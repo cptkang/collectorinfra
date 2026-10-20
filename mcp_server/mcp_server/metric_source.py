@@ -8,7 +8,8 @@
   강등 여부와 사유는 반환 최상위 ``fallback_reason``에 항상 싣는다
   (강등 없음 = null · 침묵 폴백 금지).
 - 가용 소스(§4.8.4): Prometheus ``nodename`` 라벨 값 집합(모듈 수준 지연 캐시 + TTL —
-  세션 간 공유)과 exporter 허용목록으로 호스트별 가용 소스를 판정한다.
+  세션 간 공유)과 exporter 허용목록으로 호스트별 가용 소스를 판정한다. ``anchor_mode=polestar_host``
+  (plans/189 §2.5)면 커버리지는 ``ip_label`` 값 집합이고, 폴스타에서 해석한 IP로 포함을 본다.
 - 교차 검증(§4.8.5 [v3]): 두 소스를 같이 읽어 6판정(``label_mismatch``·``not_scraped``·``stale``·
   ``scrape_down``·``value_drift``·``consistent``)을 낸다. 왕복은 최대 4회
   (PromQL 본 조회 · exporter · ``up`` 또는 ``timestamp()`` · 커버리지)다. 판정 근거가 없으면
@@ -38,6 +39,7 @@ from mcp_server import openmetrics as om
 from mcp_server import openmetrics_tools as omt
 from mcp_server import promql_tools as pq
 from mcp_server.config import AppServerConfig, OpenMetricsConfig, PrometheusConfig
+from mcp_server.polestar_tools import ANCHOR_RESOLVED, AnchorResolution, resolve_polestar_anchor
 
 logger = logging.getLogger(__name__)
 
@@ -70,7 +72,7 @@ INCONCLUSIVE_EXPORTER_ERROR = "exporter_error"
 INCONCLUSIVE_NO_COMMON_SERIES = "no_common_series"
 
 _DIAGNOSIS: dict[str, str] = {
-    VERDICT_LABEL_MISMATCH: "스크레이프 설정 nodename 정규화 필요 — 후보: {candidates}",
+    VERDICT_LABEL_MISMATCH: "스크레이프 설정 {label} 정규화 필요 — 후보: {candidates}",
     VERDICT_NOT_SCRAPED: (
         "Prometheus가 이 호스트의 시리즈를 수집하지 않는다 — 타깃 등록 필요(인프라 협의)"
     ),
@@ -88,10 +90,11 @@ _STALE_INTERVALS = 3
 _DRIFT_EPSILON = 1e-9
 
 _EP_NODENAME_VALUES = "/api/v1/label/nodename/values"
+_NODENAME_LABEL = "nodename"
 _TOOL = "prom_metric_instant"
 
-#: Prometheus 커버리지 캐시 — ``url → (만료 monotonic 시각, nodename 값 집합)``.
-#: 실패는 캐시하지 않는다.
+#: Prometheus 커버리지 캐시 — ``키 → (만료 monotonic 시각, 라벨 값 집합)``. 키는 nodename이면
+#: ``url``(종전), 다른 라벨이면 ``url|label``이다. 실패는 캐시하지 않는다.
 _COVERAGE_CACHE: dict[str, tuple[float, frozenset[str]]] = {}
 
 
@@ -313,11 +316,18 @@ def judge_cross_check(
     return result(VERDICT_CONSISTENT, compared=len(pairs))
 
 
-def diagnosis_for(verdict: str | None, evidence: dict[str, Any]) -> str | None:
-    """판정의 조치 안내 문구(§4.8.5 표). 판정이 없으면 None."""
+def diagnosis_for(
+    verdict: str | None, evidence: dict[str, Any], label: str = _NODENAME_LABEL
+) -> str | None:
+    """판정의 조치 안내 문구(§4.8.5 표). 판정이 없으면 None.
+
+    ``label``은 정규화 대상 라벨 이름이다(nodename 모드 = ``nodename`` · 앵커 모드 = ``host_label``).
+    """
     if verdict is None:
         return None
-    return _DIAGNOSIS[verdict].format(candidates=", ".join(evidence.get("candidates", [])))
+    return _DIAGNOSIS[verdict].format(
+        candidates=", ".join(evidence.get("candidates", [])), label=label
+    )
 
 
 # =====================================================================
@@ -330,38 +340,73 @@ def reset_coverage_cache() -> None:
     _COVERAGE_CACHE.clear()
 
 
-async def _coverage(
-    cfg: PrometheusConfig, ttl: int, client: httpx.AsyncClient | None
-) -> tuple[frozenset[str] | None, bool]:
-    """Prometheus ``nodename`` 라벨 값 집합과 이번에 HTTP를 쳤는지를 돌려준다.
+def coverage_label(cfg: PrometheusConfig) -> str:
+    """커버리지 라벨 이름 — nodename 모드 ``nodename`` · 앵커 모드 ``ip_label``(plans/189 §2.5)."""
+    return cfg.ip_label if pq.is_anchor_mode(cfg) else _NODENAME_LABEL
 
-    실패는 ``(None, True)``다.
+
+async def _coverage(
+    cfg: PrometheusConfig, ttl: int, client: httpx.AsyncClient | None,
+    label: str = _NODENAME_LABEL,
+) -> tuple[frozenset[str] | None, bool]:
+    """Prometheus ``label`` 라벨 값 집합과 이번에 HTTP를 쳤는지를 돌려준다.
+
+    ``label``의 기본은 ``nodename``(종전 요청 그대로)이다. 실패는 ``(None, True)``다.
     """
-    cached = _COVERAGE_CACHE.get(cfg.url)
+    if label == _NODENAME_LABEL:
+        key, endpoint, desc = cfg.url, _EP_NODENAME_VALUES, "label/nodename/values"
+    else:
+        key = f"{cfg.url}|{label}"
+        endpoint, desc = f"/api/v1/label/{label}/values", f"label/{label}/values"
+    cached = _COVERAGE_CACHE.get(key)
     if cached is not None and cached[0] > time.monotonic():
         return cached[1], False
     payload = json.loads(
-        await pq._prom_get(
-            cfg, _EP_NODENAME_VALUES, {}, "metric_source.coverage", "label/nodename/values",
-            client=client,
-        )
+        await pq._prom_get(cfg, endpoint, {}, "metric_source.coverage", desc, client=client)
     )
     values = payload.get("data")
     if "error" in payload or not isinstance(values, list):
         return None, True
     coverage = frozenset(str(v) for v in values)
-    _COVERAGE_CACHE[cfg.url] = (time.monotonic() + max(int(ttl), 0), coverage)
+    _COVERAGE_CACHE[key] = (time.monotonic() + max(int(ttl), 0), coverage)
     return coverage, True
 
 
 async def prometheus_coverage(
     cfg: PrometheusConfig, ttl: int, *, client: httpx.AsyncClient | None = None
 ) -> frozenset[str] | None:
-    """Prometheus 커버리지(§4.8.4) — TTL 동안 캐시한다. 미설정·실패면 None(미상)."""
+    """Prometheus 커버리지(§4.8.4) — TTL 동안 캐시한다. 미설정·실패면 None(미상).
+
+    앵커 모드(plans/189 §2.5)면 ``ip_label`` 값 집합이다.
+    """
     if not cfg.url:
         return None
-    coverage, _ = await _coverage(cfg, ttl, client)
+    coverage, _ = await _coverage(cfg, ttl, client, coverage_label(cfg))
     return coverage
+
+
+async def _anchor_for_coverage(
+    cfg: PrometheusConfig, pool: Any, hostname: str, source: str | None
+) -> AnchorResolution | None:
+    """앵커 모드 커버리지 판정용 폴스타 해석. 존 차단·풀 없음·호출 오류면 None(커버리지 미상).
+
+    해석 결과는 본 조회(``pq.run_metric_instant(resolution=…)``)에 넘겨 폴스타를 두 번 묻지 않는다.
+    """
+    if pool is None or pq.zone_blocked(cfg, source):
+        return None
+    if len(hostname) > pq._ANCHOR_HOSTNAME_MAX or len(source or "") > pq._ANCHOR_SOURCE_MAX:
+        return None  # 본 조회가 호출 오류로 거부한다 — 폴스타를 묻지 않는다
+    try:
+        return await resolve_polestar_anchor(pool, hostname, source, cfg.sources)
+    except ValueError:
+        return None
+
+
+def _coverage_key(resolution: AnchorResolution | None) -> str | None:
+    """해석이 1행이고 IP가 있으면 그 IP(커버리지 포함 판정 키). 그 밖은 None."""
+    if resolution is None or resolution.status != ANCHOR_RESOLVED or not resolution.anchor:
+        return None
+    return resolution.anchor.get("ipaddress") or None
 
 
 async def _prom_series(
@@ -422,16 +467,28 @@ async def run_metric_instant_with_source(
     *,
     prom_client: httpx.AsyncClient | None = None,
     om_client: httpx.AsyncClient | None = None,
+    pool: Any = None,
 ) -> str:
     """소스 사다리를 적용한 instant 조회(§4.8.3). ``cross_check``면 교차 검증 결과를 돌려준다.
 
     ``source="auto"`` + ``fallback_policy="off"`` + ``cross_check=False``는 종전 결과와
     바이트 동일이다.
+
+    ``anchor_mode=polestar_host``(plans/189 G-1)면 ``source``가 메트릭 소스 어휘(auto·prometheus·
+    exporter) 밖일 때 폴스타 source(db_id)로 보고 메트릭 소스는 ``auto``로 처리한다. ``pool``은
+    앵커 모드에서만 쓴다.
     """
+    anchored = pq.is_anchor_mode(prom_cfg)
+    polestar_source: str | None = None
+    if anchored and source not in SOURCES:
+        polestar_source = (str(source).strip() or None) if source else None
+        source = SOURCE_AUTO
     if source not in SOURCES:
         return pq._err(f"source는 {', '.join(SOURCES)} 중 하나여야 함: {source!r}")
+    anchor_kw: dict[str, Any] = {"pool": pool, "source": polestar_source} if anchored else {}
     if is_legacy_call(om_cfg.fallback_policy, source, cross_check):
-        return await pq.run_metric_instant(prom_cfg, hostname, metric, client=prom_client)
+        return await pq.run_metric_instant(prom_cfg, hostname, metric, client=prom_client,
+                                           **anchor_kw)
     if not hostname or not str(hostname).strip():
         return pq._err("hostname이 비어 있음")
     host = str(hostname).strip()
@@ -441,11 +498,16 @@ async def run_metric_instant_with_source(
         return pq._err(str(e))
 
     if cross_check:
+        cross_kw: dict[str, Any] = (
+            {"pool": pool, "polestar_source": polestar_source} if anchored else {}
+        )
         return _dump(await run_cross_check(
-            prom_cfg, om_cfg, host, metric, prom_client=prom_client, om_client=om_client
+            prom_cfg, om_cfg, host, metric, prom_client=prom_client, om_client=om_client,
+            **cross_kw,
         ))
     if source == SOURCE_PROMETHEUS:
-        result = await pq.run_metric_instant(prom_cfg, host, metric, client=prom_client)
+        result = await pq.run_metric_instant(prom_cfg, host, metric, client=prom_client,
+                                             **anchor_kw)
         return _finish(host, source, result, None)
     if source == SOURCE_EXPORTER:
         result = await omt.run_om_metric_instant(om_cfg, host, metric, client=om_client)
@@ -453,18 +515,25 @@ async def run_metric_instant_with_source(
 
     has_target = omt.resolve_target(om_cfg, host) is not None
     coverage = None
+    key: str | None = host
     if prom_cfg.url and has_target:  # 커버리지는 대안(exporter)이 있을 때만 결정을 바꾼다
-        coverage = await prometheus_coverage(
-            prom_cfg, om_cfg.coverage_ttl_seconds, client=prom_client
-        )
+        if anchored:  # 앵커 모드 — 커버리지(ip_label 값) 포함은 폴스타에서 해석한 IP로 본다
+            resolution = await _anchor_for_coverage(prom_cfg, pool, host, polestar_source)
+            anchor_kw["resolution"] = resolution
+            key = _coverage_key(resolution)
+        if key is not None:
+            coverage = await prometheus_coverage(
+                prom_cfg, om_cfg.coverage_ttl_seconds, client=prom_client
+            )
     first, reason = plan_auto_source(
         prometheus_configured=bool(prom_cfg.url), has_target=has_target,
-        coverage=coverage, hostname=host,
+        coverage=coverage, hostname=key or host,
     )
     tried: list[dict[str, Any]] = []
     detail: str | None = None
     if first == SOURCE_PROMETHEUS:
-        prom_result = await pq.run_metric_instant(prom_cfg, host, metric, client=prom_client)
+        prom_result = await pq.run_metric_instant(prom_cfg, host, metric, client=prom_client,
+                                                  **anchor_kw)
         prom_payload = json.loads(prom_result)
         outcome = classify_payload(prom_payload)
         reason = fallback_reason_for(om_cfg.fallback_policy, outcome)
@@ -472,7 +541,11 @@ async def run_metric_instant_with_source(
         if reason is None or (outcome == "empty" and not has_target):
             return _finish(host, source, prom_result, None)
         detail = prom_payload.get("error")
-        tried.append({"source": SOURCE_PROMETHEUS, "outcome": outcome, "error": detail})
+        tried_prom: dict[str, Any] = {"source": SOURCE_PROMETHEUS, "outcome": outcome,
+                                      "error": detail}
+        if prom_payload.get("reason"):  # 앵커 모드 0건 사유(plans/189) — nodename 모드엔 없다
+            tried_prom["reason"] = prom_payload["reason"]
+        tried.append(tried_prom)
     else:
         tried.append({"source": SOURCE_PROMETHEUS, "outcome": reason})
     if not has_target:
@@ -496,10 +569,16 @@ async def run_cross_check(
     prom_client: httpx.AsyncClient | None = None,
     om_client: httpx.AsyncClient | None = None,
     now: float | None = None,
+    pool: Any = None,
+    polestar_source: str | None = None,
 ) -> dict[str, Any]:
     """한 호스트·메트릭을 두 소스로 읽어 교차 검증한다(§4.8.5 [v3] · 왕복 ≤ 4).
 
     전제 오류(URL 미설정·타깃 미등록·metric 형식)는 HTTP 없이 ``{"error"}``다.
+
+    앵커 모드(plans/189 §2.5)는 PromQL 본 조회가 사다리 ``up`` 판정을 포함하므로 ``up`` 확인을
+    그 판정 결과로 대신하고(추가 왕복 없음), 왕복 수에 사다리 ``up`` 횟수를 그대로 센다(최대 3 더함).
+    정규화 후보는 ``host_label`` 값에서 찾는다.
 
     Returns:
         ``{cross_check: {verdict, diagnosis, inconclusive_reason, compared_series, round_trips,
@@ -516,23 +595,50 @@ async def run_cross_check(
     except ValueError as e:
         return {"error": str(e), "fallback_reason": None}
 
-    prom = json.loads(await pq.run_metric_instant(prom_cfg, host, metric, client=prom_client))
+    anchored = pq.is_anchor_mode(prom_cfg)
+    anchor_kw: dict[str, Any] = {"pool": pool, "source": polestar_source} if anchored else {}
+    prom_raw, probe = await pq.run_metric_instant_detail(
+        prom_cfg, host, metric, client=prom_client, **anchor_kw
+    )
+    prom = json.loads(prom_raw)
     omr = json.loads(await omt.run_om_metric_instant(om_cfg, host, metric, client=om_client))
     round_trips = 2
+    if anchored:  # 사다리 up 횟수 + 본 조회(성립했을 때만) + exporter
+        main = probe is not None and probe.matcher is not None and not probe.ambiguous
+        round_trips = (len(probe.tried) if probe else 0) + int(main) + 1
+    label = prom_cfg.host_label if anchored else _NODENAME_LABEL
     judged: dict[str, Any]
     if "error" in prom or "error" in omr:
         reason = INCONCLUSIVE_PROMETHEUS_ERROR if "error" in prom else INCONCLUSIVE_EXPORTER_ERROR
         judged = {"verdict": None, "inconclusive_reason": reason, "compared_series": 0,
                   "evidence": {}}
+    elif anchored and prom.get("reason"):
+        # 사다리가 성립하지 않은 0건(존 차단·폴스타 미해석·「모호」·미수집 등)은 up 근거로 판정하지
+        # 않는다 — 모호 사다리의 up은 다른 서버가 섞여 있고, 차단 응답은 Prometheus를 묻지 않았다.
+        # 판정 보류 사유는 응답의 reason 어휘 그대로다(plans/189 §2.4).
+        prom_reason = str(prom["reason"])
+        judged = {"verdict": None, "inconclusive_reason": prom_reason, "compared_series": 0,
+                  "evidence": {"prometheus_reason": prom_reason}}
     else:
         prom_series = list(prom["data"].get("result") or [])
         om_series = list(omr["data"].get("result") or [])
         up_series = ts_series = None
         candidates: list[str] = []
         if prom_series:
-            ts_series = await _prom_series(prom_cfg, f"timestamp({selector})",
+            ts_selector = str(prom.get("query") or selector) if anchored else selector
+            ts_series = await _prom_series(prom_cfg, f"timestamp({ts_selector})",
                                            "metric_source.cross_check.timestamp", prom_client)
             round_trips += 1
+        elif anchored:
+            # reason 없는 0건 = 사다리는 성립했고 본 조회만 비었다 — 그 단의 up 시리즈를 그대로 쓴다.
+            up_series = list(probe.up_series) if probe is not None else None
+            has_down = any(_num(s.get("value")) == 0 for s in up_series or [])
+            if om_series and not has_down and probe is not None:
+                anchor_host = str((prom.get("anchor") or {}).get("hostname") or host)
+                coverage, fetched = await _coverage(prom_cfg, om_cfg.coverage_ttl_seconds,
+                                                    prom_client, label)
+                round_trips += int(fetched)
+                candidates = label_candidates(coverage or (), anchor_host)
         else:
             up_series = await _prom_series(prom_cfg, f"up{pq.build_nodename_matcher(host)}",
                                            "metric_source.cross_check.up", prom_client)
@@ -549,7 +655,7 @@ async def run_cross_check(
             tolerance=om_cfg.cross_check_tolerance, interval=float(om_cfg.scrape_interval_hint),
             up_series=up_series, ts_series=ts_series, candidates=candidates,
         )
-    judged["diagnosis"] = diagnosis_for(judged["verdict"], judged["evidence"])
+    judged["diagnosis"] = diagnosis_for(judged["verdict"], judged["evidence"], label)
     judged["round_trips"] = round_trips
     logger.info(
         "metric source audit: tool=%s hostname=%s cross_check verdict=%s inconclusive=%s "
@@ -573,16 +679,29 @@ async def run_catalog_with_sources(
     *,
     prom_client: httpx.AsyncClient | None = None,
     om_client: httpx.AsyncClient | None = None,
+    pool: Any = None,
 ) -> str:
-    """``om_metric_catalog`` 결과에 호스트별 가용 소스(§4.8.4)를 더한다. 오류는 그대로 돌려준다."""
+    """``om_metric_catalog`` 결과에 호스트별 가용 소스(§4.8.4)를 더한다. 오류는 그대로 돌려준다.
+
+    앵커 모드(plans/189 §2.5)는 폴스타에서 해석한 IP로 ``ip_label`` 커버리지 포함을 본다 — 해석이
+    1행이 아니거나 IP가 없으면 커버리지는 미상(``unknown``)이다.
+    """
     result = await omt.run_om_metric_catalog(om_cfg, hostname, prefix, client=om_client)
     payload = json.loads(result)
     if "error" in payload:
         return result
     host = str(hostname).strip()
-    coverage = await prometheus_coverage(prom_cfg, om_cfg.coverage_ttl_seconds, client=prom_client)
+    key: str | None = host
+    if pq.is_anchor_mode(prom_cfg) and prom_cfg.url:
+        key = _coverage_key(await _anchor_for_coverage(prom_cfg, pool, host, None))
+    coverage = None
+    if key is not None:
+        coverage = await prometheus_coverage(
+            prom_cfg, om_cfg.coverage_ttl_seconds, client=prom_client
+        )
     payload.update(availability(
-        prometheus_configured=bool(prom_cfg.url), has_target=True, coverage=coverage, hostname=host
+        prometheus_configured=bool(prom_cfg.url), has_target=True, coverage=coverage,
+        hostname=key or host,
     ))
     return _dump(payload)
 
@@ -615,16 +734,18 @@ def register_source_ladder_tools(mcp: FastMCP) -> None:
     ) -> str:
         """서버(hostname)의 메트릭 순간값을 조회한다(Prometheus instant · exporter 강등 지원).
 
-        서버가 ``{nodename="<hostname>"}`` 필터를 결정적으로 조립한다(§5-0). metric은
+        서버가 hostname에서 라벨 필터를 결정적으로 조립한다(§5-0 — 라벨을 직접 쓰지 말라). metric은
         bare 메트릭 이름만 허용한다(임의 PromQL은 원시 도구 사용). 소스는 서버 정책이 고른다 —
         결과의 ``source_kind``가 ``openmetrics``면 exporter를 지금 직접 읽은 현재값이며 이력·rate는
-        없다. ``fallback_reason``(강등 사유 · 없으면 null)을 그대로 언급하라.
+        없다. ``fallback_reason``(강등 사유 · 없으면 null)을 그대로 언급하라. 결과가 0건이면
+        ``reason``·``hint``가 붙는다 — 0건을 「정상」으로 해석하지 말고 hint를 따르라.
 
         Args:
-            hostname: 등록 서버명(server_name = Prometheus nodename 라벨).
+            hostname: 폴스타 등록 서버명 또는 OS 호스트명(받은 값 그대로).
             metric: bare 메트릭 이름(예: node_load1).
-            source: auto(서버 정책 · 기본) | prometheus | exporter.
-            cross_check: true면 두 소스를 함께 읽어 판정(verdict)을 돌려준다(source는 무시).
+            source: auto(서버 정책 · 기본) | prometheus | exporter. 서버가 속한 폴스타 source
+                (알람의 dbId)를 넘기면 그 source에서 서버를 찾고 메트릭 소스는 auto로 고른다.
+            cross_check: true면 두 소스를 함께 읽어 판정(verdict)을 돌려준다(메트릭 소스 값은 무시).
             ctx: MCP 컨텍스트.
 
         Returns:
@@ -634,7 +755,8 @@ def register_source_ladder_tools(mcp: FastMCP) -> None:
         """
         config = _app_config(ctx)
         result = await run_metric_instant_with_source(
-            config.prometheus, config.openmetrics, hostname, metric, source, cross_check
+            config.prometheus, config.openmetrics, hostname, metric, source, cross_check,
+            pool=pq.anchor_pool(ctx, config.prometheus),
         )
         return pq._with_openmetrics_hint(result)
 
@@ -661,7 +783,8 @@ def register_source_ladder_tools(mcp: FastMCP) -> None:
         """
         config = _app_config(ctx)
         return await run_catalog_with_sources(
-            config.prometheus, config.openmetrics, hostname, prefix
+            config.prometheus, config.openmetrics, hostname, prefix,
+            pool=pq.anchor_pool(ctx, config.prometheus),
         )
 
     logger.info("PromQL↔OpenMetrics 소스 사다리 노출됨 — prom_metric_instant(source·cross_check)")

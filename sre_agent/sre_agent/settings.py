@@ -180,6 +180,13 @@ class AgentSettings(BaseSettings):
     # 노트만 켜면 없는 도구를 가리킨다. **만료일 2027-03-22**(D-161 ① · 6개월) — OM 배치 운영
     # 실측 후 상시화 또는 삭제를 판정한다.
     openmetrics_guidance_enabled: bool = False
+    # Prometheus 호스트 앵커 지침(plans/189 W5). 기본 off = 조사 지침 문자열 비트 동일.
+    # 켜면 `build_guidance`가 OpenMetrics 노트 자리 뒤·APM 노트 앞에 `PROMETHEUS_ANCHOR_NOTE`
+    # (hostname 의미 · source=알람 dbId · 0건 reason 처리 — 「정상」 서술 금지)를 붙인다.
+    # 운영 메모: mcp_server `PROMETHEUS_ANCHOR_MODE=polestar_host` 배치와 **함께** 켠다 — nodename
+    # 모드에서 OM 확장 `prom_metric_instant`의 `source`는 메트릭 소스(auto|prometheus|exporter)라
+    # dbId를 넘기면 안 된다. **만료일 2027-04-20**(D-161 ① · 6개월).
+    prometheus_anchor_guidance_enabled: bool = False
     # APM 조사 지침(plans/87 J3 · SPEC-apm-sre-agent §3.3). 기본 off = 조사 지침·브리핑 비트 동일.
     # 켜면 사건창 앵커에 apm_* 구간 도구 4종 · APM 조사 순서·현재값·폴백 노트 · (apm 사건이면) APM 플레이북 ·
     # 브리핑 소스 라벨·APM 한계 · 정체 가드(같은 도구·같은 인자 3회 → 미결 — 사후 판정)가 붙는다.

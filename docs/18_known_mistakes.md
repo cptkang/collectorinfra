@@ -2204,3 +2204,8 @@
 - **실수**: W13 위임에 「부족한 비밀값 꼴은 `sre_agent/.../log_masking.py`에 더한다」를 그대로 넣었다. 그 파일은 `src/utils/log_masking.py` 정본의 바이트 사본이고 `tests/test_utils/test_log_masking_copies.py`가 사본 4개 일치를 단언해, implementer가 신규 `activity_masking.py`로 이탈했다. 또 처음 표본(계획 목록)만 고정해 YAML `password:`·`sqlplus id/pw@` 등 7개 꼴이 검증에서 누출로 잡혔다.
 - **원인**: 계획서의 파일 지정을 위임 전에 실측(사본·정본 관계)하지 않았다. 가림 표본을 계획 목록으로 한정하고 운영에서 흔한 설정 파일 출력 꼴을 넣지 않았다.
 - **방지책**: 위임 프롬프트에 파일을 지정하기 전에 그 파일이 생성·복사본인지(`*_copies` 테스트·머리 주석) 확인한다. 사용자에게 보이는 가림은 계획 표본 + 설정 파일(YAML·properties·env)·CLI(`curl -u`·`sqlplus`·`IDENTIFIED BY`) 꼴과 오탐 표본(`-p 5432`·`pass: 3/5`)을 함께 고정한다.
+
+### 2026-10-20 · (plans/189 재개) PC 크래시 뒤 쓰다 만 파일에 문자열 이스케이프 `\n`이 실제 줄바꿈으로 깨진 채 남았다
+- **실수**: implementer 작업 중 PC가 크래시로 재부팅됐다. 재개해 보니 `mcp_server/mcp_server/polestar_tools.py`의 `build_anchor_lookup_sql` 안 SQL 문자열 이스케이프 `\n` 10곳이 실제 줄바꿈으로 바뀌어 SyntaxError가 났다. git diff 줄 수만 보고는 「진행됨」으로 보였다.
+- **원인**: 편집 도중 중단된 파일은 부분 기록·변형된 상태로 남을 수 있다. 재개 시 diff 존재 여부만 보고 완결성을 판단했다.
+- **방지책**: 크래시·강제 종료 뒤 재개할 때는 바뀐 `.py` 전부를 `python -m py_compile`로 먼저 확인하고, 문자열 리터럴·인코딩 깨짐을 diff로 훑은 뒤 이어간다. 긴 계획은 Wave가 끝날 때마다 계획서 머리에 진행 한 줄을 남겨 디스크만으로 재개할 수 있게 한다.

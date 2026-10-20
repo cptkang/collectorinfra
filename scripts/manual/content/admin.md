@@ -4210,13 +4210,18 @@ Prometheus 지표를 PromQL로 조회하는 연동이다. MCP 서버의 도구�
 :::
 ::: how
 1. 기준 문서 `docs/27_prometheus_integration_guide.md`를 따라 MCP 서버에 Prometheus 주소를 설정한다.
-2. MCP 서버를 재기동한다.
+2. 운영 Prometheus처럼 `nodename` 라벨이 없고 `hostname`·`node_ip` 라벨을 쓰면, `mcp_server/config.toml`의 `[prometheus]`에 `anchor_mode = "polestar_host"`와 수집 존 목록 `sources`(예: 공동존 두 DB)를 적는다. 환경변수로는 `PROMETHEUS_ANCHOR_MODE`·`PROMETHEUS_SOURCES`(JSON 배열)이다. 라벨 이름이 다르면 `PROMETHEUS_HOST_LABEL`·`PROMETHEUS_IP_LABEL`·`PROMETHEUS_INSTANCE_LABEL`로 바꾼다(`docs/27` §3.1).
+3. 장애 조사 쪽 `sre_agent/.env`에 `PROMETHEUS_ANCHOR_GUIDANCE_ENABLED=true`를 함께 켠다. 조사 LLM이 알람 dbId를 `source`로 넘기고, 0건 응답을 「정상」으로 쓰지 않게 하는 지침이다.
+4. MCP 서버와 장애 조사 서비스를 재기동한다.
 :::
 ::: ui -
 화면 캡처가 없다.
 :::
 ::: caution
 - 사용자 채팅 질의 경로에는 PromQL 조회가 없다. 이 연동은 MCP 서버 도구로 제공되어 장애 조사(sre_agent)가 쓴다(`docs/27` §3.4). 별도 화면도 없다.
+- `anchor_mode` 기본값 `nodename`은 종전 동작 그대로다. 운영 Prometheus에 `nodename` 라벨이 없는데 기본값으로 두면 조회가 전부 빈 결과가 된다.
+- `polestar_host` 모드에서 `sources` 밖 존(예: 은행존) 서버는 Prometheus를 부르지 않고 「미적용 존」으로 답한다. 관제 미등록 서버는 0건과 「미수집」 사유로 답한다. 둘 다 오류가 아니다.
+- `anchor_mode`가 허용값 밖이거나 라벨 이름이 규칙에 맞지 않으면 MCP 서버가 기동하지 않는다.
 :::
 ::: related
 - [A-50 메트릭 엔드포인트](#a-50)

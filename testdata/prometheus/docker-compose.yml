@@ -28,6 +28,8 @@ services:
 
   mock-exporter:
     # 결정적 단언용 정적 /metrics 서빙 — 실 계측(node_exporter)은 값이 비결정적이라 단언 부적합
+    # plans/189 W6: prometheus.yml job ops_node가 이 컨테이너를 운영 라벨 규약(hostname·node_ip·
+    # instance·resources) 타깃 4개로 긁는다 — 사다리 1·2·3단·「모호」 실 HTTP 확인용(RUN_DOCKER_IT=1).
     image: nginx:1.27-alpine
     container_name: fixture_mock_exporter
     ports:

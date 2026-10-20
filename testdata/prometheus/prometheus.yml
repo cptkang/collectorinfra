@@ -27,3 +27,41 @@ scrape_configs:
   - job_name: polestar
     static_configs:
       - targets: ["host.docker.internal:9098"]
+
+  # plans/189 W6 — 운영 Prometheus 타깃 라벨 규약(D-119 ③ 부기 2026-10-20) 재현. nodename 라벨은 없고
+  # hostname(OS)·node_ip(OS IP)·instance(=node_ip:port)·resources(VM name)·type 라벨을 단다.
+  # 모두 mock-exporter를 긁되 instance를 명시해 서로 다른 타깃으로 만든다(값은 mock 결정값).
+  # 소비: mcp_server/tests/test_plan189_prom_anchor.py TestDockerOperationalLabels(RUN_DOCKER_IT=1).
+  - job_name: ops_node
+    static_configs:
+      # 정상 서버 — 사다리 1단(hostname+node_ip)
+      - targets: ["mock-exporter:80"]
+        labels:
+          instance: "10.10.0.1:9100"
+          hostname: ops-01
+          node_ip: 10.10.0.1
+          resources: svr-ops-01
+          type: node
+      # VM 교체 서버 — resources가 교체 전 VM name으로 낡아 있다(폴스타 등록명과 다름)
+      - targets: ["mock-exporter:80"]
+        labels:
+          instance: "10.10.0.2:9100"
+          hostname: ops-02
+          node_ip: 10.10.0.2
+          resources: svr-ops-02-old
+          type: node
+      # 물리 호스트명 그룹 — 같은 hostname 아래 서로 다른 instance 두 타깃(「모호」 판정)
+      - targets: ["mock-exporter:80"]
+        labels:
+          instance: "10.10.0.3:9100"
+          hostname: ops-phys
+          node_ip: 10.10.0.3
+          resources: svr-ops-phys-a
+          type: node
+      - targets: ["mock-exporter:80"]
+        labels:
+          instance: "10.10.0.4:9100"
+          hostname: ops-phys
+          node_ip: 10.10.0.4
+          resources: svr-ops-phys-b
+          type: node

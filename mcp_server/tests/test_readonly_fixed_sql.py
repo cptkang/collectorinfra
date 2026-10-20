@@ -73,6 +73,7 @@ def _builder_cases() -> list[tuple[str, Callable[[], str]]]:
                         ),
                     )
         add(f"resource_status-{eng}", lambda d=d: pt.build_resource_status_sql(d, "web01", 1000))
+        add(f"anchor_lookup-{eng}", lambda d=d: pt.build_anchor_lookup_sql(d, "web01"))  # plans/189
         add(f"topology-{eng}", lambda d=d: pt.build_topology_sql(d, "web01", 3, 1000))
         for aid in ("12345", "A-1"):
             add(
@@ -122,7 +123,7 @@ def test_builder_sql_passes_readonly(build: Callable[[], str]) -> None:
 def test_builder_cases_cover_every_public_builder() -> None:
     """두 모듈의 공개 `build_*_sql` 빌더가 전부 위 케이스에 들어 있다(새 빌더 누락 방지)."""
     covered = {
-        "alarm_history", "incident_alarms", "metric_trend", "resource_status",
+        "alarm_history", "incident_alarms", "metric_trend", "resource_status", "anchor_lookup",
         "topology", "condition_log", "os_config", "change_history",
         "exporter_server_info", "exporter_latest_utilization", "exporter_active_alarm_count",
     }

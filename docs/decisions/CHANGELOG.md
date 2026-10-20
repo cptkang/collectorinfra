@@ -8,6 +8,9 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-20 | D-119 | 부기 — ③ 앵커 개정 구현(`plans/189` W1~W7 · 미커밋): `anchor_mode`(기본 `nodename` 바이트 동일)·`sources` 등 설정 · 폴스타 앵커 해석 · 사다리·모호 전 단 · `source` 인자 · OM 교차 검증 reason 판정 보류 · sre_agent 지침 플래그(만료 2027-04-20)·0건 인용 제외 · 상태 「구현 대기」→「구현 완료 · 폐쇄망 검증 대기」 |
+| 2026-10-20 | D-119 | 부기 — 구현 계약 확정(`plans/189` G-1·G-3): 고수준 PromQL 도구에 선택 인자 `source` 추가(공개 시그니처 변경) · 앵커 해석 캐시 없음 · G-2 A안(폴스타 0행은 Prometheus 미호출 `polestar_not_found` · 조회 오류만 `hostname_unverified` 표시 강등 · 0건 `anchor_unresolved`) |
+| 2026-10-20 | D-119 | 부기 — 운영 Prometheus 라벨 실측(`nodename` 없음 · 커버리지 1204/1229 · hostname 비유일) · ③ 앵커 개정: 폴스타 hostname·ipaddress를 서버가 해석해 `{hostname,node_ip}`→`{node_ip}`→`{hostname}` 사다리 · 다중 instance는 「모호」 · 전 단 0건 = 관제 미등록 사유 · 은행존 호출 전 차단 · 기본값 `nodename` 유지 · 같은 날 잔여 해소(`node_ip` 비공백 유일 · hostname 양쪽 동일값 — 정규화 없음) · 구현 계획 `plans/189` |
 | 2026-10-20 | D-123 | 부기 — 동시 상한 대기 중 워치독으로 종결된 잡은 슬롯 획득 직후 조사 생략(`_skip_if_stale` · 임계 식 `domain/job_watchdog.py` 공유 · 감사 `skipped_stale`에 status · 상태 어휘·설정 불변) |
 | 2026-10-19 | D-341 | 부기 4 구현 — `plans/187` W13~W15(실행 기록 · 허브·SSE · 장애 진단 탭) · 상태 칸 갱신 · 이탈(비밀값 꼴은 `activity_masking.py`) · 잔여(사용자 경로 2차 마스킹 실효 — 결정 대기) |
 | 2026-10-19 | D-341 · D-325 | D-341 부기 4 — `plans/187` v2.0 G-34~G-42 확정: 「장애 진단」 탭(진입 일원화 · 조사별 하위 탭 상한 없음) · sre_agent 실행 기록(`activity_since`) · 발췌 가림 후 사용자·관리자 모두 · AI 메모 관리자만 · 본체 허브 + SSE 1연결(상세는 열린 탭만) · 목록 관리자 전체/사용자 자기 채팅 조사 · 요약 JSONL · 코드 0건. D-325 부기 — ② 진단 탭 SSE 도입 · ③ 발췌 사용자 노출(마스킹) |

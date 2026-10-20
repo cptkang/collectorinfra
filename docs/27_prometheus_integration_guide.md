@@ -27,6 +27,12 @@
 대한 **외부 선행조건**(`plans/91` 1-12 · P0-3)이라 코드로는 더 진행할 것이 없다. 게이트 측 채널은 그 선행조건이 풀릴 때까지
 **예비 코드**로 두기로 확정했다(§3.3 · 판정 기한 2027-02-20).
 
+> **2026-10-20 갱신(`plans/189` · D-119 ③ 부기)**: 폐쇄망에서 `mcp_server` ↔ 운영 Prometheus 연결은 확인됐다. 그러나
+> 운영 타깃 라벨에 `nodename`이 **없어** 기본 조립(`{nodename="…"}`)은 전건 빈 결과다(G-6 실현). 운영 라벨은
+> `hostname`(OS 호스트명)·`node_ip`(OS IP)·`instance`이고, 공동존(`polestar_cm_gp`·`polestar_cm_yd`)의 관제 요청 서버만 수집한다.
+> 대응으로 `[prometheus] anchor_mode = "polestar_host"`를 추가했다 — 서버가 폴스타에서 OS 호스트명·IP를 찾아
+> `{hostname,node_ip}` → `{node_ip}` → `{hostname}` 사다리로 조립한다(§3.1·§3.5). 기본값 `nodename`은 종전과 바이트 동일하다.
+
 ---
 
 ## 1. 왜 이 구조인가 — 접근 경계 일원화 (D-119)
@@ -107,7 +113,29 @@ expose_raw_promql = false # 원시 PromQL 5종 노출 여부 (기본 비노출)
 | `PROMETHEUS_QUERY_TIMEOUT` | `query_timeout` | int | 쿼리 timeout(초) |
 | `EXPOSE_RAW_PROMQL` | `expose_raw_promql` | bool | `1/true/yes/on` → 원시 도구 노출 |
 
-오버라이드 구현: `mcp_server/mcp_server/config.py:270-287`. 시스템 환경변수가 `.env`보다 우선한다.
+오버라이드 구현: `mcp_server/mcp_server/config.py` `_apply_env_overrides`. 시스템 환경변수가 `.env`보다 우선한다.
+
+**라벨 앵커 5키 (`plans/189` · D-119 ③ 부기 2026-10-20)** — 고수준 도구가 `hostname` 인자로 셀렉터를 만드는 방식이다.
+
+| 환경변수 | TOML 대응 | 기본 | 운영 권고 | 의미 |
+|---|---|---|---|---|
+| `PROMETHEUS_ANCHOR_MODE` | `anchor_mode` | `nodename` | `polestar_host` | `nodename` = `{nodename="<hostname>"}` 고정(종전 동일) · `polestar_host` = §3.5 사다리 |
+| `PROMETHEUS_HOST_LABEL` | `host_label` | `hostname` | `hostname` | Prometheus의 OS 호스트명 라벨 이름 |
+| `PROMETHEUS_IP_LABEL` | `ip_label` | `node_ip` | `node_ip` | Prometheus의 OS IP 라벨 이름 |
+| `PROMETHEUS_INSTANCE_LABEL` | `instance_label` | `instance` | `instance` | 「모호」 판정용 — 서로 다른 값이 2개 이상이면 합치지 않는다 |
+| `PROMETHEUS_SOURCES` | `sources` | `[]`(제한 없음) | `["polestar_cm_gp","polestar_cm_yd"]` | Prometheus가 수집하는 폴스타 source(db_id) — JSON 배열. 목록 밖 source는 HTTP 없이 `prometheus_unsupported_zone` |
+
+- 라벨 이름 3종은 셀렉터에 그대로 들어가므로 라벨 이름 규칙(`[a-zA-Z_][a-zA-Z0-9_]*`)으로 검증한다 — 어기거나 `anchor_mode`가 허용값 밖이면 기동이 실패한다.
+- 운영 `config.toml` 예시:
+
+```toml
+[prometheus]
+url = "http://<운영 Prometheus>:9090"
+anchor_mode = "polestar_host"
+sources = ["polestar_cm_gp", "polestar_cm_yd"]
+```
+
+- 조사 측 지침은 `sre_agent/.env`의 `PROMETHEUS_ANCHOR_GUIDANCE_ENABLED=true`로 함께 켠다(§5.5 · 만료일 2027-04-20).
 
 > **⚠️ 실측 갭 2건**
 > - `mcp_server/.env`에 `PROMETHEUS_*` 키가 **한 줄도 없다**(2026-08-28 확인).
@@ -221,6 +249,34 @@ Docker 픽스처 실측(2026-08-06, 참고 기준선):
 - 미존재 hostname → `status=success` + 빈 배열로 graceful(오류 아님).
 
 실 Prometheus 편입 시 이 4가지를 측정하는 절차는 **§6**에 있다.
+
+#### 3.5.1 운영 실측(2026-10-20 · 폐쇄망)과 `polestar_host` 사다리
+
+운영 Prometheus는 이 전제를 충족하지 않는다 — 타깃 라벨에 `nodename`이 없다. 대신 `hostname`(OS) · `node_ip`(OS IP) ·
+`instance`(=`node_ip:port`) · `resources`(VM name — 교체 시 낡음) 등이 있다. `up{type="node"}` 1229 중 `hostname`·`node_ip`
+보유 1204. 비어 있지 않은 `node_ip`는 유일하고, `hostname`은 물리 호스트명 그룹(2~5건) 8개가 겹친다. 폴스타 `hostname`과
+Prometheus `hostname`은 같은 OS 값이라 정규화하지 않는다. 은행존은 Prometheus를 쓰지 않는다.
+
+`anchor_mode = "polestar_host"`이면 도구는 다음 순서로 동작한다.
+
+1. `source`(선택 인자 — 알람 `dbId`)가 `sources` 목록 밖이면 즉시 `reason=prometheus_unsupported_zone`(HTTP·DB 0회).
+2. 폴스타 `cmm_resource`(`server.Server` · 미삭제)에서 `NAME = x OR HOSTNAME = x`인 행의 `hostname`·`ipaddress`를 조회한다
+   (`source`가 있으면 그 source만, 없으면 `sources` 전체 · 캐시 없음). 0행 → Prometheus 미호출 `polestar_not_found`.
+   2행 이상 → `polestar_ambiguous` + 후보. 조회 오류 → `{hostname="x"}` 3단만 시도하고 `matched_by=hostname_unverified`·
+   `anchor=null`·`warning`을 싣는다(0건이면 `anchor_unresolved`).
+3. 사다리 — 각 단을 `up{…}` instant 1회로 판정한다(결과 ≥1 · 서로 다른 `instance` 1개면 성립, 2개 이상이면 `prometheus_ambiguous`).
+
+| 단 | 셀렉터 | `matched_by` |
+|---:|---|---|
+| 1 | `metric{hostname="h",node_ip="ip"}` | `hostname+node_ip` |
+| 2 | `metric{node_ip="ip"}` | `node_ip` |
+| 3 | `metric{hostname="h"}` | `hostname` |
+
+4. 성립한 셀렉터로 본 조회 1회. 전 단 0건이면 `reason=prometheus_not_monitored`(관제 미등록) + 고정 `hint`.
+
+0건은 `{error}`가 아니라 성공 응답 + `reason`·`hint`이고, 응답에는 `matched_by`·`tried`(시도한 셀렉터)·`anchor`
+(`{source,name,hostname,ipaddress}`)가 붙는다. 최대 HTTP는 `up` 3회 + 본 조회 1회다. 라벨 값은 이스케이프하고 정규식 매처(`=~`)는 쓰지 않는다.
+OpenMetrics 경로(`metric_source.py`)도 같은 모드에서 커버리지를 `/api/v1/label/<ip_label>/values`로 계산한다.
 
 ---
 
@@ -455,6 +511,21 @@ curl -s "$PROM/api/v1/status/runtimeinfo" | python -m json.tool | grep -i retent
 `200` / `['svr-web-01']` / `1404`·`1404` / `2 시리즈` / `15d`가 나온다. 실서버에서 다르면
 **명령이 아니라 환경이 다른 것**이다.
 
+**`polestar_host` 모드 확인 (운영 라벨 규약 — 2026-10-20)**: 운영처럼 `nodename`이 없으면 ②~④ 대신 아래로 본다.
+
+```bash
+# ②′ 라벨 존재 — hostname·node_ip
+curl -s --data-urlencode 'query=count(up{type="node",hostname!=""})' "$PROM/api/v1/query"
+curl -s --data-urlencode 'query=count(up{type="node",node_ip!=""})'  "$PROM/api/v1/query"
+# ③′ node_ip 유일성 — 결과가 공백 그룹 하나뿐이어야 한다
+curl -s --data-urlencode 'query=count by (node_ip)(up{type="node"}) > 1' "$PROM/api/v1/query"
+# ④′ 표본 왕복 — prom_metric_instant(hostname=<폴스타 등록명>, metric="up", source=<dbId>)의 matched_by
+```
+
+표본 기대값(`plans/189` §4): 정상 서버 `hostname+node_ip` · VM 교체 서버 `hostname+node_ip` 또는 `node_ip` ·
+물리 호스트명 그룹 서버 `node_ip`(또는 1단) · 관제 미등록 공동존 서버 `prometheus_not_monitored` · 은행존 서버
+`prometheus_unsupported_zone`(Prometheus 감사 로그 0건).
+
 **판정**
 
 | ③ 커버리지 | ④ 일치 | 결론 |
@@ -525,7 +596,7 @@ RUN_E2E=1 python sre_agent/scripts/ab_promql_gate.py --trials 2
 | ~~G-3~~ | ~~`.env.example` 오버라이드 키 9종 누락 + 유령 키 + 존 3종 미문서화~~ | — | ✅ **해소(2026-08-28)** — 키 보강 + 커버리지 테스트 8건 신설 · §8.1 |
 | G-4 | 게이트 측 Prometheus 채널 미배선 | 존별 CSV가 무효 | ✅ **처리 방침 확정(2026-09-10)** — ③ 예비 코드 + 판정 기한 2027-02-20(§3.3 · `plans/91` 1-10). 배선은 1-12 해소 시 §3.3.3 |
 | G-5 | 본체 채팅 경로에 PromQL 프로파일 없음 | 채팅에서 메트릭 조회 불가 | 필요 시 `HOST_INSPECT_PROFILES` 확장 + `host_inspect.py` 키워드·식별자 표 동반 수정(§3.4 · `plans/92` O3 선택) (미요청) |
-| G-6 | 실 Prometheus `nodename` 규약 미확인 | 조회가 **조용히 빈 결과** | §6.1 실측 후 인프라 소유자 협의 |
+| ~~G-6~~ | ~~실 Prometheus `nodename` 규약 미확인~~ | — | ✅ **실측·코드 대응(2026-10-20)** — 운영에 `nodename` 없음 확인 → `anchor_mode=polestar_host` 사다리(`plans/189` · D-119 ③ 부기 · §3.5.1). 폐쇄망 표본 왕복 확인 대기(§6.1 ④′) |
 
 ### 8.1 G-3 상세 — `mcp_server/.env.example`의 문서화 공백
 

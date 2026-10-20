@@ -47,6 +47,7 @@ import functools
 import hashlib
 import json
 import logging
+import re
 import threading
 import time
 from collections import deque
@@ -56,7 +57,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from sre_agent.application.briefing_builder import build_playbook_briefing
-from sre_agent.application.investigation_guidance import deep_dive_note
+from sre_agent.application.investigation_guidance import PROM_ANCHOR_REASONS, deep_dive_note
 from sre_agent.application.playbook_narrator import LlmCall, NarratorLimits, PlaybookNarrator
 from sre_agent.application.playbook_runner import (
     PlaybookRun,
@@ -148,6 +149,50 @@ def failed_tool_limitation(outputs: Sequence[object]) -> str | None:
     if not failed:
         return None
     return f"도구 호출 실패 {len(failed)}건: {', '.join(dict.fromkeys(failed))}"
+
+
+#: prom_* 0건 응답의 reason(plans/189 W5) — 성공 응답이지만 그 서버의 Prometheus 증거가 없다는 뜻이다.
+_PROM_EMPTY_REASON_RE = re.compile(
+    r'"reason"\s*:\s*"(' + "|".join(map(re.escape, PROM_ANCHOR_REASONS)) + r')"'
+)
+
+
+def prom_empty_reason(to: object) -> str | None:
+    """prom_* 호출 결과가 reason 달린 0건이면 그 reason(plans/189 W5). 아니면 None.
+
+    mcp_server는 0건일 때만 `reason`을 싣는다(plans/189 §2.4) — 이런 호출은 status가 success라
+    C3 필터를 통과하므로 여기서 따로 걸러 브리핑 인용 근거에서 뺀다.
+    """
+    if not str(getattr(to, "tool_name", "") or "").startswith("prom_"):
+        return None
+    text = str(getattr(to, "output", "") or "")
+    try:
+        # 앞머리 JSON 값 하나만 읽는다 — holmes 출력은 본문 JSON 뒤에 structuredContent 꼬리가 붙는다.
+        payload, _ = json.JSONDecoder().raw_decode(text.lstrip())
+    except ValueError:
+        m = _PROM_EMPTY_REASON_RE.search(text)  # JSON이 아닐 때만 정규식 폴백
+        return m.group(1) if m else None
+    if not isinstance(payload, dict):
+        return None
+    # 최상위 reason(prom_metric_*) 또는 교차 검증의 중첩 prometheus.reason만 본다 — 데이터 라벨의
+    # reason(kube_*_waiting_reason 등)이나 다른 필드 문자열에는 반응하지 않는다.
+    candidates = [payload.get("reason")]
+    nested = payload.get("prometheus")
+    if isinstance(nested, dict):
+        candidates.append(nested.get("reason"))
+    for reason in candidates:
+        if isinstance(reason, str) and reason in PROM_ANCHOR_REASONS:
+            return reason
+    return None
+
+
+def prom_empty_limitation(outputs: Sequence[object]) -> str | None:
+    """reason 달린 prom_* 0건 호출을 「근거 아님」 한계 1줄로(plans/189 W5). 없으면 None."""
+    reasons = [r for to in outputs if (r := prom_empty_reason(to))]
+    if not reasons:
+        return None
+    return (f"Prometheus 0건 {len(reasons)}건(근거 아님 — 미수집·식별 불가): "
+            f"{', '.join(dict.fromkeys(reasons))}")
 
 
 def _deep_skip_reason(result: Any) -> str | None:
@@ -831,6 +876,9 @@ class InvestigationDispatcher:
         # plans/188 C3 — 실패 호출은 인용 근거에서 빼고 한계 1줄로 알린다(판정 입력 `basis`는 불변).
         failed_line = failed_tool_limitation(basis.tool_outputs)
         _add_limitations(briefing_kwargs, [failed_line] if failed_line else [])
+        # plans/189 W5 — reason 달린 prom_* 0건(성공 응답)도 인용 근거에서 빼고 한계 1줄로 알린다.
+        prom_empty_line = prom_empty_limitation(basis.tool_outputs)
+        _add_limitations(briefing_kwargs, [prom_empty_line] if prom_empty_line else [])
         if tools_unavailable:
             # A안 브리핑: 요약 `[미결] 조사 불가 …` · 원인 고정 문구 · 사유는 한계 1줄에만.
             briefing_kwargs["investigation_skipped"] = True
@@ -851,7 +899,8 @@ class InvestigationDispatcher:
             answer=MALFORMED_ANSWER_SUMMARY if malformed else result.answer,
             verdict=verdict,
             tool_names=[to.tool_name for to in basis.tool_outputs
-                        if _tool_status(to) in _CITABLE_TOOL_STATUSES],
+                        if _tool_status(to) in _CITABLE_TOOL_STATUSES
+                        and prom_empty_reason(to) is None],
             gate_tier=gate_tier,
             remediation=self._recommend_remediation(verdict),
             **briefing_kwargs,

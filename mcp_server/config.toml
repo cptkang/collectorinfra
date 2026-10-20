@@ -34,6 +34,16 @@ query_timeout = 30
 # 기본 false — 고수준 hostname 앵커 도구만. 탐색적 조사 배치에서만 true 옵트인.
 # 값은 mcp_server/.env의 EXPOSE_RAW_PROMQL로 오버라이드 가능.
 expose_raw_promql = false
+# ── 라벨 앵커 (plans/189 · D-119 ③ 부기) — 아래는 주석 예시다. 미기재 = 기본값(현행 nodename 조립) ──
+# nodename(기본) | polestar_host — 폴스타에서 OS 호스트명·IP를 해석해 라벨 사다리로 조립 (PROMETHEUS_ANCHOR_MODE)
+# anchor_mode = "polestar_host"
+# Prometheus 라벨 이름 (PROMETHEUS_HOST_LABEL · PROMETHEUS_IP_LABEL · PROMETHEUS_INSTANCE_LABEL)
+# host_label = "hostname"
+# ip_label = "node_ip"
+# instance_label = "instance"
+# Prometheus가 수집하는 폴스타 source — 목록 밖은 HTTP 없이 거부. 빈 목록 = 제한 없음 (PROMETHEUS_SOURCES)
+# 운영 예시(공동존만 수집 · 은행존 미사용):
+# sources = ["polestar_cm_gp", "polestar_cm_yd"]
 
 # ============================================================
 # OpenMetrics (exporter 직접 스크레이프·폴스타 브리지 — plans/92 · D-210 · docs/27 §10)
