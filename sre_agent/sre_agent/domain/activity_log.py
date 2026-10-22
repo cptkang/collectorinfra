@@ -132,8 +132,13 @@ class ActivityLog:
         rows: int | None = None,
         excerpt: str | None = None,
         note: str | None = None,
+        purpose: str | None = None,
     ) -> int:
-        """이벤트 1건을 덧붙이고 seq를 돌려준다. 값이 None인 선택 키는 싣지 않는다."""
+        """이벤트 1건을 덧붙이고 seq를 돌려준다. 값이 None인 선택 키는 싣지 않는다.
+
+        `purpose`(plans/187 W17)는 「무엇 때문에 무엇을 보는지」 한 줄 — 플레이북 선택 근거 · 스텝
+        초점(`narrate.focus`) · HolmesGPT 조사 이유. `label`과 같은 상한·가림을 거친다.
+        """
         lim = self.limits
         event: dict = {"seq": 0, "at": 0.0, "engine": engine, "kind": kind}
         if step is not None:
@@ -151,6 +156,8 @@ class ActivityLog:
             event["excerpt"] = self._text(excerpt, lim.max_excerpt_bytes)
         if note is not None:
             event["note"] = self._text(note, lim.max_note_bytes)
+        if purpose is not None:
+            event["purpose"] = self._text(purpose, lim.max_label_bytes)
         with self._lock:
             self._seq += 1
             event["seq"] = self._seq

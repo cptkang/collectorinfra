@@ -25,6 +25,7 @@ from src.llm import create_llm
 from src.nodes.approval_gate import approval_gate
 from src.nodes.cache_management import cache_management
 from src.nodes.context_resolver import context_resolver
+from src.nodes.fault_diagnosis import chat_symptom_entry
 from src.nodes.fault_diagnosis import fault_diagnosis as fault_diagnosis_node
 from src.nodes.general_inference import general_inference as general_inference_node
 from src.nodes.field_mapper import field_mapper
@@ -325,6 +326,17 @@ def route_after_field_mapper_legacy(state: AgentState, *, config: AppConfig) -> 
     return "schema_analyzer"
 
 
+def route_after_field_mapper_tier2(state: AgentState, *, app_config: AppConfig) -> str:
+    """2단 + 채팅 증상 조사 등록 시: field_mapper → fault_diagnosis | intent_planner.
+
+    plans/187 W12 — 3단과 같은 결정적 라우터(`route_symptom`)로 판정한다(LLM 호출 0회).
+    진단 표지가 있고 플레이북 경로가 확정된 질의만 조사로 보내고, 나머지는 종전 2단 흐름이다.
+    """
+    if chat_symptom_entry(state, app_config):
+        return "fault_diagnosis"
+    return "intent_planner"
+
+
 def route_after_input_parser(state: AgentState) -> str:
     """input_parser 이후 — 조회 기간 되묻기면 END, 아니면 field_mapper (plans/122 T-3 · D-309).
 
@@ -595,7 +607,26 @@ def _wire_tier2(graph: TracedGraph, config: AppConfig, llm: BaseChatModel) -> No
         partial(replanner, llm=llm, app_config=config),
     )
 
-    graph.add_edge("field_mapper", "intent_planner")
+    # plans/187 W12: 채팅 증상 조사 — 장애 진단·채팅 조사 두 플래그가 모두 on일 때만 노드·분기를
+    # 등록한다. 하나라도 off면 field_mapper → intent_planner 직행(종전과 비트 동일).
+    gate = getattr(config, "noise_gate", None)
+    chat_symptom_tier = bool(
+        getattr(gate, "fault_diagnosis_enabled", False)
+        and getattr(gate, "sre_chat_investigation_enabled", False)
+    )
+    if chat_symptom_tier:
+        graph.add_node(
+            "fault_diagnosis",
+            partial(fault_diagnosis_node, app_config=config),
+        )
+        graph.add_conditional_edges(
+            "field_mapper",
+            partial(route_after_field_mapper_tier2, app_config=config),
+            {"fault_diagnosis": "fault_diagnosis", "intent_planner": "intent_planner"},
+        )
+        graph.add_edge("fault_diagnosis", END)
+    else:
+        graph.add_edge("field_mapper", "intent_planner")
     graph.add_edge("intent_planner", "agent_orchestrator")
     graph.add_conditional_edges(
         "agent_orchestrator",

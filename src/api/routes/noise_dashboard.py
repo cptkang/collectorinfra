@@ -711,6 +711,10 @@ async def noise_decisions(
     related: bool = Query(default=False, description="대표/원 발생 판단 해석"),
     page: int = Query(default=1, ge=1),
     size: int = Query(default=50, ge=1, le=200),
+    alarm_q: str | None = Query(default=None, max_length=200, description="알람명 부분일치"),
+    server_q: str | None = Query(
+        default=None, max_length=200, description="서버명·hostname 부분일치"
+    ),
 ) -> DecisionsResponse:
     """결정 감사 목록을 필터·페이지로 돌려준다."""
     window = _resolve_range(range)
@@ -725,6 +729,8 @@ async def noise_decisions(
         related=related,
         page=page,
         size=size,
+        alarm_q=alarm_q,
+        server_q=server_q,
         mask_fn=_mask_fn(request),
         operator_view=_is_operator_path(request),
     )

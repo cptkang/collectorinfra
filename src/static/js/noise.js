@@ -1893,7 +1893,7 @@
 
     // (plans/187 W15 · G-34) 장애 진단 실시간 화면이 켜져 있으면 드로어 진입은 본 화면 새 탭 `/?diagnosis=<id>`
     // (D-248 ① — 관제 페이지 안에 진단 화면을 만들지 않는다). 켜짐은 페이지를 열 때 `/active` 1회로 본다 —
-    // 404(꺼짐)·401·403이면 종전 그대로(요약형 「조사 대화로 열기」 · 버튼 추가 0).
+    // 404(꺼짐)·401·403이면 「장애 진단에서 보기」를 달지 않는다.
     var liveViewOn = false;
     if (window.BriefingView) {
         alarmCall("/api/v1/alarm/investigations/active").then(function (res) { liveViewOn = !!res.ok; }, function () {
@@ -1901,12 +1901,45 @@
         });
     }
 
-    // 요약형 「조사 대화로 열기」는 켜져 있으면 감춘다(머리의 「장애 진단에서 보기」가 대신한다)
-    function liveEntryRender(render) {
-        return Object.defineProperty({ mode: render.mode }, "openConversation", {
-            enumerable: true,
-            get: function () { return !!render.openConversation && !liveViewOn; },
-        });
+    // (plans/187 W16) ⓒ 머리의 「조사 대화로 열기」 — 조사 id가 있으면 브리핑 종류(플레이북·종전)·진행 상태·
+    // 장애 진단 켜짐과 무관하게 늘 단다. 누르면 열려 있는 포털 창의 「조사 대화」 탭에 연다(openPortalConversation).
+    // break-glass 운영자 토큰은 질의응답 API를 못 쓰므로 달지 않는다(드로어 안 상세형으로 대신 — §5.6.1 주의 1).
+    function conversationButton(view) {
+        var id = view && view.investigation_id && view.status !== "none" ? String(view.investigation_id) : "";
+        if (IS_BREAK_GLASS || !id || !investigationHead) return;
+        var btn = investigationHead.querySelector(".cause-conv-open");
+        if (!btn) {
+            btn = el("button", "cause-live-open cause-conv-open", "조사 대화로 열기");
+            btn.type = "button";
+            btn.addEventListener("click", function () { openPortalConversation(btn.getAttribute("data-investigation-id")); });
+            investigationHead.appendChild(btn);
+        }
+        btn.setAttribute("data-investigation-id", id);
+    }
+
+    // 포털 창은 이름(kbaiops-portal — app.js)으로 찾는다. 관제를 포털 머리글 링크로 열었으면 같은 창 묶음이라
+    // 빈 URL로 열면 이동 없이 그 창이 앞으로 오고, 그 창의 「조사 대화」 탭을 연다. 못 찾으면 브라우저가 빈 탭을
+    // 새로 열고 그 탭을 `/?conversation=<id>`로 보낸다(그 뒤로는 그 탭이 포털 창이 된다).
+    var PORTAL_WINDOW = "kbaiops-portal";
+
+    function openPortalConversation(investigationId) {
+        var url = "/?conversation=" + encodeURIComponent(investigationId);
+        var w = window.open("", PORTAL_WINDOW);
+        if (!w) return;   // 팝업 차단 — 브라우저가 차단 표시를 보인다
+        try {
+            if (w.KBPortal && typeof w.KBPortal.openInvestigationConversation === "function") {
+                w.KBPortal.openInvestigationConversation(investigationId);
+                w.focus();
+                return;
+            }
+            if (w.location.href === "about:blank") { w.location.replace(url); return; }
+        } catch (_err) { /* 다른 출처 창 — 아래 새 탭으로 */ }
+        window.open(url, "_blank");
+    }
+
+    function onInvestigationView(view) {
+        liveEntryButton(view);
+        conversationButton(view);
     }
 
     function liveEntryButton(view) {
@@ -1955,12 +1988,9 @@
                 investigationPanel = BV.attach(investigationBox(BV), {
                     initial: res.body,
                     load: function () { return reloadInvestigation({}, alarmId); },
-                    render: liveEntryRender({ mode: "summary", openConversation: true }),
-                    onOpenConversation: function (investigationId) {
-                        window.open("/?investigation=" + encodeURIComponent(investigationId), "_blank", "noopener");
-                    },
+                    render: { mode: "summary" },
                     analyze: analyzeOptions(alarmId),
-                    onView: liveEntryButton,
+                    onView: onInvestigationView,
                 });
                 investigationPanel.open();
                 if (asked) scrollToCause();
@@ -1995,15 +2025,12 @@
             investigationPanel = BV.attach(investigationBox(BV), {
                 initial: block,
                 load: function () { return reloadInvestigation(block, alarmId); },
-                // plans/187 W5b: 플레이북 브리핑이면 요약형 + 「조사 대화로 열기」(새 탭 — D-248 ①). break-glass
-                // 운영자 토큰은 질의응답 API를 못 쓰므로 드로어 안에서 상세형을 펼친다(§5.6.1 주의 1).
-                // (W15) 장애 진단이 켜져 있으면 머리에 「장애 진단에서 보기」(새 탭 `/?diagnosis=`)
-                render: IS_BREAK_GLASS ? { mode: "detail" } : liveEntryRender({ mode: "summary", openConversation: true }),
-                onOpenConversation: function (investigationId) {
-                    window.open("/?investigation=" + encodeURIComponent(investigationId), "_blank", "noopener");
-                },
+                // plans/187 W5b: 플레이북 브리핑이면 요약형. break-glass 운영자 토큰은 질의응답 API를 못 쓰므로
+                // 드로어 안에서 상세형을 펼친다(§5.6.1 주의 1). (W15) 장애 진단이 켜져 있으면 머리에
+                // 「장애 진단에서 보기」(새 탭 `/?diagnosis=`) · (W16) 머리에 늘 「조사 대화로 열기」(포털 「조사 대화」 탭)
+                render: IS_BREAK_GLASS ? { mode: "detail" } : { mode: "summary" },
                 analyze: analyzeOptions(alarmId),
-                onView: liveEntryButton,
+                onView: onInvestigationView,
             });
             investigationPanel.open();
             if (asked) scrollToCause();

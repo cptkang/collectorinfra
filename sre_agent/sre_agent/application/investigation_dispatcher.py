@@ -396,6 +396,29 @@ DEEP_MIN_REMAINING_S = 30.0
 NARRATOR_MIN_REMAINING_S = 2.0
 NARRATOR_SKIPPED_NOTE = "소견 생략 — 수집 후 남은 시간 {remaining:.1f}s(전체 예산 소진)"
 NO_PLAYBOOK_LIMIT = "플레이북 미선택(일치 없음 · fallback 미적재) — 종전 HolmesGPT 조사로 진행"
+#: (plans/187 W17) 실행 기록 `purpose` — 플레이북 선택 근거(`matched_by`)를 사람이 읽는 말로.
+MATCH_CONDITION_LABELS: dict[str, str] = {
+    "resource_type": "자원 유형", "alarm_kind": "알람 종류", "any_kind": "알람 키워드",
+}
+PLAYBOOK_FALLBACK_PURPOSE = (
+    "맞는 유형 플레이북이 없어 공통 점검(사용량 추이·관련 알람·재발·최근 변경)을 돈다"
+)
+HOLMES_PURPOSE = "정해진 절차가 없어 HolmesGPT가 도구를 직접 골라 알람 원인을 찾는다"
+DEEP_PURPOSES: dict[str, str] = {
+    "parallel": "플레이북과 따로 두 번째 의견을 낸다(플레이북 결과를 넘기지 않음)",
+    "conditional": "플레이북 판정 요약을 넘겨 원인을 더 깊이 확인한다",
+}
+
+
+def playbook_purpose(matched_by: str) -> str:
+    """플레이북 선택 근거 한 줄 — `match:a+b` → 「알람의 자원 유형·알람 종류가 … 일치」."""
+    if matched_by.startswith("match:"):
+        names = [MATCH_CONDITION_LABELS.get(c, c) for c in matched_by[6:].split("+") if c]
+        if names:
+            return "알람의 " + "·".join(names) + "가 이 플레이북 조건과 일치"
+    if matched_by == "fallback":
+        return PLAYBOOK_FALLBACK_PURPOSE
+    return matched_by
 #: 기동 적재에서 거부된 설정 파일(플레이북·KE) — 브리핑 `playbook.notes` 1줄(거부 0이면 문구 없음).
 REJECTED_FILES_NOTE = "설정 파일 거부 {n}건({names}) — 관리자 확인 필요"
 #: 잡이 끝난(예산 초과·예외) 뒤 수집기가 시작하려던 스텝의 사유.
@@ -809,7 +832,9 @@ class InvestigationDispatcher:
         log = _activity(job)
         if log is not None:
             log.set_phase("deep_dive")
-            safe_append(log, "deep_start", engine="system", label="HolmesGPT 조사 시작")
+            why = HOLMES_PURPOSE + (" — " + NO_PLAYBOOK_LIMIT if extra_limits else "")
+            safe_append(log, "deep_start", engine="system", label="HolmesGPT 조사 시작",
+                        purpose=why)
         investigate_started = self._clock()
         try:
             result = self._investigate_with_timeout(job)
@@ -967,20 +992,24 @@ class InvestigationDispatcher:
         log = _activity(job)
         if log is not None:
             safe_append(log, "deep_start", engine="system",
-                        label=f"심층 조사(HolmesGPT) 시작 — {mode}")
+                        label=f"심층 조사(HolmesGPT) 시작 — {mode}",
+                        purpose=DEEP_PURPOSES.get(mode))
         return _Background(
             self._diagnose_for(deep_job), deep_job, f"sre-deep-{str(job.investigation_id)[:8]}"
         )
 
     @staticmethod
-    def _deep_job(job: JobLike, pb: Playbook, prior_findings: dict | None) -> JobLike:
+    def _deep_job(job: JobLike, pb: Playbook, prior_findings: dict | None,
+                  cache: ToolResultCache) -> JobLike:
         """심층 조사 입력 — 잡 사본에 정적 지시(+ conditional이면 판정 요약)만 싣는다.
 
         `correlation`은 비운다 — 플레이북 결과(S4·S5 상관)는 `prior_findings` 요약으로만 넘기고,
         `parallel`이면 아무 결과도 넘기지 않는다(독립된 두 번째 의견 · §5.0.1 2번).
+        잡 단위 도구 캐시는 사본의 `tool_cache`로 실어 HolmesGPT 도구 경로와 공용한다(G-26).
         """
         deep_job = copy.copy(job)
         deep_job.correlation = None
+        deep_job.tool_cache = cache  # type: ignore[attr-defined]
         deep_job.deep_dive_guidance = deep_dive_note(  # type: ignore[attr-defined]
             pb.id,
             meaning=pb.runbook.meaning,
@@ -1050,6 +1079,7 @@ class InvestigationDispatcher:
         total = len(pb.steps)
         done: dict[str, dict] = {}
         order = [st.id for st in pb.steps]
+        focus = {st.id: st.narrate.focus for st in pb.steps if st.narrate is not None}
         log = _activity(job)
 
         def publish(current: str | None) -> None:
@@ -1078,12 +1108,14 @@ class InvestigationDispatcher:
                 t0 = self._clock()
                 if log is not None:
                     ctx.activity, ctx.step_id = log, sid
-                    safe_append(log, "step_start", engine="playbook", step=sid, label=label)
+                    safe_append(log, "step_start", engine="playbook", step=sid, label=label,
+                                purpose=focus.get(sid))
 
                 def step_end(status: str) -> None:
                     if log is not None:
                         safe_append(log, "step_end", engine="playbook", step=sid, label=label,
-                                    status=status, elapsed_ms=int((self._clock() - t0) * 1000))
+                                    status=status, elapsed_ms=int((self._clock() - t0) * 1000),
+                                    purpose=focus.get(sid))
 
                 try:
                     res = fn(ctx)
@@ -1237,17 +1269,20 @@ class InvestigationDispatcher:
         `partial_briefing`으로 먼저 보인다.
         """
         deadline = started + self._timeout
+        # (plans/187 W17) 어떤 플레이북을 왜 골랐는지 — 실행 기록 맨 앞(스텝·심층 시작보다 먼저)
+        safe_append(_activity(job), "started", engine="playbook", label=f"플레이북 {pb.id} 선택",
+                    purpose=playbook_purpose(matched_by))
         mode, degrade = self._deep_mode(pb)
         forced = pb.is_fallback  # fallback 플레이북은 모드와 무관하게 심층을 돈다
         deep_state: dict = {"status": "pending", "mode": mode, "reason": degrade,
                             "label": DEEP_DIVE_LABEL}
         deep: _Background | None = None
+        cache = ToolResultCache()  # 잡 단위 캐시 — 플레이북·심층 조사 공용(G-26)
         if mode == "parallel":
-            deep = self._start_deep(job, self._deep_job(job, pb, None), mode)
+            deep = self._start_deep(job, self._deep_job(job, pb, None, cache), mode)
             deep_state["status"] = "running"
         stop = threading.Event()
         library = self._progress_library(job, pb, matched_by, deep_state, stop)
-        cache = ToolResultCache()
         try:
             self._playbook_then_deep(job, started, pb, matched_by, deadline, mode, degrade,
                                      forced, deep, deep_state, library, cache, stop)
@@ -1301,7 +1336,7 @@ class InvestigationDispatcher:
                                                floor=DEEP_MIN_REMAINING_S)
             else:
                 deep = self._start_deep(
-                    job, self._deep_job(job, pb, self._prior_findings(run, block)), mode
+                    job, self._deep_job(job, pb, self._prior_findings(run, block), cache), mode
                 )
                 status = "running"
         if deep is not None and status == "running":

@@ -384,7 +384,8 @@ def test_conversation_entry_from_query_string() -> None:
     assert entry.index("history.replaceState(") < entry.index("openInvestigationConversation(id)")
     assert "openInvestigationFromQuery();" in _js_function_body(src, "checkAuthOnLoad")
     opener = _js_function_body(src, "openInvestigationConversation")
-    assert "isProcessing" in opener and 'setActiveView("chat")' in opener
+    # (W16) 질의응답 탭이 아니라 「조사 대화」 탭으로 연다
+    assert "isProcessing" in opener and 'setActiveView("investigation")' in opener
     assert opener.index("startNewChat()") < opener.index("pendingInvestigationRef = ")
     # 추천 칩은 내지 않는다(W0 — 골드셋 동형 문구 없음) · 확인 바 경로도 타지 않는다
     pin = _js_function_body(src, "renderInvestigationPin")
@@ -417,26 +418,23 @@ def test_drawer_new_tab_and_break_glass_detail() -> None:
     src = _NOISE_JS.read_text(encoding="utf-8")
     assert 'var IS_BREAK_GLASS = tokenKey === "admin_token"' in src
     inv = _js_function_body(src, "renderInvestigation")
-    assert (
-        'IS_BREAK_GLASS ? { mode: "detail" } : '
-        'liveEntryRender({ mode: "summary", openConversation: true })' in inv
-    )
-    assert (
-        'window.open("/?investigation=" + encodeURIComponent(investigationId), '
-        '"_blank", "noopener")' in inv
-    )
+    assert 'IS_BREAK_GLASS ? { mode: "detail" } : { mode: "summary" }' in inv
+    # (W16) 요약형 버튼 대신 ⓒ 머리 버튼(conversationButton)이 포털 「조사 대화」 탭으로
+    # 연다 — 새 탭 직행 0
+    assert "onView: onInvestigationView" in inv
+    assert '"/?investigation="' not in src
 
 
 @pytest.mark.parametrize(
     "page, asset",
     [
         ("index.html", "briefing-view.js?v=5"),
-        ("index.html", "app.js?v=31"),
-        ("index.html", "style.css?v=32"),
+        ("index.html", "app.js?v=33"),
+        ("index.html", "style.css?v=35"),
         ("noise.html", "briefing-view.js?v=5"),
-        ("noise.html", "noise.js?v=16"),
+        ("noise.html", "noise.js?v=17"),
         ("admin/noise.html", "briefing-view.js?v=5"),
-        ("admin/noise.html", "noise.js?v=16"),
+        ("admin/noise.html", "noise.js?v=17"),
     ],
 )
 def test_cache_versions_bumped(page: str, asset: str) -> None:

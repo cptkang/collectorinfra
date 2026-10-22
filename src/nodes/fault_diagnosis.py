@@ -46,6 +46,7 @@ from src.domain.symptom_router import (
     INVESTIGATION_REF_KIND,
     ROUTE_PLAYBOOK,
     SymptomRoute,
+    has_diagnosis_cue,
     route_symptom,
     virtual_event_fields,
 )
@@ -450,6 +451,18 @@ def _explicit_targets(state: AgentState, app_config: AppConfig) -> list[dict[str
         max_targets=max_targets,
     )
     return [t.model_dump() for t in resolution.targets] if resolution.resolved else []
+
+
+def chat_symptom_entry(state: AgentState, app_config: AppConfig) -> bool:
+    """2단 진입 판정 — 진단 표지가 있고 플레이북 경로(대상 1건 × 유형 1건)가 확정되는가.
+
+    2단에는 LLM 의도 분류(3단 `semantic_router`의 `fault_diagnosis`)가 없어 이 판정이 대신한다.
+    접수 분기(`_submit_chat_investigation`)와 같은 입력·같은 라우터를 쓴다 — LLM 호출 0회.
+    """
+    question = state.get("user_query", "") or ""
+    if not has_diagnosis_cue(question):
+        return False
+    return route_symptom(question, _explicit_targets(state, app_config)).route == ROUTE_PLAYBOOK
 
 
 def _investigation_store(gate_cfg: Any) -> Any:

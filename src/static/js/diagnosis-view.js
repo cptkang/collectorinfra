@@ -26,6 +26,9 @@
     "use strict";
 
     var API = "/api/v1/alarm/investigations";
+    // (plans/187 W18) 「이벤트 찾아 조사」 검색 — 지난 알람 검색(G-29)과 같은 판정 기록 사용자 경로
+    var DECISIONS_API = "/api/v1/noise/decisions";
+    var SEARCH_SIZE = 30;
     var ROW_CAP = 300;              // 탭당 화면 행 상한(허브 버퍼 상한과 같다)
     var FAIL_LIMIT = 3;             // 자동 재연결 연속 실패 → 조회 강등
     var FALLBACK_POLL_MS = 15000;   // 강등 시 커서 조회 간격
@@ -48,6 +51,26 @@
         readOnly: "읽기 전용 — 조사를 멈추거나 명령을 실행하는 버튼은 없습니다.",
         listTab: "진행 중 목록",
         listEmpty: "진행 중인 조사가 없습니다.",
+        // (plans/187 W18) 이벤트 찾아 조사
+        searchTitle: "이벤트 찾아 조사",
+        searchSince: "시작",
+        searchUntil: "끝",
+        searchAlarm: "알람명",
+        searchServer: "서버",
+        searchBtn: "찾기",
+        searchHint: "판정 시각 기준 · 시간을 비우면 최근 24시간(보존 30일) · 최근 30건까지",
+        searchHead: ["판정 시각", "서버", "알람명", "판정", ""],
+        searching: "찾는 중…",
+        searchEmpty: "조건에 맞는 알람이 없습니다.",
+        searchCount: "판정 기록 {total}건 중 최근 {n}건",
+        searchFailed: "알람을 찾지 못했습니다 — {reason}",
+        searchBadRange: "시작이 끝보다 늦습니다.",
+        startBtn: "조사 시작",
+        starting: "접수 중…",
+        startJoined: "같은 알람의 진행 중인 조사에 합류했습니다.",
+        startRejected: "조사 서비스가 거부했습니다 — {reason}",
+        startFailed: "조사를 시작하지 못했습니다 — {reason}",
+        noAlarmId: "알람 id가 없는 판정 기록이라 조사할 수 없습니다.",
         listFailed: "진행 중 목록을 불러오지 못했습니다 — 사유: {reason}",
         listHead: ["대상", "유형", "엔진", "상태", "경과", "기원"],
         ownerHead: "요청자",
@@ -81,6 +104,13 @@
         loading: "조사 기록을 불러오는 중…",
         loadFailed: "조사 기록을 불러오지 못했습니다 — 사유: {reason}",
         openConversation: "조사 대화로 열기",
+        // (plans/187 W17) 머리 — 어떤 알람·대상을 왜 조사하는지
+        alarmHead: "알람",
+        targetHead: "대상",
+        whyHead: "조사 이유",
+        conditionHead: "조건",
+        alarmUnknown: "알람 정보를 찾지 못했습니다(판정 기록 보존 범위 밖이거나 알람 없는 요청 조사).",
+        purposePrefix: "목적: ",
         pollError: "갱신 실패 — {reason}",
         denied: {
             invalid: "조사 id 형식이 올바르지 않아 열 수 없습니다.",
@@ -96,6 +126,9 @@
     };
 
     var ENGINE_LABELS = { playbook: "플레이북", holmes: "HolmesGPT", system: "시스템" };
+    // 폴스타 심각도 숫자 → 이름(판정 기록 `signals.severity` · 0 = 해소)
+    var SEVERITY_LABELS = { 0: "해소", 1: "정보", 2: "경고", 3: "위험", 4: "치명" };
+    var TIER_LABELS = { page: "즉시 통보", digest: "묶음 통보", suppress: "억제", drop: "버림" };
     var ORIGIN_LABELS = { chat: "채팅", manual: "요청" };
     // sre_agent `activity_log.PHASES` 어휘와 같은 키 — 모르는 phase는 영문 대신 「진행 중」
     var PHASE_LABELS = {
@@ -193,7 +226,93 @@
             warn: !!WARN_STATUS[String(e.status || "")],
             pending: /_start$/.test(String(e.kind || "")) ? key : "",
             ends: /_end$/.test(String(e.kind || "")) ? key : "",
+            // (plans/187 W17) 무엇 때문에 무엇을 보는지 — 플레이북 선택 근거 · 스텝 초점 · HolmesGPT 조사 이유
+            purpose: String(e.purpose || ""),
         };
+    }
+
+    /**
+     * (plans/187 W18) 검색 칸 값 → 판정 기록 조회 쿼리(순수). 시간을 하나라도 넣으면 30일 창 + 구간,
+     * 비우면 최근 24시간. 시작이 끝보다 늦으면 null(화면이 사유를 보인다).
+     * f = {since, until, alarm, server} — since/until은 datetime-local 값(브라우저 지역 시각).
+     */
+    function searchQuery(f) {
+        f = isObj(f) ? f : {};
+        var params = [];
+        function add(k, v) { params.push(encodeURIComponent(k) + "=" + encodeURIComponent(v)); }
+        function iso(v) {
+            if (!v) return "";
+            var d = new Date(String(v));
+            return isNaN(d.getTime()) ? "" : d.toISOString();
+        }
+        var since = iso(f.since);
+        var until = iso(f.until);
+        if (since && until && since >= until) return null;
+        add("range", since || until ? "30d" : "24h");
+        if (since) add("since", since);
+        if (until) add("until", until);
+        var alarm = String(f.alarm || "").trim();
+        var server = String(f.server || "").trim();
+        if (alarm) add("alarm_q", alarm);
+        if (server) add("server_q", server);
+        add("size", String(SEARCH_SIZE));
+        return params.join("&");
+    }
+
+    /** 실행 기록에서 조사 이유 줄을 모은다 — 플레이북 선택(`started`·playbook)과 HolmesGPT 시작(`deep_start`). */
+    function whyLines(events) {
+        var out = [];
+        asList(events).forEach(function (e) {
+            if (!isObj(e) || !e.purpose) return;
+            var plan = (e.kind === "started" && e.engine === "playbook") || e.kind === "deep_start";
+            if (plan) out.push({ seq: Number(e.seq) || 0, text: String(e.label || "") + " — " + String(e.purpose) });
+        });
+        return out;
+    }
+
+    /** 스텝 id → 그 스텝의 목적(`step_start` purpose) — 도구 행의 마우스 올림 설명에 쓴다. */
+    function stepPurposes(events, into) {
+        asList(events).forEach(function (e) {
+            if (isObj(e) && e.kind === "step_start" && e.step && e.purpose) into[String(e.step)] = String(e.purpose);
+        });
+        return into;
+    }
+
+    function fmtStamp(value) {
+        if (!value) return "";
+        var d = new Date(value);
+        if (isNaN(d.getTime())) return String(value);
+        return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " +
+            pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+    }
+
+    /**
+     * 머리의 「어떤 알람·대상을 조사하는가」 줄 모델(순수 · 서버 텍스트는 화면이 textContent로 넣는다).
+     * alarm = 조회 응답 `alarm`(판정 기록 요약), subject = 레코드 `subject`(채팅·요청 조사).
+     */
+    function targetLines(alarm, subject) {
+        var lines = [];
+        if (isObj(alarm)) {
+            var sev = alarm.severity !== undefined ? SEVERITY_LABELS[alarm.severity] || ("심각도 " + alarm.severity) : "";
+            var where = [alarm.server_name || alarm.hostname, alarm.resource_name].filter(Boolean).join(" · ");
+            var when = fmtStamp(alarm.alarm_time || alarm.ts);
+            var tier = alarm.tier ? (TIER_LABELS[alarm.tier] || String(alarm.tier)) : "";
+            lines.push({ head: TEXT.alarmHead, text: [sev ? "[" + sev + "]" : "", alarm.alarm_name || alarm.alarm_id]
+                .filter(Boolean).join(" ") + (where ? " — " + where : "") + (when ? " · 발생 " + when : "") +
+                (tier ? " · 판정 " + tier : "") });
+            if (alarm.condition_log) lines.push({ head: TEXT.conditionHead, text: firstLine(alarm.condition_log, 200) });
+        }
+        if (isObj(subject)) {
+            var who = subject.server_name || subject.hostname;
+            var ref = fmtStamp(subject.reference_time);
+            if (who || ref) {
+                lines.push({ head: TEXT.targetHead, text: (who || "") + (ref ? (who ? " · " : "") + "기준 " + ref : "") });
+            }
+            if (subject.route_label || subject.route_reason) {
+                lines.push({ head: TEXT.whyHead, text: [subject.route_label, subject.route_reason].filter(Boolean).join(" — ") });
+            }
+        }
+        return lines;
     }
 
     /**
@@ -289,6 +408,7 @@
      *   onActivate() — 장애 진단 뷰 탭으로 전환
      *   onOpenConversation(id) — 종결 화면 [조사 대화로 열기](기존 조사 대화 진입 함수)
      *   analyzeFor(id, view) — 공용 렌더 analyze 옵션(기존 [다시 분석]) 또는 null
+     *   startInvestigation(alarmId) — (W18) 「이벤트 찾아 조사」 접수 → Promise<{ok,status,body}>(없으면 칸 숨김)
      *   deps: {fetch, EventSource, setTimeout, clearTimeout, now, storage, document} — 시험용 주입
      */
     function create(opts) {
@@ -320,6 +440,7 @@
         var dom = null;
         var firstItems = null;      // 사전 게이트(/active) 응답 — 화면을 만든 뒤 그린다
         var firstError = "";
+        var searchOn = false;       // (W18) /active `event_search` — 알람 다시 분석 접수가 켜졌는지
 
         function safeSession() {
             try { return root.sessionStorage || null; } catch (_) { return null; }
@@ -393,13 +514,136 @@
             table.appendChild(thead);
             var tbody = el("tbody");
             table.appendChild(tbody);
+            var search = buildSearch();
+            listPanel.appendChild(search.box);
             listPanel.appendChild(listNote);
             listPanel.appendChild(table);
             panels.appendChild(listPanel);
             r.appendChild(panels);
 
             dom = { conn: connEl, strip: strip, listBtn: listBtn, menuBtn: menuBtn, menu: menu,
-                panels: panels, listPanel: listPanel, listNote: listNote, tbody: tbody };
+                panels: panels, listPanel: listPanel, listNote: listNote, tbody: tbody, search: search };
+        }
+
+        // ── (plans/187 W18) 이벤트 찾아 조사 ──
+        // 검색은 판정 기록 사용자 경로(GET)만 묻는다. 조사 접수(쓰기)는 이 파일에 두지 않고 app.js가 넘긴
+        // `startInvestigation(alarmId)`(기존 「분석 요청」과 같은 접수 라우트 — 존 검사·상한·합류)로 한다.
+        function buildSearch() {
+            var box = el("section", "dv-search");
+            box.hidden = true;
+            box.appendChild(el("h3", null, TEXT.searchTitle));
+            var form = el("div", "dv-search-form");
+            function field(label, type, cls) {
+                var wrap = el("label", "dv-search-field");
+                wrap.appendChild(el("span", null, label));
+                var input = el("input", cls);
+                input.type = type;
+                if (type === "text") input.maxLength = 200;
+                input.addEventListener("keydown", function (e) {
+                    if (e && e.key === "Enter") { if (e.preventDefault) e.preventDefault(); runSearch(); }
+                });
+                wrap.appendChild(input);
+                form.appendChild(wrap);
+                return input;
+            }
+            var since = field(TEXT.searchSince, "datetime-local", "dv-search-since");
+            var until = field(TEXT.searchUntil, "datetime-local", "dv-search-until");
+            var alarm = field(TEXT.searchAlarm, "text", "dv-search-alarm");
+            var server = field(TEXT.searchServer, "text", "dv-search-server");
+            var btn = el("button", "dv-search-btn", TEXT.searchBtn);
+            btn.type = "button";
+            btn.addEventListener("click", function () { runSearch(); });
+            form.appendChild(btn);
+            box.appendChild(form);
+            box.appendChild(el("div", "dv-note", TEXT.searchHint));
+            var status = el("div", "dv-search-status");
+            status.setAttribute("role", "status");
+            box.appendChild(status);
+            var table = el("table", "dv-search-list");
+            var hr = el("tr");
+            TEXT.searchHead.forEach(function (h) { hr.appendChild(el("th", null, h)); });
+            var thead = el("thead");
+            thead.appendChild(hr);
+            table.appendChild(thead);
+            var body = el("tbody");
+            table.appendChild(body);
+            box.appendChild(table);
+            return { box: box, since: since, until: until, alarm: alarm, server: server, btn: btn,
+                status: status, body: body, seq: 0 };
+        }
+
+        function showSearch(on) {
+            if (dom) dom.search.box.hidden = !(on && opts.startInvestigation);
+        }
+
+        function runSearch() {
+            var s = dom && dom.search;
+            if (!s) return Promise.resolve();
+            var qs = searchQuery({ since: s.since.value, until: s.until.value, alarm: s.alarm.value,
+                server: s.server.value });
+            s.body.textContent = "";
+            if (qs === null) { s.status.textContent = TEXT.searchBadRange; return Promise.resolve(); }
+            var mine = ++s.seq;   // 늦게 온 이전 응답이 새 결과를 덮지 않게
+            s.status.textContent = TEXT.searching;
+            return getJSON(DECISIONS_API + "?" + qs).then(function (res) {
+                if (mine !== s.seq) return;
+                if (!res.ok) { s.status.textContent = fill(TEXT.searchFailed, { reason: reasonOf(res) }); return; }
+                var found = asList(res.body.items).filter(isObj);
+                s.status.textContent = found.length
+                    ? fill(TEXT.searchCount, { total: res.body.total || found.length, n: found.length })
+                    : TEXT.searchEmpty;
+                found.forEach(function (item) { s.body.appendChild(searchRow(item)); });
+            }, function (err) {
+                if (mine === s.seq) s.status.textContent = fill(TEXT.searchFailed, { reason: (err && err.message) || String(err) });
+            });
+        }
+
+        function searchRow(item) {
+            var tr = el("tr", "dv-search-row");
+            var tier = item.tier ? (TIER_LABELS[item.tier] || String(item.tier)) : "";
+            [fmtStamp(item.ts), item.server_name || item.hostname || "-", item.alarm_name || "-",
+                [tier, item.stage_label].filter(Boolean).join(" · ")].forEach(function (c) {
+                tr.appendChild(el("td", null, c));
+            });
+            var cell = el("td", "dv-search-act");
+            var note = el("div", "dv-search-note");
+            var alarmId = String(item.alarm_id || "");
+            if (!alarmId) {
+                note.textContent = TEXT.noAlarmId;
+            } else {
+                var btn = el("button", "dv-start-btn", TEXT.startBtn);
+                btn.type = "button";
+                btn.addEventListener("click", function () { startFor(alarmId, btn, note); });
+                cell.appendChild(btn);
+            }
+            cell.appendChild(note);
+            tr.appendChild(cell);
+            return tr;
+        }
+
+        function startFor(alarmId, btn, note) {
+            btn.disabled = true;
+            btn.textContent = TEXT.starting;
+            note.textContent = "";
+            return Promise.resolve()
+                .then(function () { return opts.startInvestigation(alarmId); })
+                .then(function (res) {
+                    var body = (res && res.body) || {};
+                    btn.disabled = false;
+                    btn.textContent = TEXT.startBtn;
+                    if (!res || !res.ok) { note.textContent = fill(TEXT.startFailed, { reason: reasonOf(res) }); return; }
+                    if (body.status === "rejected") {
+                        note.textContent = fill(TEXT.startRejected, { reason: body.reason || "-" });
+                        return;
+                    }
+                    if (!body.investigation_id) { note.textContent = fill(TEXT.startFailed, { reason: "조사 id 없음" }); return; }
+                    if (body.joined) note.textContent = TEXT.startJoined;
+                    open(String(body.investigation_id), { alarmId: alarmId });
+                }, function (err) {
+                    btn.disabled = false;
+                    btn.textContent = TEXT.startBtn;
+                    note.textContent = fill(TEXT.startFailed, { reason: (err && err.message) || String(err) });
+                });
         }
 
         function setVisible(on) {
@@ -480,6 +724,7 @@
                 id: id, seq: 0, status: "", view: null, done: false, denied: "", error: "",
                 phase: null, queue: null, elapsed: null, elapsedAt: 0, progress: null, pollError: "",
                 partial: null, truncated: false, source: "", engines: {}, alarmId: null,
+                alarm: null, why: [], stepPurpose: {},
                 log: { rows: [], seen: {}, clipped: false, tools: 0 },
                 filter: { playbook: true, holmes: true, system: true, ai: true },
                 autoScroll: true, expanded: {}, finalPanel: null, dom: null,
@@ -488,7 +733,13 @@
 
         function tabLabel(tab) {
             var v = tab.view || {};
-            return textOf(v.subject) || tab.subject || tab.id;
+            // (plans/187 W17) 알람 조사는 「서버 · 알람명」, 채팅·요청 조사는 대상 서버
+            var a = tab.alarm;
+            if (isObj(a) && (a.alarm_name || a.server_name || a.hostname)) {
+                return [a.server_name || a.hostname, a.alarm_name].filter(Boolean).join(" · ");
+            }
+            var sub = isObj(v.subject) ? (v.subject.server_name || v.subject.hostname) : "";
+            return textOf(v.subject) || sub || tab.subject || tab.id;
         }
 
         function tabState(tab) {
@@ -521,10 +772,12 @@
             panel.hidden = true;
             var head = el("div", "dv-tab-head");
             var title = el("div", "dv-tab-title");
+            var target = el("dl", "dv-target");
             var meta = el("div", "dv-tab-meta");
             var warn = el("div", "dv-note dv-note--warn");
             warn.hidden = true;
             head.appendChild(title);
+            head.appendChild(target);
             head.appendChild(meta);
             head.appendChild(warn);
             panel.appendChild(head);
@@ -570,7 +823,7 @@
             panel.appendChild(finalBox);
             dom.panels.appendChild(panel);
 
-            tab.dom = { wrap: wrap, btn: btn, label: label, state: state, panel: panel, title: title, meta: meta,
+            tab.dom = { wrap: wrap, btn: btn, label: label, state: state, panel: panel, title: title, target: target, meta: meta,
                 warn: warn, filters: filters, logNote: logNote, rows: rows, partBox: partBox, partBody: partBody,
                 finalBox: finalBox, finalBody: finalBody };
             renderTabButton(tab);
@@ -589,6 +842,7 @@
             if (!tab.dom) return;
             var v = tab.view || {};
             tab.dom.title.textContent = tabLabel(tab);
+            renderTarget(tab);
             var parts = [kindLabel(v.kind || tab.kind || ""), enginesText(tab.engines)];
             var prog = progressText(tab.progress);
             if (prog) parts.push(prog);
@@ -602,6 +856,23 @@
             var warn = tab.denied || tab.error || (tab.pollError ? fill(TEXT.pollError, { reason: tab.pollError }) : "");
             tab.dom.warn.textContent = warn;
             tab.dom.warn.hidden = !warn;
+        }
+
+        // (plans/187 W17) 어떤 알람·대상을 왜 조사하는지 — 알람 요약 · 채팅 경로 · 플레이북 선택/HolmesGPT 이유
+        function renderTarget(tab) {
+            var box = tab.dom.target;
+            var v = tab.view || {};
+            var lines = targetLines(tab.alarm, v.subject);
+            if (!lines.length && (asList(v.alarm_ids).length || v.parent_alarm_id || v.kind === "alarm")) {
+                lines.push({ head: TEXT.alarmHead, text: TEXT.alarmUnknown });
+            }
+            tab.why.forEach(function (w) { lines.push({ head: TEXT.whyHead, text: w.text }); });
+            box.textContent = "";
+            lines.forEach(function (line) {
+                box.appendChild(el("dt", null, line.head));
+                box.appendChild(el("dd", null, line.text));
+            });
+            box.hidden = !lines.length;
         }
 
         function renderFilters(tab) {
@@ -630,7 +901,11 @@
             if (row.step) li.appendChild(el("span", "dv-step", row.step));
             if (row.ai) li.appendChild(el("span", "dv-ai-badge", TEXT.aiBadge));
             else li.appendChild(el("span", "dv-icon", row.icon));
-            li.appendChild(el("span", "dv-text", row.text));
+            var text = el("span", "dv-text", row.text);
+            // 도구 행은 그 스텝의 목적을 마우스 올림 설명으로 단다(행마다 되풀이하지 않는다)
+            var stepWhy = row.step ? tab.stepPurpose[row.step] : "";
+            if (!row.purpose && stepWhy) text.title = TEXT.purposePrefix + stepWhy;
+            li.appendChild(text);
             if (row.elapsed) li.appendChild(el("span", "dv-meta", row.elapsed));
             if (row.rows) li.appendChild(el("span", "dv-meta", row.rows));
             if (row.detail) {
@@ -650,6 +925,7 @@
                 li.appendChild(toggle);
                 li.appendChild(pre);
             }
+            if (row.purpose) li.appendChild(el("span", "dv-purpose", TEXT.purposePrefix + row.purpose));
             return li;
         }
 
@@ -779,6 +1055,11 @@
         function applyActivity(tab, act) {
             if (!isObj(act)) return;
             asList(act.events).forEach(function (e) { if (isObj(e) && (e.engine === "playbook" || e.engine === "holmes")) tab.engines[e.engine] = true; });
+            // 조사 이유·스텝 목적은 행 상한(300)으로 오래된 행이 빠져도 머리에 남긴다
+            var seen = {};
+            tab.why.forEach(function (w) { seen[w.seq] = true; });
+            whyLines(act.events).forEach(function (w) { if (!seen[w.seq]) tab.why.push(w); });
+            stepPurposes(act.events, tab.stepPurpose);
             mergeEvents(tab.log, act.events, operator, ROW_CAP);
             var next = Number(act.next_seq);
             if (isFinite(next) && next > tab.seq) tab.seq = next;
@@ -792,6 +1073,7 @@
             // SSE `done`을 먼저 받았으면 조회 응답이 늦게 따라와도 종결 상태를 되돌리지 않는다
             if (!(tab.done && !isTerminal(view.status))) tab.status = view.status || tab.status;
             tab.kind = view.kind || tab.kind;
+            if (isObj(view.alarm)) tab.alarm = view.alarm;
             if (!tab.alarmId && view.parent_alarm_id) tab.alarmId = String(view.parent_alarm_id);
             if (isObj(view.activity)) applyActivity(tab, view.activity);
             setState(tab, view);
@@ -1062,7 +1344,7 @@
         function probe() {
             return getJSON(API + "/active").then(function (res) {
                 if (res.status === 404 || res.status === 401 || res.status === 403) return false;
-                if (res.ok) firstItems = res.body.items;
+                if (res.ok) { firstItems = res.body.items; searchOn = res.body.event_search === true; }
                 else firstError = reasonOf(res);
                 return true;
             }, function (err) {
@@ -1080,6 +1362,7 @@
             build();
             setVisible(true);
             setItems(firstItems || []);
+            showSearch(searchOn);
             if (firstError) { listError = firstError; renderList(); }
             var saved = restore();
             if (saved) {
@@ -1103,6 +1386,7 @@
                     watch: watchKey, tabs: order.slice(), current: current, items: items.length };
             },
             tab: function (id) { return tabs[id] || null; },
+            search: runSearch,
         };
     }
 
@@ -1116,6 +1400,10 @@
         FALLBACK_POLL_MS: FALLBACK_POLL_MS,
         eventRow: eventRow,
         mergeEvents: mergeEvents,
+        whyLines: whyLines,
+        searchQuery: searchQuery,
+        stepPurposes: stepPurposes,
+        targetLines: targetLines,
         watchParam: watchParam,
         connText: connText,
         statusText: statusText,

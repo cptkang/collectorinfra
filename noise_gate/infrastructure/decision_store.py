@@ -1092,6 +1092,8 @@ class DecisionStore:
         until: datetime | None = None,
         related: bool = False,
         page: int = 1,
+        alarm_q: str | None = None,
+        server_q: str | None = None,
         size: int = 50,
         mask_fn=None,  # noqa: ANN001 — Callable[[str], str] | None (덕 타이핑)
         operator_view: bool = False,
@@ -1109,6 +1111,9 @@ class DecisionStore:
             - `facets`: 분포 칩용 건수. `tiers`는 **tier 필터만 뺀** 나머지 필터 집합에서 4키를
               항상, `stages`는 **stage 필터만 뺀** 나머지 필터 집합에서 0보다 큰 키만 센다.
             - `related=True`면 상관·자가복구 행에 대표/원 발생 판단을 붙인다(`_related_of`).
+            (plans/187 W18) `alarm_q`는 알람명, `server_q`는 서버명·hostname의 부분일치
+            (대소문자 무시) — 장애 진단 탭 「이벤트 찾아 조사」가 칸을 나눠 거른다.
+            미지정이면 종전과 같다.
             목록·facets·related는 **파일 1회 읽기**로 만든다 — related는 창 밖 tail까지 봐야
             하므로 tail을 창 없이 한 번 읽고 창은 여기서 건다(`_tail_records(window)`와 같은 판정).
 
@@ -1121,6 +1126,8 @@ class DecisionStore:
             since: 구간 시작(포함).
             until: 구간 끝(제외).
             related: 대표/원 발생 판단 해석 여부.
+            alarm_q: 알람명 부분일치 검색어.
+            server_q: 서버명·hostname 부분일치 검색어.
             page: 1부터 시작하는 페이지 번호.
             size: 페이지 크기.
             mask_fn: 표시 전 문자열 마스킹 함수(미주입이면 원문 그대로).
@@ -1131,6 +1138,8 @@ class DecisionStore:
         """
         tiers = _as_tier_set(tier)
         needle = (q or "").strip().lower()
+        alarm_needle = (alarm_q or "").strip().lower()
+        server_needle = (server_q or "").strip().lower()
         since_ts = since.timestamp() if since is not None else None
         until_ts = until.timestamp() if until is not None else None
         cutoff_ts: float | None = None
@@ -1152,6 +1161,13 @@ class DecisionStore:
                 if needle not in haystack:
                     continue
             if alarm_name and str(rec.get("alarm_name", "") or "") != alarm_name:
+                continue
+            if alarm_needle and alarm_needle not in str(rec.get("alarm_name", "") or "").lower():
+                continue
+            if server_needle and not any(
+                server_needle in str(rec.get(k, "") or "").lower()
+                for k in ("server_name", "hostname")
+            ):
                 continue
             if since_ts is not None or until_ts is not None:
                 epoch = self._epoch_of(rec)
