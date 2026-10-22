@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-19 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-20 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -229,8 +229,10 @@
 | 184 | [`184-behavior-change-small-batch.md`](./184-behavior-change-small-batch.md) | 184. 행동 변경 후보 1차 — 작은 고침 묶음 (182 S 크기 + 결정 항목) | **완료**(2026-10-17 · 커밋 전) · 21건(보안 S1·S2·S3·S4·S4b·S6 · 문구 M1·M2·M3·M5·M6·M9 · K6·K7·K8 · J2·J3·J5 · L1·L2 · H1) · 회귀 이번 변경 탓 0(교정 뒤 · 모듈 단위) · auditor Medium 2 교정(L1 안 A 사용자 확정) · 매뉴얼 user.md | 2026-10-17 |
 | 185 | [`185-single-form-fill-metric-recovery.md`](./185-single-form-fill-metric-recovery.md) | 185. 단일 DB 폼필 사용률 회수 — 멀티 경로에 맞춤 (182 J1) | **완료**(2026-10-17 · 커밋 전) · 단일이 `cmm_metric_stat` 매핑 사용률 필드 회수(공통 함수 `select_metric_recovery_fields` · 멀티 불변) · W2 병합 마감 결과 키 매핑으로 공유 칼럼 오채움 해소 · 회귀 실패 0(모듈 단위) | 2026-10-17 |
 | 186 | [`186-behavior-change-batch2.md`](./186-behavior-change-batch2.md) | 186. 행동 변경 후보 2차 — 확인 필요 항목 판정 처리 (182 잔여) | **완료**(2026-10-17 · 커밋 전) · 고침 M7·K5·J4·P3·J7·L4(인증 저장소 부재 fail-closed 503 · D-338) · 유지 S5·M4·K4 · 회귀 원래 실패 1만(모듈 단위) · auditor·verifier Critical 0 · 매뉴얼 user·admin | 2026-10-17 |
-| 187 | [`187-WIP-alarm-investigation-playbook.md`](./187-WIP-alarm-investigation-playbook.md) | 187. 알람 유형별 자동 조사 플레이북 — PAGE 알람마다 정해진 조사 단계를 결정적으로 일괄 수집하고 단계별 LLM 소견·종합 원인·대응 의견을 보인다 | **WIP** · W0~W6·W8~W12 구현(2026-10-19 · 미커밋 · 플래그 기본 off) · 잔여: W7 내부망 shadow · R-D(acquire/execute 필드 부재 → db_split n/a) · G-26 HolmesGPT 캐시 공용 · 수용 6·7 내부망 측정 · SME 자료 · 매뉴얼 캡처 *(상세: 계획서 머리)* | 2026-10-19 |
+| 187 | [`187-WIP-alarm-investigation-playbook.md`](./187-WIP-alarm-investigation-playbook.md) | 187. 알람 유형별 자동 조사 플레이북 — PAGE 알람마다 정해진 조사 단계를 결정적으로 일괄 수집하고 단계별 LLM 소견·종합 원인·대응 의견을 보인다 | **WIP** · W0~W6·W8~W12·v2.0 W13~W15(장애 진단 탭·실행 기록·SSE) 구현(플래그 기본 off · 미커밋) · 잔여: W7 shadow · R-D · G-26 캐시 공용 · 2차 마스킹 실효(결정) · 종단 1회·캡처 · 수용 6·7 내부망 *(상세: 계획서 머리)* | 2026-10-19 |
 | 188 | [`188-sre-mcp-toolset-availability.md`](./188-sre-mcp-toolset-availability.md) | 188. SRE 조사 — 폴스타 MCP 도구 미가용 시 오동작 교정 | 완료 · 커밋 전(2026-10-19) · W1~W3 툴셋 미가용 교정·「조사 불가」(D-342) · W4 마크업 답 미결 종결 · W5 Gemma 도구 호출 클라이언트 파싱(D-343) · 회귀 실패 0(모듈 단위) · 잔여 W0·W5 2턴 왕복 운영 확인 | 2026-10-19 |
+| 189 | [`189-WIP-prometheus-operational-label-anchor.md`](./189-WIP-prometheus-operational-label-anchor.md) | 189. 운영 Prometheus 라벨 앵커 — 폴스타 hostname·IP ↔ `hostname`·`node_ip` 결정적 조립 | **WIP** · W1~W7 구현 완료 · 커밋 전(2026-10-20 · D-119 부기) · 기본 `nodename` 바이트 동일 · 회귀 신규 실패 0(모듈 단위) · 검증 Critical 0·교정 8 · 잔여: 폐쇄망 표본 왕복 · Docker IT · ruff/mypy · `_deep_section` 필터 · L-4 *(상세: 계획서 머리)* | 2026-10-20 |
+| 190 | [`190-apm-investigation-latency.md`](./190-apm-investigation-latency.md) | 190. SRE 조사 APM 호출 지연 교정 — 해소 소스 한정 · X-View 사전 확인 · APM 전용 타임아웃 | 완료 · 커밋 전(2026-10-20 · W0~W5 · D-344) · 플레이북 APM `source_ids` 한정 · app_health `xview_confirm_over`=10 + 시 단위 대체·판정 불가 · `APM_TOOL_TIMEOUT_SECONDS` · 폐쇄망 재측정 대기 |
 | 191 | [`191-WIP-component-settings-webui.md`](./191-WIP-component-settings-webui.md) | 191. 분리 컴포넌트 설정 웹UI — sre_agent·apm_gateway·mcp_server·alarm_server·fabrix_proxy 설정을 관리자 화면에서 조회·저장 | **WIP** · W0~W7 완료(2026-10-21 · 커밋 전) · 5종 `/admin/config` + 본체 프록시·UI · D-345 · 회귀 rc=0(모듈 단위) · 검증·감사 지적 교정 완료 · 잔여: 매뉴얼 캡처 · CLAUDE.md 경계 표 1줄 *(상세: 계획서 머리)* | 2026-10-21 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |

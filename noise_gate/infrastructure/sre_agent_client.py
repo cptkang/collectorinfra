@@ -202,11 +202,17 @@ class SreAgentClient:
             "sre_investigate_alarm", {"payload": payload}
         )
 
-    async def poll(self, investigation_id: str) -> dict:
+    async def poll(
+        self, investigation_id: str, activity_since: int | None = None
+    ) -> dict[str, Any]:
         """조사 잡 상태·브리핑을 조회한다(`sre_get_investigation`).
 
         Args:
             investigation_id: submit이 반환한 조사 잡 식별자.
+            activity_since: (plans/187 W14) 실행 기록 커서(선택). 주면 인자로 실어 보내고 응답에
+                `activity`·`phase`·`queue_position`·`elapsed_s`가 더해진다(구버전 서비스는
+                무시한다).
+                None이면 인자를 보내지 않는다(종전 호출과 비트 동일).
 
         Returns:
             `{status, briefing?, verdict?, ...}` (파싱된 dict).
@@ -214,9 +220,10 @@ class SreAgentClient:
         Raises:
             SreAgentClientError: 연결·호출·파싱 실패 시.
         """
-        return await self._call_tool_json(
-            "sre_get_investigation", {"investigation_id": investigation_id}
-        )
+        arguments: dict[str, Any] = {"investigation_id": investigation_id}
+        if activity_since is not None:
+            arguments["activity_since"] = int(activity_since)
+        return await self._call_tool_json("sre_get_investigation", arguments)
 
     async def diagnose(
         self,

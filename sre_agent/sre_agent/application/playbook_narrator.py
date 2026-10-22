@@ -35,6 +35,7 @@ import json
 import logging
 import re
 import threading
+import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
@@ -45,6 +46,7 @@ from sre_agent.application.playbook_prompts import (
     render_step_messages,
     render_synthesis_messages,
 )
+from sre_agent.domain.activity_log import ActivityLog, safe_append
 
 logger = logging.getLogger(__name__)
 
@@ -410,11 +412,17 @@ def guard_text(
 
 
 class PlaybookNarrator:
-    """단계 소견기 · 종합기. `calls`는 실제 LLM 호출 수(단계 ≤ max_step_calls + 종합 1)."""
+    """단계 소견기 · 종합기. `calls`는 실제 LLM 호출 수(단계 ≤ max_step_calls + 종합 1).
 
-    def __init__(self, llm: LlmCall, limits: NarratorLimits | None = None) -> None:
+    `activity`(plans/187 W13)가 있으면 호출마다 `llm_start`·`llm_end`를, 단계 소견은 가드 전 초안을
+    `ai_note`(AI 메모 — 검증 전)로 남긴다. 없으면 기록 0(종전 동작).
+    """
+
+    def __init__(self, llm: LlmCall, limits: NarratorLimits | None = None,
+                 activity: ActivityLog | None = None) -> None:
         self.llm = llm
         self.limits = limits or NarratorLimits()
+        self.activity = activity
         self.calls = 0
         self._lock = threading.Lock()
 
@@ -423,6 +431,27 @@ class PlaybookNarrator:
             self.calls += 1
         out = self.llm(messages)
         return out if isinstance(out, str) else str(out or "")
+
+    def _logged_call(self, messages: list[dict[str, str]], *, step: str | None, label: str,
+                     note_label: str | None = None) -> str:
+        """`_call` + 실행 기록(시작·끝·소견 초안). 기록이 없으면 `_call`과 같다."""
+        log = self.activity
+        if log is None:
+            return self._call(messages)
+        safe_append(log, "llm_start", engine="playbook", step=step, label=label)
+        t0 = time.monotonic()
+        try:
+            text = self._call(messages)
+        except Exception as e:
+            safe_append(log, "llm_end", engine="playbook", step=step, label=label, status="error",
+                        elapsed_ms=int((time.monotonic() - t0) * 1000),
+                        excerpt=f"{type(e).__name__}: {e}")
+            raise
+        safe_append(log, "llm_end", engine="playbook", step=step, label=label, status="success",
+                    elapsed_ms=int((time.monotonic() - t0) * 1000))
+        if note_label is not None and text.strip():
+            safe_append(log, "ai_note", engine="playbook", step=step, label=note_label, note=text)
+        return text
 
     def narrate_steps(self, requests: Sequence[StepNarration]) -> dict[str, Opinion]:
         """단계 소견을 병렬로 만든다(요청 수는 호출자가 `max_step_calls` 안으로 자른다)."""
@@ -445,7 +474,13 @@ class PlaybookNarrator:
             thread_name_prefix="playbook-narrate",
         )
         try:
-            futures = {r.step: pool.submit(self._call, rendered[r.step]) for r in requests}
+            futures = {
+                r.step: pool.submit(
+                    self._logged_call, rendered[r.step], step=r.step,
+                    label=f"{r.step} 소견 작성", note_label=f"{r.step} 소견 초안",
+                )
+                for r in requests
+            }
             wait_futures(list(futures.values()), timeout=self.limits.step_timeout_s)
             for r in requests:
                 fut = futures[r.step]
@@ -490,7 +525,7 @@ class PlaybookNarrator:
         )
         pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="playbook-synth")
         try:
-            fut = pool.submit(self._call, messages)
+            fut = pool.submit(self._logged_call, messages, step=None, label="종합 소견 작성")
             wait_futures([fut], timeout=self.limits.synthesis_timeout_s)
             if not fut.done():
                 fut.cancel()

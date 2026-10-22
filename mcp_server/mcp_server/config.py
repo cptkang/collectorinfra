@@ -6,8 +6,10 @@ config.toml과 환경변수에서 서버 설정을 로드한다.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -72,6 +74,25 @@ class PrometheusConfig:
     auth_header: str = ""
     query_timeout: int = 30
     expose_raw_promql: bool = False
+    # 고수준 도구의 라벨 앵커 방식 (plans/189 · D-119 ③ 부기 2026-10-20).
+    # nodename = 현행(``{nodename="<hostname>"}``) 바이트 동일 · polestar_host = 폴스타에서
+    # OS 호스트명·IP를 해석해 ``host_label``·``ip_label`` 사다리로 조립한다. env: PROMETHEUS_ANCHOR_MODE.
+    anchor_mode: str = "nodename"
+    # Prometheus의 OS 호스트명 라벨 이름 (env: PROMETHEUS_HOST_LABEL)
+    host_label: str = "hostname"
+    # Prometheus의 OS IP 라벨 이름 (env: PROMETHEUS_IP_LABEL)
+    ip_label: str = "node_ip"
+    # 「모호」 판정용 라벨 — 서로 다른 값의 수를 센다 (env: PROMETHEUS_INSTANCE_LABEL)
+    instance_label: str = "instance"
+    # Prometheus가 수집하는 폴스타 source(db_id) 목록. 빈 목록 = 제한 없음(현행).
+    # 목록 밖 source는 HTTP 없이 거부한다. env: PROMETHEUS_SOURCES(JSON 배열).
+    sources: list[str] = field(default_factory=list)
+
+
+#: ``anchor_mode`` 허용값 (plans/189 §2.1). nodename = 현행과 바이트 동일.
+PROMETHEUS_ANCHOR_MODES: tuple[str, ...] = ("nodename", "polestar_host")
+#: Prometheus 라벨 이름 규칙 — 설정 라벨이 셀렉터에 그대로 들어가므로 주입을 막는다.
+_PROM_LABEL_NAME_RE = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_]*$")
 
 
 #: `fallback_policy` 허용값 (plans/92 §4.8.3). off = 강등 없음 = 종전 PromQL 동작과 비트 동일.
@@ -279,11 +300,19 @@ def _load_toml(path: Path) -> AppServerConfig:
 
     # Prometheus 설정 (PromQL 도구 — Plan 06 §3 · D-119)
     prom_data = data.get("prometheus", {})
+    prom_sources = prom_data.get("sources", [])
+    if not isinstance(prom_sources, list):  # 문자열이면 글자 단위로 쪼개진다 — 기동 실패로 막는다
+        raise ValueError(f"[prometheus].sources는 배열이어야 함: {prom_sources!r}")
     prometheus = PrometheusConfig(
         url=prom_data.get("url", ""),
         auth_header=prom_data.get("auth_header", ""),
         query_timeout=prom_data.get("query_timeout", 30),
         expose_raw_promql=prom_data.get("expose_raw_promql", False),
+        anchor_mode=str(prom_data.get("anchor_mode", "nodename")),
+        host_label=str(prom_data.get("host_label", "hostname")),
+        ip_label=str(prom_data.get("ip_label", "node_ip")),
+        instance_label=str(prom_data.get("instance_label", "instance")),
+        sources=[str(v) for v in prom_sources],
     )
 
     # OpenMetrics 설정 (plans/92 · D-210)
@@ -360,6 +389,44 @@ def _normalize_openmetrics(om: OpenMetricsConfig) -> None:
     om.fallback_policy = policy
 
 
+def _parse_str_list_env(env_key: str, raw: str) -> list[str]:
+    """리스트 env 값(JSON 배열)을 문자열 리스트로 읽는다. JSON이 아니면 쉼표 구분으로 읽는다."""
+    text = raw.strip()
+    if text.startswith("["):
+        try:
+            parsed = json.loads(text)
+        except ValueError as e:
+            raise ValueError(f"{env_key}는 JSON 배열이어야 함: {raw!r}") from e
+        if not isinstance(parsed, list):
+            raise ValueError(f"{env_key}는 JSON 배열이어야 함: {raw!r}")
+        return [str(v).strip() for v in parsed if str(v).strip()]
+    return [v.strip() for v in text.split(",") if v.strip()]
+
+
+def validate_prometheus_anchor(prom: PrometheusConfig) -> None:
+    """앵커 설정 5키를 검증·정규화한다 (plans/189 §2.1).
+
+    ``anchor_mode``는 허용값만 받는다. 라벨 이름 3종은 PromQL 셀렉터에 그대로 들어가므로
+    Prometheus 라벨 이름 규칙으로 검증한다(셀렉터 주입 방지).
+
+    Raises:
+        ValueError: 허용 밖 ``anchor_mode``이거나 라벨 이름이 규칙에 맞지 않을 때.
+    """
+    mode = str(prom.anchor_mode).strip().lower()
+    if mode not in PROMETHEUS_ANCHOR_MODES:
+        raise ValueError(
+            f"PROMETHEUS_ANCHOR_MODE 값 {prom.anchor_mode!r} 무효 "
+            f"(허용: {', '.join(PROMETHEUS_ANCHOR_MODES)})"
+        )
+    prom.anchor_mode = mode
+    for attr in ("host_label", "ip_label", "instance_label"):
+        value = str(getattr(prom, attr)).strip()
+        if not _PROM_LABEL_NAME_RE.fullmatch(value):
+            raise ValueError(f"Prometheus 라벨 이름 무효 ({attr}): {value!r}")
+        setattr(prom, attr, value)
+    prom.sources = [str(v).strip() for v in prom.sources if str(v).strip()]
+
+
 def _apply_env_overrides(
     config: AppServerConfig, env: Mapping[str, str] | None = None
 ) -> None:
@@ -427,12 +494,24 @@ def _apply_env_overrides(
         "PROMETHEUS_URL": ("url", str),
         "PROMETHEUS_AUTH_HEADER": ("auth_header", str),
         "PROMETHEUS_QUERY_TIMEOUT": ("query_timeout", int),
+        # 라벨 앵커 (plans/189 §2.1) — 검증은 validate_prometheus_anchor
+        "PROMETHEUS_ANCHOR_MODE": ("anchor_mode", str),
+        "PROMETHEUS_HOST_LABEL": ("host_label", str),
+        "PROMETHEUS_IP_LABEL": ("ip_label", str),
+        "PROMETHEUS_INSTANCE_LABEL": ("instance_label", str),
     }
     for env_key, (attr, cast) in _prom_overrides.items():
         env_val = env.get(env_key, "")
         if env_val:
             setattr(config.prometheus, attr, cast(env_val))
             logger.debug("환경변수 오버라이드: %s = %s", env_key, env_val)
+
+    # 수집 source 목록은 리스트라 별도 파싱 (JSON 배열 — 쉼표 구분도 받는다)
+    sources_env = env.get("PROMETHEUS_SOURCES", "")
+    if sources_env:
+        config.prometheus.sources = _parse_str_list_env("PROMETHEUS_SOURCES", sources_env)
+        logger.debug("환경변수 오버라이드: PROMETHEUS_SOURCES = %s", config.prometheus.sources)
+    validate_prometheus_anchor(config.prometheus)
 
     # expose_raw_promql도 불리언이라 별도 파싱
     raw_env = env.get("EXPOSE_RAW_PROMQL", "")

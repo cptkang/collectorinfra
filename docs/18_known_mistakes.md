@@ -2200,6 +2200,21 @@
 - **원인**: 설정 필드 추가가 카탈로그 구획·도움말 등 소비처 등재를 함께 요구한다는 것을 위임 범위에 넣지 않았다. 회귀 선택은 import 그래프 기반이라 `field_index()`처럼 config를 동적으로 훑는 테스트는 config 변경만으로는 골라지지 않을 수 있다.
 - **방지책**: `src/config/` 에 `NOISE_` 등 새 필드를 넣으면 같은 작업에서 `SECTION_BY_KEY` 등재와 `pytest tests/test_api/test_settings_catalog_sections.py`를 자기 테스트로 돌린다. 전체 회귀에서 `apm_gateway`가 TIMEOUT으로 0건이면 무한 대기 테스트(`test_plan134_w0b_verify.py::test_disconnect_before_promotion_cancels_job` — 기준에서도 대기, SIGTERM 무시)를 `--deselect`해 패키지를 따로 돌리고 `timeout -s KILL`을 쓴다.
 
+### 2026-10-19 · (plans/187 v2.0 · 팀 리드) 계획서의 「`log_masking.py`에 더한다」를 그대로 위임했는데 그 파일은 정본의 바이트 사본이었다
+- **실수**: W13 위임에 「부족한 비밀값 꼴은 `sre_agent/.../log_masking.py`에 더한다」를 그대로 넣었다. 그 파일은 `src/utils/log_masking.py` 정본의 바이트 사본이고 `tests/test_utils/test_log_masking_copies.py`가 사본 4개 일치를 단언해, implementer가 신규 `activity_masking.py`로 이탈했다. 또 처음 표본(계획 목록)만 고정해 YAML `password:`·`sqlplus id/pw@` 등 7개 꼴이 검증에서 누출로 잡혔다.
+- **원인**: 계획서의 파일 지정을 위임 전에 실측(사본·정본 관계)하지 않았다. 가림 표본을 계획 목록으로 한정하고 운영에서 흔한 설정 파일 출력 꼴을 넣지 않았다.
+- **방지책**: 위임 프롬프트에 파일을 지정하기 전에 그 파일이 생성·복사본인지(`*_copies` 테스트·머리 주석) 확인한다. 사용자에게 보이는 가림은 계획 표본 + 설정 파일(YAML·properties·env)·CLI(`curl -u`·`sqlplus`·`IDENTIFIED BY`) 꼴과 오탐 표본(`-p 5432`·`pass: 3/5`)을 함께 고정한다.
+
+### 2026-10-20 · (plans/189 재개) PC 크래시 뒤 쓰다 만 파일에 문자열 이스케이프 `\n`이 실제 줄바꿈으로 깨진 채 남았다
+- **실수**: implementer 작업 중 PC가 크래시로 재부팅됐다. 재개해 보니 `mcp_server/mcp_server/polestar_tools.py`의 `build_anchor_lookup_sql` 안 SQL 문자열 이스케이프 `\n` 10곳이 실제 줄바꿈으로 바뀌어 SyntaxError가 났다. git diff 줄 수만 보고는 「진행됨」으로 보였다.
+- **원인**: 편집 도중 중단된 파일은 부분 기록·변형된 상태로 남을 수 있다. 재개 시 diff 존재 여부만 보고 완결성을 판단했다.
+- **방지책**: 크래시·강제 종료 뒤 재개할 때는 바뀐 `.py` 전부를 `python -m py_compile`로 먼저 확인하고, 문자열 리터럴·인코딩 깨짐을 diff로 훑은 뒤 이어간다. 긴 계획은 Wave가 끝날 때마다 계획서 머리에 진행 한 줄을 남겨 디스크만으로 재개할 수 있게 한다.
+
+### 2026-10-20 · (plans/190 · 팀 리드) 계획서의 호출 상한 권장값(60초)이 위층 고정 상한(스텝 대기 30초)에 막혀 효과가 없었다
+- **실수**: 계획 §3.3이 `APM_TOOL_TIMEOUT_SECONDS=60`을 권장했지만, 플레이북 러너의 스텝 대기 상한이 `DEFAULT_STEP_TIMEOUT_S = 30`(설정 키 없음)이었다. 그래서 30을 넘는 값은 스텝을 missing으로 끝낼 뿐이고, 호출만 백그라운드에서 끝까지 돈다. 또 W2 위임 범위에서 `investigation_dispatcher.py`를 뺐는데, `run_playbook` 호출 배선이 바로 그 파일에 있어서 새 설정이 운영에 들어가지 않을 뻔했다.
+- **원인**: 타임아웃 하나를 고치면서 그 위에 겹친 상한(스텝 대기 · 수집 예산 · 조사 전체)을 호출 사슬 끝까지 따라가 보지 않았다. 위임 범위도 "설정을 읽는 곳"이 아니라 "바뀌는 함수"만 기준으로 잡았다.
+- **방지책**: 상한·타임아웃 값을 권장하기 전에 호출 사슬의 모든 겹침 상한을 grep으로 나열하고, 가장 짧은 값을 적는다. 새 설정을 위임할 때는 그 값을 실제로 넘겨주는 배선 지점(dispatcher·wiring)까지 위임 범위에 넣는다.
+
 ### 2026-10-21 · (plans/191 W0) 「명시 alias면 필드명 env를 읽지 않는다」고 가정해 SPEC에 `admin_token` + alias를 적었다
 - **실수**: 팀 리드가 SPEC §3에 `sre_agent` 관리 토큰을 「필드 `admin_token` + 명시 alias `SRE_AGENT_ADMIN_TOKEN`」으로 적었다. W1 implementer 실측 결과 `AgentSettings`는 `populate_by_name=True`라 alias를 줘도 필드명 env `ADMIN_TOKEN`을 함께 읽었다 — 루트 CWD 기동 시 본체 `ADMIN_TOKEN`이 sre_agent 관리 토큰으로 새어 들어갈 뻔했다
 - **원인**: pydantic-settings의 env 이름 해석(alias·`populate_by_name`)을 실물로 재지 않고 일반 지식으로 계약을 썼다

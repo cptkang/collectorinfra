@@ -19,6 +19,8 @@
 from __future__ import annotations
 
 import json
+import logging
+import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
@@ -36,6 +38,7 @@ from sre_agent.application.evidence_prefetch import (
     _series,
     build_calls,
 )
+from sre_agent.domain.activity_log import ActivityLog, safe_append
 from sre_agent.domain.correlation import EpisodePoint, MetricSeries, correlate
 from sre_agent.domain.source_adapter import (
     DEFAULT_REGISTRY,
@@ -45,6 +48,8 @@ from sre_agent.domain.source_adapter import (
     AdapterRegistry,
     fetch_or_not_connected,
 )
+
+logger = logging.getLogger(__name__)
 
 BatchCaller = Callable[[Sequence[tuple[str, dict]]], list[str]]
 Axis = Literal["apm", "polestar"]
@@ -86,6 +91,37 @@ NO_WAS_VERDICT = "no_was"
 DEFAULT_P95_RATIO = 2.0
 #: 정합 신뢰도 중 「대상 확정 실패」로 보는 값(게이트웨이 어휘 high·medium·none + 방어적 low).
 LOW_CONFIDENCE = frozenset({"", "none", "low"})
+
+# ── APM 호출 인자 규칙(plans/190 W1·W2 · D-344) ─────────────────────────────
+#: `source_ids`를 받는 게이트웨이 도구(W0 실측 — `apm_gateway/interface/server.py` 시그니처 ·
+#: D-274 ③ 사본). `apm_transaction_profile`은 단수 `source_id`(profile_ref 그대로)라 없다.
+APM_SOURCE_IDS_TOOLS = frozenset(
+    {
+        APM_INSTANCE_MAP,
+        APM_APP_HEALTH,
+        APM_RUNTIME_HEALTH,
+        APM_RESOURCE_POOL,
+        APM_SLOW_TX,
+        APM_ACTIVE_SERVICES,
+        APM_EVENTS,
+        "apm_status_stats",
+        "apm_metrics",
+        APM_SOURCE_CHANGES,
+        "apm_transaction_trace",
+        APM_CHANGE_IMPACT,
+        APM_PERIOD_COMPARE,
+    }
+)
+#: 옵트인 `xview_confirm_over`를 받는 도구(W0 실측 — `apm_app_health`뿐).
+APM_XVIEW_CONFIRM_TOOLS = frozenset({APM_APP_HEALTH})
+#: 게이트웨이 사전 확인 봉투의 `status`(apm_gateway `CONFIRM_REQUIRED` 사본 · D-274 ③).
+XVIEW_CONFIRM_REQUIRED = "confirm_required"
+#: 브리핑 한계 — 대상의 APM 소스를 정하지 못해 소스를 좁히지 않고 불렀다(W1).
+APM_SOURCE_UNRESOLVED_LIMIT = "APM 소스 미확정 — 전 소스 조회"
+#: 브리핑 한계 — X-View 사전 확인 초과로 구간 조회를 시 단위 통계로 대체했다(W2).
+XVIEW_CONFIRM_LIMIT = (
+    "X-View 사전 확인 초과(예상 {n}회 > 상한 {m}) — 구간 p95·에러율 생략, 시 단위 통계로 대체"
+)
 
 ACTION_TITLES: dict[str, str] = {
     "scope.resolve_was_targets": "대상 확정 · 범위 비교",
@@ -148,10 +184,19 @@ class RunScope:
     targets: list[dict[str, Any]] = field(default_factory=list)
 
     def target_names(self) -> list[str]:
-        names = [str(t["instance"]) for t in self.targets if t.get("instance")]
-        if not names and self.alarm_instance:
-            names = [self.alarm_instance]
-        return names
+        return [name for name, _ in self.target_entries()]
+
+    def target_entries(self) -> list[tuple[str, str | None]]:
+        """대상 `(인스턴스명, APM 소스 id)` — 소스는 대상 확정 결과 행의 `source_id`(없으면 None
+        · plans/190 W1). 대상이 없으면 알람 인스턴스 단독(소스 미확정)."""
+        entries = [
+            (str(t["instance"]), str(t.get("source_id") or "") or None)
+            for t in self.targets
+            if t.get("instance")
+        ]
+        if not entries and self.alarm_instance:
+            entries = [(self.alarm_instance, None)]
+        return entries
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -250,12 +295,27 @@ class StepContext:
         now: Callable[[], datetime],
         prior: Mapping[str, StepResult],
         adapters: AdapterRegistry | None = None,
+        target_sources: Sequence[str | None] | None = None,
+        xview_confirm_over: int | None = None,
     ) -> None:
         self.payload = payload
         self.windows = windows
         self.scope = scope
         self.args = dict(args)
         self.targets = list(targets)
+        #: `targets`와 같은 순서의 APM 소스 id(plans/190 W1 — 미주입·None = 소스 미확정).
+        sources = list(target_sources or [])
+        self.target_sources: list[str | None] = (
+            sources + [None] * (len(self.targets) - len(sources))
+        )[: len(self.targets)]
+        #: 기간 모드 `apm_app_health`의 X-View 사전 확인 상한(W2 — None·0 이하 = 인자 미전송).
+        self.xview_confirm_over = (
+            int(xview_confirm_over)
+            if xview_confirm_over is not None and int(xview_confirm_over) > 0
+            else None
+        )
+        #: 브리핑 한계 문장(실행기가 `PlaybookRun.notes`로 모은다 · 순서 보존 · 중복 제거).
+        self.limits: list[str] = []
         self.polestar = polestar
         self.apm = apm
         self.now = now
@@ -265,6 +325,9 @@ class StepContext:
         self.tools: list[str] = []
         self.calls: list[tuple[str, dict]] = []
         self.outputs: list[str] = []
+        #: 실행 기록(plans/187 W13) — dispatcher가 스텝 실행 직전에 단다. None이면 기록 0.
+        self.activity: ActivityLog | None = None
+        self.step_id: str | None = None
 
     @property
     def event(self) -> Mapping[str, Any]:
@@ -272,30 +335,103 @@ class StepContext:
         return ev if isinstance(ev, Mapping) else {}
 
     def call(self, axis: Axis, calls: Sequence[tuple[str, dict]]) -> list[ToolResponse]:
-        """축의 배치 콜러블로 calls를 부른다. 콜러블이 없으면 전부 오류 응답(호출하지 않음)."""
+        """축의 배치 콜러블로 calls를 부른다. 콜러블이 없으면 전부 오류 응답(호출하지 않음).
+
+        실행 기록이 달려 있으면(plans/187 W13) 호출 전 `tool_start`, 후 `tool_end`(상태 ·
+        배치 소요 · 행 수 · 발췌)를 남긴다. 잡 캐시 적중은 `status=cached`다.
+        """
         if not calls:
             return []
         caller = self.apm if axis == "apm" else self.polestar
         if caller is None:
             msg = "APM 게이트웨이 미구성" if axis == "apm" else "폴스타 MCP 미구성"
-            return [ToolResponse(t, dict(a), None, msg) for t, a in calls]
+            out_missing = [ToolResponse(t, dict(a), None, msg) for t, a in calls]
+            for r in out_missing:
+                self._record_end(r, None, "error", None, msg)
+            return out_missing
+        cached = self._record_start(caller, calls)
+        t0 = time.monotonic()
         raws = list(caller(list(calls)))
+        elapsed_ms = int((time.monotonic() - t0) * 1000)
         if len(raws) < len(calls):
             raws += [json.dumps({"error": "응답 누락"})] * (len(calls) - len(raws))
         out: list[ToolResponse] = []
-        for (tool, args), raw in zip(calls, raws):
+        for i, ((tool, args), raw) in enumerate(zip(calls, raws)):
             if tool not in self.tools:
                 self.tools.append(tool)
             self.calls.append((tool, dict(args)))
             self.outputs.append(raw)
-            out.append(parse_response(tool, dict(args), raw))
+            resp = parse_response(tool, dict(args), raw)
+            out.append(resp)
+            if self.activity is not None:
+                status = "cached" if cached[i] else ("success" if resp.ok else "error")
+                self._record_end(resp, elapsed_ms, status, _rows(resp.data), raw)
         return out
+
+    def _record_start(self, caller: BatchCaller, calls: Sequence[tuple[str, dict]]) -> list[bool]:
+        """`tool_start`를 남기고 호출 전 캐시 적중 여부를 돌려준다(기록이 없으면 전부 False)."""
+        if self.activity is None:
+            return [False] * len(calls)
+        probe = getattr(caller, "cached", None)
+        hits: list[bool] = []
+        for tool, args in calls:
+            try:
+                hits.append(bool(probe(tool, args)) if callable(probe) else False)
+                label = tool_label(tool, args)
+            except Exception as exc:  # noqa: BLE001 — 기록은 best-effort
+                logger.warning("실행 기록 실패(무시) tool=%s: %s: %s",
+                               tool, type(exc).__name__, exc)
+                hits.append(False)
+                continue
+            safe_append(self.activity, "tool_start", engine="playbook", step=self.step_id,
+                        tool=tool, label=label)
+        return hits
+
+    def _record_end(self, resp: ToolResponse, elapsed_ms: int | None, status: str,
+                    rows: int | None, excerpt: str) -> None:
+        if self.activity is None:
+            return
+        try:
+            label = tool_label(resp.tool, resp.args)
+        except Exception as exc:  # noqa: BLE001 — 기록은 best-effort
+            logger.warning("실행 기록 실패(무시) tool=%s: %s: %s",
+                           resp.tool, type(exc).__name__, exc)
+            return
+        safe_append(
+            self.activity, "tool_end", engine="playbook", step=self.step_id, tool=resp.tool,
+            label=label, status=status, elapsed_ms=elapsed_ms, rows=rows, excerpt=excerpt,
+        )
 
     def call_one(self, axis: Axis, tool: str, args: dict) -> ToolResponse:
         return self.call(axis, [(tool, args)])[0]
 
+    def target_items(self) -> list[tuple[str, str | None]]:
+        """`(대상 인스턴스명, APM 소스 id)` — `targets`·`target_sources` 짝."""
+        return list(zip(self.targets, self.target_sources))
+
+    def add_limit(self, text: str) -> None:
+        if text not in self.limits:
+            self.limits.append(text)
+
 
 StepFn = Callable[[StepContext], StepResult]
+
+
+def tool_label(tool: str, args: Mapping[str, Any]) -> str:
+    """실행 기록 한 줄 — `도구 {인자 JSON}`(인자가 없으면 도구명만 · plans/187 W13)."""
+    if not args:
+        return tool
+    return f"{tool} {json.dumps(dict(args), ensure_ascii=False, sort_keys=True, default=str)}"
+
+
+def _rows(data: Mapping[str, Any] | None) -> int | None:
+    """응답의 행 수 — 최상위에서 처음 만나는 목록 값의 길이(목록이 없으면 None)."""
+    if not isinstance(data, Mapping):
+        return None
+    for value in data.values():
+        if isinstance(value, list):
+            return len(value)
+    return None
 
 
 # ── 공용 도우미 ─────────────────────────────────────────────────────────────
@@ -432,31 +568,171 @@ def _shift(iso: str, days: int) -> str:
     return (datetime.fromisoformat(iso) - timedelta(days=days)).isoformat()
 
 
-def _baseline_calls(ctx: StepContext, instance: str) -> list[tuple[str, tuple[str, dict]]]:
+def _apm_args(
+    ctx: StepContext,
+    tool: str,
+    target_source: str | None,
+    /,
+    *,
+    discovery: bool = False,
+    **kw: Any,
+) -> dict[str, Any]:
+    """APM 도구 인자 조립 — 모든 플레이북 APM 호출의 단일 지점(plans/190 W1·W2 · D-344).
+
+    - `target_source`(대상의 APM 소스 id)가 있고 도구가 `APM_SOURCE_IDS_TOOLS`면
+      `source_ids=[target_source]`를 싣는다
+      (게이트웨이가 고른 소스 전부에서 동명 인스턴스를 찾지 않게 — 다른 존 서버 혼입 방지).
+    - 소스가 없으면 종전 인자 그대로 두고 한계 「APM 소스 미확정 — 전 소스 조회」를 남긴다.
+      `discovery`(대상 확정 전 탐색 호출 — 소스를 아직 모르는 것이 정상)는 한계를 남기지 않는다.
+    - 기간 모드(`reference_time` 있음)의 `APM_XVIEW_CONFIRM_TOOLS`에는 상한이 설정돼 있으면
+      `xview_confirm_over`를 싣는다(None·0 이하면 미전송 = 종전 비트 동일).
+    """
+    args = dict(kw)
+    if tool in APM_SOURCE_IDS_TOOLS:
+        if target_source:
+            args["source_ids"] = [target_source]
+        elif not discovery:
+            ctx.add_limit(APM_SOURCE_UNRESOLVED_LIMIT)
+    if (
+        tool in APM_XVIEW_CONFIRM_TOOLS
+        and args.get("reference_time")
+        and ctx.xview_confirm_over is not None
+    ):
+        args["xview_confirm_over"] = ctx.xview_confirm_over
+    return args
+
+
+def _confirm_required(resp: ToolResponse) -> bool:
+    """게이트웨이 X-View 사전 확인 봉투(`status = confirm_required` · 데이터 없음)인가."""
+    return resp.ok and (resp.data or {}).get("status") == XVIEW_CONFIRM_REQUIRED
+
+
+def _note_confirm(ctx: StepContext, resp: ToolResponse) -> None:
+    """사전 확인 초과 한계 1줄 — 예상 호출 수는 봉투의 `expected_xview_calls`(없으면 ?)."""
+    data = resp.data or {}
+
+    def _count(v: object) -> object:
+        return v if isinstance(v, int) and not isinstance(v, bool) else "?"
+
+    ctx.add_limit(
+        XVIEW_CONFIRM_LIMIT.format(
+            n=_count(data.get("expected_xview_calls")),
+            m=_count(data.get("xview_confirm_over", ctx.xview_confirm_over)),
+        )
+    )
+
+
+def _prior_window_compare_call(
+    ctx: StepContext, instance: str, source_id: str | None
+) -> tuple[str, dict]:
+    """사전 확인 초과 대체(§3.2 ②) — 사건창 vs 같은 길이 직전 구간의 시 단위 통계(X-View 없음).
+
+    게이트웨이는 두 구간을 시 경계로 넓힌다(`hour_floor`·`hour_ceil`). 직전 구간을 분 단위로
+    잡으면 정시를 걸친 사건창과 겹치므로, 사건창을 시 경계로 넓힌 [⌊시작⌋, ⌈끝⌉) 길이 H시간을
+    구하고 직전 구간 = [⌊시작⌋ − H, ⌊시작⌋)로 둔다. 사건창 인자는 요청 그대로 보낸다(게이트웨이가
+    같은 규칙으로 넓히고 「요청 → 조회」 한계를 단다).
+    """
+    w = ctx.windows
+    start, end = datetime.fromisoformat(w.incident_start), datetime.fromisoformat(w.incident_end)
+    floor = start.replace(minute=0, second=0, microsecond=0)
+    ceil = end.replace(minute=0, second=0, microsecond=0)
+    if ceil < end:
+        ceil += timedelta(hours=1)
+    prev_end = floor.isoformat()
+    prev_start = (floor - (ceil - floor)).isoformat()
+    return (
+        APM_PERIOD_COMPARE,
+        _apm_args(
+            ctx,
+            APM_PERIOD_COMPARE,
+            source_id,
+            instance_name=instance,
+            current_start=w.incident_start,
+            current_end=w.incident_end,
+            baseline_start=prev_start,
+            baseline_end=prev_end,
+        ),
+    )
+
+
+def _confirm_fallback(
+    ctx: StepContext,
+    entries: Sequence[tuple[str, str | None]],
+    resps: Sequence[ToolResponse],
+    missing: list[str],
+    reasons: list[str],
+) -> dict[int, dict[str, Any] | None]:
+    """사건창 `apm_app_health`가 사전 확인 초과인 대상마다 대체 비교를 1회 부른다(§3.2 ②).
+
+    돌려주는 값은 대상 순번 → 시 단위 비교 첫 행(대체 실패면 None — 그 신호는 결손 · §3.2 ③).
+    X-View는 다시 부르지 않는다. 판정은 하지 않는다(p95 근거 없음 = 판정 불가).
+    """
+    idx = [i for i, r in enumerate(resps) if _confirm_required(r)]
+    if not idx:
+        return {}
+    for i in idx:
+        _note_confirm(ctx, resps[i])
+    calls = [_prior_window_compare_call(ctx, *entries[i]) for i in idx]
+    out: dict[int, dict[str, Any] | None] = {}
+    for i, r in zip(idx, ctx.call("apm", calls)):
+        if r.ok:
+            out[i] = _first_row(r.data)
+        else:
+            out[i] = None
+            _add_missing(missing, APM_APP_HEALTH)
+            _add_missing(missing, APM_PERIOD_COMPARE)
+            reasons.append(f"{entries[i][0]}: 사전 확인 초과 대체 실패 — {r.tool}: {r.error}")
+    return out
+
+
+def _target_labels(items: Sequence[tuple[str, str | None]]) -> list[str]:
+    """표·대상별 키 이름 — 같은 이름이 둘 이상이면(다른 APM 소스) 두 번째부터 `이름@소스`.
+
+    첫 행(알람 인스턴스)은 이름 그대로라 판독의 이름 조회가 종전과 같다(plans/190 W1).
+    """
+    seen: set[str] = set()
+    out: list[str] = []
+    for name, src in items:
+        out.append(f"{name}@{src or '?'}" if name in seen else name)
+        seen.add(name)
+    return out
+
+
+def _baseline_calls(
+    ctx: StepContext, instance: str, source_id: str | None = None
+) -> list[tuple[str, tuple[str, dict]]]:
     return [
         (
             b.name,
             (
                 APM_APP_HEALTH,
-                {
-                    "instance_name": instance,
-                    "reference_time": b.reference_time,
-                    "lookback_minutes": ctx.windows.lookback_minutes,
-                },
+                _apm_args(
+                    ctx,
+                    APM_APP_HEALTH,
+                    source_id,
+                    instance_name=instance,
+                    reference_time=b.reference_time,
+                    lookback_minutes=ctx.windows.lookback_minutes,
+                ),
             ),
         )
         for b in ctx.windows.baselines
     ]
 
 
-def _incident_health_call(ctx: StepContext, instance: str) -> tuple[str, dict]:
+def _incident_health_call(
+    ctx: StepContext, instance: str, source_id: str | None = None
+) -> tuple[str, dict]:
     return (
         APM_APP_HEALTH,
-        {
-            "instance_name": instance,
-            "reference_time": ctx.windows.reference_time,
-            "lookback_minutes": ctx.windows.lookback_minutes,
-        },
+        _apm_args(
+            ctx,
+            APM_APP_HEALTH,
+            source_id,
+            instance_name=instance,
+            reference_time=ctx.windows.reference_time,
+            lookback_minutes=ctx.windows.lookback_minutes,
+        ),
     )
 
 
@@ -513,6 +789,19 @@ def _business_term(
     return None, None
 
 
+#: 소스 id로 인정하는 최대 길이(형식 가드 — 넘으면 소스 미확정으로 본다).
+_SOURCE_ID_MAX_LEN = 64
+
+
+def _row_source(row: Mapping[str, Any] | None) -> str | None:
+    """인스턴스 행의 APM 소스 id — 문자열이고 strip 뒤 1~64자일 때만(아니면 None = 소스 미확정)."""
+    value = (row or {}).get("source_id")
+    if not isinstance(value, str):
+        return None
+    value = value.strip()
+    return value if 0 < len(value) <= _SOURCE_ID_MAX_LEN else None
+
+
 def _instance_rows(resp: ToolResponse) -> list[dict[str, Any]]:
     return [
         r
@@ -539,7 +828,11 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
     missing: list[str] = []
     reasons: list[str] = []
 
-    q = ctx.call_one("apm", APM_INSTANCE_MAP, {"query": alarm_instance})
+    q = ctx.call_one(
+        "apm",
+        APM_INSTANCE_MAP,
+        _apm_args(ctx, APM_INSTANCE_MAP, None, discovery=True, query=alarm_instance),
+    )
     q_rows = _instance_rows(q)
     alarm_row = next(
         (r for r in q_rows if r.get("instance_name") == alarm_instance),
@@ -556,66 +849,93 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
     host = ctx.scope.host
     business: str | None = None
     business_source: str | None = None
-    compare: list[tuple[str, str | None]] = [(alarm_instance, None)]
+    #: 알람 인스턴스의 APM 소스 — 대상 확정 행의 `source_id`(plans/190 W1 · 실패면 None).
+    alarm_src = _row_source(alarm_row) if resolved else None
+    # (인스턴스, 호스트, 소스) — 같은 이름이라도 소스가 다르면 다른 서버라 행을 나눈다.
+    compare: list[tuple[str, str | None, str | None]] = [(alarm_instance, None, alarm_src)]
     if resolved:
         host = str(alarm_row.get("hostname") or alarm_row.get("host_name") or host or "") or None  # type: ignore[union-attr]
         business, business_source = _business_term(ctx, alarm_row)
         calls: list[tuple[str, dict]] = []
         if host:
-            calls.append((APM_INSTANCE_MAP, {"hostname": host}))
+            # 호스트는 알람 인스턴스의 서버다 — 그 소스로 좁힌다(소스 미확정이면 탐색 호출).
+            calls.append(
+                (
+                    APM_INSTANCE_MAP,
+                    _apm_args(ctx, APM_INSTANCE_MAP, alarm_src, discovery=True, hostname=host),
+                )
+            )
         if business:
-            calls.append((APM_INSTANCE_MAP, {"business": business}))
+            # 업무 동료 탐색은 소스를 좁히지 않는다 — 나온 행마다 자기 `source_id`로 이후 호출한다.
+            calls.append(
+                (
+                    APM_INSTANCE_MAP,
+                    _apm_args(ctx, APM_INSTANCE_MAP, None, discovery=True, business=business),
+                )
+            )
         for resp in ctx.call("apm", calls):
             if not resp.ok:
                 _add_missing(missing, APM_INSTANCE_MAP)
                 reasons.append(f"{resp.tool}({next(iter(resp.args))}): {resp.error}")
             for r in _instance_rows(resp):
+                name, src = str(r["instance_name"]), _row_source(r)
+                if name == alarm_instance and (
+                    alarm_src is None or src is None or src == alarm_src
+                ):
+                    continue  # 알람 인스턴스 자신(어느 쪽이든 소스 미상이면 종전처럼 이름으로 합친다)
                 compare.append(
-                    (
-                        str(r["instance_name"]),
-                        str(r.get("hostname") or r.get("host_name") or "") or None,
-                    )
+                    (name, str(r.get("hostname") or r.get("host_name") or "") or None, src)
                 )
-        compare[0] = (alarm_instance, host)
+        compare[0] = (alarm_instance, host, alarm_src)
     else:
         why = q.error or ("0건" if alarm_row is None else f"정합 신뢰도 {confidence or '없음'}")
         reasons.append(f"대상 확정 실패({why}) — 이후 APM 스텝은 알람 인스턴스 단독")
-    seen: dict[str, str | None] = {}
-    for name, h in compare:
-        seen.setdefault(name, h)
-    names = list(seen)[: max(1, max_compare)]
-    if len(seen) > len(names):
-        reasons.append(f"범위 비교 상한 {max_compare} — {len(seen) - len(names)}개 인스턴스 생략")
+    seen: dict[tuple[str, str | None], str | None] = {}
+    for name, h, src in compare:
+        seen.setdefault((name, src), h)
+    entries = list(seen)[: max(1, max_compare)]
+    if len(seen) > len(entries):
+        reasons.append(
+            f"범위 비교 상한 {max_compare} — {len(seen) - len(entries)}개 인스턴스 생략"
+        )
 
-    health_calls = [_incident_health_call(ctx, n) for n in names]
-    base_calls = _baseline_calls(ctx, alarm_instance)
+    health_calls = [_incident_health_call(ctx, n, src) for n, src in entries]
+    base_calls = _baseline_calls(ctx, alarm_instance, alarm_src)
     resps = ctx.call("apm", health_calls + [c for _, c in base_calls])
-    cur_resps, base_resps = resps[: len(names)], resps[len(names) :]
+    cur_resps, base_resps = resps[: len(entries)], resps[len(entries) :]
     lb = ctx.windows.lookback_minutes
     base_stats = {bn: _window_stats(r.data, lb) for (bn, _), r in zip(base_calls, base_resps)}
     base_p95 = _baseline_p95(list(base_stats.values()))
     if any(not r.ok for r in resps):
         _add_missing(missing, APM_APP_HEALTH)
         reasons.append(_reasons(resps))
+    for r in base_resps:
+        if _confirm_required(r):
+            _note_confirm(ctx, r)
+    hourly = _confirm_fallback(ctx, entries, cur_resps, missing, reasons)
+    labels = _target_labels(entries)
     instances: list[dict[str, Any]] = []
-    for name, resp in zip(names, cur_resps):
+    for idx, ((name, src), resp) in enumerate(zip(entries, cur_resps)):
         stats = _window_stats(resp.data, lb)
         verdict, source = (
             target_verdict(_signals(resp.data), (stats or {}).get("p95_ms"), base_p95, ratio)
             if resp.ok
             else (None, None)
         )
-        instances.append(
-            {
-                "instance": name,
-                "host": seen.get(name),
-                "stats": stats,
-                "verdict": verdict,
-                "verdict_source": source,
-                "was_signals": _signals(resp.data),
-                "error": resp.error,
-            }
-        )
+        inst: dict[str, Any] = {
+            "instance": name,
+            "host": seen.get((name, src)),
+            "source_id": src,
+            "stats": stats,
+            "verdict": verdict,
+            "verdict_source": source,
+            "was_signals": _signals(resp.data),
+            "error": resp.error,
+        }
+        if idx in hourly:
+            inst["xview_confirm_required"] = True
+            inst["period_compare"] = hourly[idx]
+        instances.append(inst)
     pick = str(ctx.args.get("pick", "degraded"))
     chosen = [instances[0]] + [
         i for i in instances[1:] if pick != "degraded" or i["verdict"] == "degraded"
@@ -627,6 +947,7 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
             "verdict": i["verdict"],
             "verdict_source": i["verdict_source"],
             "confidence": confidence or None,
+            "source_id": i["source_id"],
         }
         for i in chosen
     ]
@@ -656,16 +977,16 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
         ],
         "rows": [
             [
-                i["instance"],
+                label,
                 i["host"],
                 (i["stats"] or {}).get("tps"),
                 (i["stats"] or {}).get("p95_ms"),
-                base_p95 if i["instance"] == alarm_instance else None,
+                base_p95 if idx == 0 else None,
                 (i["stats"] or {}).get("error_rate"),
                 i["verdict"],
                 i["verdict_source"],
             ]
-            for i in instances
+            for idx, (label, i) in enumerate(zip(labels, instances))
         ],
     }
     head = instances[0]
@@ -702,11 +1023,18 @@ def host_to_was(ctx: StepContext) -> StepResult:
     if not host:
         return _missing([], "호스트명 없음 — 역방향 대상 확정 불가")
     max_compare = int(ctx.args.get("max_compare", 8))
-    m = ctx.call_one("apm", APM_INSTANCE_MAP, {"hostname": host})
+    m = ctx.call_one(
+        "apm",
+        APM_INSTANCE_MAP,
+        _apm_args(ctx, APM_INSTANCE_MAP, None, discovery=True, hostname=host),
+    )
     if not m.ok:
         return _missing([APM_INSTANCE_MAP], f"{APM_INSTANCE_MAP}: {m.error}")
-    names = list(dict.fromkeys(str(r["instance_name"]) for r in _instance_rows(m)))[:max_compare]
-    if not names:
+    # (인스턴스, 소스) — 같은 이름이라도 소스가 다르면 행을 나눈다(plans/190 W1).
+    entries = list(
+        dict.fromkeys((str(r["instance_name"]), _row_source(r)) for r in _instance_rows(m))
+    )[:max_compare]
+    if not entries:
         # 명시 판정(W4 후속 ③) — None이면 역방향 `when`(S0r.verdict == 'degraded')이 판정 불가
         # (UNKNOWN)로 실행돼 버린다. 「WAS 없음」은 확인된 사실이라 결정적으로 거짓이 되게 한다.
         return StepResult(
@@ -716,27 +1044,37 @@ def host_to_was(ctx: StepContext) -> StepResult:
             reason="이 호스트에 WAS 인스턴스 없음",
             data={"host": host, "instances": []},
         )
-    resps = ctx.call("apm", [_incident_health_call(ctx, n) for n in names])
+    resps = ctx.call("apm", [_incident_health_call(ctx, n, src) for n, src in entries])
+    missing = [APM_APP_HEALTH] if any(not r.ok for r in resps) else []
+    reasons = [_reasons(resps)]
+    hourly = _confirm_fallback(ctx, entries, resps, missing, reasons)
+    labels = _target_labels(entries)
     instances = []
-    for name, resp in zip(names, resps):
+    for idx, ((name, src), resp) in enumerate(zip(entries, resps)):
         sig = _signals(resp.data)
-        verdict = None if not resp.ok else ("degraded" if sig else "normal")
-        instances.append(
-            {
-                "instance": name,
-                "stats": _window_stats(resp.data, ctx.windows.lookback_minutes),
-                "verdict": verdict,
-                "verdict_source": VERDICT_SOURCE_GATEWAY if resp.ok else None,
-                "was_signals": sig,
-                "error": resp.error,
-            }
-        )
+        # 사전 확인 초과는 게이트웨이가 판정하지 않은 응답이다 — 「정상」이 아니라 판정 불가.
+        judged = resp.ok and idx not in hourly
+        verdict = None if not judged else ("degraded" if sig else "normal")
+        inst: dict[str, Any] = {
+            "instance": name,
+            "source_id": src,
+            "stats": _window_stats(resp.data, ctx.windows.lookback_minutes),
+            "verdict": verdict,
+            "verdict_source": VERDICT_SOURCE_GATEWAY if judged else None,
+            "was_signals": sig,
+            "error": resp.error,
+        }
+        if idx in hourly:
+            inst["xview_confirm_required"] = True
+            inst["period_compare"] = hourly[idx]
+        instances.append(inst)
     targets = [
         {
             "instance": i["instance"],
             "verdict": i["verdict"],
             "verdict_source": i["verdict_source"],
             "confidence": None,
+            "source_id": i["source_id"],
         }
         for i in instances
         if i["verdict"] == "degraded"
@@ -751,7 +1089,6 @@ def host_to_was(ctx: StepContext) -> StepResult:
         targets=targets,
     )
     v, s = _worst([(i["verdict"], i["verdict_source"]) for i in instances])
-    missing = [APM_APP_HEALTH] if any(not r.ok for r in resps) else []
     return StepResult(
         status="ok",
         verdict=v,
@@ -760,17 +1097,17 @@ def host_to_was(ctx: StepContext) -> StepResult:
             "columns": ["instance", "tps", "p95_ms", "verdict"],
             "rows": [
                 [
-                    i["instance"],
+                    label,
                     (i["stats"] or {}).get("tps"),
                     (i["stats"] or {}).get("p95_ms"),
                     i["verdict"],
                 ]
-                for i in instances
+                for label, i in zip(labels, instances)
             ],
         },
         data={"scope": scope.to_dict(), "host": host, "instances": instances},
         missing=missing,
-        reason=_reasons(resps) or None,
+        reason=" · ".join(r for r in reasons if r) or None,
         artifacts={"scope": scope},
     )
 
@@ -804,27 +1141,31 @@ def golden_signals(ctx: StepContext) -> StepResult:
     reasons: list[str] = []
     verdicts: list[tuple[str | None, str | None]] = []
     all_ok_incident = True
-    for name in ctx.targets:
-        base_calls = _baseline_calls(ctx, name)
+    items = ctx.target_items()
+    for (inst_name, src), name in zip(items, _target_labels(items)):
+        base_calls = _baseline_calls(ctx, inst_name, src)
         cmp_calls = [
             (
                 b.name,
                 (
                     APM_PERIOD_COMPARE,
-                    {
-                        "instance_name": name,
-                        "current_start": w.incident_start,
-                        "current_end": w.incident_end,
-                        "baseline_start": b.start,
-                        "baseline_end": b.end,
-                    },
+                    _apm_args(
+                        ctx,
+                        APM_PERIOD_COMPARE,
+                        src,
+                        instance_name=inst_name,
+                        current_start=w.incident_start,
+                        current_end=w.incident_end,
+                        baseline_start=b.start,
+                        baseline_end=b.end,
+                    ),
                 ),
             )
             for b in w.baselines
         ]
         resps = ctx.call(
             "apm",
-            [_incident_health_call(ctx, name)]
+            [_incident_health_call(ctx, inst_name, src)]
             + [c for _, c in base_calls]
             + [c for _, c in cmp_calls],
         )
@@ -841,6 +1182,15 @@ def golden_signals(ctx: StepContext) -> StepResult:
                 _add_missing(missing, r.tool)
         if any(not r.ok for r in resps):
             reasons.append(f"{name}: {_reasons(resps)}")
+        # 사전 확인 초과(§3.2 ①) — 이 스텝은 이미 시 단위 비교를 부른다: p95는 N/A(판정 불가),
+        # 시 단위 통계(`period_compare`)는 그대로 싣는다. X-View는 다시 부르지 않는다.
+        for r in resps[: 1 + len(base_calls)]:
+            if _confirm_required(r):
+                _note_confirm(ctx, r)
+        inc_confirm = _confirm_required(inc)
+        if inc_confirm and not any(cmp.values()):
+            _add_missing(missing, APM_APP_HEALTH)  # 대체할 시 단위 통계도 없음(§3.2 ③)
+            reasons.append(f"{name}: X-View 사전 확인 초과 — 시 단위 통계도 없음")
         stats = _window_stats(inc.data, lb)
         all_ok_incident = all_ok_incident and inc.ok
         base_p95 = _baseline_p95(list(base.values()))
@@ -859,6 +1209,10 @@ def golden_signals(ctx: StepContext) -> StepResult:
             "verdict": verdict,
             "verdict_source": source,
         }
+        if src is not None:
+            per_target[name]["source_id"] = src
+        if inc_confirm:
+            per_target[name]["xview_confirm_required"] = True
         for metric in ("p95_ms", "tps", "error_rate", "calls"):
             cur = (stats or {}).get(metric)
             vals = [(base.get(b.name) or {}).get(metric) for b in w.baselines]
@@ -918,16 +1272,22 @@ def runtime_and_pool(ctx: StepContext) -> StepResult:
     reasons: list[str] = []
     signals: list[dict[str, Any]] = []
     any_ok = False
-    for name in ctx.targets:
-        base = {
-            "instance_name": name,
-            "reference_time": ctx.windows.reference_time,
-            "lookback_minutes": lb,
-        }
+    items = ctx.target_items()
+    for (inst_name, src), name in zip(items, _target_labels(items)):
+        base = _apm_args(
+            ctx,
+            APM_RUNTIME_HEALTH,
+            src,
+            instance_name=inst_name,
+            reference_time=ctx.windows.reference_time,
+            lookback_minutes=lb,
+        )
         calls = [(APM_RUNTIME_HEALTH, dict(base))]
         if with_proc:
             calls.append((APM_RUNTIME_HEALTH, {**base, "metrics": ["proc_cpu", "active_service"]}))
-        calls.append((APM_RESOURCE_POOL, {"instance_name": name}))
+        calls.append(
+            (APM_RESOURCE_POOL, _apm_args(ctx, APM_RESOURCE_POOL, src, instance_name=inst_name))
+        )
         resps = ctx.call("apm", calls)
         trend: dict[str, Any] = {}
         for r in resps[:-1]:
@@ -1010,18 +1370,21 @@ def slow_tx_breakdown(ctx: StepContext) -> StepResult:
     blocked = _need_apm(ctx, [APM_SLOW_TX])
     if blocked:
         return blocked
-    name = ctx.targets[0]
+    name, src = ctx.target_items()[0]
     n = int(ctx.args.get("n", 5))
     profile_top = min(int(ctx.args.get("profile_top", 1)), 1)  # 프로파일 예산 1(§8)
     resp = ctx.call_one(
         "apm",
         APM_SLOW_TX,
-        {
-            "instance_name": name,
-            "reference_time": ctx.windows.reference_time,
-            "lookback_minutes": ctx.windows.lookback_minutes,
-            "n": n,
-        },
+        _apm_args(
+            ctx,
+            APM_SLOW_TX,
+            src,
+            instance_name=name,
+            reference_time=ctx.windows.reference_time,
+            lookback_minutes=ctx.windows.lookback_minutes,
+            n=n,
+        ),
     )
     if not resp.ok:
         return _missing([APM_SLOW_TX], f"{APM_SLOW_TX}: {resp.error}")
@@ -1038,16 +1401,20 @@ def slow_tx_breakdown(ctx: StepContext) -> StepResult:
     reason = None
     ref = rows[0].get("profile_ref")
     if profile_top and isinstance(ref, dict):
+        # 프로파일은 단수 `source_id`(profile_ref 그대로)를 받는다 — `source_ids` 비대상(W0).
         p = ctx.call_one(
             "apm",
             APM_TX_PROFILE,
-            {
-                "instance_name": name,
-                "source_id": ref.get("source_id"),
-                "domain_id": ref.get("domain_id"),
-                "txid": ref.get("txid"),
-                "time_ms": ref.get("time_ms"),
-            },
+            _apm_args(
+                ctx,
+                APM_TX_PROFILE,
+                src,
+                instance_name=name,
+                source_id=ref.get("source_id"),
+                domain_id=ref.get("domain_id"),
+                txid=ref.get("txid"),
+                time_ms=ref.get("time_ms"),
+            ),
         )
         if p.ok:
             prow = _first_row(p.data) or {}
@@ -1181,7 +1548,7 @@ def related_alarms(ctx: StepContext) -> StepResult:
     events: list[dict[str, Any]] = []
     points: list[EpisodePoint] = []
     apm_ok = False
-    instance = ctx.targets[0] if ctx.targets else ctx.scope.alarm_instance
+    instance, src = ctx.target_items()[0] if ctx.targets else (ctx.scope.alarm_instance, None)
     if ctx.apm is None or not instance:
         missing.append(APM_EVENTS)
         reasons.append(
@@ -1191,11 +1558,14 @@ def related_alarms(ctx: StepContext) -> StepResult:
         ev = ctx.call_one(
             "apm",
             APM_EVENTS,
-            {
-                "instance_name": instance,
-                "reference_time": ctx.windows.reference_time,
-                "lookback_minutes": ctx.windows.lookback_minutes,
-            },
+            _apm_args(
+                ctx,
+                APM_EVENTS,
+                src,
+                instance_name=instance,
+                reference_time=ctx.windows.reference_time,
+                lookback_minutes=ctx.windows.lookback_minutes,
+            ),
         )
         if ev.ok:
             apm_ok = True
@@ -1315,7 +1685,7 @@ def recent_changes(ctx: StepContext) -> StepResult:
     missing: list[str] = []
     candidates: list[dict[str, Any]] = []
     impact: list[dict[str, Any]] = []
-    instance = ctx.targets[0] if ctx.targets else ctx.scope.alarm_instance
+    instance, src = ctx.target_items()[0] if ctx.targets else (ctx.scope.alarm_instance, None)
 
     def _candidate(source: str, at: datetime | None, desc: str) -> None:
         if at is None:
@@ -1340,7 +1710,11 @@ def recent_changes(ctx: StepContext) -> StepResult:
     else:
         args = {"instance_name": instance, "reference_time": ctx.windows.reference_time}
         sc, ci = ctx.call(
-            "apm", [(APM_SOURCE_CHANGES, dict(args)), (APM_CHANGE_IMPACT, dict(args))]
+            "apm",
+            [
+                (APM_SOURCE_CHANGES, _apm_args(ctx, APM_SOURCE_CHANGES, src, **args)),
+                (APM_CHANGE_IMPACT, _apm_args(ctx, APM_CHANGE_IMPACT, src, **args)),
+            ],
         )
         for r in (sc, ci):
             if not r.ok:
@@ -1454,16 +1828,20 @@ def events_errors(ctx: StepContext) -> StepResult:
     blocked = _need_apm(ctx, [APM_EVENTS])
     if blocked:
         return blocked
+    name, src = ctx.target_items()[0]
     resp = ctx.call_one(
         "apm",
         APM_EVENTS,
-        {
-            "instance_name": ctx.targets[0],
-            "reference_time": ctx.windows.reference_time,
-            "lookback_minutes": ctx.windows.lookback_minutes,
-            "record": "error",
-            "n": int(ctx.args.get("n", 10)),
-        },
+        _apm_args(
+            ctx,
+            APM_EVENTS,
+            src,
+            instance_name=name,
+            reference_time=ctx.windows.reference_time,
+            lookback_minutes=ctx.windows.lookback_minutes,
+            record="error",
+            n=int(ctx.args.get("n", 10)),
+        ),
     )
     if not resp.ok:
         return _missing([APM_EVENTS], f"{APM_EVENTS}: {resp.error}")
@@ -1481,10 +1859,11 @@ def active_services(ctx: StepContext) -> StepResult:
     blocked = _need_apm(ctx, [APM_ACTIVE_SERVICES])
     if blocked:
         return blocked
+    name, src = ctx.target_items()[0]
     resp = ctx.call_one(
         "apm",
         APM_ACTIVE_SERVICES,
-        {"instance_name": ctx.targets[0], "n": int(ctx.args.get("n", 10))},
+        _apm_args(ctx, APM_ACTIVE_SERVICES, src, instance_name=name, n=int(ctx.args.get("n", 10))),
     )
     if not resp.ok:
         return _missing([APM_ACTIVE_SERVICES], f"{APM_ACTIVE_SERVICES}: {resp.error}")
@@ -1568,6 +1947,11 @@ SCOPE_ACTIONS = frozenset({"scope.resolve_was_targets", "scope.host_to_was"})
 
 __all__ = [
     "ACTION_TITLES",
+    "APM_SOURCE_IDS_TOOLS",
+    "APM_SOURCE_UNRESOLVED_LIMIT",
+    "APM_XVIEW_CONFIRM_TOOLS",
+    "XVIEW_CONFIRM_LIMIT",
+    "XVIEW_CONFIRM_REQUIRED",
     "BaselineWindow",
     "CORRELATION_NOT_CAUSATION",
     "CHANGE_CANDIDATE_NOTE",
@@ -1589,4 +1973,5 @@ __all__ = [
     "parse_response",
     "realtime_badge",
     "target_verdict",
+    "tool_label",
 ]

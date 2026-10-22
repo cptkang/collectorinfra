@@ -186,6 +186,13 @@ class AgentSettings(BaseSettings):
     # 노트만 켜면 없는 도구를 가리킨다. **만료일 2027-03-22**(D-161 ① · 6개월) — OM 배치 운영
     # 실측 후 상시화 또는 삭제를 판정한다.
     openmetrics_guidance_enabled: bool = False
+    # Prometheus 호스트 앵커 지침(plans/189 W5). 기본 off = 조사 지침 문자열 비트 동일.
+    # 켜면 `build_guidance`가 OpenMetrics 노트 자리 뒤·APM 노트 앞에 `PROMETHEUS_ANCHOR_NOTE`
+    # (hostname 의미 · source=알람 dbId · 0건 reason 처리 — 「정상」 서술 금지)를 붙인다.
+    # 운영 메모: mcp_server `PROMETHEUS_ANCHOR_MODE=polestar_host` 배치와 **함께** 켠다 — nodename
+    # 모드에서 OM 확장 `prom_metric_instant`의 `source`는 메트릭 소스(auto|prometheus|exporter)라
+    # dbId를 넘기면 안 된다. **만료일 2027-04-20**(D-161 ① · 6개월).
+    prometheus_anchor_guidance_enabled: bool = False
     # APM 조사 지침(plans/87 J3 · SPEC-apm-sre-agent §3.3). 기본 off = 조사 지침·브리핑 비트 동일.
     # 켜면 사건창 앵커에 apm_* 구간 도구 4종 · APM 조사 순서·현재값·폴백 노트 · (apm 사건이면) APM 플레이북 ·
     # 브리핑 소스 라벨·APM 한계 · 정체 가드(같은 도구·같은 인자 3회 → 미결 — 사후 판정)가 붙는다.
@@ -243,3 +250,22 @@ class AgentSettings(BaseSettings):
     # 플레이북 예산(초) — 수집 상한(§8 수용 기준 6). 조사 전체 타임아웃(300s) 안에서
     # 쓰고, 수집 뒤 남은 시간을 소견기 타임아웃에 나눈다.
     sre_playbook_budget_s: float = Field(default=120.0, gt=0)
+    # ── 플레이북 APM 호출 지연 교정(plans/190 · D-344) ──
+    # X-View 사전 확인 상한(W2) — 기간 모드 `apm_app_health` 호출에 게이트웨이 옵트인 인자
+    # `xview_confirm_over`로 싣는다. 예상 X-View 호출(1분 조각 × 소스·도메인)이 이 수를 넘으면
+    # 게이트웨이는 데이터 호출 없이 `status: confirm_required`를 돌려주고, 플레이북은 시 단위 통계
+    # (`apm_period_compare`)로 대체한 뒤 `[한계]`로 노출한다(침묵 강등 금지).
+    # **기본 10 — 기본 off 원칙의 예외**: off면 폐쇄망에서 보고된 정체(도구 1건 8~11분 · 2026-10-20)가
+    # 그대로 남는다(D-296 부기 ⓓ 「플래그 없음」 선례). None 또는 0 이하 = 인자 미전송(종전 비트 동일).
+    apm_xview_confirm_over: int | None = 10
+    # APM 게이트웨이 도구 호출 상한(초 · W3). None = 종전대로 `evidence_prefetch_timeout_seconds`
+    # (비트 동일). 플레이북 수집 예산 `sre_playbook_budget_s` 안에서 쓰인다.
+    apm_tool_timeout_seconds: float | None = None
+
+    # ── 조사 잡 실행 기록(plans/187 W13 · §5.6.3 ⓑ · D-341 부기 4 ㉘) ──
+    # 기본 off = 기록 자체를 하지 않고 `sre_get_investigation(activity_since=…)`를 무시해 응답이
+    # 비트 동일. 켜면 접수된 잡마다 메모리 링 버퍼(이벤트 300 · 발췌·AI 메모 1건 2KB · 잡당 256KB)에
+    # 동시 상한 대기·스텝·도구 호출·소견 LLM·HolmesGPT 스트림(도구·판단 회차·AI 메모)을 남기고,
+    # `activity_since ≥ 0` 조회에 `activity`·`phase`·`queue_position`·`elapsed_s`를 더한다.
+    # 한 줄·발췌·메모는 버퍼에 넣기 전에 비밀값을 가린다(G-36). 잡 TTL(1시간)과 함께 사라진다.
+    sre_activity_log_enabled: bool = False

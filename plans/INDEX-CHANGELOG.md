@@ -4,9 +4,18 @@
 
 ## 갱신 이력
 - 2026-10-21 — 191 잔여 3 해소: alarm_server 설정 파일 우선순위 교정(전용 `alarm_server.env`가 공용 `.env`를 이김 · `.env`는 보충) · D-345 부기 · 행동 변경 · 매뉴얼 admin 원천 갱신
-- 2026-10-21 — **191 WIP 유지(구현 완료)**: W1~W7 — 공용 `config_admin.py` 정본(sre_agent)+사본 4·컴포넌트별 어댑터·관리 토큰(기본 off=404)·본체 `component_admin` 프록시·설정 탭 대상 선택·매뉴얼 A-81 · 검증·감사 교정(줄 구분자 주입·`$` 확장·보안 경계 키 읽기 전용·litellm `.env` 주입 스냅샷·오류 계약 `{key,message}`) · 잔여 캡처·CLAUDE.md 1줄
+- 2026-10-21 — **191 WIP 유지(구현 완료)**: W1~W7 — 공용 `config_admin.py` 정본(sre_agent)+사본 4·컴포넌트별 어댑터·관리 토큰(기본 off=404)·본체 `component_admin` 프록시·설정 탭 대상 선택·매뉴얼 A-82(원 A-81) · 검증·감사 교정(줄 구분자 주입·`$` 확장·보안 경계 키 읽기 전용·litellm `.env` 주입 스냅샷·오류 계약 `{key,message}`) · 잔여 캡처·CLAUDE.md 1줄
 - 2026-10-21 — **191 TODO→WIP**: 심도 검토·W0 — SPEC `spec/SPEC-component-config-admin.md` · D-345 등재(D-179 개정·부기) · 게이트 G-1~G-7 사용자 위임 권고안 채택 · 실측 정정(alarm_server `.env`가 전용 파일을 이김·CWD 기준 · sre_agent 미들웨어 전체 래핑 · mcp_server `load_config`의 `os.environ` 변경 · 가드 키 읽기 전용) · Wave 재분할(W2~W5 병렬)
 - 2026-10-19 — **191 신설(TODO)**: 분리 컴포넌트 5종 설정 웹UI 계획 — 컴포넌트 자체 설정 관리 API(`/admin/config`) + 본체 프록시·UI · 재기동 대기 표시 · D-345 예약(D-179 개정) · 게이트 G-1~G-7
+- 2026-10-20 — 190 완료(`-TODO` 제거): W0~W5 · D-344 등재 · 플레이북 APM 해소 소스 한정·X-View 사전 확인(기본 10)·APM 전용 상한 · 커밋 전 · 폐쇄망 재측정 대기
+- 2026-10-20 — 190 신설(`-TODO`): SRE 조사 APM 지연 교정(해소 소스 한정 · X-View 사전 확인 · APM 전용 타임아웃 · D-344 예약) · 착수
+- 2026-10-20 — 189 구현(미커밋 · `-TODO`→`-WIP`): W1~W7 · PC 크래시 재개(깨진 문자열 복구) · 회귀 신규 실패 0(모듈 단위) · verifier·auditor Critical 0 · 교정 8 · 해석·이탈 §2.6 · 잔여 = 폐쇄망 표본 왕복 · Docker IT · ruff/mypy · `_deep_section` · L-4 · 92 B-2
+- 2026-10-20 — 189 G-2 확정(A안 — 폴스타 0행은 Prometheus 미호출 `polestar_not_found` · 조회 오류만 `hostname_unverified` 표시 강등) · 게이트 전건 확정 · 구현 착수
+- 2026-10-20 — 189 게이트: G-1 확정(도구 선택 인자 `source` 추가) · G-3 확정(앵커 해석 캐시 없음) · G-2 권고 개정(0행 차단 · 폴스타 조회 오류만 표시 강등) 후 대기
+- 2026-10-20 — 189 신설(TODO): 운영 Prometheus 라벨 앵커(D-119 부기 — `nodename` 부재 실측 · `hostname`·`node_ip` 사다리) · 91 1-12 실측 완료 → 189 이관 · 92 머리에 B-2 `nodename=server_name` 재판정 필요 기록
+- 2026-10-19 — 187 v2.0 W13~W15 구현(미커밋): sre_agent 실행 기록(`activity_since` · 가림 보강) · 본체 허브·SSE(`/alarm/investigations/{active,stream}`) · 「장애 진단」 탭 · 매뉴얼 U-70·A-81 · 모듈 회귀 실패 0 · 검증 High 1·Medium 4 교정(Medium 2 2차 마스킹은 사용자 결정)
+- 2026-10-19 — 187 v2.0 확정: G-34~G-42 인터뷰 확정(발췌 사용자 노출 · AI 메모 관리자만 · SSE · 탭 상한 없음 · 목록 관리자 전체/사용자 자기 채팅 조사 · 상세 푸시는 열린 탭만) · D-341 부기 4 · D-325 부기
+- 2026-10-19 — 187 v2.0 검토안: 「장애 진단」 뷰 탭(조사별 하위 탭 · 진행 중 목록) · sre_agent 잡 실행 기록(도구·명령 한 줄·상태·소요 · `activity_since` 커서) · 본체 중계 캐시 · 「멈춘 것처럼」 원인 5건 실측(F1 화면 300초 상한 · F2 동시 상한 대기 비표시 · F3 HolmesGPT 무노출 · F4 스텝 내 도구 무노출 · F5 목록 없음) · W13~W15 · 수용 14~20 · G-34~G-40 확정 대기
 - 2026-10-19 — **187 TODO→WIP · 155 TODO→WIP · 커밋 전**: 알람 조사 플레이북(D-341) W0~W6·W8~W12 구현 — sre_agent 결정적 플레이북 엔진(YAML 12종·판독 R-A~R-H·가설 규칙·소견/종합 LLM ≤8회·가드)·HolmesGPT 심층 parallel/conditional·엔진 일치·런북/KEDB 읽기 · 본체 진척 전달·마스킹·workb 3줄+링크·추가 조사(diagnosis)·이 알람 분석(manual)·KB 초안·포스트모템·엔진 선택·채팅 증상 결정적 라우팅 · 웹 요약형/상세형·조사 대화·지난 알람 검색·관리자 「조사 지식」 탭·매뉴얼 U-62~U-69·A-77~A-80 · 155 공용부(지연 poll·kind=diagnosis·사용자별 상한)를 187 W10이 선행 구현 · 잔여 W7 내부망 shadow·R-D·G-26 캐시 공용
 - 2026-10-19 — 188 W5(C8) 추가·완료: Gemma 4 도구 호출 마크업을 sre_agent가 `DefaultLLM.completion` 응답 후처리로 `tool_calls` 변환(tools 있는 호출만 · 실패면 원본 → W4) · D-343 · verifier Major 1·Minor 3 교정 · 회귀 실패 0(모듈 단위) · 매뉴얼 admin 25절 · 파일명 WIP→무표기
 - 2026-10-19 — 188 W4(C7) 추가·완료: 조사 LLM 답의 도구 호출 마크업(vLLM `--tool-call-parser` 불일치) 감지 → 원문 없이 `[미결] 조사 실패` 종결 · D-342 부기 · 매뉴얼 admin 25절 · 파일명 WIP→무표기 복귀

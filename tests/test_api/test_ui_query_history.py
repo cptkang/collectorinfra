@@ -52,9 +52,12 @@ def test_history_lives_inside_chat_layout(index_html: str) -> None:
 
 
 def test_exactly_two_view_tabs(index_html: str) -> None:
-    """이력이 사이드바가 되면서 탭은 둘로 돌아왔다."""
+    """이력이 사이드바가 되면서 탭은 둘로 돌아왔다.
+
+    plans/187 W15 장애 진단은 사전 게이트 뒤에만 보이는 셋째 탭이다.
+    """
     views = re.findall(r'class="view-tab[^"]*"\s+data-view="(\w+)"', index_html)
-    assert sorted(views) == ["alarm", "chat"], views
+    assert sorted(views) == ["alarm", "chat", "diagnosis"], views
 
 
 def test_sidebar_collapse_states_cover_both_panels(style_css: str) -> None:

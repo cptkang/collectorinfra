@@ -230,6 +230,9 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_INVESTIGATION_KB_INCORRECT_STREAK": "자동 장애 조사",
     "NOISE_INVESTIGATION_KB_ENGINE_MIN_SAMPLES": "자동 장애 조사",
     "NOISE_INVESTIGATION_KB_ENGINE_SWITCH_RATIO": "자동 장애 조사",
+    # (plans/187 W14) 조사 진행 실시간 화면(SSE 허브)
+    "NOISE_INVESTIGATION_LIVE_VIEW_ENABLED": "자동 장애 조사",
+    "NOISE_INVESTIGATION_LIVE_POLL_SECONDS": "자동 장애 조사",
     "NOISE_FAULT_DIAGNOSIS_ENABLED": "자동 장애 조사",
     "NOISE_FAULT_ESCALATION_ENABLED": "자동 장애 조사",
     # (plans/87 J4) APM 게이트웨이 fatal 이벤트로 폴스타 알람 승격(app_impact)

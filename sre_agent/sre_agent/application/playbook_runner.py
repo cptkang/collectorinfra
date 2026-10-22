@@ -510,6 +510,7 @@ def run_playbook(
     steps: Mapping[str, StepFn] | None = None,
     synthesize: bool = False,
     narrator: PlaybookNarrator | None = None,
+    xview_confirm_over: int | None = None,
 ) -> PlaybookRun:
     """플레이북을 실행한다. 예외를 내지 않는다 — 실패는 섹션의 상태·사유로 남긴다.
 
@@ -528,6 +529,8 @@ def run_playbook(
                      `narrator`를 주면 자동 참.
                      소견기 없이 켜면 가설·대응·추가 확인만 채우고 소견은 「소견기 미구성」.
     narrator:        단계 소견기·종합기(LLM 주입 — W4 배선). 기본 None = 기존 동작 그대로.
+    xview_confirm_over: 기간 모드 `apm_app_health`의 X-View 사전 확인 상한(plans/190 W2 — 호출자가
+                     `settings.apm_xview_confirm_over`를 넘긴다). None·0 이하 = 인자 미전송(비트 동일).
     """
     started = clock()
     library = STEP_LIBRARY if steps is None else steps
@@ -550,6 +553,7 @@ def run_playbook(
             reference_time=reference_time,
             library=library,
             started=started,
+            xview_confirm_over=xview_confirm_over,
         )
     finally:
         if own_cache:
@@ -586,6 +590,7 @@ def _run(
     reference_time: str | None,
     library: Mapping[str, StepFn],
     started: float,
+    xview_confirm_over: int | None = None,
 ) -> PlaybookRun:
     notes: list[str] = []
     source, source_reason = resolve_polestar_source(payload, polestar_source)
@@ -634,21 +639,25 @@ def _run(
                     if verdict is Tri.UNKNOWN
                     else None
                 )
-                names = scope.target_names()
+                entries = scope.target_entries()
                 if step.for_each == "targets":
-                    targets = names if for_each_max is None else names[: max(1, for_each_max)]
+                    picked = (
+                        entries if for_each_max is None else entries[: max(1, for_each_max)]
+                    )
                 else:
-                    targets = names[:1]
+                    picked = entries[:1]
                 ctx = StepContext(
                     payload=payload,
                     windows=windows,
                     scope=scope,
                     args=step.args,
-                    targets=targets,
+                    targets=[name for name, _ in picked],
+                    target_sources=[src for _, src in picked],
                     polestar=polestar,
                     apm=apm,
                     now=now,
                     prior=dict(results),
+                    xview_confirm_over=xview_confirm_over,
                 )
                 contexts[step.id] = ctx
                 submitted.append(
@@ -751,6 +760,8 @@ def _finish(
             continue
         outputs.extend(ctx.outputs)
         calls.extend({"step": s.step, "tool": t, "args": a} for t, a in ctx.calls)
+        # 스텝 한계(plans/190 — APM 소스 미확정 · X-View 사전 확인 초과)는 브리핑 한계로 간다.
+        notes.extend(n for n in list(ctx.limits) if n not in notes)
     return PlaybookRun(
         playbook_id=playbook.id,
         version=playbook.version,

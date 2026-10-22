@@ -11,6 +11,7 @@
 > ① exporter의 `/metrics`를 **직접 읽는다**(Prometheus 서버 없이) · ② 우리가 OpenMetrics를 **내보낸다**(Prometheus가 우리를
 > 스크레이프) · ③ 폴스타 이력을 OpenMetrics 파일로 **백필**한다(`promtool`). 셋은 코드 위치·안전 통제·가치가 다르므로
 > 한 계획에 담되 **트랙 A/B/C로 분리**하고 착수 범위는 G-1로 확정받는다. 권고는 **A 우선**(§0.3).
+> **⚠ 2026-10-20 기록(D-119 부기 · `plans/189`)**: 운영 Prometheus에는 `nodename` 라벨이 없고, 공동존 등록명(VM name)으로는 매칭되지 않는다(앵커 = `hostname`·`node_ip`). B-2 브리지의 `nodename = server_name` 규약은 **운영에 켜기 전에 조인 키를 재판정**해야 한다. `metric_source.py` 커버리지의 `nodename` 가정은 189 W4가 설정화한다.
 > **상위/선행 계획**: **D-119**(`mcp_server` = 관측 데이터 읽기 접근 경계 — 트랙 A는 이 경계의 확장) · `docs/27_prometheus_integration_guide.md`
 > (연동 정본 — 본 계획 완료 시 §10 「OpenMetrics」 절 추가) · **Plan 66** 4-A / **Plan 91** 1-10·1-12(운영 Prometheus 외부 대기 ·
 > 게이트측 클라이언트 예비 코드 판정 기한 2027-02-20) · **Plan 55** M0(공통 신호 모델 — OpenMetrics를 정규화 형식으로) ·

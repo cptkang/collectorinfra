@@ -21,7 +21,7 @@ from collections.abc import Callable
 from types import SimpleNamespace
 from typing import TYPE_CHECKING, Any, Optional
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
@@ -32,7 +32,7 @@ from src.api.dependencies import (
     require_user,
     resolve_stream_user,
 )
-from src.api import investigation_poll
+from src.api import investigation_live_hub, investigation_poll
 from src.infrastructure import investigation_request_limit
 from src.api.error_detail import admin_error_detail
 # plans/166 A8 — 스키마는 alarm_schemas로 이동 · 여기서 재노출(D-337 ①)
@@ -1214,8 +1214,15 @@ async def _investigation_response(
     request: Request,
     current_user: dict[str, Any],
     rec: dict[str, Any] | None,
+    activity_since: int | None = None,
 ) -> dict[str, Any]:
-    """조사 레코드 → 응답(지연 poll · 사용자 마스킹/운영자 원문). 존 검사는 호출부가 먼저 한다."""
+    """조사 레코드 → 응답(지연 poll · 사용자 마스킹/운영자 원문). 존 검사는 호출부가 먼저 한다.
+
+    (plans/187 W14) 실시간 화면이 켜져 있으면 ① `activity_since`가 오면 허브 버퍼에서 실행 기록
+    (`activity`·`phase`·`queue_position`·`elapsed_s`)을 더하고 ② 허브 폴러가 도는 조사는 sre_agent를
+    따로 묻지 않고 허브 진척을 싣는다(종전 `POLL_LIVE` 자리). 꺼져 있으면 `activity_since`를
+    무시한다(종전 응답 · 종전 지연 poll).
+    """
     from noise_gate.infrastructure.investigation_store import (
         ACTIVE_STATUSES,
         investigation_view,
@@ -1225,10 +1232,18 @@ async def _investigation_response(
         return {"status": "none"}
     config = request.app.state.config
     poll_reason: str | None = None
+    hub = _live_hub(request) if _live_view_enabled(config) else None
+    entry: investigation_live_hub.LiveEntry | None = None
+    if hub is not None and activity_since is not None and rec.get("investigation_id"):
+        entry = await hub.snapshot(rec)
+        rec = hub.current_record(rec)
     if rec.get("status") in ACTIVE_STATUSES:
-        store = _investigation_store(config)
-        if store is not None:
-            rec, poll_reason = await _refresh_investigation(store, rec, config.noise_gate)
+        if hub is not None and hub.is_live(str(rec.get("investigation_id") or "")):
+            rec = hub.current_record(rec)
+        else:
+            store = _investigation_store(config)
+            if store is not None:
+                rec, poll_reason = await _refresh_investigation(store, rec, config.noise_gate)
     operator = _is_alarm_operator(config, current_user)
     view = investigation_view(
         rec,
@@ -1238,6 +1253,11 @@ async def _investigation_response(
     if poll_reason:
         view["reason"] = poll_reason
     _attach_live_progress(view, rec, None if operator else _investigation_mask_fn(config))
+    if hub is not None and entry is not None and activity_since is not None:
+        view.update(hub.activity_payload(
+            entry, max(activity_since, -1), operator=operator,
+            mask_fn=None if operator else _investigation_mask_fn(config),
+        ))
     # (plans/187 W9 · G-15) KB가 켜져 있으면 운영자 뷰 브리핑 **사본**에 참고 문서·KE 재발 신호를
     # 붙인다. 꺼져 있거나 사용자 뷰(원 브리핑 없음)면 종전과 비트 동일하다. (plans/187 W5a) 사용자
     # 뷰의 플레이북 표시 부분(`briefing`)에는 붙이지 않는다.
@@ -1299,6 +1319,203 @@ def _assert_unbound_request_owner(
         raise HTTPException(status_code=403, detail="이 사용자 요청 조사를 볼 권한이 없습니다.")
 
 
+# ─── 조사 진행 실시간 허브·SSE (plans/187 W14 · §5.6.3 ⓒ · G-39·G-41·G-42) ─────────────
+#
+# 기본 off(`NOISE_INVESTIGATION_LIVE_VIEW_ENABLED`)면 두 라우트가 404(인증보다 먼저)이고 조회 경로의
+# `activity_since`는 무시된다(비트 동일). **등록 순서 주의**: 아래 두 경로는
+# `/{investigation_id}`보다 먼저 등록해야 한다(뒤에 두면 `stream`·`active`가 조사 id로 먹힌다).
+
+
+def _live_view_enabled(config: Any) -> bool:
+    """실시간 화면 플래그(기동 시 설정값)."""
+    return bool(getattr(config.noise_gate, "investigation_live_view_enabled", False))
+
+
+async def _require_live_view_enabled(request: Request) -> None:
+    """플래그 off면 미등록 라우트와 같은 404 — 인증보다 먼저 판정한다."""
+    if not _live_view_enabled(request.app.state.config):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _live_hub(request: Request) -> investigation_live_hub.InvestigationLiveHub:
+    """앱 단위 허브(첫 사용 때 만든다 · 종료는 lifespan `aclose`). 요약 보관은 조사 저장소 옆."""
+    hub = getattr(request.app.state, "investigation_live_hub", None)
+    if hub is None:
+        from pathlib import Path
+
+        from noise_gate.infrastructure.investigation_activity_store import (
+            DEFAULT_FILENAME,
+            InvestigationActivityStore,
+        )
+
+        config = request.app.state.config
+        path = config.noise_gate.investigation_store_path
+        hub = investigation_live_hub.InvestigationLiveHub(
+            config.noise_gate,
+            store_factory=lambda: _investigation_store(config),
+            activity_store=(
+                InvestigationActivityStore(Path(path).parent / DEFAULT_FILENAME) if path else None
+            ),
+        )
+        request.app.state.investigation_live_hub = hub
+    return hub
+
+
+async def require_live_user(
+    request: Request,
+    token: str | None = Query(
+        None, description="내부망 폴백 토큰(사용자 토큰만 — 운영자 토큰은 Authorization 헤더로)"
+    ),
+) -> dict[str, Any]:
+    """실시간 경로 인증 — 운영자(break-glass) 토큰은 헤더로만, 사용자 토큰은 쿠키 → 헤더 → 쿼리.
+
+    `/admin/noise/stream`과 같은 판정이다: 운영자 토큰은 운영자 시크릿 서명 + `type == "admin"` +
+    `sub`, 사용자 토큰은 사용자 시크릿 서명 + `type == "user"` + 활성 사용자(`resolve_stream_user`).
+    토큰이 없거나 무효면 401(종류가 다른 토큰 포함). 개발 모드(인증 꺼짐)는 익명 사용자.
+    """
+    from src.api.dependencies import _try_break_glass_admin
+
+    config = request.app.state.config
+    user: dict[str, Any] | None = None
+    if config.auth.enabled:
+        user = _try_break_glass_admin(request, request.headers.get("authorization"))
+    if user is None:
+        user = await resolve_stream_user(request, token)
+    if config.auth.enabled and user is None:
+        raise HTTPException(status_code=401, detail="인증이 필요합니다.")
+    return user or {}
+
+
+def _live_scope(
+    request: Request, current_user: dict[str, Any], operator: bool
+) -> Callable[[dict[str, Any]], bool]:
+    """목록 범위(G-41) — 관리자 = 모든 미종결 조사 · 사용자 = 내가 채팅으로 시작한 조사만.
+
+    사용자 몫은 `owner_sub`가 나이고 채팅 기원(`origin=chat` · 조사 대화 추가 조사
+    `kind=diagnosis`)이며 조회 인가를 통과하는 것이다. 알람 카드에서 연 조사는 목록 밖이지만
+    `watch`로는 열린다(존 검사).
+    """
+    from noise_gate.infrastructure.investigation_store import KIND_DIAGNOSIS
+
+    if operator:
+        return lambda rec: True
+    sub = current_user.get("sub")
+
+    def _in_scope(rec: dict[str, Any]) -> bool:
+        if not sub or rec.get("owner_sub") != sub:
+            return False
+        if rec.get("origin") != _CHAT_REQUEST_ORIGIN and rec.get("kind") != KIND_DIAGNOSIS:
+            return False
+        try:
+            _assert_investigation_access(request, current_user, rec)
+        except HTTPException:
+            return False
+        return True
+
+    return _in_scope
+
+
+@router.get(
+    "/alarm/investigations/active",
+    summary="진행 중 조사 목록(장애 진단 화면)",
+    description=(
+        "목록 범위의 미종결 조사와 실시간 허브의 진척(phase·대기 순번·경과)을 반환합니다 — "
+        "조사 서비스를 추가로 호출하지 않습니다.<br/>"
+        "관리자(운영자 토큰 포함)는 모든 미종결 조사, 사용자는 자기 채팅 조사만 봅니다.<br/>"
+        "실시간 화면(NOISE_INVESTIGATION_LIVE_VIEW_ENABLED)이 꺼져 있으면 404입니다."
+    ),
+    tags=["alarm"],
+)
+async def list_active_investigations(
+    request: Request,
+    _enabled: None = Depends(_require_live_view_enabled),
+    current_user: dict[str, Any] = Depends(require_live_user),
+) -> dict[str, Any]:
+    """미종결 조사 목록(첫 화면·SSE 끊김 대체용)."""
+    config = request.app.state.config
+    hub = _live_hub(request)
+    operator = _is_alarm_operator(config, current_user)
+    in_scope = _live_scope(request, current_user, operator)
+    recs = [rec for rec in hub.active_records(fresh=True) if in_scope(rec)]
+    return {
+        "items": hub.list_items(
+            recs, operator=operator, mask_fn=None if operator else _investigation_mask_fn(config)
+        ),
+        "poll_seconds": hub.poll_seconds,
+    }
+
+
+@router.get(
+    "/alarm/investigations/stream",
+    summary="조사 진행 실시간 스트림(SSE)",
+    description=(
+        "브라우저당 연결 1개로 여러 조사를 다중화합니다. `watch=<id>:<seq>,…`"
+        "(열린 하위 탭과 마지막 seq)을 주면 그 조사의 실행 기록을 seq 뒤부터 보냅니다.<br/>"
+        "이벤트: `summary`(목록 범위 · 바뀔 때만) · "
+        "`activity`/`partial`/`done`/`poll_error`(watch 조사만) · "
+        "`denied`(권한 없는 watch id) · `ping`(25초). `id:`는 watch와 같은 꼴이라 "
+        "`Last-Event-ID`로 이어 받습니다.<br/>"
+        "인증: 쿠키(user_token) → Authorization 헤더(운영자 토큰은 헤더만) → 쿼리 토큰. 실패 401 · "
+        "꺼져 있으면 404."
+    ),
+    tags=["alarm"],
+)
+async def investigation_live_stream(
+    request: Request,
+    watch: str | None = Query(None, description="`<조사 id>:<마지막 seq>`를 쉼표로 잇는다"),
+    _enabled: None = Depends(_require_live_view_enabled),
+    current_user: dict[str, Any] = Depends(require_live_user),
+) -> StreamingResponse:
+    """조사 SSE — watch 조사는 연결(재연결 포함) 때 조사별로 권한을 검사한다(거부는 `denied`)."""
+    config = request.app.state.config
+    hub = _live_hub(request)
+    operator = _is_alarm_operator(config, current_user)
+    cursors = investigation_live_hub.parse_watch(watch)
+    if len(cursors) > investigation_live_hub.WATCH_MAX_ITEMS:
+        raise HTTPException(
+            status_code=400,
+            detail=f"watch 항목은 {investigation_live_hub.WATCH_MAX_ITEMS}개까지입니다.",
+        )
+    investigation_live_hub.merge_last_event_id(cursors, request.headers.get("last-event-id"))
+    store = _investigation_store(config)
+    watch_recs: dict[str, dict[str, Any]] = {}
+    denied: list[dict[str, Any]] = []
+    for investigation_id in list(cursors):
+        reason: str | None = None
+        rec: dict[str, Any] | None = None
+        if not investigation_live_hub.INVESTIGATION_ID_RE.match(investigation_id):
+            reason = "invalid"
+        else:
+            rec = store.get_by_investigation(investigation_id) if store is not None else None
+            if rec is None:
+                reason = "not_found"
+            else:
+                try:
+                    _assert_investigation_access(request, current_user, rec)
+                except HTTPException:
+                    reason = "forbidden"
+        if reason is not None or rec is None:
+            if not operator and reason in ("not_found", "forbidden"):
+                reason = "unavailable"  # 사용자에게는 남의 id 존재를 구분해 주지 않는다
+            cursors.pop(investigation_id)
+            denied.append({"investigation_id": investigation_id, "reason": reason})
+            continue
+        watch_recs[investigation_id] = rec
+    ctx = investigation_live_hub.StreamContext(
+        operator=operator,
+        mask_fn=None if operator else _investigation_mask_fn(config),
+        in_scope=_live_scope(request, current_user, operator),
+        watch=watch_recs,
+        cursors=cursors,
+        denied=denied,
+    )
+    return StreamingResponse(
+        investigation_live_hub.stream_events(hub, ctx, request.is_disconnected),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
+
 @router.get(
     "/alarm/investigations/by-alarm/{alarm_id}",
     summary="알람의 자동 조사 브리핑 조회",
@@ -1318,6 +1535,9 @@ async def get_alarm_investigation(
     alarm_id: str,
     request: Request,
     current_user: dict[str, Any] = Depends(require_user),
+    activity_since: int | None = Query(
+        None, description="(실시간 화면 켜짐일 때만) 실행 기록 커서 — 이 seq 뒤의 이벤트를 더한다"
+    ),
 ) -> dict[str, Any]:
     """알람 id → 최신 조사(plans/153 §4.2).
 
@@ -1341,7 +1561,7 @@ async def get_alarm_investigation(
         _assert_investigation_zone(
             request, current_user, [alarm_id, *member_ids], (rec or {}).get("alarm_db_ids")
         )
-    view = await _investigation_response(request, current_user, rec)
+    view = await _investigation_response(request, current_user, rec, activity_since)
     if manual and not owner_view:
         view["previous"] = _previous_investigations(
             request, current_user, store, alarm_id, (rec or {}).get("investigation_id")
@@ -1364,31 +1584,50 @@ async def get_investigation(
     investigation_id: str,
     request: Request,
     current_user: dict[str, Any] = Depends(require_user),
+    activity_since: int | None = Query(
+        None, description="(실시간 화면 켜짐일 때만) 실행 기록 커서 — 이 seq 뒤의 이벤트를 더한다"
+    ),
 ) -> dict[str, Any]:
     """조사 id → 최신 조사(plans/153 §4.2).
 
     (plans/187 W10 · plans/155 G-7) 추가 조사가 켜져 있고 레코드가 `kind="diagnosis"`면 알람 존 판정
-    대신 **소유자 또는 관리자**만 허용한다. 꺼져 있으면 종전 판정 그대로다.
+    대신 **소유자 또는 관리자**만 허용한다. 꺼져 있으면 종전 판정 그대로다. 인가는
+    `_assert_investigation_access`(실시간 스트림 watch와 공용 · plans/187 W14에서 추출 — 동작 불변).
     """
     config = request.app.state.config
     store = _investigation_store(config)
     rec = store.get_by_investigation(investigation_id) if store is not None else None
-    # (plans/187 W12) 내 사용자 요청 조사는 존 검사 없이 연다(사용자 뷰 마스킹은 그대로).
+    _assert_investigation_access(request, current_user, rec)
+    view = await _investigation_response(request, current_user, rec, activity_since)
+    if rec is not None and _followup_enabled(config) and _is_diagnosis(rec):
+        return _with_notice(view)
+    return view
+
+
+def _assert_investigation_access(
+    request: Request, current_user: dict[str, Any], rec: dict[str, Any] | None
+) -> None:
+    """조사 id 조회 인가 — `get_investigation`과 실시간 스트림 `watch`가 같이 쓴다.
+
+    순서: 내 사용자 요청 조사(plans/187 W12 — 존 검사 없이 연다) → 알람 수신 권한(없으면
+    레코드 유무와 무관하게 403) → 알람 없는 사용자 요청 조사는 소유자·운영자만(교정 H1) →
+    추가 조사(켜짐)는 소유자·관리자만 → 그 밖에는 조사에 걸린 알람 전부의 존 검사(fail-closed).
+
+    Raises:
+        HTTPException: 권한 없음(403).
+    """
+    config = request.app.state.config
     if rec is not None and _request_owner_view(config, current_user, rec):
-        view = await _investigation_response(request, current_user, rec)
-        return _with_notice(view) if _followup_enabled(config) and _is_diagnosis(rec) else view
-    # 알람 수신 권한이 없는 사용자는 레코드 유무와 무관하게 403.
+        return
     _alarm_zone_scope(request, current_user)
-    # (교정 H1) 알람 없는 사용자 요청 조사는 소유자 또는 운영자만(전 존 사용자라도 비소유자는 403).
     _assert_unbound_request_owner(config, current_user, rec)
     if rec is not None and _followup_enabled(config) and _is_diagnosis(rec):
         _assert_diagnosis_owner(config, current_user, rec)
-        return _with_notice(await _investigation_response(request, current_user, rec))
+        return
     if rec is not None:
         _assert_investigation_zone(
             request, current_user, list(rec.get("alarm_ids") or []), rec.get("alarm_db_ids")
         )
-    return await _investigation_response(request, current_user, rec)
 
 
 # ─── 조사 대화의 「추가 조사 요청」 (plans/187 W10 · D-341 ⑭ · G-21 · plans/155 공용부) ───

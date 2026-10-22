@@ -10,7 +10,8 @@
 ③″ 이미 수집된 판정(진단 잡의 `prior_findings`가 있을 때만 · plans/187 W10 — 화이트리스트 재검증)
 ④ kind별 플레이북(plans/91 1-5 · plans/51 §6 —
 결정적 문구) ⑤ OpenMetrics 서술 노트(settings.openmetrics_guidance_enabled일 때만 ·
-plans/92 O3 · R-12) ⑥ APM 노트(settings.apm_guidance_enabled일 때만 · plans/87 J3)
+plans/92 O3 · R-12) ⑤′ Prometheus 호스트 앵커 노트(settings.prometheus_anchor_guidance_enabled일
+때만 · plans/189 W5) ⑥ APM 노트(settings.apm_guidance_enabled일 때만 · plans/87 J3)
 ⑦ settings.investigation_guidance_extra(운영자 자유 지침).
 부하 가드(LOAD_GUARD_NOTE)는 `ask()`가 항상 덧붙이므로 여기서 넣지 않는다.
 
@@ -274,6 +275,80 @@ OPENMETRICS_NOTE: str = (
 
 
 # ---------------------------------------------------------------------
+# Prometheus 호스트 앵커 노트 (plans/189 W5 · D-035 — 결정적 문구, LLM 0)
+#
+# 운영 Prometheus에는 `nodename` 라벨이 없어 mcp_server(`anchor_mode=polestar_host`)가 폴스타
+# 레지스트리에서 OS 호스트명·IP를 찾아 라벨 사다리로 조회한다. 0건은 `{error}`가 아니라 성공 응답 +
+# `reason`이라 LLM이 「0 = 정상」으로 읽기 쉽다 — 여기서 못 박는다. reason 어휘는 mcp_server 응답
+# 계약의 동형 재정의다(패키지 경계상 import 불가 — D-139). `prometheus_anchor_guidance_enabled`가
+# 꺼져 있으면 붙이지 않는다(조립 문자열 바이트 동일).
+# ---------------------------------------------------------------------
+
+#: prom_* 0건 응답의 `reason` 어휘(plans/189 §2.4 — 0건일 때만 실린다).
+PROM_ANCHOR_REASONS: tuple[str, ...] = (
+    "prometheus_not_monitored",
+    "prometheus_ambiguous",
+    "polestar_ambiguous",
+    "prometheus_unsupported_zone",
+    "polestar_not_found",
+    "anchor_unresolved",
+)
+
+PROMETHEUS_ANCHOR_NOTE_TEMPLATE: str = (
+    "Prometheus 호스트 지표 도구(prom_metric_range · prom_metric_instant) 사용 지침:\n"
+    "- hostname 인자에는 알람의 서버 이름(폴스타 등록명 또는 OS 호스트명)을 그대로 넘긴다. "
+    "도구가 폴스타에서 OS 호스트명·IP를 찾아 Prometheus 라벨로 바꾸므로 라벨 셀렉터를 직접 만들지 않는다.\n"
+    "- {source_line}\n"
+    "- 결과의 matched_by가 hostname_unverified면 폴스타 조회 실패로 서버 신원을 확인하지 못한 값이다 — "
+    "확정 근거로 쓰지 말고 warning과 함께 서술한다.\n"
+    "- 결과가 0건이고 reason이 있으면 그 서버의 Prometheus 증거는 없다 — "
+    "0건을 「정상」·「0」·「이상 없음」으로 서술하지 않는다. reason·hint를 결론의 한계에 적고, "
+    "reason이 달린 0건 결과는 근거로 인용하지 않는다.\n"
+    "- reason이 prometheus_not_monitored(관제 미등록 — Prometheus 미수집) · "
+    "prometheus_unsupported_zone(Prometheus 미적용 존) · anchor_unresolved(폴스타 조회 실패)면 "
+    "같은 구간을 polestar_metric_trend로 대체한다.\n"
+    "- polestar_ambiguous(폴스타 후보 여러 개) → 후보를 합치지 말고 source를 지정해 다시 부른다. "
+    "prometheus_ambiguous(같은 hostname에 여러 instance) → 값을 합치지 말고 그 사실을 서술한다. "
+    "polestar_not_found → 등록명이나 OS 호스트명을 그대로 넘겼는지 확인하고, "
+    "source를 지정했다면 빼고 한 번 다시 부른다."
+)
+
+#: 알람 dbId를 알 때 — 값을 그대로 보여 준다.
+_PROM_SOURCE_LINE_KNOWN = (
+    'source 인자에는 알람의 dbId를 그대로 넘긴다(이 사건: source="{db_id}"). '
+    "생략하면 Prometheus 적용 source 전체에서 찾는다."
+)
+#: 폴스타 알람이지만 dbId를 모를 때.
+_PROM_SOURCE_LINE_GENERIC = (
+    "source 인자에는 알람의 dbId(폴스타 db_id)를 그대로 넘긴다. "
+    "모르면 생략한다 — Prometheus 적용 source 전체에서 찾는다."
+)
+#: APM(제니퍼) 트리거 — dbId는 제니퍼 소스라 폴스타 source가 아니다(plans/153 R-4와 같은 판정).
+_PROM_SOURCE_LINE_APM = (
+    "source 인자는 폴스타 db_id다 — 이 사건의 dbId는 제니퍼 소스라 넘기지 말고 생략한다"
+    "(Prometheus 적용 source 전체에서 찾는다)."
+)
+_PROM_DB_ID_RE = re.compile(r"^[0-9A-Za-z_.\-]{1,64}$")
+
+
+def prometheus_anchor_note(job) -> str:  # noqa: ANN001 — JobLike
+    """⑤′ Prometheus 호스트 앵커 노트. 폴스타 알람의 dbId를 알면 source 값을 그대로 싣는다.
+
+    dbId는 외부 페이로드 값이라 짧은 식별자 꼴(`_PROM_DB_ID_RE`)일 때만 싣는다.
+    """
+    payload = getattr(job, "payload", None)
+    if is_apm_trigger(payload):
+        line = _PROM_SOURCE_LINE_APM
+    else:
+        payload = payload if isinstance(payload, dict) else {}
+        event = payload.get("event") if isinstance(payload.get("event"), dict) else {}
+        db_id = str(event.get("dbId") or payload.get("db_id") or "").strip()
+        line = (_PROM_SOURCE_LINE_KNOWN.format(db_id=db_id) if _PROM_DB_ID_RE.match(db_id)
+                else _PROM_SOURCE_LINE_GENERIC)
+    return PROMETHEUS_ANCHOR_NOTE_TEMPLATE.format(source_line=line)
+
+
+# ---------------------------------------------------------------------
 # APM(제니퍼 게이트웨이) 지침 (plans/87 J3 · SPEC-apm-sre-agent §3.3 · D-035 — 결정적 문구, LLM 0)
 #
 # 전부 `apm_guidance_enabled`일 때만 붙는다 — 꺼져 있으면 조립 문자열이 종전과 바이트 동일하다.
@@ -408,6 +483,8 @@ def apm_notes(settings, job, *, apm_loaded: bool | None = None) -> list[str]:  #
 #: `re.ASCII` — 이름 뒤에 한국어 조사가 붙어도(「prom_metric_range로」) 경계로 본다
 #: (유니코드 `\b`는 한글을 단어 문자로 친다).
 TOOL_NAME_RE = re.compile(r"\b(?:polestar|prom|om|apm)_[a-z0-9]+(?:_[a-z0-9]+)*\b", re.ASCII)
+#: 도구 이름 꼴이지만 도구가 아닌 토큰 — prom_* 응답 reason 값(「polestar_ambiguous」 등 · plans/189 W5).
+_NON_TOOL_TOKENS: frozenset[str] = frozenset(PROM_ANCHOR_REASONS)
 _LIST_SEPARATORS = (r"\s*·\s*", r",\s*")
 
 
@@ -430,9 +507,10 @@ def filter_tool_mentions(text: str, available: Collection[str]) -> str:
     kept: list[str] = []
     for line in text.split("\n"):
         for name in dict.fromkeys(TOOL_NAME_RE.findall(line)):
-            if name not in available:
+            if name not in available and name not in _NON_TOOL_TOKENS:
                 line = _drop_name(line, name)
-        if any(name not in available for name in TOOL_NAME_RE.findall(line)):
+        if any(name not in available and name not in _NON_TOOL_TOKENS
+               for name in TOOL_NAME_RE.findall(line)):
             continue
         kept.append(line)
     return "\n".join(kept)
@@ -743,6 +821,7 @@ def build_guidance(  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
     순서: ① 원격 셸 ② 사건 구간 ③ 상관 결과 [③″ 이미 수집된 판정 — 진단 잡 `prior_findings`]
     ④ **kind별 플레이북**(plans/91 1-5)
     ⑤ **OpenMetrics 서술 노트**(`openmetrics_guidance_enabled`일 때만 · plans/92 O3)
+    ⑤′ **Prometheus 호스트 앵커 노트**(`prometheus_anchor_guidance_enabled`일 때만 · plans/189 W5)
     ⑥ **APM 노트**(`apm_guidance_enabled`일 때만 · plans/87 J3) ⑦ 운영자 자유 지침.
 
     `apm_guidance_enabled`면 ②에 apm_* 구간 도구를 더하고, ④는 apm 사건(kind `apm` 또는 트리거
@@ -807,6 +886,8 @@ def build_guidance(  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
             parts.append(playbook)
     if getattr(settings, "openmetrics_guidance_enabled", False):
         parts.append(OPENMETRICS_NOTE)
+    if getattr(settings, "prometheus_anchor_guidance_enabled", False):
+        parts.append(prometheus_anchor_note(job))
     if apm_on:
         parts.extend(apm_notes(settings, job, apm_loaded=apm_loaded))
     if available_tools is not None:
@@ -818,7 +899,8 @@ def build_guidance(  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
 
 
 __all__ = ["ANCHORED_TOOLS", "APM_ANCHORED_TOOLS", "INCIDENT_SCOPE_NOTE_TEMPLATE", "PLAYBOOK_NOTES",
-           "OPENMETRICS_NOTE", "APM_UNAVAILABLE_CODES", "APM_FOCUS_NOTE_TEMPLATE", "APM_REALTIME_NOTE",
+           "OPENMETRICS_NOTE", "PROM_ANCHOR_REASONS", "PROMETHEUS_ANCHOR_NOTE_TEMPLATE",
+           "prometheus_anchor_note", "APM_UNAVAILABLE_CODES", "APM_FOCUS_NOTE_TEMPLATE", "APM_REALTIME_NOTE",
            "APM_FALLBACK_NOTE", "APM_NOT_CONFIGURED_NOTE", "APM_TOOLS_UNLOADED_NOTE",
            "APM_PLAYBOOK_NOTE",
            "TOOL_NAME_RE", "filter_tool_mentions",

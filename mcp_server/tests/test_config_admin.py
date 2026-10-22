@@ -339,6 +339,26 @@ def test_dry_run_failure_leaves_file_unchanged(env_dir):
     assert not (env_dir / ".env.bak").exists()
 
 
+def test_invalid_anchor_label_rejected_by_dry_run(env_dir):
+    """라벨 이름은 PromQL 셀렉터에 들어간다 — 규칙 밖 값은 기동 검증(`validate_prometheus_anchor`)과
+    같은 경로로 dry-run에서 거부된다(원격 plans/189 앵커 키 편입 · 2026-10-22 병합)."""
+    path = env_dir / ".env"
+    before = path.read_text()
+    resp = _client(env_dir).put(
+        "/admin/config", headers=_auth(),
+        json={"settings": {"PROMETHEUS_HOST_LABEL": "host\"}"}},
+    )
+    assert resp.status_code == 400
+    assert path.read_text() == before
+
+
+def test_prometheus_sources_is_readonly(env_dir):
+    resp = _client(env_dir).put(
+        "/admin/config", headers=_auth(), json={"settings": {"PROMETHEUS_SOURCES": '["x"]'}}
+    )
+    assert {"key": "PROMETHEUS_SOURCES", "reason": "readonly"} in resp.json()["ignored_keys"]
+
+
 def test_type_validation_error(env_dir):
     resp = _client(env_dir).put(
         "/admin/config", headers=_auth(),

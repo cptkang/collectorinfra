@@ -31,6 +31,8 @@ from __future__ import annotations
 import json
 import logging
 import time
+from collections.abc import Iterable
+from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import quote
 
@@ -270,6 +272,35 @@ def build_resource_status_sql(is_db2: bool, server_name: str, limit: int) -> str
     )
 
 
+#: Prometheus 앵커 해석 행 상한 — 2행이면 이미 「모호」라 많이 읽을 이유가 없다(plans/189 §2.2).
+ANCHOR_LOOKUP_LIMIT = 10
+
+
+def build_anchor_lookup_sql(
+    is_db2: bool, hostname: str, limit: int = ANCHOR_LOOKUP_LIMIT
+) -> str:
+    """Prometheus 라벨 앵커용 서버 신원 조회 SQL을 조립한다(plans/189 §2.2 · 읽기 전용 SELECT).
+
+    server.Server 행 중 ``NAME``(폴스타 등록명) 또는 ``HOSTNAME``(OS 호스트명)이 값과
+    **완전 일치**하는 행의 OS 호스트명·IP를 돌려준다(정규화하지 않는다 — 양쪽이 같은 OS 값).
+    """
+    t_res = _q(is_db2, "cmm_resource")
+    lit = _sql_literal(hostname)
+    return (
+        "SELECT\n"
+        "    CR.ID AS resource_id,\n"
+        "    CR.NAME AS name,\n"
+        "    CR.HOSTNAME AS hostname,\n"
+        "    CR.IPADDRESS AS ipaddress\n"
+        f"FROM {t_res} CR\n"
+        "WHERE CR.RESOURCE_TYPE = 'server.Server'\n"
+        "  AND CR.DTIME IS NULL\n"
+        f"  AND (CR.NAME = {lit} OR CR.HOSTNAME = {lit})\n"
+        "ORDER BY CR.NAME\n"
+        f"{_row_limit(is_db2, limit)}"
+    )
+
+
 def _topology_pg_sql(name_lit: str, max_hops: int, limit: int) -> str:
     """PostgreSQL 다홉 토폴로지 SQL(WITH RECURSIVE — 조상 up + 자손 down)."""
     schema = _PG_SCHEMA
@@ -475,6 +506,145 @@ def _resolve_engine(pool: DBPoolManager, source: str) -> tuple[bool, str]:
         )
     source_type = pool.get_source_type(source)
     return source_type == "db2", source_type
+
+
+# =====================================================================
+# Prometheus 라벨 앵커 해석 (plans/189 §2.2 · 캐시 없음 — G-3)
+# =====================================================================
+
+#: 해석 결과 상태 어휘.
+ANCHOR_RESOLVED = "resolved"
+ANCHOR_NOT_FOUND = "not_found"
+ANCHOR_AMBIGUOUS = "ambiguous"
+ANCHOR_LOOKUP_ERROR = "lookup_error"
+
+#: 앵커 해석에 쓸 수 있는 폴스타 엔진.
+_ANCHOR_ENGINES = frozenset({"postgresql", "db2"})
+
+#: 로그에 싣는 외부 입력 값의 최대 길이(로그 주입·폭주 방지).
+_LOG_VALUE_MAX = 128
+
+
+def log_safe(value: Any, limit: int = _LOG_VALUE_MAX) -> str:
+    """외부 입력 값을 로그용으로 ``repr`` 인용하고 ``limit``자로 자른다(개행·제어문자 노출 방지)."""
+    return repr(str(value)[:limit])
+
+
+@dataclass(frozen=True)
+class AnchorResolution:
+    """폴스타 앵커 해석 결과.
+
+    ``anchor``는 1행일 때만 ``{source, name, hostname, ipaddress}``다. ``candidates``는
+    2행 이상일 때의 후보 목록, ``failed_sources``는 조회에 실패한 source다.
+    """
+
+    status: str
+    anchor: Optional[dict[str, str]] = None
+    candidates: list[dict[str, str]] = field(default_factory=list)
+    failed_sources: list[str] = field(default_factory=list)
+    warning: Optional[str] = None
+
+
+def _anchor_row(source: str, row: dict[str, Any]) -> dict[str, str]:
+    """조회 행을 ``{source, name, hostname, ipaddress}``로 정규화한다(칼럼명 소문자 · 값 문자열)."""
+    lowered = {str(k).lower(): v for k, v in row.items()}
+
+    def text(key: str) -> str:
+        value = lowered.get(key)
+        return "" if value is None else str(value).strip()
+
+    return {
+        "source": source,
+        "name": text("name"),
+        "hostname": text("hostname"),
+        "ipaddress": text("ipaddress"),
+    }
+
+
+def _anchor_targets(
+    pool: Any, source: Optional[str], sources: Iterable[str]
+) -> tuple[list[tuple[str, bool]], list[str]]:
+    """해석 대상 ``[(source, is_db2)]``와 대상에서 뺀(풀에 없음·비활성·비폴스타) 설정 source를 정한다.
+
+    뺀 source는 조회 실패가 아니다 — 호출부가 경고 로그만 남기고 판정(0행 등)에 세지 않는다.
+
+    ``source``를 지정했으면 그 하나다 — 미등록이거나 폴스타 엔진이 아니면 ValueError.
+    지정하지 않았으면 ``sources`` 목록, 그것도 비면 풀의 활성 source 중 PostgreSQL/DB2다.
+
+    Raises:
+        ValueError: 지정한 source가 미등록이거나 폴스타 엔진(PostgreSQL/DB2)이 아닐 때.
+    """
+    if source:
+        is_db2, engine = _resolve_engine(pool, source)
+        if engine not in _ANCHOR_ENGINES:
+            raise ValueError(f"폴스타 소스가 아님: {source} (engine={engine})")
+        return [(source, is_db2)], []
+    configured = [s for s in sources if s]
+    names = configured or list(pool.get_active_sources())
+    targets: list[tuple[str, bool]] = []
+    skipped: list[str] = []
+    for name in names:
+        if not pool.is_source_active(name):
+            skipped.append(name)
+            continue
+        engine = pool.get_source_type(name)
+        if engine in _ANCHOR_ENGINES:
+            targets.append((name, engine == "db2"))
+        elif configured:
+            skipped.append(name)
+    return targets, skipped
+
+
+async def resolve_polestar_anchor(
+    pool: Any,
+    hostname: str,
+    source: Optional[str] = None,
+    sources: Iterable[str] = (),
+) -> AnchorResolution:
+    """폴스타에서 hostname(등록명 또는 OS 호스트명)의 OS 호스트명·IP를 해석한다(plans/189 §2.2).
+
+    - 1행 → ``resolved`` · 0행(오류 없음) → ``not_found`` · 2행 이상(여러 source 합산) →
+      ``ambiguous``(합치지 않는다).
+    - 조회 오류: 모든 대상이 실패했거나, 일부 실패 + 나머지 0행이면 ``lookup_error``다. 일부만
+      실패하고 다른 곳에서 행이 나오면 그 행으로 판정하고 ``warning``에 실패 source를 적는다.
+      오류 원문은 로그에 남긴다(침묵 폴백 금지). 실패는 실제 조회 예외만 센다 — 설정 ``sources`` 중
+      풀에 없거나 비활성인 source는 대상에서 빼고 경고 로그만 남긴다. 대상이 하나도 없으면
+      ``lookup_error``(「조회 대상 폴스타 source 없음」)다.
+
+    Raises:
+        ValueError: 지정한 ``source``가 미등록이거나 폴스타 엔진이 아닐 때 · hostname에 백슬래시가
+            있을 때(호출 오류).
+    """
+    host = str(hostname).strip()
+    _sql_literal(host)  # 리터럴로 못 쓰는 값(백슬래시)은 조회 오류가 아니라 호출 오류다(ValueError)
+    targets, skipped = _anchor_targets(pool, source, sources)
+    failed: list[str] = []
+    if skipped:
+        logger.warning("폴스타 앵커 해석 — 풀에 없음·비활성·비폴스타 source 제외: %s",
+                       ", ".join(skipped))
+    rows: list[dict[str, str]] = []
+    for name, is_db2 in targets:
+        try:
+            raw = await pool.execute(name, build_anchor_lookup_sql(is_db2, host))
+        except Exception as e:
+            logger.warning("폴스타 앵커 해석 실패 (%s, hostname=%s): %s", name, log_safe(host), e)
+            failed.append(name)
+            continue
+        rows.extend(_anchor_row(name, r) for r in raw)
+    warning = f"폴스타 조회 실패 source: {', '.join(failed)}" if failed else None
+    if len(rows) == 1:
+        return AnchorResolution(ANCHOR_RESOLVED, anchor=rows[0], failed_sources=failed,
+                                warning=warning)
+    if len(rows) >= 2:
+        return AnchorResolution(ANCHOR_AMBIGUOUS, candidates=rows, failed_sources=failed,
+                                warning=warning)
+    if not targets:
+        logger.warning("폴스타 앵커 해석 — 조회 대상 source 없음 (hostname=%s)", log_safe(host))
+        return AnchorResolution(ANCHOR_LOOKUP_ERROR, failed_sources=list(skipped),
+                                warning="조회 대상 폴스타 source 없음")
+    if failed:
+        return AnchorResolution(ANCHOR_LOOKUP_ERROR, failed_sources=failed, warning=warning)
+    return AnchorResolution(ANCHOR_NOT_FOUND)
 
 
 # =====================================================================

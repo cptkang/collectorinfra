@@ -29,6 +29,8 @@ _FUNCS = (
     "chatInvestigationCardHtml",
     "appendChatInvestigationCards",
     "investigationRefOf",
+    "diagnosisOn",
+    "openInvestigationEntry",
 )
 
 # 가짜 DOM — textContent→innerHTML 이스케이프는 브라우저와 같게 &·<·>만 바꾼다.

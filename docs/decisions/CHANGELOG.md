@@ -10,6 +10,14 @@
 |------|---------|----------|
 | 2026-10-21 | D-345 | 부기 — alarm_server 설정 파일 우선순위 교정(`env_file` `[.env, alarm_server.env]` · 전용 파일 우선 · `.env` 보충 `fallback` · `override_dotenv` 제외 폐지) — 행동 변경 · 사용자 지시 |
 | 2026-10-21 | D-345 · D-179 | D-345 본문 등재(예약 → 확정 · 분리 컴포넌트 설정 관리 API + 본체 프록시 · G-1~G-7 사용자 위임 권고안 채택 · G-3·G-4 실측 보정) · D-179 상태·부기(D-345가 「본체 UI에서 쓰지 않는다」 개정) — `plans/191` W0 |
+| 2026-10-20 | D-344 | 신규 — SRE 조사 플레이북 APM 호출 지연 교정(`plans/190`): 해소 소스 `source_ids` 한정 · 기간 모드 app_health `xview_confirm_over`(기본 10 · 기본 off 예외) + confirm 시 시 단위 통계 대체·판정 불가·한계 노출 · `apm_tool_timeout_seconds` · 후속 대기 정렬 규칙 문서 |
+| 2026-10-20 | D-341 | 부기 — 플레이북 APM 호출에 해소 소스 한정·X-View 사전 확인·APM 전용 상한 적용(D-344 · `plans/190`) |
+| 2026-10-20 | D-119 | 부기 — ③ 앵커 개정 구현(`plans/189` W1~W7 · 미커밋): `anchor_mode`(기본 `nodename` 바이트 동일)·`sources` 등 설정 · 폴스타 앵커 해석 · 사다리·모호 전 단 · `source` 인자 · OM 교차 검증 reason 판정 보류 · sre_agent 지침 플래그(만료 2027-04-20)·0건 인용 제외 · 상태 「구현 대기」→「구현 완료 · 폐쇄망 검증 대기」 |
+| 2026-10-20 | D-119 | 부기 — 구현 계약 확정(`plans/189` G-1·G-3): 고수준 PromQL 도구에 선택 인자 `source` 추가(공개 시그니처 변경) · 앵커 해석 캐시 없음 · G-2 A안(폴스타 0행은 Prometheus 미호출 `polestar_not_found` · 조회 오류만 `hostname_unverified` 표시 강등 · 0건 `anchor_unresolved`) |
+| 2026-10-20 | D-119 | 부기 — 운영 Prometheus 라벨 실측(`nodename` 없음 · 커버리지 1204/1229 · hostname 비유일) · ③ 앵커 개정: 폴스타 hostname·ipaddress를 서버가 해석해 `{hostname,node_ip}`→`{node_ip}`→`{hostname}` 사다리 · 다중 instance는 「모호」 · 전 단 0건 = 관제 미등록 사유 · 은행존 호출 전 차단 · 기본값 `nodename` 유지 · 같은 날 잔여 해소(`node_ip` 비공백 유일 · hostname 양쪽 동일값 — 정규화 없음) · 구현 계획 `plans/189` |
+| 2026-10-20 | D-123 | 부기 — 동시 상한 대기 중 워치독으로 종결된 잡은 슬롯 획득 직후 조사 생략(`_skip_if_stale` · 임계 식 `domain/job_watchdog.py` 공유 · 감사 `skipped_stale`에 status · 상태 어휘·설정 불변) |
+| 2026-10-19 | D-341 | 부기 4 구현 — `plans/187` W13~W15(실행 기록 · 허브·SSE · 장애 진단 탭) · 상태 칸 갱신 · 이탈(비밀값 꼴은 `activity_masking.py`) · 잔여(사용자 경로 2차 마스킹 실효 — 결정 대기) |
+| 2026-10-19 | D-341 · D-325 | D-341 부기 4 — `plans/187` v2.0 G-34~G-42 확정: 「장애 진단」 탭(진입 일원화 · 조사별 하위 탭 상한 없음) · sre_agent 실행 기록(`activity_since`) · 발췌 가림 후 사용자·관리자 모두 · AI 메모 관리자만 · 본체 허브 + SSE 1연결(상세는 열린 탭만) · 목록 관리자 전체/사용자 자기 채팅 조사 · 요약 JSONL · 코드 0건. D-325 부기 — ② 진단 탭 SSE 도입 · ③ 발췌 사용자 노출(마스킹) |
 | 2026-10-19 | D-341 | 상태 「미구현」→「구현(잔여 있음)」 · 구현 경로 · 구현 부기(R-D 미충족 · G-26 HolmesGPT 캐시 공용 미구현 · W7 외부망만 · 3단 배선 · 보안 교정 · 예시 KE 픽스처 이동) — `plans/187` W0~W6·W8~W12 |
 | 2026-10-19 | D-003 | 부기 — MariaDB 10.x는 `transaction_read_only`가 없어(1193) 운영 itam 풀 초기화 실패 → `tx_read_only` 폴백(`mcp_server/db.py` `_create_mariadb_readonly_pool`) · 강등 없음 |
 | 2026-10-19 | D-343 | 신규 — `plans/188` W5: Gemma 4 도구 호출 마크업(`<\|tool_call>call:…<tool_call\|>`)을 `DefaultLLM.completion` 응답 후처리로 `tool_calls` 변환 · tools 있는 호출만 · 해석 실패면 원본(→ D-342 W4 종결) · `TOOL_CALL_MARKUP_PARSE_ENABLED` 기본 on 예외(만료 2027-04-19) · 커밋 없음 |

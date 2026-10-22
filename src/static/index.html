@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KB AIOps 포탈</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=31">
+    <link rel="stylesheet" href="/static/css/style.css?v=32">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
 </head>
@@ -96,6 +96,13 @@
                 aria-controls="alarmView" aria-selected="false">
                 이벤트 알람
                 <span class="view-tab-badge" id="alarmTabBadge" aria-hidden="true"></span>
+            </button>
+            <!-- plans/187 W15 장애 진단 — 사전 게이트(/active 200)에서만 보인다. 꺼져 있으면(404)·권한이
+                 없으면 숨긴 채 스트림도 열지 않는다. 배지 = 진행 중 조사 건수. -->
+            <button type="button" class="view-tab" data-view="diagnosis" id="diagnosisTab"
+                aria-controls="diagnosisView" aria-selected="false" style="display: none;">
+                장애 진단
+                <span class="view-tab-badge view-tab-badge--live" id="diagnosisTabBadge" aria-hidden="true"></span>
             </button>
         </div>
     </div>
@@ -399,13 +406,18 @@
         </div>
     </div>
 
+    <!-- 장애 진단 뷰(plans/187 W15 · §5.6.3 ⓓ) — 화면은 diagnosis-view.js가 만든다(읽기 전용). -->
+    <div class="diagnosis-view view-hidden" id="diagnosisView"></div>
+
     <script src="/static/js/marked.min.js?v=1"></script>
     <!-- app.js 변경 시 v를 올려야 브라우저 캐시가 갱신된다(D-187: v=2 캐시로 저장 값 패널 미표시 실측) -->
     <!-- plans/153 W3: 조사 브리핑 공용 렌더(관제 드로어와 같은 파일) — app.js보다 먼저 -->
-    <script src="/static/js/briefing-view.js?v=4"></script>
+    <script src="/static/js/briefing-view.js?v=5"></script>
+    <!-- plans/187 W15: 장애 진단 뷰 — 공용 브리핑 렌더 뒤 · app.js보다 먼저 -->
+    <script src="/static/js/diagnosis-view.js?v=2"></script>
     <script src="/static/vendor/chartjs/chart.umd.min.js?v=1"></script>
     <script src="/static/js/result-viz.js?v=4"></script>
-    <script src="/static/js/app.js?v=30"></script>
+    <script src="/static/js/app.js?v=31"></script>
 </body>
 
 </html>

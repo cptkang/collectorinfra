@@ -22,6 +22,7 @@ from mcp_server.config import (
     _DEFAULT_CONFIG_PATH,
     DOTENV_INJECTED_KEYS,
     OPENMETRICS_FALLBACK_POLICIES,
+    PROMETHEUS_ANCHOR_MODES,
     AppServerConfig,
     _apply_env_overrides,
     _load_toml,
@@ -41,7 +42,13 @@ AUDIT_PATH = _PROJECT_ROOT / "logs" / "config_admin" / "mcp_server_audit.jsonl"
 RESTART_HINT = "cd mcp_server && ../.venv/bin/python -m mcp_server"
 #: 데이터 경계 가드(D-003 취지) — 명시 목록.
 _GUARD_KEYS = frozenset(
-    {"SERVER_HOST", "EXPOSE_EXECUTE_SQL", "POLESTAR_DOMAIN_GUARD", "EXPOSE_RAW_PROMQL"}
+    {
+        "SERVER_HOST",
+        "EXPOSE_EXECUTE_SQL",
+        "POLESTAR_DOMAIN_GUARD",
+        "EXPOSE_RAW_PROMQL",
+        "PROMETHEUS_SOURCES",
+    }
 )
 #: URL·경로·호스트·가드 꼴 키도 읽기 전용이다 —
 #: 바꾸면 자격증명(인증 헤더 등)이 다른 곳으로 따라간다.
@@ -91,6 +98,18 @@ _FIELDS: tuple[tuple[str, str, str, Any, str, tuple[str, ...], bool, tuple[str, 
      True, ("prometheus", "auth_header")),
     ("PROMETHEUS_QUERY_TIMEOUT", "prometheus", "int", 30, "PromQL 쿼리 timeout(초)", (), False,
      ("prometheus", "query_timeout")),
+    ("PROMETHEUS_ANCHOR_MODE", "prometheus", "enum", "nodename",
+     "고수준 도구 hostname 셀렉터 조립 방식", PROMETHEUS_ANCHOR_MODES, False,
+     ("prometheus", "anchor_mode")),
+    ("PROMETHEUS_HOST_LABEL", "prometheus", "string", "hostname", "OS 호스트명 라벨 이름", (),
+     False, ("prometheus", "host_label")),
+    ("PROMETHEUS_IP_LABEL", "prometheus", "string", "node_ip", "OS IP 라벨 이름", (), False,
+     ("prometheus", "ip_label")),
+    ("PROMETHEUS_INSTANCE_LABEL", "prometheus", "string", "instance",
+     "「모호」 판정용 라벨 이름", (), False, ("prometheus", "instance_label")),
+    ("PROMETHEUS_SOURCES", "prometheus", "string", "[]",
+     "Prometheus 수집 폴스타 source(JSON 배열 · 읽기 전용 — 존 범위 가드)", (), False,
+     ("prometheus", "sources")),
     ("EXPOSE_OPENMETRICS_TOOLS", "openmetrics", "bool", False, "om_* 도구 등록", (), False,
      ("openmetrics", "expose_openmetrics_tools")),
     ("OPENMETRICS_SCRAPE_TIMEOUT", "openmetrics", "int", 10, "스크레이프 timeout(초)", (), False,

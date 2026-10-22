@@ -40,6 +40,7 @@ from sre_agent.diagnosis import (
     clean_toolset_error,
     tools_unavailable_result,
 )
+from sre_agent.domain.activity_log import ActivityLog
 from sre_agent.domain.answer_markup import has_tool_call_markup
 from sre_agent.domain.cross_source_episode import (
     EpisodeContext,
@@ -270,7 +271,9 @@ def _default_diagnose_fn(
     """
     get_agent = agent_getter or _agent_getter(settings)
 
-    def _diagnose(job) -> DiagnosisResult:
+    def _diagnose(job, activity: ActivityLog | None = None) -> DiagnosisResult:
+        # `activity`(plans/187 W13 · 선택)는 잡 실행 기록
+        # — HolmesGPT 스트림 훅이 쓴다(없으면 무동작).
         agent = get_agent()
         unavailable = agent.mcp_unavailable()
         if toolset_check is not None and settings.polestar_mcp_url:
@@ -281,11 +284,14 @@ def _default_diagnose_fn(
             return tools_unavailable_result(unavailable)
         # 조사 지침 주입(plans/50 G5 · D-197): 원격 셸 안내 · 사건 구간 · 운영자 추가 지침.
         # 종전에는 additions를 넘기지 않아 REMOTE_VM_SHELL_NOTE조차 주입되지 않았다.
+        # 기록이 없으면 종전 호출 그대로(선택 인자를 넘기지 않는다 — 플래그 off 비트 동일).
+        extra = {"activity": activity} if activity is not None else {}
         result = agent.ask(
             _job_to_question(job, settings),
             system_prompt_additions=build_guidance(
                 settings, job, remote=True, available_tools=agent.tool_names()
             ),
+            **extra,
         )
         if toolset_check is not None:
             toolset_check.last_answer_malformed = has_tool_call_markup(result.answer)
@@ -433,13 +439,18 @@ def create_service(
         return json.dumps(result, ensure_ascii=False)
 
     @mcp.tool()
-    async def sre_get_investigation(investigation_id: str) -> str:
+    async def sre_get_investigation(investigation_id: str, activity_since: int = -1) -> str:
         """조사 잡 상태를 조회한다(§3).
 
         반환(JSON): {status: running|done|failed|timeout|stub|..., briefing?, verdict?,
         tool_calls_summary?, tokens?, cost?, error?}.
+
+        `activity_since`(plans/187 W13 · 선택): `-1`(기본)이면 종전과 비트 동일. `≥ 0`이고
+        `SRE_ACTIVITY_LOG_ENABLED`면 `activity{next_seq, truncated, events[seq > activity_since]}`·
+        `phase`(queued|collecting|narrating|deep_dive|finalizing — 종결이면 null)·`queue_position`·
+        `elapsed_s`를 더한다. 다음 조회에는 `activity.next_seq`를 넘긴다. 플래그 off면 무시한다.
         """
-        return json.dumps(store.get(investigation_id), ensure_ascii=False)
+        return json.dumps(store.get(investigation_id, activity_since), ensure_ascii=False)
 
     @mcp.tool()
     async def sre_diagnose(
