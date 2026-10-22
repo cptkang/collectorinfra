@@ -42,7 +42,9 @@ def test_main_installs_record_factory(monkeypatch, restore_logging) -> None:
         calls.append("install")
         log_masking.install_log_record_factory()
 
-    cfg = SimpleNamespace(log_level="INFO", stream_key="alarm:raw", socket_port=9100)
+    cfg = SimpleNamespace(
+        log_level="INFO", stream_key="alarm:raw", socket_port=9100, admin_port=None, admin_token=""
+    )
     monkeypatch.setattr(main_mod, "AlarmServerConfig", lambda: cfg)
     monkeypatch.setattr(main_mod, "TcpReceiver", FakeReceiver)
     monkeypatch.setattr(main_mod, "install_log_record_factory", recording_install)

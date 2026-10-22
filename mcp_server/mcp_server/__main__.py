@@ -48,9 +48,11 @@ def main() -> None:
         # 미들웨어를 씌운 ASGI 앱을 uvicorn으로 직접 서빙한다(sre_agent run_service 전례).
         import uvicorn
 
+        from mcp_server.config_admin_adapter import wrap_admin_app
         from mcp_server.server import build_asgi_app
 
-        app = build_asgi_app(server, token)
+        # 설정 관리 API(D-345): MCP_ADMIN_TOKEN이 있을 때만 /admin/config 분기 래퍼로 감싼다.
+        app = wrap_admin_app(build_asgi_app(server, token), config)
         logger.info("전송 인증(정적 Bearer): %s", "on" if token else "off")
         uvicorn.run(
             app,
@@ -60,6 +62,11 @@ def main() -> None:
         )
     else:
         # stdio 등 비-HTTP transport는 전송 인증 대상이 아니다(FastMCP 기본 run).
+        if config.server.admin_token:
+            logger.warning(
+                "MCP_ADMIN_TOKEN이 설정됐으나 transport=%s — 설정 관리 API는 sse에서만 등록된다",
+                config.server.transport,
+            )
         server.run(transport=config.server.transport)
 
 

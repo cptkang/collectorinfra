@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Optional
@@ -17,6 +18,10 @@ logger = logging.getLogger(__name__)
 # 기본 설정 파일 경로 (패키지 루트 기준)
 _PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 _DEFAULT_CONFIG_PATH = _PACKAGE_ROOT / "config.toml"
+
+#: `_load_dotenv`가 `.env`에서 `os.environ`에 실제로 넣은 키(누적). 여기에 없는데 `os.environ`에
+#: 있는 키는 기동 전 셸·systemd가 준 값이다 — 설정 관리 API가 `override_os`로 판정한다(D-345).
+DOTENV_INJECTED_KEYS: set[str] = set()
 
 
 @dataclass
@@ -48,6 +53,9 @@ class ServerConfig:
     # `Authorization: Bearer <token>` 헤더를 요구하고 불일치 시 401을 반환한다.
     # env: MCP_BEARER_TOKEN (또는 config.toml [server].bearer_token).
     bearer_token: str = ""
+    # 설정 관리 API(`/admin/config` — plans/191 · D-345) 관리 토큰. 빈 값이면 관리 라우트 미등록
+    # (현행 비트 동일). env 전용: MCP_ADMIN_TOKEN (config.toml에서 읽지 않는다).
+    admin_token: str = ""
 
 
 @dataclass
@@ -198,25 +206,32 @@ def load_config(config_path: str | Path | None = None) -> AppServerConfig:
     return config
 
 
+def read_dotenv(env_path: Path) -> dict[str, str]:
+    """.env 파일을 `os.environ`에 넣지 않고 키→값으로 읽는다(같은 키는 첫 줄이 이긴다)."""
+    values: dict[str, str] = {}
+    with open(env_path) as f:
+        for line in f:
+            line = line.strip()
+            if not line or line.startswith("#"):
+                continue
+            if "=" not in line:
+                continue
+            key, _, value = line.partition("=")
+            values.setdefault(key.strip(), value.strip())
+    return values
+
+
 def _load_dotenv(directory: Path) -> None:
     """디렉토리에서 .env 파일을 로드한다."""
     env_path = directory / ".env"
     if not env_path.exists():
         return
     try:
-        with open(env_path) as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#"):
-                    continue
-                if "=" not in line:
-                    continue
-                key, _, value = line.partition("=")
-                key = key.strip()
-                value = value.strip()
-                # 이미 설정된 환경변수는 오버라이드하지 않음
-                if key not in os.environ:
-                    os.environ[key] = value
+        for key, value in read_dotenv(env_path).items():
+            # 이미 설정된 환경변수는 오버라이드하지 않음
+            if key not in os.environ:
+                os.environ[key] = value
+                DOTENV_INJECTED_KEYS.add(key)
         logger.info(".env 파일 로드: %s", env_path)
     except Exception as e:
         logger.warning(".env 파일 로드 실패: %s", e)
@@ -345,8 +360,13 @@ def _normalize_openmetrics(om: OpenMetricsConfig) -> None:
     om.fallback_policy = policy
 
 
-def _apply_env_overrides(config: AppServerConfig) -> None:
+def _apply_env_overrides(
+    config: AppServerConfig, env: Mapping[str, str] | None = None
+) -> None:
     """환경변수로 설정을 오버라이드한다.
+
+    ``env``를 주면 ``os.environ`` 대신 그 매핑을 읽는다(설정 관리 dry-run — 프로세스 환경
+    불변). 생략하면 ``os.environ``(기존 동작).
 
     규칙:
     - SERVER_*: 서버 설정
@@ -354,6 +374,8 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
     - {SOURCE_NAME_UPPER}_CONNECTION: 소스별 DB 연결 문자열
       예: INFRA_DB_CONNECTION, INFRA_DB2_CONNECTION, POLESTAR_CONNECTION
     """
+    if env is None:
+        env = os.environ
     # 서버 설정 오버라이드
     _env_overrides = {
         "SERVER_NAME": ("name", str),
@@ -365,13 +387,18 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
         "MCP_BEARER_TOKEN": ("bearer_token", str),
     }
     for env_key, (attr, cast) in _env_overrides.items():
-        env_val = os.environ.get(env_key, "")
+        env_val = env.get(env_key, "")
         if env_val:
             setattr(config.server, attr, cast(env_val))
             logger.debug("환경변수 오버라이드: %s = %s", env_key, env_val)
 
+    # 관리 토큰은 값을 로그에 남기지 않도록 위 루프와 분리한다(D-345).
+    admin_env = env.get("MCP_ADMIN_TOKEN", "")
+    if admin_env:
+        config.server.admin_token = admin_env
+
     # expose_execute_sql은 불리언이라 별도 파싱 ("1"/"true"/"yes"/"on" → True)
-    expose_env = os.environ.get("EXPOSE_EXECUTE_SQL", "")
+    expose_env = env.get("EXPOSE_EXECUTE_SQL", "")
     if expose_env:
         config.server.expose_execute_sql = expose_env.strip().lower() in (
             "1", "true", "yes", "on",
@@ -385,7 +412,7 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
         "EXPOSE_POLESTAR_TOOLS": "expose_polestar_tools",
     }
     for env_key, attr in _polestar_flags.items():
-        env_val = os.environ.get(env_key, "")
+        env_val = env.get(env_key, "")
         if env_val:
             setattr(
                 config.server,
@@ -402,13 +429,13 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
         "PROMETHEUS_QUERY_TIMEOUT": ("query_timeout", int),
     }
     for env_key, (attr, cast) in _prom_overrides.items():
-        env_val = os.environ.get(env_key, "")
+        env_val = env.get(env_key, "")
         if env_val:
             setattr(config.prometheus, attr, cast(env_val))
             logger.debug("환경변수 오버라이드: %s = %s", env_key, env_val)
 
     # expose_raw_promql도 불리언이라 별도 파싱
-    raw_env = os.environ.get("EXPOSE_RAW_PROMQL", "")
+    raw_env = env.get("EXPOSE_RAW_PROMQL", "")
     if raw_env:
         config.prometheus.expose_raw_promql = raw_env.strip().lower() in (
             "1", "true", "yes", "on",
@@ -431,7 +458,7 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
         "OPENMETRICS_BRIDGE_CACHE_SECONDS": ("bridge_cache_seconds", int),
     }
     for env_key, (attr, cast) in _om_overrides.items():
-        env_val = os.environ.get(env_key, "")
+        env_val = env.get(env_key, "")
         if env_val:
             setattr(config.openmetrics, attr, cast(env_val))
             logger.debug("환경변수 오버라이드: %s = %s", env_key, env_val)
@@ -442,7 +469,7 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
         "EXPOSE_POLESTAR_EXPORTER": "expose_polestar_exporter",
     }
     for env_key, attr in _om_flags.items():
-        env_val = os.environ.get(env_key, "")
+        env_val = env.get(env_key, "")
         if env_val:
             setattr(
                 config.openmetrics,
@@ -456,7 +483,7 @@ def _apply_env_overrides(config: AppServerConfig) -> None:
     # 소스별 연결 문자열 오버라이드
     for source in config.sources:
         env_key = f"{source.name.upper()}_CONNECTION"
-        env_val = os.environ.get(env_key, "")
+        env_val = env.get(env_key, "")
         if env_val:
             source.connection = env_val
             logger.debug("환경변수 오버라이드: %s -> %s", env_key, source.name)

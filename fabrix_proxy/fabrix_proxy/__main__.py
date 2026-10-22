@@ -1,6 +1,7 @@
 """프록시 엔트리 — `python -m fabrix_proxy [--host H] [--port P]` (plans/148 §3.8).
 
 설정 로드 → 토큰 확인(비면 종료코드 2) → 기동 로그 1줄(자격증명·업스트림 URL 미포함) → uvicorn.
+관리 토큰(`FABRIX_PROXY_ADMIN_TOKEN`)이 있으면 `/admin/config` 관리 앱을 경로 분기로 붙인다.
 """
 
 from __future__ import annotations
@@ -14,6 +15,7 @@ from pydantic import ValidationError
 
 from fabrix_proxy.app import create_app
 from fabrix_proxy.config import ConfigError, ProxySettings
+from fabrix_proxy.config_admin_adapter import wrap_admin
 from fabrix_proxy.log_masking import install_log_record_factory
 
 logger = logging.getLogger("fabrix_proxy")
@@ -57,7 +59,13 @@ def main(argv: list[str] | None = None) -> int:
         settings.fabrix_proxy_fewshot,
         settings.fabrix_proxy_poc_mode,
     )
-    uvicorn.run(app, host=host, port=port, log_level=settings.fabrix_proxy_log_level.lower())
+    # 관리 토큰이 있을 때만 `/admin/config` 경로 분기 래퍼로 감싼다(plans/191 · 없으면 app 그대로).
+    uvicorn.run(
+        wrap_admin(settings, app),
+        host=host,
+        port=port,
+        log_level=settings.fabrix_proxy_log_level.lower(),
+    )
     return 0
 
 

@@ -257,6 +257,10 @@
     var settingsAllExpanded = false;
     var settingsHelpCache = {};   // env_key -> 도움말 응답 (탭 체류 중 재조회 방지)
     var settingsHelpKey = null;   // 현재 패널에 띄운 키 (null = 닫힘)
+    // (plans/191) 설정 대상 — null = 본체, 문자열 = 분리 컴포넌트 이름(admin-components.js가 고른다).
+    // 컴포넌트 항목은 본체 SettingSchemaItem과 같은 필드 이름이라 아코디언·위젯·diff 모달을 그대로 쓴다.
+    var settingsTarget = null;
+    var settingsHooks = {};       // admin-components.js가 채운다: onSchema · onFailed · onSaved · failText
 
     ensureSettingsLoaded();  // 설정 탭이 기본 활성 상태다
 
@@ -266,13 +270,53 @@
         loadSettings();
     }
 
+    function componentConfigUrl(name) {
+        return "/api/v1/admin/components/" + encodeURIComponent(name) + "/config";
+    }
+
+    // (plans/191) 대상 전환 — 편집·배너를 비우고 새 대상의 스키마를 읽는다. 리로드는 본체 전용이다(U-3).
+    window.AdminSettings = {
+        setTarget: function (name, hooks) {
+            settingsTarget = name || null;
+            settingsHooks = hooks || {};
+            settingsEdits = {};
+            settingsGroups = [];
+            settingsItems = {};
+            closeSettingHelp();
+            ["restartBanner", "readinessBanner", "settingsWarnings"].forEach(function (id) {
+                var banner = document.getElementById(id);
+                banner.textContent = "";
+                banner.style.display = "none";
+            });
+            document.getElementById("reloadSettingsBtn").style.display = settingsTarget ? "none" : "";
+            settingsLoaded = true;
+            settingsRows = {};
+            document.getElementById("settingsAccordion").textContent = "";
+            document.getElementById("settingsLoading").classList.add("active");
+            return loadSettings();
+        },
+        hasUnsavedEdits: function () { return dirtyCount() > 0; },
+    };
+
     async function loadSettings() {
+        var target = settingsTarget;
         try {
-            var response = await apiRequest("GET", "/api/v1/admin/settings/schema");
-            var data = await response.json();
+            var response = await apiRequest("GET",
+                target ? componentConfigUrl(target) : "/api/v1/admin/settings/schema");
+            var data = await response.json().catch(function () { return {}; });
+            if (target !== settingsTarget) return;  // 응답을 기다리는 동안 대상이 바뀌었다
 
             if (!response.ok) {
                 settingsLoaded = false;
+                if (target) {
+                    settingsGroups = [];
+                    settingsItems = {};
+                    renderSettings();
+                    showError(settingsHooks.onFailed
+                        ? settingsHooks.onFailed(response.status, data)
+                        : "컴포넌트 설정을 불러오지 못했습니다.");
+                    return;
+                }
                 showError(errorMessage(data, "설정을 불러오는 데 실패했습니다."));
                 return;
             }
@@ -286,12 +330,21 @@
                 });
             });
 
-            renderWarnings(data.warnings || [], data.env_file_path);
+            renderWarnings(data.warnings || [], target ? writeTargetPath(data) : data.env_file_path);
             renderSettings();
+            if (target && settingsHooks.onSchema) settingsHooks.onSchema(data);
         } catch (err) {
             settingsLoaded = false;
             showError("서버와의 통신에 실패했습니다.");
         }
+    }
+
+    function writeTargetPath(data) {
+        var sources = Array.isArray(data.sources) ? data.sources : [];
+        for (var i = 0; i < sources.length; i++) {
+            if (sources[i] && sources[i].role === "write_target") return String(sources[i].path || "");
+        }
+        return "";
     }
 
     function errorMessage(data, fallback) {
@@ -309,6 +362,8 @@
     function fieldErrors(data) {
         var detail = data && data.detail;
         if (detail && Array.isArray(detail.errors)) return detail.errors;
+        // (plans/191) 컴포넌트 PUT 400은 errors를 최상위에 싣는다
+        if (data && Array.isArray(data.errors)) return data.errors;
         return [];
     }
 
@@ -411,7 +466,8 @@
     }
 
     function matchesFilters(item, query, filter, showUnconsumed) {
-        if (!item.consumed && !showUnconsumed && !isDirty(item)) return false;
+        // 컴포넌트 항목(plans/191)에는 consumed가 없다 — 명시적 false만 미소비로 본다.
+        if (item.consumed === false && !showUnconsumed && !isDirty(item)) return false;
 
         if (query) {
             var haystack = (item.env_key + " " + (item.description || "")).toLowerCase();
@@ -525,7 +581,8 @@
         helpBtn.title = item.env_key + " 설명 보기";
         helpBtn.setAttribute("aria-label", item.env_key + " 설명 보기");
         helpBtn.addEventListener("click", function () { openSettingHelp(item.env_key); });
-        keyLine.appendChild(helpBtn);
+        // 상세 설명 API는 본체 카탈로그 전용이다 — 컴포넌트 항목은 행의 설명으로 대신한다.
+        if (!settingsTarget) keyLine.appendChild(helpBtn);
 
         label.appendChild(keyLine);
 
@@ -774,9 +831,14 @@
     function buildBadges(item) {
         var badges = [];
         var mode = applyMode(item);
-        if (item.is_secret) {
+        if (item.is_secret && settingsTarget) {
+            badges.push(makeBadge("🔒 파일 편집", "badge--secret",
+                "컴포넌트 시크릿입니다. 값은 화면에 오가지 않으며 서버의 파일을 직접 고쳐야 합니다."));
+        } else if (item.is_secret) {
             badges.push(makeBadge("🔒 .encenv 관리", "badge--secret",
                 ".encenv에서 관리하는 시크릿입니다. .env 수정은 반영되지 않습니다."));
+        } else if (mode === "restart" && settingsTarget) {
+            badges.push(makeBadge("재기동", "badge--restart", "저장 후 이 컴포넌트를 재기동해야 반영됩니다."));
         } else if (mode === "restart") {
             badges.push(makeBadge("재시작", "badge--restart", "저장 후 서버 재시작이 필요합니다."));
         } else if (mode === "reload") {
@@ -785,7 +847,7 @@
         } else {
             badges.push(makeBadge("즉시 반영", "badge--immediate", "저장 후 다음 요청부터 반영됩니다."));
         }
-        if (!item.consumed) {
+        if (item.consumed === false) {
             badges.push(makeBadge("미소비", "badge--unconsumed",
                 "현재 코드가 이 설정을 읽지 않습니다."));
         }
@@ -795,6 +857,19 @@
         } else if (item.override === "encenv") {
             badges.push(makeBadge(".encenv 우선", "badge--override",
                 ".encenv 값이 .env를 덮어씁니다 — 저장해도 반영되지 않습니다."));
+        } else if (item.override === "dotenv") {
+            badges.push(makeBadge(".env 우선", "badge--override",
+                "쓰기 대상보다 우선하는 .env에 같은 키가 있습니다 — 저장해도 반영되지 않습니다."));
+        } else if (item.override === "toml") {
+            badges.push(makeBadge("toml 원천", "badge--override",
+                "읽기 전용 원천(config.toml)에서 온 값입니다."));
+        }
+        if (item.writable === false && !item.is_secret) {
+            badges.push(makeBadge("읽기 전용", "badge--override", item.readonly_reason || "이 화면에서 바꿀 수 없습니다."));
+        }
+        if (item.restart_pending) {
+            badges.push(makeBadge("재기동 대기", "badge--restart",
+                "파일 값이 기동 시와 다릅니다 — 컴포넌트를 재기동해야 반영됩니다."));
         }
         return badges;
     }
@@ -823,6 +898,13 @@
             secretState.className = "setting-state-text";
             secretState.textContent = item.is_set ? "설정됨" : "미설정";
             nodes.state.appendChild(secretState);
+            return;
+        }
+        if (item.writable === false) {
+            var readonlyState = document.createElement("span");
+            readonlyState.className = "setting-state-text";
+            readonlyState.textContent = "읽기 전용";
+            nodes.state.appendChild(readonlyState);
             return;
         }
 
@@ -883,6 +965,7 @@
 
     function buildWidget(item) {
         if (item.is_secret) return buildSecretWidget(item);
+        if (item.writable === false) return buildReadonlyWidget(item);
         if (item.type === "bool") return buildToggle(item);
         if (item.type === "tristate") return buildSegments(item, ["auto", "true", "false"]);
         if (item.type === "enum") {
@@ -899,16 +982,35 @@
         var wrap = document.createElement("div");
         wrap.className = "setting-secret";
         var text = document.createElement("span");
-        text.textContent = item.is_set
-            ? "설정됨 — .encenv에서 관리합니다."
-            : "미설정 — .encenv에 값을 넣어야 합니다.";
+        if (settingsTarget) {
+            text.textContent = item.is_set
+                ? "설정됨 — 컴포넌트 서버의 파일을 직접 편집해 관리합니다."
+                : "미설정 — 컴포넌트 서버의 파일에 값을 넣어야 합니다.";
+        } else {
+            text.textContent = item.is_set
+                ? "설정됨 — .encenv에서 관리합니다."
+                : "미설정 — .encenv에 값을 넣어야 합니다.";
+        }
+        wrap.appendChild(text);
+        return wrap;
+    }
+
+    // (plans/191) 컴포넌트가 쓰기 불가로 표시한 항목 — 실효값과 사유만 보인다.
+    function buildReadonlyWidget(item) {
+        var wrap = document.createElement("div");
+        wrap.className = "setting-secret";
+        var text = document.createElement("span");
+        var value = item.effective_value === null || item.effective_value === undefined
+            ? "(미설정)" : String(item.effective_value);
+        text.textContent = value + (item.readonly_reason ? " — " + item.readonly_reason : "");
         wrap.appendChild(text);
         return wrap;
     }
 
     function buildToggle(item) {
         var value = currentValue(item);
-        var on = (value === null || value === undefined ? item.default : value) === "true";
+        // `.env` 표기 문자열("true")이 계약이지만, 컴포넌트가 bool을 실어도 같게 그린다(plans/191).
+        var on = String(value === null || value === undefined ? item.default : value) === "true";
 
         var toggle = document.createElement("button");
         toggle.type = "button";
@@ -1205,22 +1307,28 @@
         confirmBtn.disabled = true;
 
         try {
-            var response = await apiRequest("PUT", "/api/v1/admin/settings", {
-                settings: pendingChanges.settings,
-                reset_keys: pendingChanges.reset_keys,
-            });
-            var data = await response.json();
+            var target = settingsTarget;
+            var response = await apiRequest("PUT",
+                target ? componentConfigUrl(target) : "/api/v1/admin/settings", {
+                    settings: pendingChanges.settings,
+                    reset_keys: pendingChanges.reset_keys,
+                });
+            var data = await response.json().catch(function () { return {}; });
 
             if (!response.ok) {
                 closeDiffModal();
-                showValidationErrors(data);
+                showValidationErrors(data, response.status);
                 return;
             }
 
             closeDiffModal();
-            showSuccess(data.message);
-            showRestartBanner(data);
-            showReadinessWarnings(data);
+            if (target) {
+                if (settingsHooks.onSaved) settingsHooks.onSaved(data);
+            } else {
+                showSuccess(data.message);
+                showRestartBanner(data);
+                showReadinessWarnings(data);
+            }
             pendingChanges = null;
             settingsEdits = {};
             await loadSettings();
@@ -1231,9 +1339,13 @@
         }
     });
 
-    function showValidationErrors(data) {
+    function showValidationErrors(data, status) {
         var errors = fieldErrors(data);
-        showError(errorMessage(data, "저장에 실패했습니다."));
+        showError(settingsTarget && settingsHooks.failText
+            ? settingsHooks.failText(status, data)
+            : errorMessage(data, "저장에 실패했습니다."));
+        // (plans/191) 컴포넌트 거부 — 키 없는 전역 오류까지 배너에 모두 적는다(행 표시는 아래에서).
+        if (settingsTarget && settingsHooks.onRejected) settingsHooks.onRejected(status, data);
         if (!errors.length) return;
 
         // 오류 행이 필터·접힘으로 가려지지 않도록 조건을 초기화하고 해당 그룹을 펼친다

@@ -3,6 +3,10 @@
 > `plans/INDEX.md` 머리의 갱신 이력과, 2026-10-06(D-304) 축약 전의 긴 「상태」 칸 원문을 보존한다. **새 갱신 이력은 아래 「갱신 이력」 목록 맨 위에 한 줄씩 추가한다.** INDEX 머리에는 최종 갱신 날짜만 둔다.
 
 ## 갱신 이력
+- 2026-10-21 — 191 잔여 3 해소: alarm_server 설정 파일 우선순위 교정(전용 `alarm_server.env`가 공용 `.env`를 이김 · `.env`는 보충) · D-345 부기 · 행동 변경 · 매뉴얼 admin 원천 갱신
+- 2026-10-21 — **191 WIP 유지(구현 완료)**: W1~W7 — 공용 `config_admin.py` 정본(sre_agent)+사본 4·컴포넌트별 어댑터·관리 토큰(기본 off=404)·본체 `component_admin` 프록시·설정 탭 대상 선택·매뉴얼 A-81 · 검증·감사 교정(줄 구분자 주입·`$` 확장·보안 경계 키 읽기 전용·litellm `.env` 주입 스냅샷·오류 계약 `{key,message}`) · 잔여 캡처·CLAUDE.md 1줄
+- 2026-10-21 — **191 TODO→WIP**: 심도 검토·W0 — SPEC `spec/SPEC-component-config-admin.md` · D-345 등재(D-179 개정·부기) · 게이트 G-1~G-7 사용자 위임 권고안 채택 · 실측 정정(alarm_server `.env`가 전용 파일을 이김·CWD 기준 · sre_agent 미들웨어 전체 래핑 · mcp_server `load_config`의 `os.environ` 변경 · 가드 키 읽기 전용) · Wave 재분할(W2~W5 병렬)
+- 2026-10-19 — **191 신설(TODO)**: 분리 컴포넌트 5종 설정 웹UI 계획 — 컴포넌트 자체 설정 관리 API(`/admin/config`) + 본체 프록시·UI · 재기동 대기 표시 · D-345 예약(D-179 개정) · 게이트 G-1~G-7
 - 2026-10-19 — **187 TODO→WIP · 155 TODO→WIP · 커밋 전**: 알람 조사 플레이북(D-341) W0~W6·W8~W12 구현 — sre_agent 결정적 플레이북 엔진(YAML 12종·판독 R-A~R-H·가설 규칙·소견/종합 LLM ≤8회·가드)·HolmesGPT 심층 parallel/conditional·엔진 일치·런북/KEDB 읽기 · 본체 진척 전달·마스킹·workb 3줄+링크·추가 조사(diagnosis)·이 알람 분석(manual)·KB 초안·포스트모템·엔진 선택·채팅 증상 결정적 라우팅 · 웹 요약형/상세형·조사 대화·지난 알람 검색·관리자 「조사 지식」 탭·매뉴얼 U-62~U-69·A-77~A-80 · 155 공용부(지연 poll·kind=diagnosis·사용자별 상한)를 187 W10이 선행 구현 · 잔여 W7 내부망 shadow·R-D·G-26 캐시 공용
 - 2026-10-19 — 188 W5(C8) 추가·완료: Gemma 4 도구 호출 마크업을 sre_agent가 `DefaultLLM.completion` 응답 후처리로 `tool_calls` 변환(tools 있는 호출만 · 실패면 원본 → W4) · D-343 · verifier Major 1·Minor 3 교정 · 회귀 실패 0(모듈 단위) · 매뉴얼 admin 25절 · 파일명 WIP→무표기
 - 2026-10-19 — 188 W4(C7) 추가·완료: 조사 LLM 답의 도구 호출 마크업(vLLM `--tool-call-parser` 불일치) 감지 → 원문 없이 `[미결] 조사 실패` 종결 · D-342 부기 · 매뉴얼 admin 25절 · 파일명 WIP→무표기 복귀

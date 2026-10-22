@@ -50,7 +50,7 @@ GROUP_ORDER: tuple[str, ...] = (
     "intent_frame", "composite", "security", "host_authz", "server", "admin", "auth",
     "multi_db", "polestar_rest", "redis", "schema_cache", "audit", "observability",
     "alarm", "workb", "noise_gate", "drm", "rag", "result_viz", "portal_help",
-    TOP_LEVEL_GROUP,
+    "component_admin", TOP_LEVEL_GROUP,
 )
 
 GROUP_TITLES: dict[str, str] = {
@@ -81,6 +81,7 @@ GROUP_TITLES: dict[str, str] = {
     "rag": "문서 검색(RAG)",
     "result_viz": "결과 그래프·값 해석",
     "portal_help": "포탈 도움말",
+    "component_admin": "분리 컴포넌트 관리",
     TOP_LEVEL_GROUP: "전역",
 }
 

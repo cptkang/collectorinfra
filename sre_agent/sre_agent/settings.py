@@ -106,6 +106,12 @@ class AgentSettings(BaseSettings):
     # FastMCP Host 헤더 검사와 uvicorn 바인딩이 같은 값을 쓴다 — 0.0.0.0으로 열면
     # service_bearer_token을 함께 설정할 것.
     service_host: str = "127.0.0.1"
+    # 설정 관리 API(`/admin/config` · plans/191 · D-345) 관리 토큰. None(기본) = 관리 라우트
+    # 미등록(현행 비트 동일). env는 `SRE_AGENT_ADMIN_TOKEN`이다 — 필드명을 `admin_token`으로 두면
+    # 레포 루트 CWD 기동 시 본체 `.env`의 `ADMIN_TOKEN`을 읽는다. validation_alias로도 막히지
+    # 않는다(populate_by_name=True면 pydantic-settings가 필드명 env도 읽는다 — 2026-10-21 실측).
+    # service_bearer_token과 같은 값이면 등록하지 않는다.
+    sre_agent_admin_token: SecretStr | None = None
 
     # ── 조사 dispatcher 폭주 방지 가드 (Plan 02 §4·§10 — 전부 기본 off/보수값) ──
     # 스칼라 필드이므로 nested Field(default_factory=...)는 불요(중첩 모델 없음).

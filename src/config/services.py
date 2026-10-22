@@ -1,4 +1,4 @@
-"""기타 서비스 설정 — 서버·관측(로그)·DRM·문서 RAG·결과 그래프·포탈 도움말.
+"""기타 서비스 설정 — 서버·관측(로그)·DRM·문서 RAG·결과 그래프·포탈 도움말·컴포넌트 설정 프록시.
 
 plans/166 W2 I4 — 옛 `src/config.py`에서 클래스를 그대로 옮겼다. 공개 경로는 `src.config`
 그대로다(패키지 `__init__`이 이 모듈의 클래스를 재노출한다 · D-337 ①).
@@ -9,7 +9,7 @@ plans/166 W2 I4 — 옛 `src/config.py`에서 클래스를 그대로 옮겼다. 
 
 from __future__ import annotations
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings
 
 
@@ -191,3 +191,27 @@ class PortalHelpConfig(BaseSettings):
     enabled: bool = True
 
     model_config = {"env_prefix": "PORTAL_HELP_", "env_file": ".env", "extra": "ignore"}
+
+
+#: 본체 프록시가 받는 분리 컴포넌트 이름(plans/191 · D-345). 이 밖의 이름은 설정에 있어도 무시한다.
+COMPONENT_ADMIN_NAMES: tuple[str, ...] = (
+    "sre_agent", "apm_gateway", "mcp_server", "alarm_server", "fabrix_proxy",
+)
+
+
+class ComponentAdminConfig(BaseSettings):
+    """분리 컴포넌트 설정 관리 프록시 (plans/191 · D-345 · `spec/SPEC-component-config-admin.md` §5).
+
+    각 컴포넌트가 자기 `/admin/config` API를 소유하고, 본체는 관리자 화면용으로 HTTP 프록시만 한다
+    (import 0 · D-139). `endpoints`가 비면 기능 off — 설정 탭에 대상 선택이 그려지지 않는다(현행 동일).
+    """
+
+    # 컴포넌트 이름 → 관리 API 기준 URL(JSON · 예 {"sre_agent": "http://127.0.0.1:9098"}).
+    # 이름은 `COMPONENT_ADMIN_NAMES` 밖이면, URL은 http(s)가 아니면 무시하고 경고한다.
+    endpoints: dict[str, str] = Field(default_factory=dict)
+    # 이름 → 관리 토큰(JSON 객체 문자열 · 시크릿 — `.encenv` 관리 · 웹UI 편집 차단·repr 마스킹).
+    tokens: SecretStr = SecretStr("")
+    # 컴포넌트 호출 1회 상한(초).
+    timeout_seconds: float = 5.0
+
+    model_config = {"env_prefix": "COMPONENT_ADMIN_", "env_file": (".env", ".encenv"), "extra": "ignore"}

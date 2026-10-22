@@ -10,6 +10,7 @@ transport는 SSE(collectorinfra 클라이언트 실측 경로와 동일), 포트
 
 from __future__ import annotations
 
+import hmac
 import json
 import logging
 import threading
@@ -23,11 +24,11 @@ from starlette.types import Receive, Scope, Send
 from sre_agent import __version__
 from sre_agent.application.briefing_builder import build_briefing
 from sre_agent.application.evidence_prefetch import prefetch_and_correlate, scope_from_job
-from sre_agent.application.investigation_guidance import build_guidance
 from sre_agent.application.investigation_dispatcher import (
     InvestigationDispatcher,
     PlaybookWiring,
 )
+from sre_agent.application.investigation_guidance import build_guidance
 from sre_agent.application.investigation_jobs import (
     CONTRACT_VERSION,
     JobStore,
@@ -49,6 +50,8 @@ from sre_agent.domain.cross_source_episode import (
 from sre_agent.infrastructure.known_error_loader import DEFAULT_KNOWN_ERROR_DIR, load_known_errors
 from sre_agent.infrastructure.mcp_tool_client import make_apm_batch_caller, make_batch_caller
 from sre_agent.infrastructure.playbook_loader import DEFAULT_PLAYBOOK_DIR, load_playbooks
+from sre_agent.interface.config_admin import AdminPathRouter, build_admin_app
+from sre_agent.interface.config_admin_adapter import build_adapter
 from sre_agent.settings import AgentSettings
 from sre_agent.toolset_profiles import remote_vm_profile
 
@@ -512,15 +515,31 @@ def get_job_store(mcp: FastMCP) -> JobStore:
     return getattr(mcp, _JOB_STORE_ATTR)
 
 
-def build_asgi_app(mcp: FastMCP, token: str | None) -> Starlette:
+def build_asgi_app(
+    mcp: FastMCP, token: str | None, settings: AgentSettings | None = None
+) -> Starlette | AdminPathRouter:
     """FastMCP SSE 앱에 정적 Bearer 인증 미들웨어를 씌워 반환한다.
 
     `mcp.run(transport="sse")`는 내부에서 자체 앱을 만들어 미들웨어 주입점이 없으므로,
     run_service는 이 함수로 앱을 조립해 uvicorn에 직접 넘긴다.
+    settings에 관리 토큰(`SRE_AGENT_ADMIN_TOKEN`)이 있을 때만 `/admin/config` 경로 분기 래퍼를
+    바깥에 씌운다(plans/191 · D-345). 없으면 반환 객체가 종전과 같다. 관리 토큰이 서비스 토큰과
+    같으면 관리 경로가 서비스 토큰으로 열리므로 등록하지 않고 경고 1줄을 남긴다.
     """
     app = mcp.sse_app()
     app.add_middleware(StaticBearerAuthMiddleware, token=token)
-    return app
+    if settings is None or settings.sre_agent_admin_token is None:
+        return app
+    admin_token = settings.sre_agent_admin_token.get_secret_value().strip()
+    if not admin_token:
+        return app
+    if token is not None and hmac.compare_digest(admin_token.encode(), token.encode()):
+        logger.warning(
+            "설정 관리 API 미등록: 관리 토큰이 서비스 Bearer 토큰과 같다"
+            "(SRE_AGENT_ADMIN_TOKEN을 바꿀 것)"
+        )
+        return app
+    return AdminPathRouter(app, build_admin_app(build_adapter(settings), admin_token))
 
 
 __all__ = [

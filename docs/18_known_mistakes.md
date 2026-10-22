@@ -2199,3 +2199,18 @@
 - **실수**: `src/config/alarm.py`에 조사 화면 링크·추가 조사·사용자 요청 분석·KB 설정 13키를 넣고 `src/api/settings_catalog.py`의 `SECTION_BY_KEY`에 올리지 않아 `tests/test_api/test_settings_catalog_sections.py::test_every_noise_key_has_section`이 실패했다. 계획 끝 모듈 단위 회귀(`--files <130>`)는 `settings_catalog.py`를 바꾸지 않았으므로 이 테스트를 선택하지 않았다.
 - **원인**: 설정 필드 추가가 카탈로그 구획·도움말 등 소비처 등재를 함께 요구한다는 것을 위임 범위에 넣지 않았다. 회귀 선택은 import 그래프 기반이라 `field_index()`처럼 config를 동적으로 훑는 테스트는 config 변경만으로는 골라지지 않을 수 있다.
 - **방지책**: `src/config/` 에 `NOISE_` 등 새 필드를 넣으면 같은 작업에서 `SECTION_BY_KEY` 등재와 `pytest tests/test_api/test_settings_catalog_sections.py`를 자기 테스트로 돌린다. 전체 회귀에서 `apm_gateway`가 TIMEOUT으로 0건이면 무한 대기 테스트(`test_plan134_w0b_verify.py::test_disconnect_before_promotion_cancels_job` — 기준에서도 대기, SIGTERM 무시)를 `--deselect`해 패키지를 따로 돌리고 `timeout -s KILL`을 쓴다.
+
+### 2026-10-21 · (plans/191 W0) 「명시 alias면 필드명 env를 읽지 않는다」고 가정해 SPEC에 `admin_token` + alias를 적었다
+- **실수**: 팀 리드가 SPEC §3에 `sre_agent` 관리 토큰을 「필드 `admin_token` + 명시 alias `SRE_AGENT_ADMIN_TOKEN`」으로 적었다. W1 implementer 실측 결과 `AgentSettings`는 `populate_by_name=True`라 alias를 줘도 필드명 env `ADMIN_TOKEN`을 함께 읽었다 — 루트 CWD 기동 시 본체 `ADMIN_TOKEN`이 sre_agent 관리 토큰으로 새어 들어갈 뻔했다
+- **원인**: pydantic-settings의 env 이름 해석(alias·`populate_by_name`)을 실물로 재지 않고 일반 지식으로 계약을 썼다
+- **방지책**: 설정 키 이름 충돌을 피하려면 alias가 아니라 **필드명 자체**를 고유하게 둔다. 계약 문서에 env 키 해석을 적을 때는 그 설정 클래스의 `model_config`(`populate_by_name`·`env_prefix`)를 확인하고 한 줄 실측(`Cls(_env_file=None)` + monkeypatch env)으로 검증한다
+
+### 2026-10-21 · (plans/191 W1) 서드파티 import가 `.env`를 `os.environ`에 싣는 것을 못 보고 OS 원천 판정을 `os.environ`으로 했다
+- **실수**: sre_agent 설정 관리 어댑터가 「`os.environ`에 있는 키 = OS 원천(override_os)」으로 판정했다. 그런데 litellm은 import 시 `dotenv.load_dotenv()`로 CWD `.env`를 `os.environ`에 싣는다. 그 결과 파일에 적힌 모든 키가 override_os로 판정됐고, 웹 저장은 사실상 동작하지 않았다(verifier Critical). dry-run 로더도 env 원천이 후보 파일을 이겨 옛 값을 검증했다
+- **원인**: 단위 테스트는 litellm을 거치지 않는 깨끗한 환경에서 돌아 이 결함을 재현하지 못했다. 같은 프로세스의 의존 패키지가 환경을 바꾸는지 실측하지 않았다
+- **방지책**: 「값 출처」를 `os.environ`으로 판정하는 코드는 패키지 `__init__`에서 import 시점 환경 키를 스냅샷하고 그 집합으로만 판정한다(`sre_agent.PROCESS_ENV_KEYS_AT_IMPORT`). 다른 패키지는 실 진입점을 import한 뒤 `os.environ`을 import 전후로 비교해 함정이 없는지 실측한다
+
+### 2026-10-21 · (plans/191 W2) 본체 테스트의 가짜 컴포넌트가 계약과 다른 오류 키를 써 계약 불일치를 가렸다
+- **실수**: 컴포넌트 공용 모듈은 `errors[]` 항목을 `{key, error}`로 냈고 본체 UI는 `message`를 읽었다. 그런데 본체 테스트의 가짜 컴포넌트가 `message`를 돌려줘 테스트가 통과했다. bool 값도 같은 문제였다. 컴포넌트는 `True`를 냈고 UI는 `.env` 문자열 `"true"`를 기대했지만, 가짜가 UI 기대 쪽으로 맞춰져 있어 걸리지 않았다(verifier Major 2건)
+- **원인**: 프로세스를 넘는 계약을 양쪽이 각자 가짜로 테스트했고, 가짜가 SPEC이 아니라 소비자 코드의 기대에 맞춰 작성됐다
+- **방지책**: 프로세스 경계 계약의 가짜 응답은 SPEC 예시를 그대로 옮기고, 가능하면 실제 공급자 모듈(공용 `ConfigAdminService`)이 만든 응답으로 소비자 테스트를 한 건 이상 돌린다

@@ -4,5 +4,5 @@
 Redis Stream('alarm:raw')에 발행한다.
 
 에이전트 서버(src/)와 독립된 별도 프로세스로 실행된다.
-기동 방법: python -m alarm_server
+기동 방법: python -m noise_gate.alarm_server
 """

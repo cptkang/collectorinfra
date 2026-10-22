@@ -48,9 +48,12 @@ from apm_gateway.application.jobs import Job, JobManager
 from apm_gateway.application.masking import mask_text
 from apm_gateway.application.scope_tools import ScopeTools, scope_target
 from apm_gateway.application.tools import ApmTools
+from apm_gateway.config import GatewayConfig
 from apm_gateway.domain import jobs as js
 from apm_gateway.domain.errors import API_ERROR, CONTRACT_VIOLATION, INVALID_ARGUMENT, ApmError
 from apm_gateway.interface.audit import audit
+from apm_gateway.interface.config_admin import AdminPathRouter, build_admin_app
+from apm_gateway.interface.config_admin_adapter import build_adapter
 
 if TYPE_CHECKING:  # 런타임 import는 순환(`manage_server`가 이 모듈의 인자 주석을 쓴다)
     from apm_gateway.interface.manage_server import RunData
@@ -167,17 +170,32 @@ class BearerPrincipalMiddleware:
         await send({"type": "http.response.body", "body": body})
 
 
-def build_asgi_app(mcp: FastMCP, tokens: Mapping[str, str] | str | None) -> Starlette:
+def build_asgi_app(
+    mcp: FastMCP, tokens: Mapping[str, str] | str | None, cfg: GatewayConfig | None = None
+) -> Starlette | AdminPathRouter:
     """SSE 앱에 주체별 Bearer 미들웨어를 씌운다(`mcp.run(transport="sse")`에는 주입점이 없다).
 
     `tokens`는 `{주체: 토큰}`(설정 `ServerConfig.bearer_tokens`) — 문자열 하나를 주면 주체
     `default`다.
+    cfg에 관리 토큰(`APM_GATEWAY_ADMIN_TOKEN`)이 있을 때만 `/admin/config` 경로 분기 래퍼를 바깥에
+    씌운다(plans/191 · D-345 — 없으면 종전과 같은 앱). 관리 토큰이 어느 주체의 Bearer 토큰과 같으면
+    관리 경로가 그 토큰으로 열리므로 등록하지 않고 경고 1줄을 남긴다.
     """
     if isinstance(tokens, str):
         tokens = {js.DEFAULT_PRINCIPAL: tokens}
+    tokens = dict(tokens or {})
     app = mcp.sse_app()
-    app.add_middleware(BearerPrincipalMiddleware, tokens=dict(tokens or {}))
-    return app
+    app.add_middleware(BearerPrincipalMiddleware, tokens=tokens)
+    if cfg is None or not cfg.server.admin_token:
+        return app
+    admin_token = cfg.server.admin_token
+    if any(hmac.compare_digest(admin_token.encode(), t.encode()) for t in tokens.values()):
+        logger.warning(
+            "설정 관리 API 미등록: 관리 토큰이 MCP Bearer 토큰과 같다"
+            "(APM_GATEWAY_ADMIN_TOKEN을 바꿀 것)"
+        )
+        return app
+    return AdminPathRouter(app, build_admin_app(build_adapter(cfg), admin_token))
 
 
 def request_principal(mcp: FastMCP) -> str:

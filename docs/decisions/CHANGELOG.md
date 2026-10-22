@@ -8,6 +8,8 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-21 | D-345 | 부기 — alarm_server 설정 파일 우선순위 교정(`env_file` `[.env, alarm_server.env]` · 전용 파일 우선 · `.env` 보충 `fallback` · `override_dotenv` 제외 폐지) — 행동 변경 · 사용자 지시 |
+| 2026-10-21 | D-345 · D-179 | D-345 본문 등재(예약 → 확정 · 분리 컴포넌트 설정 관리 API + 본체 프록시 · G-1~G-7 사용자 위임 권고안 채택 · G-3·G-4 실측 보정) · D-179 상태·부기(D-345가 「본체 UI에서 쓰지 않는다」 개정) — `plans/191` W0 |
 | 2026-10-19 | D-341 | 상태 「미구현」→「구현(잔여 있음)」 · 구현 경로 · 구현 부기(R-D 미충족 · G-26 HolmesGPT 캐시 공용 미구현 · W7 외부망만 · 3단 배선 · 보안 교정 · 예시 KE 픽스처 이동) — `plans/187` W0~W6·W8~W12 |
 | 2026-10-19 | D-003 | 부기 — MariaDB 10.x는 `transaction_read_only`가 없어(1193) 운영 itam 풀 초기화 실패 → `tx_read_only` 폴백(`mcp_server/db.py` `_create_mariadb_readonly_pool`) · 강등 없음 |
 | 2026-10-19 | D-343 | 신규 — `plans/188` W5: Gemma 4 도구 호출 마크업(`<\|tool_call>call:…<tool_call\|>`)을 `DefaultLLM.completion` 응답 후처리로 `tool_calls` 변환 · tools 있는 호출만 · 해석 실패면 원본(→ D-342 W4 종결) · `TOOL_CALL_MARKUP_PARSE_ENABLED` 기본 on 예외(만료 2027-04-19) · 커밋 없음 |
