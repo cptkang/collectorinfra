@@ -282,7 +282,11 @@ def _default_diagnose_fn(
         # 조사 지침 주입(plans/50 G5 · D-197): 원격 셸 안내 · 사건 구간 · 운영자 추가 지침.
         # 종전에는 additions를 넘기지 않아 REMOTE_VM_SHELL_NOTE조차 주입되지 않았다.
         # 기록이 없으면 종전 호출 그대로(선택 인자를 넘기지 않는다 — 플래그 off 비트 동일).
-        extra = {"activity": activity} if activity is not None else {}
+        extra: dict = {"activity": activity} if activity is not None else {}
+        # 플레이북 모드 심층 잡(G-26)은 잡 사본에 잡 단위 도구 캐시가 실려 온다 — 두 엔진 공용.
+        tool_cache = getattr(job, "tool_cache", None)
+        if tool_cache is not None:
+            extra["tool_cache"] = tool_cache
         result = agent.ask(
             _job_to_question(job, settings),
             system_prompt_additions=build_guidance(

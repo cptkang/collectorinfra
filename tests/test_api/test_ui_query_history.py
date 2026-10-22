@@ -55,9 +55,10 @@ def test_exactly_two_view_tabs(index_html: str) -> None:
     """이력이 사이드바가 되면서 탭은 둘로 돌아왔다.
 
     plans/187 W15 장애 진단은 사전 게이트 뒤에만 보이는 셋째 탭이다.
+    plans/187 W16 조사 대화는 「조사 대화로 열기」로만 보이는 넷째 탭이다(대화 화면 공유).
     """
     views = re.findall(r'class="view-tab[^"]*"\s+data-view="(\w+)"', index_html)
-    assert sorted(views) == ["alarm", "chat", "diagnosis"], views
+    assert sorted(views) == ["alarm", "chat", "diagnosis", "investigation"], views
 
 
 def test_sidebar_collapse_states_cover_both_panels(style_css: str) -> None:
@@ -147,7 +148,8 @@ def test_panel_key_is_declared_before_init(app_js: str) -> None:
 def test_scroll_restore_only_on_chat(app_js: str) -> None:
     """복원 분기가 else면 이력 탭으로 *갈* 때도 돌아 엉뚱한 곳을 만진다."""
     body = app_js.split("function setActiveView(view)")[1].split("\n    }\n")[0]
-    assert 'view === "chat" && stickToBottom' in body
+    # plans/187 W16: 조사 대화 탭도 대화 화면(chat)이라 shown(표시 화면) 기준으로 본다
+    assert 'shown === "chat" && stickToBottom' in body
 
 
 # ─── 서빙 ───

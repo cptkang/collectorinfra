@@ -39,6 +39,8 @@
     var chatView = document.getElementById("chatView");
     var alarmView = document.getElementById("alarmView");
     var diagnosisView = document.getElementById("diagnosisView");   // plans/187 W15 장애 진단
+    var investigationTab = document.getElementById("investigationTab");   // plans/187 W16 조사 대화
+    var investigationTabClose = document.getElementById("investigationTabClose");
     var alarmList = document.getElementById("alarmList");
     var alarmEmpty = document.getElementById("alarmEmpty");
     var alarmTabBadge = document.getElementById("alarmTabBadge");
@@ -319,6 +321,9 @@
     // disclosures에 ref.investigation_id로 남겨 사이드바 재열기 때 고정 카드를 복원한다)와 고정 카드 패널.
     var pendingInvestigationRef = null;
     var investigationPinPanel = null;
+    // plans/187 W16 조사 대화 탭 — 대화 화면에 올라 있는 쪽("chat"|"investigation")과 내려 둔 다른 쪽 대화
+    var conversationSlot = "chat";
+    var parkedConversation = null;
     var PROMPT_PLACEHOLDER = promptEl ? promptEl.placeholder : "";
     // 존 역질문(파일 경로) 재전송용 — 마지막 업로드 파일 참조 (Plan 75 §4 확장)
     var lastUploadedFile = null;
@@ -4273,11 +4278,14 @@
     }
 
     function setActiveView(view) {
+        // plans/187 W16: 「조사 대화」 탭은 대화 화면(chatView)을 질의응답과 함께 쓴다 — 탭을 옮기면 대화를 바꿔 끼운다
+        if ((view === "chat" || view === "investigation") && view !== conversationSlot && !swapConversation(view)) return;
         activeView = view;
         var views = viewRegistry();
+        var shown = view === "investigation" ? "chat" : view;
         Object.keys(views).forEach(function (key) {
             var el = views[key];
-            if (el) el.classList.toggle("view-hidden", key !== view);
+            if (el) el.classList.toggle("view-hidden", key !== shown);
         });
         document.querySelectorAll(".view-tab").forEach(function (btn) {
             var on = btn.dataset.view === view;
@@ -4288,7 +4296,7 @@
             alarmUnreadCount = 0;
             renderAlarmBadge();
             updateAlarmScrollBtn();   // 복귀 시 스크롤 위치에 맞춰 "맨 위로" 버튼 표시 갱신
-        } else if (view === "chat" && stickToBottom && chatMessages) {
+        } else if (shown === "chat" && stickToBottom && chatMessages) {
             // 숨겨진 동안 chatMessages.scrollHeight는 0이라 스트리밍 추종이 맨 위로 밀어 놓는다.
             // 돌아올 때 "맨 아래 고정" 상태였던 경우에 한해 복원한다.
             // (조건을 else로 두면 이력 탭으로 *갈* 때 복원이 돌아 엉뚱한 곳을 만진다.)
@@ -4639,6 +4647,7 @@
             showError("처리 중인 질의가 끝난 뒤 대화를 불러올 수 있습니다.");
             return;
         }
+        if (activeView === "investigation") setActiveView("chat");   // 이력은 질의응답 탭에 연다(plans/187 W16)
         fetch("/api/v1/threads/" + encodeURIComponent(threadId), { headers: getAuthHeaders() })
             .then(function (res) {
                 if (res.status === 404) throw new Error("대화를 찾을 수 없습니다");
@@ -4759,19 +4768,131 @@
         if (promptEl) promptEl.placeholder = PROMPT_PLACEHOLDER;
     }
 
-    // 알람 카드 「조사 대화로 열기」 · `/?investigation=<id>` 진입 — 질의응답 탭으로 넘어가 새 대화를 연다.
+    // 「조사 대화로 열기」(알람 카드 · 장애 진단 종결 화면 · 노이즈 관제 · `/?conversation=<id>`) —
+    // 「조사 대화」 탭을 열고(없으면 보이고) 그 탭의 대화를 새 조사 대화로 바꾼다. 질의응답 탭 대화는 그대로다.
     function openInvestigationConversation(investigationId) {
-        if (!investigationId || !INVESTIGATION_ID_RE.test(String(investigationId))) return;
+        if (!investigationId || !INVESTIGATION_ID_RE.test(String(investigationId))) return false;
         if (isProcessing) {
             showError("답변이 끝난 뒤 조사 대화를 열 수 있습니다.");
-            return;
+            return false;
         }
-        setActiveView("chat");
+        showInvestigationTab(true);
+        setActiveView("investigation");
         startNewChat();
         pendingInvestigationRef = String(investigationId);
         if (promptEl) promptEl.placeholder = INVESTIGATION_PROMPT_HINT;
         renderInvestigationPin(pendingInvestigationRef, { restored: false });
+        return true;
     }
+
+    // ─── 조사 대화 탭 (plans/187 W16 · §5.6.1 1 개정) ───
+    // 질의응답·조사 대화 두 탭이 대화 화면 하나를 함께 쓴다. 화면에 올라 있지 않은 쪽 대화는 말풍선 노드와
+    // 대화 상태(thread · 범위 칩 · 고정 카드 패널)를 통째로 내려 두었다가 탭으로 돌아오면 다시 올린다.
+    // 떼어 낸 패널은 공용 렌더가 재조회를 멈추므로(isConnected) 다시 올릴 때 open()으로 새로 읽는다.
+    // 답변 스트리밍 중에는 바꿔 끼우지 않는다.
+    // 상태 변수 conversationSlot·parkedConversation은 위 「State」에 둔다(초기화 전에 setActiveView가 불릴 수 있다).
+
+    function captureConversation() {
+        var nodes = document.createDocumentFragment();
+        Array.prototype.filter.call(chatMessages.children, function (el) { return el.classList.contains("message"); })
+            .forEach(function (el) { nodes.appendChild(el); });
+        return {
+            nodes: nodes,
+            welcomeHidden: !!(chatWelcome && chatWelcome.classList.contains("hidden")),
+            messages: messages,
+            currentThreadId: currentThreadId,
+            lastUploadedFile: lastUploadedFile,
+            currentDbScope: currentDbScope,
+            pendingDbIds: pendingDbIds,
+            pendingReset: pendingReset,
+            currentApmScope: currentApmScope,
+            apmScopeInherited: apmScopeInherited,
+            pendingApmIds: pendingApmIds,
+            pendingApmReset: pendingApmReset,
+            pendingInvestigationRef: pendingInvestigationRef,
+            investigationPinPanel: investigationPinPanel,
+            chatInvestigationPanels: chatInvestigationPanels,
+            placeholder: promptEl ? promptEl.placeholder : "",
+            draft: promptEl ? promptEl.value : "",
+        };
+    }
+
+    function restoreConversation(saved) {
+        saved = saved || {
+            nodes: null, welcomeHidden: false, messages: [], currentThreadId: null, lastUploadedFile: null,
+            currentDbScope: null, pendingDbIds: null, pendingReset: false, currentApmScope: null,
+            apmScopeInherited: false, pendingApmIds: null, pendingApmReset: false, pendingInvestigationRef: null,
+            investigationPinPanel: null, chatInvestigationPanels: [], placeholder: PROMPT_PLACEHOLDER, draft: "",
+        };
+        if (saved.nodes) chatMessages.appendChild(saved.nodes);
+        if (chatWelcome) chatWelcome.classList.toggle("hidden", saved.welcomeHidden);
+        messages = saved.messages;
+        currentThreadId = saved.currentThreadId;
+        lastUploadedFile = saved.lastUploadedFile;
+        currentDbScope = saved.currentDbScope;
+        pendingDbIds = saved.pendingDbIds;
+        pendingReset = saved.pendingReset;
+        currentApmScope = saved.currentApmScope;
+        apmScopeInherited = saved.apmScopeInherited;
+        pendingApmIds = saved.pendingApmIds;
+        pendingApmReset = saved.pendingApmReset;
+        pendingInvestigationRef = saved.pendingInvestigationRef;
+        investigationPinPanel = saved.investigationPinPanel;
+        chatInvestigationPanels = saved.chatInvestigationPanels;
+        if (promptEl) {
+            promptEl.placeholder = saved.placeholder;
+            promptEl.value = saved.draft;
+        }
+        if (investigationPinPanel) investigationPinPanel.open();
+        chatInvestigationPanels.forEach(function (p) { p.open(); });
+    }
+
+    function swapConversation(slot) {
+        if (isProcessing) {
+            showError("답변이 끝난 뒤 탭을 옮길 수 있습니다.");
+            return false;
+        }
+        hideError();
+        hidePromptConfirm();
+        var current = captureConversation();
+        restoreConversation(parkedConversation);
+        parkedConversation = current;
+        conversationSlot = slot;
+        closeApmScopePopover();
+        updateDbScopeChip();
+        updateApmScopeChip();
+        showProgressEmpty();
+        stickToBottom = true;
+        renderHistoryList();
+        return true;
+    }
+
+    function showInvestigationTab(on) {
+        if (investigationTab) investigationTab.style.display = on ? "" : "none";
+        if (investigationTabClose) investigationTabClose.style.display = on ? "" : "none";
+    }
+
+    // × — 조사 대화 탭을 닫는다. 질의한 조사 대화는 이력에 남아 있다(질의 없이 닫으면 남지 않는다 — D-248 ④).
+    function closeInvestigationTab() {
+        if (activeView === "investigation") {
+            if (!swapConversation("chat")) return;
+            setActiveView("chat");
+        } else if (conversationSlot === "investigation") {
+            if (!swapConversation("chat")) return;
+        }
+        // 이제 조사 대화는 내려 둔 쪽에 있다 — 재조회를 멈추고 버린다
+        var gone = parkedConversation;
+        parkedConversation = null;
+        if (gone) {
+            if (gone.investigationPinPanel) gone.investigationPinPanel.close();
+            gone.chatInvestigationPanels.forEach(function (p) { p.close(); });
+        }
+        showInvestigationTab(false);
+    }
+
+    // 노이즈 관제(다른 브라우저 탭)가 이 창을 이름으로 찾아 부른다(noise.js openPortalConversation)
+    window.name = "kbaiops-portal";
+    window.KBPortal = { openInvestigationConversation: openInvestigationConversation };
 
     function renderInvestigationPin(investigationId, opts) {
         if (!window.BriefingView || !chatMessages) return;
@@ -4916,18 +5037,22 @@
     // `/?investigation=<id>`(관제 드로어 새 탭 · workb 링크) — 열고 나면 쿼리를 지워 새로고침 = 새 대화(D-248 ⑧)
     // (plans/187 W15 · G-34) `/?diagnosis=<id>`(관제 드로어 새 탭)도 받는다. 장애 진단이 켜져 있으면 둘 다
     // 그 조사의 진단 하위 탭으로 열고, 꺼져 있으면 종전 조사 대화로 연다.
+    // (W16) `/?conversation=<id>`(노이즈 관제가 열린 포털 창을 못 찾았을 때)는 진단 여부와 무관하게 조사 대화 탭으로 연다.
     function openInvestigationFromQuery() {
         var params = new URLSearchParams(window.location.search);
         var id = params.get("investigation");
         var diag = params.get("diagnosis");
-        if (id === null && diag === null) return;
+        var conv = params.get("conversation");
+        if (id === null && diag === null && conv === null) return;
         params.delete("investigation");
         params.delete("diagnosis");
+        params.delete("conversation");
         var rest = params.toString();
         history.replaceState(null, "", window.location.pathname + (rest ? "?" + rest : "") + window.location.hash);
         if (id === null) id = diag;
+        if (id === null) id = conv;
         if (!INVESTIGATION_ID_RE.test(id)) { showError("조사 id 형식이 올바르지 않아 조사 대화를 열지 않았습니다."); return; }
-        if (window.DiagnosisView && window.DiagnosisView.openIfEnabled(id)) return;
+        if (conv === null && window.DiagnosisView && window.DiagnosisView.openIfEnabled(id)) return;
         openInvestigationConversation(id);
     }
 
@@ -4949,6 +5074,10 @@
             analyzeFor: function (investigationId, view, alarmId) {
                 var target = investigationAlarmIds[investigationId] || alarmId;
                 return target ? analyzeOptions(target, { follow: false, probe: true }) : null;
+            },
+            // (plans/187 W18) 「이벤트 찾아 조사」 — 기존 「분석 요청」과 같은 접수 라우트(존 검사·상한·합류)
+            startInvestigation: function (alarmId) {
+                return bvRequest("/api/v1/alarm/" + encodeURIComponent(alarmId) + "/investigations", "POST");
             },
         }).catch(function (err) {
             console.warn("[diagnosis] 장애 진단 초기화 실패:", err);
@@ -5209,7 +5338,13 @@
         if (historySearch) {
             historySearch.addEventListener("input", function () { renderHistoryList(); });
         }
-        if (newChatBtn) newChatBtn.addEventListener("click", startNewChat);
+        if (newChatBtn) {
+            newChatBtn.addEventListener("click", function () {
+                if (activeView === "investigation" && !isProcessing) setActiveView("chat");   // plans/187 W16
+                startNewChat();
+            });
+        }
+        if (investigationTabClose) investigationTabClose.addEventListener("click", closeInvestigationTab);
         updateAlarmViewState();
         setupHistoryPanel();
     }

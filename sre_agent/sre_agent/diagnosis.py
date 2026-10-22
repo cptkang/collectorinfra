@@ -6,16 +6,28 @@ holmesgpt 0.36.0 실측 API 기준:
   (`_StreamDrain` — 결과 조립은 holmes `ToolCallingLLM.call()`과 같다 · plans/154 W1)
 """
 
+import copy
+import json
 import logging
 import re
+import threading
 import time
+from collections.abc import Callable
 from dataclasses import dataclass, field
+from typing import Any
 
 from holmes.config import Config
 from holmes.core.llm_usage import RequestStats
 from holmes.core.prompt import build_initial_ask_messages
 from holmes.core.tool_calling_llm import LLMResult, ToolCallingLLM
-from holmes.core.tools import PrerequisiteCacheMode, ToolsetStatusEnum, ToolsetTag, ToolsetType
+from holmes.core.tools import (
+    PrerequisiteCacheMode,
+    StructuredToolResult,
+    StructuredToolResultStatus,
+    ToolsetStatusEnum,
+    ToolsetTag,
+    ToolsetType,
+)
 from holmes.utils.colors import AI_COLOR
 from holmes.utils.stream import StreamEvents
 
@@ -23,6 +35,7 @@ from sre_agent.domain.activity_log import ActivityLog, safe_append
 from sre_agent.infrastructure.bash_write_guard import install_bash_write_guard
 from sre_agent.infrastructure.llm_message_guard import install_system_message_guard
 from sre_agent.infrastructure.tool_call_markup_guard import install_tool_call_markup_guard
+from sre_agent.infrastructure.tool_result_cache import CacheClosedError, ToolResultCache
 from sre_agent.settings import AgentSettings
 from sre_agent.toolset_profiles import LOAD_GUARD_NOTE, vm_profile
 
@@ -148,6 +161,96 @@ def tools_unavailable_result(errors: dict[str, str]) -> DiagnosisResult:
     return DiagnosisResult(answer=TOOLS_UNAVAILABLE_PREFIX, tools_unavailable=line)
 
 
+def _result_text(result: StructuredToolResult) -> str:
+    """holmes 도구 결과 → 잡 캐시 값(플레이북 배치 콜러블과 같은 「도구 반환 문자열」).
+
+    MCP 도구는 `data`가 도구 텍스트(isError여도 `data`에 실린다)이고, 호출 예외는 `error`만 있다
+    — 후자는 배치 콜러블의 `{"error": …}`와 같은 모양으로 남긴다.
+    """
+    data = result.data
+    if isinstance(data, str):
+        return data
+    if data is not None:
+        return json.dumps(data, ensure_ascii=False, default=str)
+    if result.error:
+        return json.dumps({"error": result.error}, ensure_ascii=False)
+    return ""
+
+
+def _result_from_text(text: str, params: dict) -> StructuredToolResult:
+    """잡 캐시 값 → holmes 도구 결과. `{"error": …}` 단독이면 ERROR, 그 밖은 SUCCESS(텍스트)."""
+    try:
+        parsed = json.loads(text)
+    except ValueError:
+        parsed = None
+    if isinstance(parsed, dict) and set(parsed) == {"error"}:
+        return StructuredToolResult(status=StructuredToolResultStatus.ERROR,
+                                    error=str(parsed["error"]), params=params)
+    return StructuredToolResult(status=StructuredToolResultStatus.SUCCESS, data=text,
+                                params=params)
+
+
+class _CachedToolInvoke:
+    """잡 단위 도구 결과 캐시를 거치는 holmes `_directly_invoke_tool_call` 대체 (G-26 · D-341 ⑲).
+
+    holmes 0.36.0 실측: 병렬 도구 호출은 `call_stream`의 스레드풀(16)이
+    `self._invoke_llm_tool_call` → `self._directly_invoke_tool_call(tool_name, tool_params,
+    user_approved, tool_call_id, …)`로 부른다. `ask` 1회마다 `ToolCallingLLM` 얕은 사본에 이 객체를
+    인스턴스 속성으로 얹으므로(holmes `with_executor`와 같은 요청별 사본) 스레드풀 문맥 전파 없이도
+    그 잡의 캐시만 쓰인다 — 공유 `ToolCallingLLM`·전역 상태는 건드리지 않는다(잡 간 누수 0).
+
+    캐시 대상은 MCP 도구(`mcp_tool_name`)뿐이다 — 플레이북이 부르는 폴스타·APM 도구와 같은
+    서버 쪽 이름으로 키를 만든다(충돌 접두어가 붙은 노출 이름이 아니다). 그 밖의 도구·사용자 승인
+    재호출은 종전 그대로 부른다. 잡이 끝나 캐시가 닫혔으면 실호출 없이 오류 결과를 돌려준다.
+    """
+
+    def __init__(self, llm: ToolCallingLLM, cache: ToolResultCache) -> None:
+        self._llm = llm
+        self._inner = llm._directly_invoke_tool_call
+        self._cache = cache
+        self._lock = threading.Lock()
+        self._hits: set[str] = set()
+
+    def __call__(self, tool_name: str, tool_params: dict, user_approved: bool,
+                 tool_call_id: str, **kwargs: Any) -> StructuredToolResult:
+        user_id = (kwargs.get("request_context") or {}).get("user_id")
+        tool = self._llm.tool_executor.get_tool_by_name(tool_name, user_id=user_id)
+        server_name = getattr(tool, "mcp_tool_name", None) or None
+        if server_name is None or user_approved:
+            return self._inner(tool_name, tool_params, user_approved, tool_call_id, **kwargs)
+        owned: list[StructuredToolResult] = []
+
+        def _batch(calls: object) -> list[str]:
+            res = self._inner(tool_name, tool_params, user_approved, tool_call_id, **kwargs)
+            owned.append(res)
+            return [_result_text(res)]
+
+        try:
+            text = self._cache.fetch(_batch, [(str(server_name), tool_params)])[0]
+        except CacheClosedError as exc:
+            return StructuredToolResult(status=StructuredToolResultStatus.ERROR,
+                                        error=str(exc), params=tool_params)
+        if owned:
+            return owned[0]
+        with self._lock:
+            self._hits.add(tool_call_id)
+        return _result_from_text(text, tool_params)
+
+    def is_hit(self, tool_call_id: str) -> bool:
+        """이 호출이 잡 캐시(완료·진행 중)에서 나왔는지 — 실행 기록 `status=cached`용."""
+        with self._lock:
+            return tool_call_id in self._hits
+
+
+def _with_tool_cache(llm: ToolCallingLLM, cache: ToolResultCache
+                     ) -> tuple[ToolCallingLLM, _CachedToolInvoke]:
+    """`ask` 1회용 사본 — 도구 실행만 잡 캐시를 거친다(원본·다른 잡은 그대로)."""
+    invoke = _CachedToolInvoke(llm, cache)
+    clone = copy.copy(llm)
+    clone._directly_invoke_tool_call = invoke
+    return clone, invoke
+
+
 class _StreamDrain:
     """holmes `ToolCallingLLM.call_stream`을 직접 소비하는 `call()` 대체 (plans/154 W1 · M-2).
 
@@ -164,10 +267,14 @@ class _StreamDrain:
     판단 회차 `llm_start`(라운드 시작·도구 묶음 종료 뒤) → `llm_end`(AI 메시지·도구 시작·종결 중 첫
     이벤트) · `START_TOOL` → `tool_start`(도구명만 옴) · `TOOL_RESULT` → `tool_end`(`description`
     한 줄 · `result.status` · 발췌) · `AI_MESSAGE` 본문 → `ai_note`. 없으면 기록 0(결과 조립 불변).
+    `cache_hit`(G-26)이 있으면 잡 캐시에서 나온 도구 결과의 `tool_end`를 `status=cached`로 남긴다
+    (플레이북 스텝의 캐시 적중 표시와 같다).
     """
 
-    def __init__(self, llm: ToolCallingLLM, activity: ActivityLog | None = None) -> None:
+    def __init__(self, llm: ToolCallingLLM, activity: ActivityLog | None = None,
+                 cache_hit: Callable[[str], bool] | None = None) -> None:
         self._llm = llm
+        self._cache_hit = cache_hit
         self.tool_calls: list[dict] = []
         self.num_llm_calls = 0
         # 끝난 스트림 라운드의 누적(`call()`의 accumulated_stats)
@@ -222,7 +329,10 @@ class _StreamDrain:
             result = data.get("result") if isinstance(data.get("result"), dict) else {}
             status = result.get("status")
             status = str(getattr(status, "value", status) or "unknown")
-            t0 = self._tool_t0.pop(str(data.get("tool_call_id") or ""), None)
+            call_id = str(data.get("tool_call_id") or "")
+            if self._cache_hit is not None and call_id and self._cache_hit(call_id):
+                status = "cached"
+            t0 = self._tool_t0.pop(call_id, None)
             name = str(data.get("tool_name") or data.get("name") or "")
             text = result.get("data") or result.get("error")
             log.append(
@@ -484,7 +594,8 @@ class DiagnosisAgent:
         return frozenset(self.llm.tool_executor.tools_by_name)
 
     def ask(self, question: str, system_prompt_additions: str | None = None,
-            activity: ActivityLog | None = None) -> DiagnosisResult:
+            activity: ActivityLog | None = None,
+            tool_cache: ToolResultCache | None = None) -> DiagnosisResult:
         """자연어 질문으로 장애 진단을 수행한다.
 
         holmes는 max_steps 상한 도달 시 전용 클래스 없이 plain `Exception("Too many LLM
@@ -496,6 +607,9 @@ class DiagnosisAgent:
         plans/154 W1: holmes를 `call_stream` 직접 소비(`_StreamDrain`)로 부른다 — 상한 예외에서도
         그때까지의 도구 기록·토큰·step 수를 미완주 결과에 싣는다(답변 문구는 종전 그대로).
         상한 턴에서 예외 없이 결론을 낸 경우(`steps == max_steps`)는 미완주로 바꾸지 않는다.
+
+        `tool_cache`(G-26 · 선택)는 플레이북 모드 잡의 잡 단위 캐시다 — 주면 이 조사의 MCP 도구
+        호출이 플레이북과 같은 캐시를 거친다(`_CachedToolInvoke`). 없으면 종전 호출 그대로.
         """
         messages = build_initial_ask_messages(
             initial_user_prompt=question,
@@ -503,7 +617,11 @@ class DiagnosisAgent:
             tool_executor=self.llm.tool_executor,
             system_prompt_additions=_with_load_guard_note(system_prompt_additions),
         )
-        drain = _StreamDrain(self.llm, activity=activity)
+        if tool_cache is None:
+            drain = _StreamDrain(self.llm, activity=activity)
+        else:
+            llm, invoke = _with_tool_cache(self.llm, tool_cache)
+            drain = _StreamDrain(llm, activity=activity, cache_hit=invoke.is_hit)
         try:
             result = drain.run(messages)
         except Exception as exc:  # noqa: BLE001 — holmes는 전용 예외 클래스 없이 plain Exception

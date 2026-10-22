@@ -446,6 +446,29 @@ body:has(.chat-layout.history-collapsed) {
     outline-offset: -2px;
 }
 
+/* plans/187 W16 「조사 대화」 탭 닫기 — 탭 버튼 안에 버튼을 넣지 않으려 바로 옆 형제로 둔다 */
+.view-tab-close {
+    align-self: center;
+    margin-left: -6px;
+    padding: 2px 6px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.view-tab-close:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+}
+
+.view-tab-close:focus-visible {
+    outline: 2px solid var(--accent);
+}
+
 /* 미확인 알람 수 — 다른 뷰에 있는 동안 도착한 건수만 센다(0이면 감춘다) */
 .view-tab-badge {
     display: none;
@@ -637,20 +660,24 @@ body:has(.chat-layout.history-collapsed) {
 .dv-note:empty { display: none; }
 .dv-note--warn { color: var(--warning); }
 
-.dv-list {
+.dv-list,
+.dv-search-list {
     width: 100%;
     border-collapse: collapse;
     font-size: 0.8125rem;
 }
 
 .dv-list th,
-.dv-list td {
+.dv-list td,
+.dv-search-list th,
+.dv-search-list td {
     padding: 6px 8px;
     border-bottom: 1px solid var(--table-cell-border);
     text-align: left;
 }
 
-.dv-list th {
+.dv-list th,
+.dv-search-list th {
     color: var(--text-secondary);
     border-bottom-color: var(--table-header-border);
 }
@@ -669,6 +696,24 @@ body:has(.chat-layout.history-collapsed) {
 .dv-tab-meta {
     font-size: 0.8125rem;
     color: var(--text-secondary);
+}
+
+/* (plans/187 W17) 어떤 알람·대상을 왜 조사하는지 */
+.dv-target {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 2px 8px;
+    margin: 4px 0;
+    font-size: 0.8125rem;
+}
+
+.dv-target dt {
+    color: var(--text-secondary);
+}
+
+.dv-target dd {
+    margin: 0;
+    overflow-wrap: anywhere;
 }
 
 .dv-grid {
@@ -780,6 +825,80 @@ body:has(.chat-layout.history-collapsed) {
 .dv-text {
     flex: 1 1 200px;
     min-width: 0;
+    overflow-wrap: anywhere;
+}
+
+/* (plans/187 W18) 이벤트 찾아 조사 */
+.dv-search {
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.dv-search h3 {
+    margin: 0 0 6px;
+    font-size: 0.875rem;
+}
+
+.dv-search-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 6px 10px;
+}
+
+.dv-search-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    min-width: 0;
+}
+
+.dv-search-field input {
+    max-width: 100%;
+    box-sizing: border-box;
+    height: 32px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.8125rem;
+}
+
+.dv-search-btn,
+.dv-start-btn {
+    flex: 0 0 auto;
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.8125rem;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.dv-search-btn:hover,
+.dv-start-btn:hover:not(:disabled) { background: var(--surface-hover); }
+.dv-start-btn:disabled { opacity: 0.6; cursor: default; }
+
+.dv-search-status,
+.dv-search-note {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+.dv-purpose {
+    flex-basis: 100%;
+    padding-left: 18px;
+    color: var(--text-secondary);
     overflow-wrap: anywhere;
 }
 

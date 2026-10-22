@@ -441,7 +441,10 @@ def app_js() -> str:
 def test_other_screens_open_in_new_tab(index_html: str, link_id: str) -> None:
     # 같은 탭으로 이동하면 이 페이지가 내려가 질의응답 화면이 사라진다
     tag = re.search(r'<a id="' + link_id + r'"[^>]*>', index_html).group(0)
-    assert 'target="_blank"' in tag and 'rel="noopener"' in tag
+    assert 'target="_blank"' in tag
+    # plans/187 W16: 노이즈 관제만 rel="opener"(target=_blank의 암묵 noopener 해제) — 관제가 이 창을
+    # 이름으로 찾아 「조사 대화」 탭을 연다
+    assert 'rel="opener"' in tag if link_id == "noiseConsoleLink" else 'rel="noopener"' in tag
 
 
 def test_history_mode_buttons(index_html: str) -> None:
@@ -470,6 +473,8 @@ def test_new_chat_button_starts_fresh_thread(index_html: str, app_js: str) -> No
     body = app_js.split("function startNewChat()", 1)[1].split("\n    }\n", 1)[0]
     assert "currentThreadId = null" in body
     assert 'querySelectorAll(".message")' in body
-    assert 'newChatBtn.addEventListener("click", startNewChat)' in app_js
+    handler = app_js.split('newChatBtn.addEventListener("click", function () {', 1)[1]
+    handler = handler.split("});", 1)[0]
+    assert "startNewChat();" in handler
     # 패널을 접어도 보여야 한다 — 접히면 숨는 본문(historyPanelBody) 밖에 둔다
     assert index_html.index('id="newChatBtn"') < index_html.index('id="historyPanelBody"')

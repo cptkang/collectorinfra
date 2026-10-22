@@ -1113,17 +1113,37 @@ def _is_alarm_operator(config: Any, current_user: dict[str, Any]) -> bool:
     return bool(not config.auth.enabled) or is_admin_user(current_user)
 
 
+#: 값 패턴 앞뒤 경계 — 식별자·Base64 문자에 붙어 있으면 비밀값 조각으로 보지 않는다.
+_INLINE_EDGE = r"A-Za-z0-9+/=_\-"
+
+
 def _investigation_mask_fn(config: Any) -> Callable[[str], str]:
-    """사용자 뷰 마스킹 함수 — 관제(`noise_dashboard._mask_fn`)와 같은 값 패턴 방식."""
+    """사용자 뷰 마스킹 함수 — 관제(`noise_dashboard._mask_fn`)와 같은 값 패턴 방식.
+
+    plans/187 잔여 ⑥(2026-10-22 사용자 결정): 값 전체가 비밀값 꼴이면 통째로 가리고, 아니면 한 줄
+    안에 섞인 비밀값만 가린다 — 민감 키의 값·Bearer·JWT·URL 비밀번호(`mask_secrets`)와 같은 값
+    패턴의 부분 일치. 운영자 뷰에는 쓰지 않는다(원문).
+    """
     from src.security.data_masker import DataMasker
+    from src.utils.log_masking import mask_secrets
 
     mask = str(config.security.mask_pattern)
+    inline = [
+        re.compile(
+            rf"(?<![{_INLINE_EDGE}])(?:{p.pattern.removeprefix('^').removesuffix('$')})"
+            rf"(?![{_INLINE_EDGE}])"
+        )
+        for p in DataMasker.SENSITIVE_VALUE_PATTERNS
+    ]
 
     def _mask(text: str) -> str:
         for pattern in DataMasker.SENSITIVE_VALUE_PATTERNS:
             if pattern.match(text):
                 return mask
-        return text
+        masked = mask_secrets(text)
+        for pattern in inline:
+            masked = pattern.sub(mask, masked)
+        return masked
 
     return _mask
 
@@ -1258,6 +1278,13 @@ async def _investigation_response(
             entry, max(activity_since, -1), operator=operator,
             mask_fn=None if operator else _investigation_mask_fn(config),
         ))
+    if hub is not None and activity_since is not None:
+        # (plans/187 W17) 장애 진단 화면 — 어떤 알람을 조사하는지(판정 기록의 알람 요약)
+        alarm = _investigation_alarm_brief(
+            config, rec, None if operator else _investigation_mask_fn(config), operator
+        )
+        if alarm:
+            view["alarm"] = alarm
     # (plans/187 W9 · G-15) KB가 켜져 있으면 운영자 뷰 브리핑 **사본**에 참고 문서·KE 재발 신호를
     # 붙인다. 꺼져 있거나 사용자 뷰(원 브리핑 없음)면 종전과 비트 동일하다. (plans/187 W5a) 사용자
     # 뷰의 플레이북 표시 부분(`briefing`)에는 붙이지 않는다.
@@ -1442,6 +1469,8 @@ async def list_active_investigations(
             recs, operator=operator, mask_fn=None if operator else _investigation_mask_fn(config)
         ),
         "poll_seconds": hub.poll_seconds,
+        # (plans/187 W18) 「이벤트 찾아 조사」 — 다시 분석 접수가 켜져 있을 때만 화면이 칸을 보인다
+        "event_search": _manual_enabled(config),
     }
 
 
@@ -1691,6 +1720,44 @@ def _with_notice(view: dict[str, Any]) -> dict[str, Any]:
 def _followup_error(status_code: int, code: str, reason: str) -> HTTPException:
     """추가 조사 라우트의 거부 — `detail = {code, reason}`(사유 노출 · 침묵 금지)."""
     return HTTPException(status_code=status_code, detail={"code": code, "reason": reason})
+
+
+#: 장애 진단 화면 머리의 알람 요약 키(판정 기록 뷰에서 고른다 — 조건 로그는 운영자 뷰에만 남는다).
+_ALARM_BRIEF_KEYS: tuple[str, ...] = (
+    "alarm_id", "alarm_name", "server_name", "hostname", "resource_name", "resource_type",
+    "alarm_time", "ts", "tier", "reason", "condition_log",
+)
+
+
+def _investigation_alarm_brief(
+    config: Any,
+    rec: dict[str, Any],
+    mask_fn: Callable[[str], str] | None,
+    operator: bool,
+) -> dict[str, Any] | None:
+    """조사에 걸린 첫 알람(없으면 `parent_alarm_id`)의 판정 기록 요약(plans/187 W17).
+
+    판정 기록 뷰(`get_decision`)가 사용자 경로의 운영자 전용 키 제거·마스킹을 이미 한다.
+    존 검사는 호출부(`_assert_investigation_access`)가 먼저 했다. 기록이 없으면 None.
+    """
+    from noise_gate.infrastructure.decision_store import DecisionStore
+
+    alarm_id = next(iter(rec.get("alarm_ids") or []), None) or rec.get("parent_alarm_id")
+    if not alarm_id:
+        return None
+    ng = config.noise_gate
+    decision = DecisionStore(
+        ng.decision_store_path,
+        bool(getattr(ng, "decision_store_enabled", True)),
+        int(getattr(ng, "decision_store_max_lines", 20000)),
+    ).get_decision(str(alarm_id), mask_fn=mask_fn, operator_view=operator)
+    if not decision:
+        return None
+    brief = {k: decision[k] for k in _ALARM_BRIEF_KEYS if decision.get(k) not in (None, "")}
+    signals = decision.get("signals")
+    if isinstance(signals, dict) and isinstance(signals.get("severity"), (int, float)):
+        brief["severity"] = signals["severity"]
+    return brief
 
 
 def _decision_alarm_info(config: Any, alarm_id: str) -> dict[str, Any]:

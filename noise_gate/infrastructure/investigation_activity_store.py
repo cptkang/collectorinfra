@@ -31,6 +31,7 @@ _DEFAULT_MAX_LINES = 1000
 #: 요약에 남기는 이벤트 키(발췌·AI 메모 제외).
 SUMMARY_EVENT_KEYS: tuple[str, ...] = (
     "seq", "at", "engine", "kind", "step", "tool", "label", "status", "elapsed_ms", "rows",
+    "purpose",
 )
 #: 요약에서 통째로 빼는 이벤트 종류(G-38 — AI 메모는 보관하지 않는다).
 EXCLUDED_KINDS: frozenset[str] = frozenset({"ai_note"})

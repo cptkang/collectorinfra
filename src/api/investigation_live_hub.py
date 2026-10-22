@@ -72,7 +72,7 @@ STATE_KEYS: tuple[str, ...] = ("phase", "queue_position", "elapsed_s")
 #: 사용자 경로 이벤트 키(화이트리스트 — `note`는 싣지 않는다 · G-38 fail-closed).
 USER_EVENT_KEYS: tuple[str, ...] = (
     "seq", "at", "engine", "kind", "step", "tool", "label", "status", "elapsed_ms", "rows",
-    "excerpt",
+    "excerpt", "purpose",
 )
 #: 마스킹하지 않는 이벤트 키(수치·enum·도구 이름).
 _UNMASKED_EVENT_KEYS: frozenset[str] = frozenset({
@@ -80,7 +80,7 @@ _UNMASKED_EVENT_KEYS: frozenset[str] = frozenset({
 })
 #: 관리자에게만 보내는 이벤트 종류(G-38).
 ADMIN_ONLY_KINDS: frozenset[str] = frozenset({"ai_note"})
-_CLIP_KEYS: tuple[str, ...] = ("label", "excerpt", "note")
+_CLIP_KEYS: tuple[str, ...] = ("label", "excerpt", "note", "purpose")
 _STATUS_RUNNING = "running"
 #: 목록 「엔진」 칸에 싣는 엔진 이름(W14 교정 — 그 밖의 값은 버린다).
 LIST_ENGINES: frozenset[str] = frozenset({"playbook", "holmes"})
