@@ -333,7 +333,7 @@
 ::: what
 `sre_agent`·`apm_gateway`·`mcp_server`·`alarm_server`·`fabrix_proxy`처럼 **별도 프로세스로 도는 컴포넌트의 설정**을 이 화면에서 조회·저장한다. 본체는 각 컴포넌트의 설정 관리 API를 중계만 하고, 값의 검증과 파일 저장은 컴포넌트가 직접 한다.
 
-목록 위에 **설정 대상** 선택이 나타나고, 고른 컴포넌트의 카드에 연결 상태·버전·기동 시각·읽는 파일·쓰기 가능 여부·재기동 대기 항목이 보인다. 본체 설정 파일에 컴포넌트 주소(`COMPONENT_ADMIN_ENDPOINTS`)가 하나도 없으면 선택이 나타나지 않고 화면은 예전과 같다.
+목록 위에 **설정 대상** 선택이 나타나고, 고른 컴포넌트의 카드에 연결 상태·버전·기동 시각·읽는 파일·쓰기 가능 여부·재기동 대기 항목이 보인다. 본체 `.encenv`의 `COMPONENT_ADMIN_TOKENS`에 관리 토큰을 넣은 컴포넌트만 나타난다. `sre_agent`·`apm_gateway`·`mcp_server` 주소는 이미 등록된 서비스 주소(`NOISE_INVESTIGATION_SERVICE_URL`·`MCP_SOURCE_ENDPOINTS`·`DBHUB_SERVER_URL`)에서 가져오므로 따로 적지 않는다. `alarm_server`·`fabrix_proxy`는 `COMPONENT_ADMIN_ENDPOINTS`에 주소를 적는다. 토큰이 하나도 없으면 선택이 나타나지 않고 화면은 예전과 같다.
 :::
 ::: how
 1. 「환경변수 설정」 탭 위의 **설정 대상**에서 컴포넌트 이름을 누른다. 연결되지 않은 컴포넌트는 이름 옆에 ⚠가 붙고, 카드에 사유(연결 실패·응답 시간 초과·관리 토큰 불일치·관리 API 꺼짐 등)가 나온다.

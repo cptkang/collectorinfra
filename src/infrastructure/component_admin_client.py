@@ -17,10 +17,11 @@ import json
 import logging
 from dataclasses import dataclass
 from typing import Any
+from urllib.parse import urlsplit
 
 import httpx
 
-from src.config import COMPONENT_ADMIN_NAMES, ComponentAdminConfig
+from src.config import COMPONENT_ADMIN_NAMES, AppConfig, ComponentAdminConfig
 
 logger = logging.getLogger(__name__)
 
@@ -70,8 +71,51 @@ def _failure(reason: str, detail: str = "", status_code: int | None = None) -> C
     return ComponentResult(status_code=status_code, reason=reason, message=message)
 
 
-def resolve_endpoints(config: ComponentAdminConfig) -> tuple[dict[str, str], list[str]]:
+def _origin(url: str) -> str:
+    """서비스 URL(예 `http://h:9098/sse`)에서 `scheme://host:port`만 남긴다.
+
+    http(s)가 아니면 빈 값.
+    """
+    parsed = urlsplit((url or "").strip())
+    if parsed.scheme.lower() not in ("http", "https") or not parsed.netloc:
+        return ""
+    return f"{parsed.scheme}://{parsed.netloc}"
+
+
+def derive_endpoints(app_config: AppConfig) -> dict[str, str]:
+    """이미 등록된 서비스 URL에서 관리 API 기준 URL을 얻는다.
+
+    관리 라우트는 서비스와 같은 호스트·포트에 있다(G-7).
+
+    - `sre_agent` ← `NOISE_INVESTIGATION_SERVICE_URL`
+    - `apm_gateway` ← `MCP_SOURCE_ENDPOINTS["apm"]` → 없으면 `NOISE_APM_MCP_URL`
+    - `mcp_server` ← `DBHUB_SERVER_URL`
+
+    `alarm_server`(관리 전용 리스너)·`fabrix_proxy`(본체가 아는 프록시 주소 없음)는 원천이 없어
+    `COMPONENT_ADMIN_ENDPOINTS`에 직접 적는다.
+    """
+    noise_gate = app_config.noise_gate
+    dbhub = app_config.dbhub
+    candidates = {
+        "sre_agent": noise_gate.investigation_service_url,
+        "apm_gateway": dbhub.source_endpoints.get("apm") or noise_gate.apm_mcp_url,
+        "mcp_server": dbhub.server_url,
+    }
+    derived: dict[str, str] = {}
+    for name, url in candidates.items():
+        origin = _origin(url)
+        if origin:
+            derived[name] = origin
+    return derived
+
+
+def resolve_endpoints(
+    config: ComponentAdminConfig, derived: dict[str, str] | None = None,
+) -> tuple[dict[str, str], list[str]]:
     """설정의 endpoints를 허용 이름·http(s) URL로 거른다.
+
+    `COMPONENT_ADMIN_ENDPOINTS`에 없는 컴포넌트는 `COMPONENT_ADMIN_TOKENS`에 토큰이 있을 때만
+    `derived`(기존 서비스 URL에서 얻은 주소)를 쓴다 — 토큰이 없으면 기능 off(현행 화면 동일).
 
     Returns:
         (이름 → 기준 URL — 허용 상수 순서, 무시한 항목 경고 문구 목록)
@@ -80,9 +124,12 @@ def resolve_endpoints(config: ComponentAdminConfig) -> tuple[dict[str, str], lis
     for name in config.endpoints:
         if name not in COMPONENT_ADMIN_NAMES:
             warnings.append(f"알 수 없는 컴포넌트 이름이라 무시했습니다: {name}")
+    tokens, _ = parse_tokens(config)
     resolved: dict[str, str] = {}
     for name in COMPONENT_ADMIN_NAMES:
         url = config.endpoints.get(name)
+        if url is None and name in tokens:
+            url = (derived or {}).get(name)
         if url is None:
             continue
         if not isinstance(url, str) or not url.lower().startswith(("http://", "https://")):
@@ -116,15 +163,17 @@ class ComponentAdminClient:
         self,
         config: ComponentAdminConfig,
         *,
+        derived: dict[str, str] | None = None,
         transport: httpx.AsyncBaseTransport | None = None,
     ) -> None:
         """설정을 해석해 둔다.
 
         Args:
             config: `AppConfig.component_admin`
+            derived: 기존 서비스 URL에서 얻은 주소(`derive_endpoints`) — 토큰이 있는 컴포넌트만 쓴다
             transport: 테스트용 httpx 전송(가짜 컴포넌트 ASGI·MockTransport). 운영은 None.
         """
-        self._endpoints, endpoint_warnings = resolve_endpoints(config)
+        self._endpoints, endpoint_warnings = resolve_endpoints(config, derived)
         self._tokens, token_warnings = parse_tokens(config)
         self.warnings: list[str] = endpoint_warnings + token_warnings
         self._timeout = config.timeout_seconds

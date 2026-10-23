@@ -3,6 +3,7 @@
 > `plans/INDEX.md` 머리의 갱신 이력과, 2026-10-06(D-304) 축약 전의 긴 「상태」 칸 원문을 보존한다. **새 갱신 이력은 아래 「갱신 이력」 목록 맨 위에 한 줄씩 추가한다.** INDEX 머리에는 최종 갱신 날짜만 둔다.
 
 ## 갱신 이력
+- 2026-10-22 — 191 관리 주소 파생: `sre_agent`·`apm_gateway`·`mcp_server`는 기존 서비스 URL에서 관리 주소를 얻는다(토큰만 등록 · 명시 주소 우선) · D-345 부기 · 상태 「커밋 전」→ `82b2a7ae`
 - 2026-10-21 — 191 잔여 3 해소: alarm_server 설정 파일 우선순위 교정(전용 `alarm_server.env`가 공용 `.env`를 이김 · `.env`는 보충) · D-345 부기 · 행동 변경 · 매뉴얼 admin 원천 갱신
 - 2026-10-21 — **191 WIP 유지(구현 완료)**: W1~W7 — 공용 `config_admin.py` 정본(sre_agent)+사본 4·컴포넌트별 어댑터·관리 토큰(기본 off=404)·본체 `component_admin` 프록시·설정 탭 대상 선택·매뉴얼 A-82(원 A-81) · 검증·감사 교정(줄 구분자 주입·`$` 확장·보안 경계 키 읽기 전용·litellm `.env` 주입 스냅샷·오류 계약 `{key,message}`) · 잔여 캡처·CLAUDE.md 1줄
 - 2026-10-21 — **191 TODO→WIP**: 심도 검토·W0 — SPEC `spec/SPEC-component-config-admin.md` · D-345 등재(D-179 개정·부기) · 게이트 G-1~G-7 사용자 위임 권고안 채택 · 실측 정정(alarm_server `.env`가 전용 파일을 이김·CWD 기준 · sre_agent 미들웨어 전체 래핑 · mcp_server `load_config`의 `os.environ` 변경 · 가드 키 읽기 전용) · Wave 재분할(W2~W5 병렬)

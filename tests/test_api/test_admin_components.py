@@ -150,6 +150,8 @@ def _app(fake: _FakeComponents, *, endpoints: dict[str, str] | None = None,
         auth=SimpleNamespace(enabled=auth, jwt_secret=USER_SECRET),
         admin=SimpleNamespace(jwt_secret=ADMIN_SECRET),
         component_admin=_component_config(endpoints),
+        noise_gate=SimpleNamespace(investigation_service_url="", apm_mcp_url=""),
+        dbhub=SimpleNamespace(server_url="", source_endpoints={}),
     )
     app.state.user_repo = _UserRepo()
     app.state.component_admin_transport = httpx.MockTransport(fake.handler)
@@ -394,8 +396,11 @@ def test_put_generates_request_id_without_middleware(audits):  # noqa: ANN001
     fake = _FakeComponents()
     app = FastAPI()
     app.include_router(routes.router, prefix="/api/v1")
-    app.state.config = SimpleNamespace(auth=SimpleNamespace(enabled=False),
-                                       component_admin=_component_config())
+    app.state.config = SimpleNamespace(
+        auth=SimpleNamespace(enabled=False), component_admin=_component_config(),
+        noise_gate=SimpleNamespace(investigation_service_url="", apm_mcp_url=""),
+        dbhub=SimpleNamespace(server_url="", source_endpoints={}),
+    )
     app.state.component_admin_transport = httpx.MockTransport(fake.handler)
     TestClient(app).put("/api/v1/admin/components/sre_agent/config", json={"settings": {}})
     put = [c for c in fake.calls if c.method == "PUT"][0]
@@ -605,3 +610,71 @@ out = {json.dumps(cases)}.map(function (item) {{
     return buildToggle(item).className.indexOf(" on") !== -1;
 }});""")
     assert out == [True, True, True, False, False]
+
+
+# ── 기존 서비스 URL에서 관리 주소 파생 (COMPONENT_ADMIN_ENDPOINTS 중복 등록 제거) ──
+
+def _service_config(**noise: str) -> SimpleNamespace:
+    return SimpleNamespace(
+        noise_gate=SimpleNamespace(
+            investigation_service_url=noise.get("sre", "http://sre.test:9098/sse"),
+            apm_mcp_url=noise.get("apm", ""),
+        ),
+        dbhub=SimpleNamespace(
+            server_url="http://mcp.test:9099/sse",
+            source_endpoints={"apm": "http://apm.test:9096/sse"},
+        ),
+    )
+
+
+def test_derive_endpoints_uses_existing_service_urls_origin():
+    from src.infrastructure.component_admin_client import derive_endpoints
+
+    assert derive_endpoints(_service_config()) == {
+        "sre_agent": "http://sre.test:9098",
+        "apm_gateway": "http://apm.test:9096",
+        "mcp_server": "http://mcp.test:9099",
+    }
+
+
+def test_derive_apm_falls_back_to_noise_apm_url_and_skips_non_http():
+    from src.infrastructure.component_admin_client import derive_endpoints
+
+    cfg = _service_config(sre="file:///etc/passwd", apm="https://apm2.test/sse")
+    cfg.dbhub.source_endpoints = {}
+    derived = derive_endpoints(cfg)
+    assert derived["apm_gateway"] == "https://apm2.test"
+    assert "sre_agent" not in derived
+
+
+def test_derived_endpoint_needs_token_and_explicit_wins():
+    derived = {"sre_agent": "http://sre.test:9098", "mcp_server": "http://mcp.test:9099"}
+    # 토큰 없음 = 기능 off(현행 화면 동일)
+    assert resolve_endpoints(_component_config(endpoints={}, tokens={}), derived)[0] == {}
+    # 토큰이 있는 컴포넌트만 파생 주소를 쓴다
+    resolved, _ = resolve_endpoints(
+        _component_config(endpoints={}, tokens={"sre_agent": SRE_TOKEN}), derived)
+    assert resolved == {"sre_agent": "http://sre.test:9098"}
+    # 명시 주소가 파생 주소를 이긴다
+    resolved, _ = resolve_endpoints(
+        _component_config(endpoints={"sre_agent": "http://other.test"},
+                          tokens={"sre_agent": SRE_TOKEN}), derived)
+    assert resolved == {"sre_agent": "http://other.test"}
+
+
+def test_route_lists_component_from_derived_url_without_endpoints():
+    fake = _FakeComponents()
+    app = FastAPI()
+    app.include_router(routes.router, prefix="/api/v1")
+    cfg = _service_config(sre="http://sre.test/sse")
+    app.state.config = SimpleNamespace(
+        auth=SimpleNamespace(enabled=False, jwt_secret=USER_SECRET),
+        admin=SimpleNamespace(jwt_secret=ADMIN_SECRET),
+        component_admin=_component_config(endpoints={}),
+        noise_gate=cfg.noise_gate, dbhub=cfg.dbhub,
+    )
+    app.state.user_repo = _UserRepo()
+    app.state.component_admin_transport = httpx.MockTransport(fake.handler)
+    rows = TestClient(app).get("/api/v1/admin/components").json()["components"]
+    assert [(r["name"], r["reachable"]) for r in rows] == [("sre_agent", True)]
+    assert [str(c.url) for c in fake.calls] == ["http://sre.test/admin/config/status"]

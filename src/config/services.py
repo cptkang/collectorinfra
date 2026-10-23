@@ -203,11 +203,13 @@ class ComponentAdminConfig(BaseSettings):
     """분리 컴포넌트 설정 관리 프록시 (plans/191 · D-345 · `spec/SPEC-component-config-admin.md` §5).
 
     각 컴포넌트가 자기 `/admin/config` API를 소유하고, 본체는 관리자 화면용으로 HTTP 프록시만 한다
-    (import 0 · D-139). `endpoints`가 비면 기능 off — 설정 탭에 대상 선택이 그려지지 않는다(현행 동일).
+    (import 0 · D-139). `tokens`가 비면 기능 off — 설정 탭에 대상 선택이 그려지지 않는다(현행 동일).
     """
 
-    # 컴포넌트 이름 → 관리 API 기준 URL(JSON · 예 {"sre_agent": "http://127.0.0.1:9098"}).
+    # 컴포넌트 이름 → 관리 API 기준 URL(JSON · 예 {"alarm_server": "http://127.0.0.1:9101"}).
     # 이름은 `COMPONENT_ADMIN_NAMES` 밖이면, URL은 http(s)가 아니면 무시하고 경고한다.
+    # sre_agent·apm_gateway·mcp_server는 비워 두면 토큰이 있을 때 기존 서비스 URL에서 주소를 얻는다
+    # (`component_admin_client.derive_endpoints`).
     endpoints: dict[str, str] = Field(default_factory=dict)
     # 이름 → 관리 토큰(JSON 객체 문자열 · 시크릿 — `.encenv` 관리 · 웹UI 편집 차단·repr 마스킹).
     tokens: SecretStr = SecretStr("")

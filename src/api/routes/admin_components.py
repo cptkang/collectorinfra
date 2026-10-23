@@ -6,7 +6,8 @@
 `/admin/config/*`를 그대로 중계한다. 본체는 컴포넌트 패키지를 import하지 않는다(D-139).
 
 - 전부 `require_admin_user`(role·`type` 클레임 명시 검증).
-- `{name}`은 허용 상수 ∩ `COMPONENT_ADMIN_ENDPOINTS` 키만 받는다(그 밖은 404 — 임의 URL 금지).
+- `{name}`은 허용 상수 ∩ (`COMPONENT_ADMIN_ENDPOINTS` 키 ∪ 토큰이 있고 기존 서비스 URL에서 주소를
+  얻은 컴포넌트)만 받는다(그 밖은 404 — 임의 URL 금지).
 - 응답의 시크릿 항목 값(`file_value`·`effective_value`)은 한 번 더 지운다(방어 심화).
 - 저장은 본체 감사 `SETTINGS_UPDATE`에 컴포넌트 이름·키 이름만 남긴다(값은 컴포넌트 감사가 보관).
 """
@@ -23,7 +24,11 @@ from fastapi.responses import JSONResponse
 
 from src.api.admin_audit import log_admin_event
 from src.api.dependencies import require_admin_user
-from src.infrastructure.component_admin_client import ComponentAdminClient, ComponentResult
+from src.infrastructure.component_admin_client import (
+    ComponentAdminClient,
+    ComponentResult,
+    derive_endpoints,
+)
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -33,7 +38,9 @@ def _client(request: Request) -> ComponentAdminClient:
     """실행 중 설정으로 클라이언트를 만든다(`component_admin_transport`는 테스트 주입 지점)."""
     config = request.app.state.config
     transport = getattr(request.app.state, "component_admin_transport", None)
-    return ComponentAdminClient(config.component_admin, transport=transport)
+    return ComponentAdminClient(
+        config.component_admin, derived=derive_endpoints(config), transport=transport,
+    )
 
 
 def _require_component(client: ComponentAdminClient, name: str) -> None:
@@ -85,7 +92,7 @@ async def list_components(
 ) -> dict[str, Any]:
     """설정된 컴포넌트의 연결 상태를 병렬로 모은다(개별 실패 격리).
 
-    `COMPONENT_ADMIN_ENDPOINTS`가 비면 빈 목록 — 화면은 대상 선택을 그리지 않는다.
+    주소가 해석된 컴포넌트가 없으면 빈 목록 — 화면은 대상 선택을 그리지 않는다.
     """
     client = _client(request)
     for warning in client.warnings:

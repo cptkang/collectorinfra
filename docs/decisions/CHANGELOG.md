@@ -8,6 +8,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-22 | D-345 | 부기 — 관리 주소 파생: `sre_agent`·`apm_gateway`·`mcp_server`는 토큰이 있으면 기존 서비스 URL(`NOISE_INVESTIGATION_SERVICE_URL`·`MCP_SOURCE_ENDPOINTS[apm]`/`NOISE_APM_MCP_URL`·`DBHUB_SERVER_URL`)의 호스트·포트를 쓴다(명시 주소 우선) · 사용자 지시 |
 | 2026-10-21 | D-345 | 부기 — alarm_server 설정 파일 우선순위 교정(`env_file` `[.env, alarm_server.env]` · 전용 파일 우선 · `.env` 보충 `fallback` · `override_dotenv` 제외 폐지) — 행동 변경 · 사용자 지시 |
 | 2026-10-21 | D-345 · D-179 | D-345 본문 등재(예약 → 확정 · 분리 컴포넌트 설정 관리 API + 본체 프록시 · G-1~G-7 사용자 위임 권고안 채택 · G-3·G-4 실측 보정) · D-179 상태·부기(D-345가 「본체 UI에서 쓰지 않는다」 개정) — `plans/191` W0 |
 | 2026-10-20 | D-344 | 신규 — SRE 조사 플레이북 APM 호출 지연 교정(`plans/190`): 해소 소스 `source_ids` 한정 · 기간 모드 app_health `xview_confirm_over`(기본 10 · 기본 off 예외) + confirm 시 시 단위 통계 대체·판정 불가·한계 노출 · `apm_tool_timeout_seconds` · 후속 대기 정렬 규칙 문서 |
