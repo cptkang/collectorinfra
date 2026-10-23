@@ -3613,6 +3613,11 @@ input.bv-input { min-width: 16em; }
 /* 조사 대화 첫 고정 카드(app.js) — 브리핑 본문은 위 공용 스타일 */
 .investigation-pin .message-bubble { max-width: 100%; }
 .investigation-pin-head { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 0.8rem; margin-bottom: 6px; }
+.investigation-pin-target { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0 0 8px; font-size: 0.78rem; line-height: 1.5; padding: 6px 8px; border-radius: 6px; background: var(--surface-hover); }
+.investigation-pin-target[hidden] { display: none; }
+.investigation-pin-target dt { font-weight: 700; white-space: nowrap; }
+.investigation-pin-target dd { margin: 0; overflow-wrap: anywhere; }
+.investigation-pin-target dd ol { margin: 0; padding: 0; list-style: none; }
 .investigation-pin-foot { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; font-size: 0.72rem; color: var(--text-muted); }
 .investigation-pin-scope { color: var(--warning); }
 

@@ -4890,31 +4890,6 @@
         showInvestigationTab(false);
     }
 
-    // 노이즈 관제(다른 브라우저 탭)가 이 창의 「장애 진단」 탭(꺼져 있으면 「조사 대화」 탭)에 조사를 연다
-    // (noise.js openInPortal — plans/187 W19 · G-46). 관제를 이 창이 열었으면 window.opener로 직접 부르고,
-    // 아니면 BroadcastChannel로 묻는다 — 포털 탭이 여럿이면 관제가 마지막으로 본 탭(seen) 하나만 고른다.
-    function openInvestigationFromPortal(investigationId) {
-        if (!investigationId || !INVESTIGATION_ID_RE.test(String(investigationId))) return false;
-        return openInvestigationEntry(String(investigationId));
-    }
-    window.KBPortal = { openInvestigation: openInvestigationFromPortal };
-
-    var PORTAL_TAB_ID = String(Date.now()) + "-" + Math.random().toString(36).slice(2);
-    var portalSeenAt = Date.now();
-    document.addEventListener("visibilitychange", function () { portalSeenAt = Date.now(); });
-    if (typeof BroadcastChannel === "function") {
-        var portalChannel = new BroadcastChannel("kbaiops-portal");
-        portalChannel.onmessage = function (ev) {
-            var m = ev.data || {};
-            if (m.type === "probe") {
-                portalChannel.postMessage({ type: "here", req: m.req, portal: PORTAL_TAB_ID,
-                    seen: document.hidden ? portalSeenAt : Date.now() });
-            } else if (m.type === "open" && m.portal === PORTAL_TAB_ID) {
-                portalChannel.postMessage({ type: "result", req: m.req, ok: openInvestigationFromPortal(m.id) });
-            }
-        };
-    }
-
     function renderInvestigationPin(investigationId, opts) {
         if (!window.BriefingView || !chatMessages) return;
         if (chatWelcome) chatWelcome.classList.add("hidden");
@@ -4923,6 +4898,7 @@
         el.innerHTML =
             '<div class="message-content"><div class="message-bubble">' +
                 '<div class="investigation-pin-head">조사 대화 · 조사 브리핑</div>' +
+                '<dl class="investigation-pin-target" hidden></dl>' +
                 '<div class="investigation-pin-body"></div>' +
                 '<div class="investigation-pin-foot">' +
                     '<span>이 카드는 조사 기록을 보여 줄 뿐 질의의 맥락으로 쓰이지 않습니다. ' +
@@ -4936,6 +4912,10 @@
         var scoped = !!(opts && opts.restored);   // 복원한 대화는 저장된 범위를 따른다
         var path = "/api/v1/alarm/investigations/" + encodeURIComponent(investigationId);
         var pinAlarmId = investigationAlarmIds[investigationId] || null;
+        // (plans/187 W23) 어떤 알람·대상의 조사인지 — 첫 조회에만 알람 요약을 받아 머리 아래에 둔다
+        var targetBox = el.querySelector(".investigation-pin-target");
+        var targetShown = false;
+        var pinAlarm = null;
         investigationPinPanel = window.BriefingView.attach(el.querySelector(".investigation-pin-body"), {
             limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
             render: { mode: "detail" },
@@ -4960,12 +4940,19 @@
             analyze: pinAlarmId ? analyzeOptions(pinAlarmId, { follow: false, probe: true }) : null,
             onOpenConversation: openInvestigationConversation,
             load: async function () {
-                var resp = await fetch(path, { headers: getAuthHeaders() });
+                var resp = await fetch(targetShown ? path : path + "?with_alarm=true", { headers: getAuthHeaders() });
                 if (!resp.ok) {
                     var detail = await resp.json().catch(function () { return {}; });
                     throw new Error(detail.detail || ("HTTP " + resp.status));
                 }
-                return resp.json();
+                var view = await resp.json();
+                if (!targetShown) {
+                    targetShown = true;
+                    pinAlarm = view.alarm || null;
+                }
+                // 플레이북 줄은 조사가 진행되며 생기므로 재조회마다 다시 그린다(알람 요약은 첫 조회 값)
+                renderPinTarget(targetBox, Object.assign({}, view, { alarm: pinAlarm }));
+                return view;
             },
             engineChoice: async function (choice) {
                 var resp = await fetch(path + "/engine-choice", {
@@ -4987,6 +4974,34 @@
             },
         });
         investigationPinPanel.open();
+    }
+
+    // 조사 대화 카드 머리 아래 「조사 · 알람 · 판정 사유 · 조건 · 함께 조사하는 알람 · 대상 · 플레이북」 줄
+    // (장애 진단 탭과 같은 문형 — 서버 텍스트는 textContent)
+    function renderPinTarget(box, view) {
+        if (!box || !view || !window.DiagnosisView) return;
+        var lines = window.DiagnosisView.conversationHeadLines(view);
+        box.textContent = "";
+        lines.forEach(function (line) {
+            var dt = document.createElement("dt");
+            dt.textContent = line.head;
+            var dd = document.createElement("dd");
+            if (line.items && line.items.length) {
+                // (W24) 조사 항목 — 단계마다 한 줄
+                var ol = document.createElement("ol");
+                line.items.forEach(function (item) {
+                    var li = document.createElement("li");
+                    li.textContent = item;
+                    ol.appendChild(li);
+                });
+                dd.appendChild(ol);
+            } else {
+                dd.textContent = line.text;
+            }
+            box.appendChild(dt);
+            box.appendChild(dd);
+        });
+        box.hidden = !lines.length;
     }
 
     // ─── plans/187 FE-2 공용 호출 ───
