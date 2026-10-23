@@ -13,17 +13,20 @@ settings:
       여기에 적은 컴포넌트(sre_agent·apm_gateway·mcp_server·alarm_server·fabrix_proxy)가 설정 탭 위
       「설정 대상」 선택에 나타나고, 고르면 그 컴포넌트의 설정을 조회·저장한다. 본체는 이 주소에 고정
       경로(/admin/config/…)만 붙여 호출하며, 다섯 이름 밖의 이름이나 http(s)가 아닌 주소는 무시하고
-      서버 로그와 목록 응답에 경고를 남긴다. 비어 있으면 선택이 나타나지 않는다.
+      서버 로그와 목록 응답에 경고를 남긴다. sre_agent·apm_gateway·mcp_server는 적지 않아도 된다 —
+      COMPONENT_ADMIN_TOKENS에 토큰이 있으면 이미 등록된 서비스 주소(NOISE_INVESTIGATION_SERVICE_URL ·
+      MCP_SOURCE_ENDPOINTS의 apm(없으면 NOISE_APM_MCP_URL) · DBHUB_SERVER_URL)의 호스트·포트를 쓴다.
+      여기 적은 값이 그 파생 주소를 이긴다.
     options:
       - value: "{}"
         label: 기본
-        effect: 대상 선택이 없고 설정 탭은 본체 설정만 보인다(현행과 같다).
+        effect: 토큰이 있는 sre_agent·apm_gateway·mcp_server만 기존 서비스 주소로 나타난다(토큰이 없으면 현행과 같다).
     caution: >-
       각 컴포넌트에 관리 토큰을 설정해야 응답한다 — 토큰이 없으면 카드에 「관리 API 꺼짐」이 뜬다.
       컴포넌트가 다른 서버에 있으면 그 서버의 관리 API 포트가 본체에서 열려 있어야 한다.
     example: >-
-      {"sre_agent": "http://127.0.0.1:9098"}로 두고 본체를 재시작하면 설정 탭 위에 「본체 · sre_agent」
-      선택이 생긴다.
+      {"alarm_server": "http://127.0.0.1:9101"}로 두고 COMPONENT_ADMIN_TOKENS에 alarm_server 토큰을 넣은 뒤
+      본체를 재시작하면 설정 탭 위에 「본체 · alarm_server」 선택이 생긴다.
     related: [COMPONENT_ADMIN_TOKENS, COMPONENT_ADMIN_TIMEOUT_SECONDS]
 
   COMPONENT_ADMIN_TOKENS:
