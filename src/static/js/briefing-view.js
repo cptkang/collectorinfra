@@ -11,7 +11,7 @@
  *   - 출처를 표기한다(D-035) — 「자동 조사 · 도구 출력 인용」 배지, `[가설]`·`[미결]` 접두는 배지로 바꾼다.
  *   - 침묵 금지 — 실패·타임아웃·거부·APM 도구 미연결·재조회 상한 도달을 상태 칩·「한계」 칸으로 보인다.
  *   - 「한계」는 접지 않는다. 권고 아래 human-gated 문구는 항상 남긴다(sre_agent `HUMAN_GATED_NOTE`).
- *   - 지연 로드 — 화면이 펼칠 때만 부른다. 조사 중이면 15초 간격으로 다시 묻되 상한(기본 600초 =
+ *   - 지연 로드 — 화면이 펼칠 때만 부른다. 조사 중이면 15초 간격으로 다시 묻되 상한(기본 1200초 =
  *     `investigation_followup_timeout_seconds` 기본 · plans/187 W22)에서 멈춘다. 닫으면 타이머를 정리한다(G-2 (a)).
  *
  * 전역은 `window.BriefingView` 하나만 둔다. DOM 없이 도는 순수 함수(문자열 렌더·재조회 상한)는
@@ -21,7 +21,7 @@
     "use strict";
 
     var POLL_MS = 15000;          // 조사 중 재조회 간격(G-2 (a))
-    var DEFAULT_LIMIT_S = 600;    // 재조회 상한 — capabilities가 값을 주지 않으면 이 값(W22 · 조사 전체 600s 정렬)
+    var DEFAULT_LIMIT_S = 1200;   // 재조회 상한 — capabilities가 값을 주지 않으면 이 값(W22 · 조사 전체 600s의 2배 · D-344 ④)
 
     // sre_agent briefing_builder.HUMAN_GATED_NOTE와 같은 문구(채팅·WorkB가 그대로 싣는 줄).
     var HUMAN_GATED_NOTE = "※ 실행은 운영자 승인 후 수동 — 시스템은 제안만(자동 실행 경로 없음)";

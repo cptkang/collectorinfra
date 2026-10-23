@@ -497,7 +497,7 @@ class AlarmCapabilitiesResponse(BaseModel):
         ),
     )
     investigation_followup_timeout_seconds: float = Field(
-        default=600.0,
+        default=1200.0,
         description=(
             "조사 후속 조회 전체 타임아웃(초) — 웹이 진행 중 조사를 다시 조회하는 상한 "
             "(NOISE_INVESTIGATION_FOLLOWUP_TIMEOUT_SECONDS · plans/153 W2)"
