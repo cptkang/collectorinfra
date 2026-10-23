@@ -381,7 +381,7 @@ class NoiseGateConfig(BaseSettings):
     # off면 CW-A 경로 비트동일(회귀 0). 후속 발송 실패·타임아웃은 감사에 사유 기록(침묵 금지)하고
     # 통보·판정에는 영향을 주지 않는다. 읽기전용·조치 없음(D-003).
     investigation_followup_enabled: bool = False           # (3-E) 즉시통보+후속 브리핑 옵트인
-    investigation_followup_timeout_seconds: float = 600.0  # (3-E) 후속 poll 전체 타임아웃(초) — sre_agent investigation_timeout_seconds(600) 정렬 · W22
+    investigation_followup_timeout_seconds: float = 1200.0  # (3-E) 후속 poll 전체 타임아웃(초) — sre_agent investigation_timeout_seconds(600)보다 커야 한다 · 권장 max(600, 2×조사 상한)(D-344 ④) · W22
     investigation_followup_max_inflight: int = 8           # (3-E) 동시 진행 후속 태스크 상한(알람 폭주 시 spawn 차단·사유 로그)
     # (plans/187 W5a · §5.6 ④) 플레이북 후속 메시지의 조사 대화 링크 base(`<base>/?investigation=<id>`).
     # 비면 링크 대신 「웹에서 확인」 문구만 싣는다. 플레이북 브리핑이 없으면 읽지 않는다(비트 동일).

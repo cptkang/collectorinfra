@@ -323,14 +323,15 @@ out = {limit: BV.DEFAULT_LIMIT_S, poll: BV.POLL_MS, loading: container.innerHTML
 await panel.open(); panel.close();
 out.afterOpen = container.innerHTML.indexOf("조사 중") >= 0;
 """)
-    assert out["limit"] == 600 and out["poll"] == 15000
+    assert out["limit"] == 1200 and out["poll"] == 15000
     assert out["afterOpen"] is True and out["noteCls"] is True
     assert "재조회 상한({s}초)" in _BV_JS.read_text(encoding="utf-8")
 
 
 def test_attach_limit_follows_capability_seconds_else_default():
     # capabilities `investigation_followup_timeout_seconds`(float 초)를 그대로 상한으로 쓴다 —
-    # 값이 없으면(None·0) 600초(W22). 응답이 상한을 넘겨 오면 그 자리에서 멈추고 상한 값을 안내한다.
+    # 값이 없으면(None·0) 1200초(D-344 ④).
+    # 응답이 상한을 넘겨 오면 그 자리에서 멈추고 상한 값을 안내한다.
     out = _node("""
 function slow() {
   return new Promise(function (r) {
@@ -386,7 +387,7 @@ def test_drawer_appends_briefing_after_cause_and_stops_on_close():
     assert "stopInvestigation()" in inv and "BV.attach(" in inv and "initial: block" in inv
     assert "decisionInvestigation(alarmId)" in inv  # 행 레코드엔 블록이 없다 — 열 때 1회 읽기
     assert '"/decisions/"' in _js_function_body(src, "decisionInvestigation")
-    # 관제 화면은 alarm capabilities를 읽지 않는다 — 상한은 공용 기본 600초(limitSeconds 미지정)
+    # 관제 화면은 alarm capabilities를 읽지 않는다 — 상한은 공용 기본 1200초(limitSeconds 미지정)
     assert "limitSeconds" not in inv and "capabilities" not in src
     reload = _js_function_body(src, "reloadInvestigation")
     assert "/api/v1/alarm/investigations/" in reload
