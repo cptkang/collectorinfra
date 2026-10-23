@@ -119,6 +119,7 @@ admin:
   - {id: A-10, title: 설정 리로드, anchors: ["#reloadSettingsBtn"], files: *DASH, captures: [settings-list]}
   - {id: A-11, title: 시크릿 항목, anchors: ["시크릿"], files: *DASH, captures: []}
   - {id: A-12, title: 다른 곳에서 덮인 값, anchors: ["settings"], files: *DASH, captures: []}
+  - {id: A-82, title: 분리 컴포넌트 설정, anchors: ["#settingsTargetBar", "#componentCard", "설정 대상", "/api/v1/admin/components", "재기동 대기: "], files: [src/static/admin/dashboard.html, src/static/js/admin-components.js], captures: []}
   # 3. DB 연결 설정
   - {id: A-13, title: 연결 정보 입력, anchors: ["#testDbBtn", "data-tab=\"dbconfig\""], files: *DASH, captures: [dbconfig]}
   - {id: A-14, title: 연결 테스트, anchors: ["#testDbBtn", "연결 테스트"], files: *DASH, captures: [dbconfig]}

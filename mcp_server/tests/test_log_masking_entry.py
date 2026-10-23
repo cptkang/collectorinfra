@@ -34,7 +34,7 @@ def test_main_installs_record_factory(monkeypatch, restore_logging) -> None:
     cfg = SimpleNamespace(
         server=SimpleNamespace(
             log_level="INFO", name="t", host="127.0.0.1", port=1, transport="stdio",
-            bearer_token="",
+            bearer_token="", admin_token="",
         )
     )
     monkeypatch.setattr(config_mod, "load_config", lambda: cfg)

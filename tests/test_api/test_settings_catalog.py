@@ -179,8 +179,8 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     response = await get_settings_schema(_ADMIN)
 
     # plans/107 intent_frame +1 · plans/126 rag +1 · plans/160 result_viz +1 ·
-    # plans/142 portal_help +1
-    assert len(response.groups) == 28
+    # plans/142 portal_help +1 · plans/191 component_admin +1
+    assert len(response.groups) == 29
     assert response.env_file_path == str(env_file)
     items = {
         item.env_key: item
@@ -220,7 +220,8 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/187 W10 NOISE_INVESTIGATION_ADDITIONAL_* +3 · W11 MANUAL_* +2 · W9 KB_* +7 ·
     # W5a WEB_BASE_URL +1 · W12 SRE_CHAT_INVESTIGATION_ENABLED +1(noise_gate 기존 그룹)
     # plans/187 W14 NOISE_INVESTIGATION_LIVE_{VIEW_ENABLED,POLL_SECONDS} +2(noise_gate 기존 그룹)
-    assert len(items) == 442
+    # plans/191 W2 COMPONENT_ADMIN_{ENDPOINTS,TOKENS,TIMEOUT_SECONDS} +3(신규 그룹 component_admin)
+    assert len(items) == 445
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -358,7 +359,8 @@ def test_t2_group_and_field_counts():
     """
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
-    assert len(group_keys) == 28  # plans/160 W2 result_viz +1 · plans/142 W3 portal_help +1
+    # plans/160 W2 result_viz +1 · plans/142 W3 portal_help +1 · plans/191 W2 component_admin +1
+    assert len(group_keys) == 29
     # plans/111 COMPOSITE_TASK_FRAME_ENABLED +1 · plans/103 TIER3_PLAN_LOOP_ENABLED +1 ·
     # plans/82 v7.1 API_SSE_GROUP_PREVIEW_ROWS +1 ·
     # plans/92 O4 OBS_METRICS_{ENDPOINT_ENABLED,BEARER_TOKEN} +2 ·
@@ -393,7 +395,9 @@ def test_t2_group_and_field_counts():
     # plans/187 W10 NOISE_INVESTIGATION_ADDITIONAL_* +3 · W11 MANUAL_* +2 · W9 KB_* +7 ·
     # W5a WEB_BASE_URL +1 · W12 SRE_CHAT_INVESTIGATION_ENABLED +1(noise_gate 기존 그룹)
     # plans/187 W14 NOISE_INVESTIGATION_LIVE_{VIEW_ENABLED,POLL_SECONDS} +2(noise_gate 기존 그룹)
-    assert len(index) == 442
+    # plans/191 W2 COMPONENT_ADMIN_{ENDPOINTS,TOKENS,TIMEOUT_SECONDS} +3
+    # (신규 그룹 component_admin +1)
+    assert len(index) == 445
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 21
 
@@ -445,6 +449,8 @@ def test_t2_type_detection():
     # dict 필드(plans/125 A-2) — JSON 객체 · `default_factory` 값이 기본값(표지 문자열 아님)
     assert index["MCP_SOURCE_ENDPOINTS"].type == "json_object"
     assert index["MCP_SOURCE_ENDPOINTS"].default == "{}"
+    assert index["COMPONENT_ADMIN_ENDPOINTS"].type == "json_object"  # plans/191 — 같은 전례
+    assert index["COMPONENT_ADMIN_ENDPOINTS"].default == "{}"
     assert index["ALARM_NOTIFICATION_CHANNELS_CSV"].type == "csv"
     assert index["POLESTAR_DB_IDS"].type == "csv"
     assert index["LLM_MODEL"].type == "string"
@@ -463,6 +469,7 @@ def test_t2_secret_detection():
         "OBS_METRICS_BEARER_TOKEN",  # SecretStr 자동 판정(plans/92 O4)
         "NOISE_APM_MCP_TOKEN",  # SecretStr 자동 판정(plans/87 J4 — APM 게이트웨이 Bearer)
         "MCP_SOURCE_TOKENS",  # SecretStr 자동 판정(plans/125 A-2 — 관측 소스 게이트웨이 Bearer)
+        "COMPONENT_ADMIN_TOKENS",  # SecretStr 자동 판정(plans/191 — 컴포넌트 관리 토큰)
     }
     assert index["NOISE_INVESTIGATION_SERVICE_TOKEN"].type == "secret"
     assert index["ADMIN_PASSWORD"].default is None  # 시크릿은 기본값도 노출하지 않는다

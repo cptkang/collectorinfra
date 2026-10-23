@@ -6084,6 +6084,74 @@ select:focus {
     color: var(--text-secondary);
 }
 
+/* plans/191 · D-345: 분리 컴포넌트 대상 선택 · 카드 (admin-components.js) */
+.settings-target {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    margin-bottom: 10px;
+}
+
+.settings-target[hidden],
+.component-card[hidden] {
+    display: none;
+}
+
+.settings-target__label {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-secondary);
+}
+
+.segment-option--down {
+    border-style: dashed;
+}
+
+.component-card {
+    margin-bottom: 14px;
+    padding: 12px 14px;
+    font-size: 0.75rem;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.component-card__head {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.component-card__name {
+    font-family: var(--font-mono);
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.component-card__rows {
+    display: grid;
+    grid-template-columns: max-content 1fr;
+    gap: 4px 14px;
+    margin: 0;
+}
+
+.component-card__rows dt {
+    color: var(--text-muted);
+}
+
+.component-card__rows dd {
+    margin: 0;
+    font-family: var(--font-mono);
+    color: var(--text-secondary);
+    word-break: break-all;
+}
+
+.component-card__error {
+    color: var(--warning);
+}
+
 /* ──────────────────────────────────────────────
    D-191: 설정 옵션 상세 설명 패널 (오른쪽)
    ────────────────────────────────────────────── */

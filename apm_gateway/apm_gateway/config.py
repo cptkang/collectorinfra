@@ -18,6 +18,9 @@
 - 호출 주체(§3.6): `APM_GATEWAY_BEARER_TOKENS`(JSON 객체 `{주체: 토큰}`) + 종전 단일
   `APM_GATEWAY_BEARER_TOKEN`(주체 `default`). 같은 토큰을 두 주체에 주면 기동 실패다(메시지에 토큰
   값 없음).
+- 설정 관리 API(plans/191 · D-345): `APM_GATEWAY_ADMIN_TOKEN`이 있을 때만 `/admin/config`를 연다.
+  `load_dotenv`가 `os.environ`에 넣은 키는 `DOTENV_INJECTED_KEYS`에 기록한다 — 거기 없는데
+  `os.environ`에 있는 키는 프로세스 환경 원천(파일을 고쳐도 반영되지 않음)으로 판정한다.
 """
 
 from __future__ import annotations
@@ -25,6 +28,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -52,6 +56,8 @@ SOURCE_KEY_SUFFIXES = (
     "RATE_LIMIT_PER_SEC",
     "MAX_RESPONSE_BYTES",
 )
+# `load_dotenv`가 `os.environ`에 넣은 키(설정 관리 API의 프로세스 환경 원천 판정용 · plans/191)
+DOTENV_INJECTED_KEYS: set[str] = set()
 
 
 @dataclass
@@ -74,6 +80,8 @@ class ServerConfig:
     bearer_token: str = ""
     # 주체 → 토큰(단일 `bearer_token`은 주체 `default`로 들어 있다). 비면 무인증(주체 `anonymous`).
     bearer_tokens: dict[str, str] = field(default_factory=dict)
+    # 설정 관리 API 토큰(plans/191 · D-345) — 비면 관리 라우트를 등록하지 않는다(현행 동일).
+    admin_token: str = ""
 
 
 @dataclass
@@ -289,7 +297,9 @@ def load_dotenv(path: Path) -> None:
     """`.env`를 `os.environ`에 넣는다(이미 있는 키는 그대로 · 값은 로그에 남기지 않는다)."""
     if not path.exists():
         return
-    for line in path.read_text(encoding="utf-8").splitlines():
+    # 줄 경계는 `\r\n`·`\n`·`\r`만 — `splitlines()`는 유니코드 줄 구분자(U+2028 등)로도 나눠
+    # 값 하나에 키 줄을 끼워 넣을 수 있다(설정 관리 API 사본의 `split_env_lines`와 같은 의미)
+    for line in re.split(r"\r\n|\n|\r", path.read_text(encoding="utf-8")):
         line = line.strip()
         if not line or line.startswith("#") or "=" not in line:
             continue
@@ -297,6 +307,7 @@ def load_dotenv(path: Path) -> None:
         key = key.strip()
         if key and key not in os.environ:
             os.environ[key] = value.strip()
+            DOTENV_INJECTED_KEYS.add(key)
     logger.info(".env 로드: %s", path)
 
 
@@ -380,6 +391,7 @@ def load_config(
             log_level=(get("APM_GATEWAY_LOG_LEVEL") or "INFO").strip(),
             bearer_token=bearer_token,
             bearer_tokens=_bearer_tokens(get("APM_GATEWAY_BEARER_TOKENS"), bearer_token),
+            admin_token=(get("APM_GATEWAY_ADMIN_TOKEN") or "").strip(),
         ),
         runtime=RuntimeConfig(
             timezone=(get("APM_TIMEZONE") or "Asia/Seoul").strip(),
@@ -430,6 +442,7 @@ def describe(cfg: GatewayConfig) -> dict[str, Any]:
         ],
         "bearer": bool(cfg.server.bearer_tokens),
         "bearer_principals": sorted(cfg.server.bearer_tokens),
+        "admin_api": bool(cfg.server.admin_token),
         "jobs": {
             "inline_rows": cfg.jobs.inline_rows,
             "chunk_rows": cfg.jobs.chunk_rows,

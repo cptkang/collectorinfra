@@ -2,7 +2,7 @@
 
 FastMCP(SSE)를 uvicorn으로 기동한다. 기동 순서:
 1. 감사 JSONL 기반 재기동 복구(running/accepted 잡 → failed(restart) 확정, 침묵 유실 금지).
-2. 정적 Bearer 인증 미들웨어를 씌운 ASGI 앱 조립.
+2. 정적 Bearer 인증 미들웨어를 씌운 ASGI 앱 조립(관리 토큰이 있으면 `/admin/config` 래퍼 · D-345).
 3. uvicorn 서빙.
 
 수신부·게이트 엔트리는 통합으로 소멸했다 — 엔트리는 run_service 하나뿐이다(§2).
@@ -17,6 +17,7 @@ import signal
 import uvicorn
 
 from sre_agent.infrastructure.log_masking import install_log_record_factory
+from sre_agent.interface.config_admin import AdminPathRouter
 from sre_agent.interface.mcp_service import (
     DEFAULT_PORT,
     build_asgi_app,
@@ -55,13 +56,14 @@ def main() -> None:
         if settings.service_bearer_token is not None
         else None
     )
-    app = build_asgi_app(mcp, token)
+    app = build_asgi_app(mcp, token, settings=settings)
 
     logger.info(
-        "sre_agent 조사 서비스 기동: http://%s:%d/sse (인증=%s)",
+        "sre_agent 조사 서비스 기동: http://%s:%d/sse (인증=%s · 설정 관리=%s)",
         settings.service_host,
         DEFAULT_PORT,
         "on" if token else "off",
+        "on" if isinstance(app, AdminPathRouter) else "off",
     )
     # 3. uvicorn 서빙.
     uvicorn.run(app, host=settings.service_host, port=DEFAULT_PORT)

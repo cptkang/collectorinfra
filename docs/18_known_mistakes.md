@@ -2214,3 +2214,18 @@
 - **실수**: 계획 §3.3이 `APM_TOOL_TIMEOUT_SECONDS=60`을 권장했지만, 플레이북 러너의 스텝 대기 상한이 `DEFAULT_STEP_TIMEOUT_S = 30`(설정 키 없음)이었다. 그래서 30을 넘는 값은 스텝을 missing으로 끝낼 뿐이고, 호출만 백그라운드에서 끝까지 돈다. 또 W2 위임 범위에서 `investigation_dispatcher.py`를 뺐는데, `run_playbook` 호출 배선이 바로 그 파일에 있어서 새 설정이 운영에 들어가지 않을 뻔했다.
 - **원인**: 타임아웃 하나를 고치면서 그 위에 겹친 상한(스텝 대기 · 수집 예산 · 조사 전체)을 호출 사슬 끝까지 따라가 보지 않았다. 위임 범위도 "설정을 읽는 곳"이 아니라 "바뀌는 함수"만 기준으로 잡았다.
 - **방지책**: 상한·타임아웃 값을 권장하기 전에 호출 사슬의 모든 겹침 상한을 grep으로 나열하고, 가장 짧은 값을 적는다. 새 설정을 위임할 때는 그 값을 실제로 넘겨주는 배선 지점(dispatcher·wiring)까지 위임 범위에 넣는다.
+
+### 2026-10-21 · (plans/191 W0) 「명시 alias면 필드명 env를 읽지 않는다」고 가정해 SPEC에 `admin_token` + alias를 적었다
+- **실수**: 팀 리드가 SPEC §3에 `sre_agent` 관리 토큰을 「필드 `admin_token` + 명시 alias `SRE_AGENT_ADMIN_TOKEN`」으로 적었다. W1 implementer 실측 결과 `AgentSettings`는 `populate_by_name=True`라 alias를 줘도 필드명 env `ADMIN_TOKEN`을 함께 읽었다 — 루트 CWD 기동 시 본체 `ADMIN_TOKEN`이 sre_agent 관리 토큰으로 새어 들어갈 뻔했다
+- **원인**: pydantic-settings의 env 이름 해석(alias·`populate_by_name`)을 실물로 재지 않고 일반 지식으로 계약을 썼다
+- **방지책**: 설정 키 이름 충돌을 피하려면 alias가 아니라 **필드명 자체**를 고유하게 둔다. 계약 문서에 env 키 해석을 적을 때는 그 설정 클래스의 `model_config`(`populate_by_name`·`env_prefix`)를 확인하고 한 줄 실측(`Cls(_env_file=None)` + monkeypatch env)으로 검증한다
+
+### 2026-10-21 · (plans/191 W1) 서드파티 import가 `.env`를 `os.environ`에 싣는 것을 못 보고 OS 원천 판정을 `os.environ`으로 했다
+- **실수**: sre_agent 설정 관리 어댑터가 「`os.environ`에 있는 키 = OS 원천(override_os)」으로 판정했다. 그런데 litellm은 import 시 `dotenv.load_dotenv()`로 CWD `.env`를 `os.environ`에 싣는다. 그 결과 파일에 적힌 모든 키가 override_os로 판정됐고, 웹 저장은 사실상 동작하지 않았다(verifier Critical). dry-run 로더도 env 원천이 후보 파일을 이겨 옛 값을 검증했다
+- **원인**: 단위 테스트는 litellm을 거치지 않는 깨끗한 환경에서 돌아 이 결함을 재현하지 못했다. 같은 프로세스의 의존 패키지가 환경을 바꾸는지 실측하지 않았다
+- **방지책**: 「값 출처」를 `os.environ`으로 판정하는 코드는 패키지 `__init__`에서 import 시점 환경 키를 스냅샷하고 그 집합으로만 판정한다(`sre_agent.PROCESS_ENV_KEYS_AT_IMPORT`). 다른 패키지는 실 진입점을 import한 뒤 `os.environ`을 import 전후로 비교해 함정이 없는지 실측한다
+
+### 2026-10-21 · (plans/191 W2) 본체 테스트의 가짜 컴포넌트가 계약과 다른 오류 키를 써 계약 불일치를 가렸다
+- **실수**: 컴포넌트 공용 모듈은 `errors[]` 항목을 `{key, error}`로 냈고 본체 UI는 `message`를 읽었다. 그런데 본체 테스트의 가짜 컴포넌트가 `message`를 돌려줘 테스트가 통과했다. bool 값도 같은 문제였다. 컴포넌트는 `True`를 냈고 UI는 `.env` 문자열 `"true"`를 기대했지만, 가짜가 UI 기대 쪽으로 맞춰져 있어 걸리지 않았다(verifier Major 2건)
+- **원인**: 프로세스를 넘는 계약을 양쪽이 각자 가짜로 테스트했고, 가짜가 SPEC이 아니라 소비자 코드의 기대에 맞춰 작성됐다
+- **방지책**: 프로세스 경계 계약의 가짜 응답은 SPEC 예시를 그대로 옮기고, 가능하면 실제 공급자 모듈(공용 `ConfigAdminService`)이 만든 응답으로 소비자 테스트를 한 건 이상 돌린다

@@ -1,0 +1,49 @@
+# 설정 옵션 상세 설명 — 분리 컴포넌트 설정 관리 (plans/191 · D-345)
+# 근거: src/config/services.py ComponentAdminConfig · src/infrastructure/component_admin_client.py ·
+#       src/api/routes/admin_components.py
+
+version: 1
+group: component_admin
+
+settings:
+
+  COMPONENT_ADMIN_ENDPOINTS:
+    summary: 설정 탭에서 관리할 분리 컴포넌트의 관리 API 주소(JSON · 이름 → URL).
+    behavior: >-
+      여기에 적은 컴포넌트(sre_agent·apm_gateway·mcp_server·alarm_server·fabrix_proxy)가 설정 탭 위
+      「설정 대상」 선택에 나타나고, 고르면 그 컴포넌트의 설정을 조회·저장한다. 본체는 이 주소에 고정
+      경로(/admin/config/…)만 붙여 호출하며, 다섯 이름 밖의 이름이나 http(s)가 아닌 주소는 무시하고
+      서버 로그와 목록 응답에 경고를 남긴다. 비어 있으면 선택이 나타나지 않는다.
+    options:
+      - value: "{}"
+        label: 기본
+        effect: 대상 선택이 없고 설정 탭은 본체 설정만 보인다(현행과 같다).
+    caution: >-
+      각 컴포넌트에 관리 토큰을 설정해야 응답한다 — 토큰이 없으면 카드에 「관리 API 꺼짐」이 뜬다.
+      컴포넌트가 다른 서버에 있으면 그 서버의 관리 API 포트가 본체에서 열려 있어야 한다.
+    example: >-
+      {"sre_agent": "http://127.0.0.1:9098"}로 두고 본체를 재시작하면 설정 탭 위에 「본체 · sre_agent」
+      선택이 생긴다.
+    related: [COMPONENT_ADMIN_TOKENS, COMPONENT_ADMIN_TIMEOUT_SECONDS]
+
+  COMPONENT_ADMIN_TOKENS:
+    summary: 컴포넌트별 관리 토큰(JSON 객체 · 시크릿).
+    behavior: >-
+      컴포넌트 이름마다 그 컴포넌트의 관리 토큰을 적는다. 해당 컴포넌트를 부를 때만 그 토큰을 싣는다.
+      시크릿이라 이 화면에서 편집할 수 없고 .encenv에서 관리한다.
+    stability: 컴포넌트 쪽 관리 토큰과 다르면 그 컴포넌트는 「관리 토큰 불일치」로 조회·저장이 모두 거부된다.
+    caution: 서비스 호출용 Bearer 토큰과 다른 값을 쓴다 — 같으면 컴포넌트가 관리 API를 열지 않는다.
+    example: >-
+      {"sre_agent": "<sre_agent 관리 토큰>"}처럼 적는다. sre_agent 쪽 관리 토큰을 바꾸고 이 값을 그대로 두면
+      다음 조회부터 sre_agent 카드가 「관리 토큰 불일치」로 바뀐다.
+    related: [COMPONENT_ADMIN_ENDPOINTS]
+
+  COMPONENT_ADMIN_TIMEOUT_SECONDS:
+    summary: 컴포넌트 관리 API 호출 1회의 대기 상한(초).
+    behavior: 넘으면 그 컴포넌트만 「응답 시간 초과」로 표시하고 다른 컴포넌트 상태는 그대로 보인다.
+    performance: 목록은 컴포넌트를 동시에 부르므로 화면이 늦어지는 최대 시간이 이 값이다.
+    stability: 너무 작으면 정상 컴포넌트도 시간 초과로 보인다.
+    example: >-
+      기본 5초에서 한 컴포넌트가 멈춰 있으면 설정 탭의 대상 선택은 최대 5초 뒤에 나타나고, 그 컴포넌트만
+      ⚠ 표시가 붙는다.
+    related: [COMPONENT_ADMIN_ENDPOINTS]

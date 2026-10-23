@@ -39,3 +39,6 @@ REDIS_PASSWORD=
 
 # worKB(사내메신저) 쪽지 발송 Bearer 인증 토큰 (알람 발송 채널 — 나머지 WORKB_* 설정은 .env)
 WORKB_BEARER_TOKEN=
+
+# 분리 컴포넌트 관리 토큰(JSON 객체 · 이름 → 토큰). 각 컴포넌트의 관리 토큰과 일치시킬 것 — 서비스 Bearer와 다른 값이어야 한다 (plans/191)
+COMPONENT_ADMIN_TOKENS=

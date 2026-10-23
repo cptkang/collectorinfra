@@ -21,6 +21,7 @@ from fastapi.staticfiles import StaticFiles
 
 from src.api.routes import admin, admin_auth, alarm, apm_jobs, conversation, db_structure, doc_search, health, noise_dashboard, query, schema_cache, scope, ui, user_auth
 from src.api.routes import result_viz
+from src.api.routes import admin_components
 from src.config import AppConfig, load_config
 from src.graph import build_graph
 from src.routing.apm_source_health import SourceHealthReport
@@ -884,6 +885,8 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
         admin_auth.router, prefix="/api/v1", tags=["admin-auth"]
     )
     application.include_router(admin.router, prefix="/api/v1", tags=["admin"])
+    # (plans/191) 분리 컴포넌트 설정 프록시 — COMPONENT_ADMIN_ENDPOINTS가 비면 빈 목록(현행 화면).
+    application.include_router(admin_components.router, prefix="/api/v1", tags=["admin"])
     # (Plan 54) 알람 노이즈 캔슬링 관제 — 운영자 JWT 뒤의 집계·조회·침묵 관리.
     application.include_router(
         noise_dashboard.router, prefix="/api/v1", tags=["noise-console"]

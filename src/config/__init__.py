@@ -38,6 +38,8 @@ from src.config.security import AuditConfig as AuditConfig
 from src.config.security import AuthConfig as AuthConfig
 from src.config.security import HostAuthzConfig as HostAuthzConfig
 from src.config.security import SecurityConfig as SecurityConfig
+from src.config.services import COMPONENT_ADMIN_NAMES as COMPONENT_ADMIN_NAMES
+from src.config.services import ComponentAdminConfig as ComponentAdminConfig
 from src.config.services import DrmConfig as DrmConfig
 from src.config.services import ObservabilityConfig as ObservabilityConfig
 from src.config.services import PortalHelpConfig as PortalHelpConfig
@@ -90,6 +92,8 @@ class AppConfig(BaseSettings):
     result_viz: ResultVizConfig = Field(default_factory=ResultVizConfig)
     # plans/142: 포탈 기능 도움말(매뉴얼 근거) — 기본 on(G-7 (b) 예외 · 근거는 클래스 주석)
     portal_help: PortalHelpConfig = Field(default_factory=PortalHelpConfig)
+    # plans/191: 분리 컴포넌트 설정 관리 프록시 — endpoints 미입력 = off(설정 탭 대상 선택 없음)
+    component_admin: ComponentAdminConfig = Field(default_factory=ComponentAdminConfig)
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 

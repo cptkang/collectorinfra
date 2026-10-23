@@ -46,6 +46,9 @@ class ProxySettings(BaseSettings):
     fabrix_proxy_port: int = 9095
     fabrix_proxy_log_level: str = "INFO"
     fabrix_proxy_model_aliases: list[str] = Field(default_factory=lambda: ["fabrix-tools"])
+    # 설정 관리 API(`/admin/config` · plans/191 · D-345) — 비면 관리 라우트 미등록(현행 동일).
+    # 프록시 토큰과 같은 값이면 등록하지 않는다. `.encenv`에 두기를 권장한다.
+    fabrix_proxy_admin_token: str = ""
 
     # ── 업스트림 KBGenAI (src/clients/fabrix_kbgenai.py 이식) ──
     fabrix_base_url: str = ""

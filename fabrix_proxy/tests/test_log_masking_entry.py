@@ -32,6 +32,7 @@ def test_main_installs_record_factory(monkeypatch, restore_logging) -> None:
     calls: list[str] = []
     settings = SimpleNamespace(
         fabrix_proxy_log_level="INFO",
+        fabrix_proxy_admin_token="",
         fabrix_proxy_host="127.0.0.1",
         fabrix_proxy_port=1,
         fabrix_proxy_model_aliases=["a"],

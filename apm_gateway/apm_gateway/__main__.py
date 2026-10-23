@@ -132,7 +132,8 @@ async def _serve() -> list[int]:
         port=cfg.server.port,
         event_buffer=event_buffer,
     )
-    app = build_asgi_app(mcp, cfg.server.bearer_tokens)
+    # 관리 토큰이 있으면 /admin/config 경로 분기 래퍼(D-345 · 없으면 종전 앱)
+    app = build_asgi_app(mcp, cfg.server.bearer_tokens, cfg)
 
     logger.info(
         "APM 게이트웨이 시작: %s:%d · 허용 경로 %d · %s",

@@ -2,6 +2,9 @@
 .env
 .encenv
 alarm_server/alarm_server.env
+# alarm_server 전용 설정은 기동 CWD(보통 레포 루트) 기준 — 설정 관리 API 백업 포함(plans/191)
+/alarm_server.env
+/alarm_server.env.bak
 # 웹UI 설정 저장 시 생성되는 백업·임시 파일 (.env와 동일한 값을 담는다)
 .env.bak
 .env.tmp
