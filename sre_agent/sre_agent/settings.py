@@ -10,6 +10,10 @@ from pydantic_settings import BaseSettings, SettingsConfigDict
 STUB_LLM_KEY_ABSENT = "조사 미실행 — LLM 키 부재(스텁)"
 STUB_LLM_DISABLED = "조사 미실행 — 조사 LLM 비활성(INVESTIGATION_LLM_ENABLED=false · 스텁)"
 
+# MCP 도구 호출 1건 상한(초) 기본값 — `evidence_prefetch_timeout_seconds` 필드 기본값과
+# `mcp_tool_client` 폴백이 이 상수 하나를 쓴다(plans/187 W22 · D-341 부기 13).
+TOOL_CALL_TIMEOUT_S = 60.0
+
 
 class AgentSettings(BaseSettings):
     # env_file은 CWD 기준 (".env", ".encenv") — 레포 루트에서 기동하면 collectorinfra
@@ -24,7 +28,7 @@ class AgentSettings(BaseSettings):
     # 결정적 가드(실측): 다중 메트릭 실 조사는 10 step으로 `Too many LLM calls -
     # exceeded max_steps`로 미완주(포커스 질의는 20에서 완주, 브로드 트리아지는 30도 초과).
     # 마진으로 40 — 상한 도달 시 DiagnosisAgent.ask가 구조화 미완주로 graceful 반환하고
-    # (하드 실패 금지·Plan 02 §12-④), dispatcher 전체 타임아웃(300s)이 하드 백스톱.
+    # (하드 실패 금지·Plan 02 §12-④), dispatcher 전체 타임아웃(600s)이 하드 백스톱.
     max_steps: int = 40
 
     # 폴스타 MCP 접속 설정 (Plan 06 §94 · D-119). mcp_server(Plan 04)가 노출하는
@@ -116,9 +120,15 @@ class AgentSettings(BaseSettings):
     # ── 조사 dispatcher 폭주 방지 가드 (Plan 02 §4·§10 — 전부 기본 off/보수값) ──
     # 스칼라 필드이므로 nested Field(default_factory=...)는 불요(중첩 모델 없음).
     # 조사 1건 **전체** 타임아웃(per-call 아님·asyncio.wait_for). HolmesGPT 다단계
-    # 조사를 감안해 300s(원본 45s보다 상향). collectorinfra MCP 동기 타임아웃(60s)보다
+    # 조사를 감안해 상향(원본 45s → 300s → 600s · plans/187 W22 · D-341 부기 13 — 내부망
+    # 스텝·소견기 타임아웃 결손 대책). collectorinfra MCP 동기 타임아웃(60s)보다
     # 길어 submit/poll 비동기 잡 패턴이 성립한다.
-    investigation_timeout_seconds: int = 300
+    # 시간 사슬(이 프로세스 안 — 기동 시 `timechain_warnings`가 검사): 도구 1건 60 < 스텝 기본
+    # 90 ≤ 대상 확정 스텝 120 ≤ 수집 예산 240 < 조사 전체 600 · 예산 240 + 소견 60 + 종합 90
+    # = 390 ≤ 600.
+    # 검사 밖(다른 프로세스): 게이트웨이 제니퍼 API 1건 30s(< 도구 1건 60s) · 본체 후속 poll
+    # 상한 600s(≥ 조사 전체여야 결과를 받는다).
+    investigation_timeout_seconds: int = 600
     # 동일 fingerprint 재조사 최소 간격(초). None이면 TTL dedup off
     # (JobStore active-fingerprint dedup만 동작). 켜면 완료된 조사도 이 간격 내 재조사 억제.
     investigation_dedup_ttl_seconds: float | None = None
@@ -229,8 +239,11 @@ class AgentSettings(BaseSettings):
     evidence_correlation_related_hosts: int = 0
     # baseline 기간 수(granularity 단위 — 시간 지표면 24 = 직전 24시간).
     evidence_baseline_periods: int = 24
-    # 사전수집 MCP 배치 타임아웃(초) — SSE 연결·호출 단위에 같이 적용.
-    evidence_prefetch_timeout_seconds: float = 20.0
+    # 사전수집 MCP 배치 타임아웃(초) — SSE 연결·호출 단위에 같이 적용. 플레이북 스텝의 도구 1건
+    # 상한이기도 하다(같은 배치 콜러블). 20 → 60(plans/187 W22 · D-341 부기 13): 게이트웨이 제니퍼
+    # API 1건 상한이 30s로 오르고 도구 하나가 API를 2회 이상 순차로 부를 수 있어 그보다 충분히 크게.
+    # 스텝 기본 상한(90s)보다 작아야 한다.
+    evidence_prefetch_timeout_seconds: float = TOOL_CALL_TIMEOUT_S
 
     # ── 알람 유형별 조사 플레이북(plans/187 W4 · D-341 ①⑮~⑲) ──
     # 기본 off = 현행 비트 동일. off면 아래 플레이북 설정(심층 모드·디렉토리·예산)을
@@ -247,9 +260,10 @@ class AgentSettings(BaseSettings):
     # 플레이북 YAML 디렉토리. None이면 패키지 기본(`sre_agent/config/playbooks/`).
     # 기동 시 1회 읽는다.
     sre_playbook_dir: str | None = None
-    # 플레이북 예산(초) — 수집 상한(§8 수용 기준 6). 조사 전체 타임아웃(300s) 안에서
-    # 쓰고, 수집 뒤 남은 시간을 소견기 타임아웃에 나눈다.
-    sre_playbook_budget_s: float = Field(default=120.0, gt=0)
+    # 플레이북 예산(초) — 수집 상한(§8 수용 기준 6). 조사 전체 타임아웃(600s) 안에서
+    # 쓰고, 수집 뒤 남은 시간을 소견기 타임아웃에 나눈다. 120 → 240(plans/187 W22 · D-341 부기 13):
+    # 대상 확정 스텝 120s + 뒤 단계(스텝 90s)가 한 번에 들어가고 결손 스텝 재시도 여유를 남긴다.
+    sre_playbook_budget_s: float = Field(default=240.0, gt=0)
     # ── 플레이북 APM 호출 지연 교정(plans/190 · D-344) ──
     # X-View 사전 확인 상한(W2) — 기간 모드 `apm_app_health` 호출에 게이트웨이 옵트인 인자
     # `xview_confirm_over`로 싣는다. 예상 X-View 호출(1분 조각 × 소스·도메인)이 이 수를 넘으면
@@ -261,6 +275,38 @@ class AgentSettings(BaseSettings):
     # APM 게이트웨이 도구 호출 상한(초 · W3). None = 종전대로 `evidence_prefetch_timeout_seconds`
     # (비트 동일). 플레이북 수집 예산 `sre_playbook_budget_s` 안에서 쓰인다.
     apm_tool_timeout_seconds: float | None = None
+    # 「스텝 타임아웃」으로 결손된 스텝을 수집 단계 뒤 남은 예산 안에서 1회씩 다시 돈다
+    # (plans/187 W22 · D-341 부기 13 · 결정적 · LLM 0). 잡 도구 캐시를 그대로 써 이미 받은 호출은
+    # 다시 부르지 않는다. 대상 확정 스텝이 재시도로 성공해도 범위는 바꾸지 않는다
+    # (뒤 단계는 이미 실행됐다).
+    # **기본 on은 사용자 대책 요청(2026-10-23)에 따른 예외(D-161 기본 off 원칙의 예외)** — 근거:
+    # 내부망 S0·S1 스텝 타임아웃 결손이 반복됐다. off면 종전과 비트 동일.
+    # 한계: 첫 시도에서 오류로 끝난 호출(도구 1건 상한 60s 초과 포함)은 잡 캐시에 오류로 남아
+    # 재시도가 다시 부르지 않는다 — 재시도가 살리는 것은 스텝 상한에 걸려 아직 못 낸·기다리던
+    # 호출이다.
+    sre_playbook_retry_timed_out_steps: bool = True
+    # 배치 콜러블이 한 MCP 세션 안에서 동시에 내는 도구 호출 상한
+    # (plans/187 W21 P1 · D-341 부기 12). 1 = 종전 순차.
+    # **기본 4는 사용자 확정 예외(D-161 기본 off 원칙의 예외)** — 근거: was.latency S0가
+    # 최대 13건을 순차로 내고 호출당 상한 20s(W22에서 60s)라 스텝 상한을 넘어 결손이 났다
+    # (내부망 2026-10-22).
+    # 게이트웨이 부하는 4로 묶는다. 사전수집(evidence_prefetch)도 같은 배치 콜러블을 써
+    # 함께 적용된다. 실효 동시 호출 = 스텝 워커 4 × 이 값 × 동시 조사 수 — 그래서 상한은 8이다.
+    sre_tool_batch_concurrency: int = Field(default=4, ge=1, le=8)
+    # 단계 소견 LLM 1건 타임아웃(초 · plans/187 W21 P5 · D-341 부기 12). 종전 20s 코드 고정에서
+    # 내부망 「소견기 타임아웃 20s」가 반복됐다. 45 → 60(plans/187 W22 · D-341 부기 13):
+    # 조사 전체 600s − 수집 예산 240s = 최소 360s가 남고, 소견 동시 4 × 약 3회차 × 60s = 180s
+    # + 종합 90s = 270s가 그 안에 든다. 남은 시간이 적으면 dispatcher의 기존 축소 로직이 줄인다.
+    sre_narrator_step_timeout_s: float = Field(default=60.0, gt=0)
+    # 종합(S9) LLM 1건 타임아웃(초 · plans/187 W22 · D-341 부기 13). 종전 30s 코드 고정
+    # (`NarratorLimits.synthesis_timeout_s`)을 설정으로 올렸다 — 종합 입력이 단계 소견 전부라
+    # 단계 소견(60s)보다 길다. 수집 예산 + 소견 + 종합 = 240 + 60 + 90 = 390 ≤ 조사 전체 600.
+    sre_narrator_synthesis_timeout_s: float = Field(default=90.0, gt=0)
+    # APM 소스 ID → 폴스타 db_id 매핑(plans/187 W21 P6 · D-341 부기 12).
+    # 예 {"cm_prd":"polestar_cm_gp"}. 페이로드에 `meta.episode.infra_db_ids`가 없을 때만
+    # 대체로 쓰고, 그 사실을 근거 문장으로 남긴다.
+    # 기본 빈 매핑 = 현행 동일(폴스타 축 미확정). `.env`에는 JSON으로 쓴다(인라인 주석 금지).
+    sre_playbook_polestar_source_map: dict[str, str] = Field(default_factory=dict)
 
     # ── 조사 잡 실행 기록(plans/187 W13 · §5.6.3 ⓑ · D-341 부기 4 ㉘) ──
     # 기본 off = 기록 자체를 하지 않고 `sre_get_investigation(activity_since=…)`를 무시해 응답이
@@ -269,3 +315,37 @@ class AgentSettings(BaseSettings):
     # `activity_since ≥ 0` 조회에 `activity`·`phase`·`queue_position`·`elapsed_s`를 더한다.
     # 한 줄·발췌·메모는 버퍼에 넣기 전에 비밀값을 가린다(G-36). 잡 TTL(1시간)과 함께 사라진다.
     sre_activity_log_enabled: bool = False
+
+
+def timechain_warnings(
+    settings: AgentSettings, *, step_default_s: float, max_step_timeout_s: float | None
+) -> list[str]:
+    """조사 시간 사슬의 어긋난 관계를 문장으로 모은다(plans/187 W22 · D-341 부기 13 · 순수 함수).
+
+    관계: 도구 1건 < 스텝 기본 · 스텝 기본 ≤ 수집 예산 · 플레이북 스텝 `timeout_s` 최대값
+    ≤ 수집 예산 · 수집 예산 < 조사 전체 · 수집 예산 + 소견 단계 + 종합 ≤ 조사 전체.
+    정합이면 빈 목록이다.
+    게이트웨이(제니퍼 API 1건)·본체(후속 poll) 상한은 다른 프로세스라 검사하지 않는다.
+    `step_default_s`는 실행기 기본값, `max_step_timeout_s`는 적재된 플레이북 스텝 `timeout_s`의
+    최대값(없으면 None)이다 — 둘 다 응용 계층 값이라 호출자가 넘긴다.
+    """
+    tool = float(settings.evidence_prefetch_timeout_seconds)
+    budget = float(settings.sre_playbook_budget_s)
+    total = float(settings.investigation_timeout_seconds)
+    narr = float(settings.sre_narrator_step_timeout_s)
+    synth = float(settings.sre_narrator_synthesis_timeout_s)
+    out: list[str] = []
+    if not tool < step_default_s:
+        out.append(f"도구 1건 {tool:g}s ≥ 스텝 기본 {step_default_s:g}s")
+    if not step_default_s <= budget:
+        out.append(f"스텝 기본 {step_default_s:g}s > 수집 예산 {budget:g}s")
+    if max_step_timeout_s is not None and not max_step_timeout_s <= budget:
+        out.append(f"플레이북 스텝 timeout_s 최대 {max_step_timeout_s:g}s > 수집 예산 {budget:g}s")
+    if not budget < total:
+        out.append(f"수집 예산 {budget:g}s ≥ 조사 전체 {total:g}s")
+    if not budget + narr + synth <= total:
+        out.append(
+            f"수집 예산 {budget:g}s + 소견 {narr:g}s + 종합 {synth:g}s = "
+            f"{budget + narr + synth:g}s > 조사 전체 {total:g}s"
+        )
+    return out

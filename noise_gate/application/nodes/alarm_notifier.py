@@ -710,7 +710,7 @@ async def _deliver_investigation_followup(
     investigation_id = pending.get("investigation_id") or ""
     alarm_id = pending.get("alarm_id") or ""
     fingerprint = pending.get("fingerprint") or ""
-    timeout = float(getattr(gate_cfg, "investigation_followup_timeout_seconds", 300.0))
+    timeout = float(getattr(gate_cfg, "investigation_followup_timeout_seconds", 600.0))
 
     briefing: Optional[dict] = None
     verdict: Any = None

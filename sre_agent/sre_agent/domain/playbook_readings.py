@@ -561,6 +561,22 @@ def _host_finding(
     return sid, s4, findings if isinstance(findings, Mapping) else {}
 
 
+def was_cpu_top_instance(s2_data: Mapping[str, Any]) -> str | None:
+    """S2(`apm.runtime_and_pool`) 대상 중 사건창 프로세스 CPU 최대 인스턴스(동률은 S2 순서 앞).
+
+    알람 인스턴스가 없는 호스트 알람에서 R-E가 보는 인스턴스이자 S3a(`target: was_cpu_top`)의
+    대상이다(plans/187 W20b — 같은 함수로 둘을 맞춘다). 값이 하나도 없으면 None.
+    """
+    targets = s2_data.get("targets")
+    best: tuple[float, str] | None = None
+    for name, tgt in (targets.items() if isinstance(targets, Mapping) else ()):
+        proc = ((tgt or {}).get("trend_summary") or {}).get("process_cpu_pct")
+        value = _num(proc.get("max")) if isinstance(proc, Mapping) else None
+        if value is not None and (best is None or value > best[0]):
+            best = (value, str(name))
+    return best[1] if best else None
+
+
 def read_cpu_owner(
     steps: Mapping[str, Mapping[str, Any]], p: ReadingParams = DEFAULT_PARAMS
 ) -> tuple[str | None, ReadingEvidence]:
@@ -569,9 +585,12 @@ def read_cpu_owner(
     호스트 CPU 이상 아님 → none. 이상이고 (호스트 − WAS) ≥ 기준 %p → other_process.
     WAS ≥ 기준 % → TPS가 늘었으면 was_load, 아니면 was_logic. 그 밖 → none.
     호스트 CPU 결손 · WAS 프로세스 CPU 조회 실패 → None(판단 보류). S6 상위 프로세스는 대조 근거로
-    싣는다.
+    싣는다. 알람 인스턴스가 없으면(호스트 알람) S2 프로세스 CPU 최대 인스턴스를 본다(W20b).
     """
     instance = _alarm_instance(steps)
+    if instance is None:
+        _, s2_any = _find(steps, "apm.runtime_and_pool")
+        instance = was_cpu_top_instance(_data(s2_any))
     sid4, s4, findings = _host_finding(steps)
     sid2, s2, t2 = _s2_target(steps, instance)
     sid6, s6 = _find(steps, "host.process_top")
@@ -925,6 +944,7 @@ __all__ = [
     "enabled_readings",
     "read_change_candidates",
     "read_cpu_owner",
+    "was_cpu_top_instance",
     "read_db_split",
     "read_dominant",
     "read_fs_eta",

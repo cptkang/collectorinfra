@@ -1,5 +1,5 @@
 {
-  "_note": "손으로 만든 예시 데이터(녹화 아님) — plans/153 「조사 브리핑」·「발생 원인과 처리」 캡처용. 같은 서버의 인프라 원인 알람(CPU)과 제니퍼 증상 알람(WAS 응답 지연)이 한 사건으로 묶이고, 증상은 크로스소스 사건 상관으로 PAGE → DASHBOARD 강등, 원인 알람의 단독 조사와 사건 종합 조사가 모두 완료된 장면. ago_min 은 캡처 시각 기준 몇 분 전인지다(녹화 결정 기록보다 앞이라 결정 이력 첫 행을 바꾸지 않는다). 서버 이름은 샌드박스 명명 규칙(svr-*)을 따른 가상 이름이다.",
+  "_note": "손으로 만든 예시 데이터(녹화 아님) — plans/153 「조사 브리핑」·「발생 원인과 처리」 캡처용. 같은 서버의 인프라 원인 알람(CPU)과 제니퍼 증상 알람(WAS 응답 지연)이 한 사건으로 묶이고, 증상은 크로스소스 사건 상관으로 PAGE → DASHBOARD 강등, 원인 알람의 단독 조사와 사건 종합 조사가 모두 완료된 장면. ago_min 은 캡처 시각 기준 몇 분 전인지다(녹화 결정 기록보다 앞이라 결정 이력 첫 행을 바꾸지 않는다). 서버 이름은 샌드박스 명명 규칙(svr-*)을 따른 가상 이름이다. activity 는 장애 진단 장면(plans/187 U-70)의 실행 기록 요약 예시다 — 이벤트 ago_min 도 캡처 시각 기준으로 바꾼다. inv-manual-flow 는 조사 흐름 화면(plans/187 W20)의 채팅 조사 예시 — 사용자 예시 사슬(CPU 추이 → 프로세스 상위 → WAS 프로세스 CPU → 실행 중 요청 → 실행 중 SQL · 건너뜀 1건 · AI 해석 있음·없음 각 1건)이다.",
   "decisions": [
     {
       "ago_min": 40,
@@ -221,6 +221,326 @@
           }
         ]
       }
+    },
+    {
+      "ago_min": 24,
+      "investigation_id": "inv-manual-flow",
+      "kind": "diagnosis",
+      "origin": "chat",
+      "status": "submitted",
+      "source": "chat",
+      "subject": {
+        "server_name": "svr-was-01",
+        "reference_time": null,
+        "route_label": "플레이북 host.cpu",
+        "route_reason": "대상 서버 1대(svr-was-01)와 증상 「CPU 사용률」이 규칙으로 정해짐"
+      }
+    },
+    {
+      "ago_min": 20,
+      "investigation_id": "inv-manual-flow",
+      "kind": "diagnosis",
+      "origin": "chat",
+      "status": "done",
+      "source": "chat",
+      "subject": {
+        "server_name": "svr-was-01",
+        "reference_time": null,
+        "route_label": "플레이북 host.cpu",
+        "route_reason": "대상 서버 1대(svr-was-01)와 증상 「CPU 사용률」이 규칙으로 정해짐"
+      },
+      "verdict": {
+        "level": "high"
+      },
+      "briefing_lines": [],
+      "briefing": {
+        "summary": "svr-was-01 CPU 포화의 주인은 WAS 인스턴스 A1의 요청 처리입니다",
+        "limitations": [
+          "프로세스 상위·실행 중 요청·실행 중 SQL은 조사 시각 기준 현재값입니다"
+        ],
+        "playbook": {
+          "id": "host.cpu",
+          "version": 2,
+          "matched_by": "symptom",
+          "scope": {
+            "host": "svr-was-01",
+            "polestar_server": "svr-was-01",
+            "alarm_name": "CPU 사용률"
+          },
+          "readings": {
+            "cpu_owner": "was_load"
+          },
+          "sections": [
+            {
+              "step": "S4",
+              "action": "host.usage_trend",
+              "title": "호스트 자원 시간대별 추이",
+              "status": "ok",
+              "verdict": "degraded",
+              "verdict_source": "playbook_rule",
+              "table": {
+                "columns": [
+                  "metric",
+                  "max",
+                  "prev_day",
+                  "ratio_prev_day",
+                  "minutes_over_90"
+                ],
+                "rows": [
+                  [
+                    "cpu_pct",
+                    96.0,
+                    43.0,
+                    2.2,
+                    30
+                  ]
+                ]
+              },
+              "badges": [],
+              "tools": [
+                "polestar_metric_trend"
+              ],
+              "reason": null,
+              "finding": "CPU 포화 — 최대 96% · 전일 같은 시간 43%의 2.2배 · 30분째 90% 이상",
+              "opinion": "전일 같은 시간보다 크게 오른 채 포화가 이어지고 있어 일시적 튀는 값이 아니다.",
+              "opinion_dropped_reason": null
+            },
+            {
+              "step": "S6",
+              "action": "host.process_top",
+              "title": "프로세스 CPU 상위",
+              "status": "ok",
+              "table": {
+                "columns": [
+                  "rank",
+                  "process",
+                  "cpu_pct",
+                  "share_of_top10_pct"
+                ],
+                "rows": [
+                  [
+                    1,
+                    "java (WAS A1)",
+                    78.0,
+                    85.0
+                  ],
+                  [
+                    2,
+                    "sshd",
+                    3.0,
+                    3.3
+                  ]
+                ]
+              },
+              "badges": [
+                "현재값 · 알람 후 2분"
+              ],
+              "tools": [
+                "polestar_top_processes"
+              ],
+              "reason": null,
+              "finding": "1위 java(WAS A1) 78% · 2위 sshd 3% — 1위가 상위 10개 합의 85%",
+              "opinion": "",
+              "opinion_dropped_reason": null
+            },
+            {
+              "step": "S0r",
+              "action": "scope.host_to_was",
+              "title": "호스트의 WAS 인스턴스 영향",
+              "status": "ok",
+              "verdict": "normal",
+              "verdict_source": "apm_gateway",
+              "table": {
+                "columns": [
+                  "instance",
+                  "p95_ms",
+                  "error_rate",
+                  "verdict"
+                ],
+                "rows": [
+                  [
+                    "A1",
+                    820.0,
+                    0.001,
+                    "normal"
+                  ],
+                  [
+                    "A2",
+                    790.0,
+                    0.0,
+                    "normal"
+                  ]
+                ]
+              },
+              "badges": [],
+              "tools": [
+                "apm_instance_map",
+                "apm_app_health"
+              ],
+              "reason": null,
+              "finding": "WAS 인스턴스 A1·A2 — 응답 시간·오류율 정상",
+              "opinion": "",
+              "opinion_dropped_reason": null
+            },
+            {
+              "step": "S1",
+              "action": "apm.golden_signals",
+              "title": "WAS 골든 시그널",
+              "status": "skipped",
+              "because": "호스트의 WAS 인스턴스 영향 결과가 정상이라 생략"
+            },
+            {
+              "step": "S2",
+              "action": "apm.runtime_and_pool",
+              "title": "JVM 런타임 · DB 커넥션 풀",
+              "status": "ok",
+              "verdict": "degraded",
+              "verdict_source": "playbook_rule",
+              "table": {
+                "columns": [
+                  "instance",
+                  "metric",
+                  "max",
+                  "last"
+                ],
+                "rows": [
+                  [
+                    "A1",
+                    "process_cpu_pct",
+                    74.0,
+                    71.0
+                  ],
+                  [
+                    "A2",
+                    "process_cpu_pct",
+                    6.0,
+                    5.0
+                  ]
+                ]
+              },
+              "badges": [],
+              "tools": [
+                "apm_runtime_metrics"
+              ],
+              "reason": null,
+              "finding": "A1 프로세스 CPU 최대 74%(호스트 96%의 대부분) · A2 6% — CPU 주인 = WAS 처리",
+              "opinion": "",
+              "opinion_dropped_reason": "표에 없는 수치를 써서 가드가 버렸습니다"
+            },
+            {
+              "step": "S3a",
+              "action": "apm.active_services",
+              "title": "액티브 서비스",
+              "status": "ok",
+              "table": {
+                "columns": [
+                  "instance",
+                  "application",
+                  "cpu_ms",
+                  "elapsed_ms",
+                  "sql_count"
+                ],
+                "rows": [
+                  [
+                    "A1",
+                    "/order/submit",
+                    4210,
+                    9800,
+                    12
+                  ],
+                  [
+                    "A1",
+                    "/order/list",
+                    1830,
+                    4100,
+                    4
+                  ]
+                ]
+              },
+              "badges": [
+                "현재값 · 알람 후 3분"
+              ],
+              "tools": [
+                "apm_active_services"
+              ],
+              "reason": null,
+              "finding": "A1 실행 중 요청 5건 — 1위 /order/submit CPU 4210ms · SQL 12회",
+              "opinion": "",
+              "opinion_dropped_reason": null
+            },
+            {
+              "step": "S3b",
+              "action": "apm.active_sql",
+              "title": "실행 중 SQL",
+              "status": "ok",
+              "table": {
+                "columns": [
+                  "instance",
+                  "application",
+                  "cpu_ms",
+                  "elapsed_ms",
+                  "sql"
+                ],
+                "rows": [
+                  [
+                    "A1",
+                    "/order/submit",
+                    4210,
+                    9800,
+                    "SELECT * FROM ORDER_ITEM WHERE ORDER_ID = ? AND STATUS = ?"
+                  ]
+                ]
+              },
+              "badges": [
+                "현재값 · 알람 후 3분"
+              ],
+              "tools": [
+                "apm_active_detail"
+              ],
+              "reason": null,
+              "finding": "A1 실행 중 SQL 1건 — /order/submit의 ORDER_ITEM 조회(조건 값은 ?로 가림)",
+              "opinion": "",
+              "opinion_dropped_reason": null
+            }
+          ],
+          "synthesis": {
+            "hypotheses": [
+              {
+                "rank": 1,
+                "title": "WAS 요청 처리 부하(CPU 주인 = WAS)",
+                "status": "supported",
+                "status_label": "지지",
+                "evidence_steps": [
+                  "S4",
+                  "S2",
+                  "S3a"
+                ],
+                "rule_id": "H-CPU-WAS"
+              },
+              {
+                "rank": 2,
+                "title": "배치·기타 프로세스 점유",
+                "status": "refuted",
+                "status_label": "반박",
+                "evidence_steps": [
+                  "S6"
+                ],
+                "rule_id": "H-CPU-OTHER"
+              }
+            ],
+            "actions": [
+              {
+                "order": 1,
+                "source": "playbook",
+                "text": "A1의 /order/submit 요청과 ORDER_ITEM 조회 실행계획을 담당에 확인 요청"
+              }
+            ],
+            "followups": [],
+            "narrative": "CPU 포화는 WAS 인스턴스 A1의 주문 요청 처리에서 비롯된 것으로 보인다. 실행 중 SQL의 실행계획 확인이 필요하다.",
+            "narrative_dropped_reason": null
+          }
+        }
+      }
     }
   ],
   "cards": [
@@ -249,6 +569,407 @@
       "stage": "matrix",
       "alarm_time": null,
       "received_at": null
+    }
+  ],
+  "activity": [
+    {
+      "ago_min": 31,
+      "investigation_id": "inv-manual-ep",
+      "status": "done",
+      "truncated": false,
+      "events": [
+        {
+          "seq": 1,
+          "ago_min": 33.9,
+          "engine": "playbook",
+          "kind": "started",
+          "label": "플레이북 host.cpu_saturation 선택",
+          "purpose": "알람 유형 「CPU 사용률」과 같은 사건의 「WAS 응답 지연」이 플레이북 일치 조건에 맞음",
+          "status": "ok"
+        },
+        {
+          "seq": 2,
+          "ago_min": 33.8,
+          "engine": "playbook",
+          "kind": "step_start",
+          "label": "S0 알람·사건 범위 확인",
+          "step": "S0",
+          "purpose": "같은 사건으로 묶인 알람과 조사 시간 범위를 정한다"
+        },
+        {
+          "seq": 3,
+          "ago_min": 33.7,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "label": "polestar_alarm_history {host: svr-was-01, window: 30m}",
+          "step": "S0",
+          "tool": "polestar_alarm_history",
+          "status": "ok",
+          "elapsed_ms": 820,
+          "rows": 2
+        },
+        {
+          "seq": 4,
+          "ago_min": 33.6,
+          "engine": "playbook",
+          "kind": "step_end",
+          "label": "S0 알람·사건 범위 확인",
+          "step": "S0",
+          "status": "ok",
+          "elapsed_ms": 910
+        },
+        {
+          "seq": 5,
+          "ago_min": 33.5,
+          "engine": "playbook",
+          "kind": "step_start",
+          "label": "S1 호스트 자원 추이",
+          "step": "S1",
+          "purpose": "CPU·메모리·파일 시스템 사용률을 5분 단위로 보고 상위 프로세스를 확인한다"
+        },
+        {
+          "seq": 6,
+          "ago_min": 33.3,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "label": "polestar_metric_trend {host: svr-was-01, metric: cpu, step: 5m}",
+          "step": "S1",
+          "tool": "polestar_metric_trend",
+          "status": "ok",
+          "elapsed_ms": 1420,
+          "rows": 12
+        },
+        {
+          "seq": 7,
+          "ago_min": 33.1,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "label": "polestar_top_processes {host: svr-was-01, n: 5}",
+          "step": "S1",
+          "tool": "polestar_top_processes",
+          "status": "ok",
+          "elapsed_ms": 960,
+          "rows": 5
+        },
+        {
+          "seq": 8,
+          "ago_min": 33.0,
+          "engine": "playbook",
+          "kind": "step_end",
+          "label": "S1 호스트 자원 추이",
+          "step": "S1",
+          "status": "ok",
+          "elapsed_ms": 2510
+        },
+        {
+          "seq": 9,
+          "ago_min": 32.9,
+          "engine": "playbook",
+          "kind": "step_start",
+          "label": "S2 WAS 골든 시그널",
+          "step": "S2",
+          "purpose": "응답 시간·TPS·에러율·액티브 서비스를 원인 시각 전후로 비교한다"
+        },
+        {
+          "seq": 10,
+          "ago_min": 32.6,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "label": "apm_app_health {instance: was-01}",
+          "step": "S2",
+          "tool": "apm_app_health",
+          "status": "ok",
+          "elapsed_ms": 1130,
+          "rows": 4
+        },
+        {
+          "seq": 11,
+          "ago_min": 32.5,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "label": "apm_slow_transactions {instance: was-01, n: 5}",
+          "step": "S2",
+          "tool": "apm_slow_transactions",
+          "status": "cached",
+          "elapsed_ms": 3,
+          "rows": 5
+        },
+        {
+          "seq": 12,
+          "ago_min": 32.4,
+          "engine": "playbook",
+          "kind": "step_end",
+          "label": "S2 WAS 골든 시그널",
+          "step": "S2",
+          "status": "ok",
+          "elapsed_ms": 1290
+        },
+        {
+          "seq": 13,
+          "ago_min": 31.6,
+          "engine": "playbook",
+          "kind": "llm_end",
+          "label": "종합 의견 작성",
+          "status": "ok",
+          "elapsed_ms": 4200
+        },
+        {
+          "seq": 14,
+          "ago_min": 31.1,
+          "engine": "system",
+          "kind": "finalize",
+          "label": "브리핑 조립",
+          "status": "ok",
+          "elapsed_ms": 40
+        }
+      ]
+    },
+    {
+      "ago_min": 20,
+      "investigation_id": "inv-manual-flow",
+      "status": "done",
+      "truncated": false,
+      "events": [
+        {
+          "seq": 1,
+          "ago_min": 23.9,
+          "engine": "playbook",
+          "kind": "started",
+          "label": "플레이북 host.cpu 선택",
+          "status": "ok",
+          "purpose": "증상 「CPU 사용률」 — 대상 서버 svr-was-01"
+        },
+        {
+          "seq": 2,
+          "ago_min": 23.8,
+          "engine": "playbook",
+          "kind": "step_start",
+          "step": "S4",
+          "label": "S4 호스트 자원 시간대별 추이",
+          "because": "알람 「CPU 사용률 95%」 — 평소보다 얼마나 높은지부터 본다"
+        },
+        {
+          "seq": 3,
+          "ago_min": 23.75,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "step": "S4",
+          "tool": "polestar_metric_trend",
+          "label": "polestar_metric_trend {host: svr-was-01}",
+          "phrase": "폴스타 · svr-was-01 CPU 사용률 시간대별(사건창 · 전일·전주 같은 시간 비교)",
+          "status": "ok",
+          "elapsed_ms": 800,
+          "rows": 12
+        },
+        {
+          "seq": 4,
+          "ago_min": 23.6,
+          "engine": "playbook",
+          "kind": "step_end",
+          "step": "S4",
+          "label": "S4 호스트 자원 시간대별 추이",
+          "status": "ok",
+          "elapsed_ms": 1200,
+          "finding": "CPU 포화 — 최대 96% · 전일 같은 시간 43%의 2.2배 · 30분째 90% 이상"
+        },
+        {
+          "seq": 5,
+          "ago_min": 23.5,
+          "engine": "playbook",
+          "kind": "step_start",
+          "step": "S6",
+          "label": "S6 프로세스 CPU 상위",
+          "because": "CPU 포화 → 어느 프로세스가 쓰는지 확인"
+        },
+        {
+          "seq": 6,
+          "ago_min": 23.45,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "step": "S6",
+          "tool": "polestar_top_processes",
+          "label": "polestar_top_processes {host: svr-was-01}",
+          "phrase": "폴스타 · svr-was-01 프로세스 목록(CPU 순 상위 10) · 현재값",
+          "status": "ok",
+          "elapsed_ms": 800,
+          "rows": 10
+        },
+        {
+          "seq": 7,
+          "ago_min": 23.3,
+          "engine": "playbook",
+          "kind": "step_end",
+          "step": "S6",
+          "label": "S6 프로세스 CPU 상위",
+          "status": "ok",
+          "elapsed_ms": 800,
+          "finding": "1위 java(WAS A1) 78% · 2위 sshd 3% — 1위가 상위 10개 합의 85%"
+        },
+        {
+          "seq": 8,
+          "ago_min": 23.2,
+          "engine": "playbook",
+          "kind": "step_start",
+          "step": "S0r",
+          "label": "S0r 호스트의 WAS 인스턴스 영향",
+          "because": "1위가 WAS 프로세스 → 이 호스트의 WAS 인스턴스 확인"
+        },
+        {
+          "seq": 9,
+          "ago_min": 23.15,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "step": "S0r",
+          "tool": "apm_instance_map",
+          "label": "apm_instance_map {host: svr-was-01}",
+          "phrase": "제니퍼 · svr-was-01의 WAS 인스턴스 목록",
+          "status": "ok",
+          "elapsed_ms": 800,
+          "rows": 2
+        },
+        {
+          "seq": 10,
+          "ago_min": 23.099999999999998,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "step": "S0r",
+          "tool": "apm_app_health",
+          "label": "apm_app_health {host: svr-was-01}",
+          "phrase": "제니퍼 · A1·A2 응답 시간·오류율(사건창)",
+          "status": "ok",
+          "elapsed_ms": 800,
+          "rows": 2
+        },
+        {
+          "seq": 11,
+          "ago_min": 23.0,
+          "engine": "playbook",
+          "kind": "step_end",
+          "step": "S0r",
+          "label": "S0r 호스트의 WAS 인스턴스 영향",
+          "status": "ok",
+          "elapsed_ms": 1200,
+          "finding": "WAS 인스턴스 A1·A2 — 응답 시간·오류율 정상"
+        },
+        {
+          "seq": 12,
+          "ago_min": 22.9,
+          "engine": "playbook",
+          "kind": "step_skip",
+          "step": "S1",
+          "label": "S1 WAS 골든 시그널",
+          "status": "skipped",
+          "because": "호스트의 WAS 인스턴스 영향 결과가 정상이라 생략"
+        },
+        {
+          "seq": 13,
+          "ago_min": 22.8,
+          "engine": "playbook",
+          "kind": "step_start",
+          "step": "S2",
+          "label": "S2 JVM 런타임 · DB 커넥션 풀",
+          "because": "WAS 인스턴스가 있음 → 제니퍼에서 인스턴스별 프로세스 CPU 확인"
+        },
+        {
+          "seq": 14,
+          "ago_min": 22.75,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "step": "S2",
+          "tool": "apm_runtime_metrics",
+          "label": "apm_runtime_metrics {host: svr-was-01}",
+          "phrase": "제니퍼 · A1·A2 JVM 런타임(프로세스 CPU·GC·힙 · 사건창)",
+          "status": "ok",
+          "elapsed_ms": 800,
+          "rows": 8
+        },
+        {
+          "seq": 15,
+          "ago_min": 22.6,
+          "engine": "playbook",
+          "kind": "step_end",
+          "step": "S2",
+          "label": "S2 JVM 런타임 · DB 커넥션 풀",
+          "status": "ok",
+          "elapsed_ms": 1900,
+          "finding": "A1 프로세스 CPU 최대 74%(호스트 96%의 대부분) · A2 6% — CPU 주인 = WAS 처리"
+        },
+        {
+          "seq": 16,
+          "ago_min": 22.4,
+          "engine": "playbook",
+          "kind": "step_start",
+          "step": "S3a",
+          "label": "S3a 액티브 서비스",
+          "because": "CPU 주인 = WAS 처리(A1) → 지금 무엇을 처리 중인지"
+        },
+        {
+          "seq": 17,
+          "ago_min": 22.349999999999998,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "step": "S3a",
+          "tool": "apm_active_services",
+          "label": "apm_active_services {host: svr-was-01}",
+          "phrase": "제니퍼 · A1 실행 중 요청(CPU 시간 순 상위 5) · 현재값",
+          "status": "ok",
+          "elapsed_ms": 800,
+          "rows": 5
+        },
+        {
+          "seq": 18,
+          "ago_min": 22.2,
+          "engine": "playbook",
+          "kind": "step_end",
+          "step": "S3a",
+          "label": "S3a 액티브 서비스",
+          "status": "ok",
+          "elapsed_ms": 1200,
+          "finding": "A1 실행 중 요청 5건 — 1위 /order/submit CPU 4210ms · SQL 12회"
+        },
+        {
+          "seq": 19,
+          "ago_min": 22.0,
+          "engine": "playbook",
+          "kind": "step_start",
+          "step": "S3b",
+          "label": "S3b 실행 중 SQL",
+          "because": "실행 중 요청이 있음 → CPU 시간 상위 요청의 SQL 확인"
+        },
+        {
+          "seq": 20,
+          "ago_min": 21.95,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "step": "S3b",
+          "tool": "apm_active_detail",
+          "label": "apm_active_detail {host: svr-was-01}",
+          "phrase": "제니퍼 · A1 실행 중 요청 상위 3건의 SQL(조건 값 가림) · 현재값",
+          "status": "ok",
+          "elapsed_ms": 800,
+          "rows": 1
+        },
+        {
+          "seq": 21,
+          "ago_min": 21.8,
+          "engine": "playbook",
+          "kind": "step_end",
+          "step": "S3b",
+          "label": "S3b 실행 중 SQL",
+          "status": "ok",
+          "elapsed_ms": 1200,
+          "finding": "A1 실행 중 SQL 1건 — /order/submit의 ORDER_ITEM 조회(조건 값은 ?로 가림)"
+        },
+        {
+          "seq": 22,
+          "ago_min": 21.0,
+          "engine": "system",
+          "kind": "finalize",
+          "label": "브리핑 조립",
+          "status": "ok",
+          "elapsed_ms": 40
+        }
+      ]
     }
   ]
 }

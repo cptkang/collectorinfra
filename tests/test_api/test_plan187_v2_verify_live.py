@@ -142,11 +142,10 @@ async def test_w13_real_contract_flows_through_hub(tmp_path, monkeypatch, who): 
     raw = json.dumps(frames, ensure_ascii=False)
     assert RAW_SECRET not in raw  # sre_agent 가림이 그대로 흐른다
     if who == "user":
-        # 사용자: ai_note 0 · note 키 0 · 값 패턴(VISA) 줄 단위 2차 마스킹
-        assert "ai_note" not in kinds and '"note"' not in raw
+        # 사용자(plans/187 W20 · G-48): ai_note도 받되 값 패턴(VISA)은 줄 단위 2차 마스킹
+        assert "ai_note" in kinds
         assert VISA not in raw
-        assert {1, 2, 3, 4} <= set(seqs)  # ai_note(5) 외 누락 없음
-        assert 5 not in seqs
+        assert {1, 2, 3, 4, 5} <= set(seqs)  # 누락 없음
     else:
         assert "ai_note" in kinds and VISA in raw
         assert set(range(1, pages["done_0"]["activity"]["next_seq"] + 1)) <= set(seqs) | {1}
@@ -155,7 +154,8 @@ async def test_w13_real_contract_flows_through_hub(tmp_path, monkeypatch, who): 
     assert resp.status_code == 200
     body = resp.json()
     assert body["activity"]["source"] in ("live", "archive")
-    assert ("ai_note" in resp.text) is (who == "admin")
+    assert "ai_note" in resp.text  # G-48 — 사용자·관리자 모두
+    assert (VISA in resp.text) is (who == "admin")
 
 
 # ── 의심 4: 사용자 경로 누출 ────────────────────────────────────────────────────
@@ -178,7 +178,6 @@ async def test_user_active_and_summary_never_carry_owner_or_foreign(tmp_path, fa
         assert {i["investigation_id"] for i in s["data"]["items"]} <= {"chat-u1"}
         assert all("owner_sub" not in i for i in s["data"]["items"])
     raw = json.dumps(frames, ensure_ascii=False)
-    assert "ai_note" not in raw and "메모" not in raw and '"note"' not in raw
     assert "chat-u2" not in raw
 
 

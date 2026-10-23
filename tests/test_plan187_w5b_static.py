@@ -429,12 +429,12 @@ def test_drawer_new_tab_and_break_glass_detail() -> None:
     "page, asset",
     [
         ("index.html", "briefing-view.js?v=5"),
-        ("index.html", "app.js?v=33"),
-        ("index.html", "style.css?v=35"),
+        ("index.html", "app.js?v=34"),
+        ("index.html", "style.css?v=36"),
         ("noise.html", "briefing-view.js?v=5"),
-        ("noise.html", "noise.js?v=17"),
+        ("noise.html", "noise.js?v=18"),
         ("admin/noise.html", "briefing-view.js?v=5"),
-        ("admin/noise.html", "noise.js?v=17"),
+        ("admin/noise.html", "noise.js?v=18"),
     ],
 )
 def test_cache_versions_bumped(page: str, asset: str) -> None:

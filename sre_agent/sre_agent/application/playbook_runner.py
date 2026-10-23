@@ -53,6 +53,7 @@ from sre_agent.application.playbook_steps import (
     StepFn,
     StepResult,
 )
+from sre_agent.domain.activity_log import ActivityLog, safe_append
 from sre_agent.domain.correlation import correlate
 from sre_agent.domain.cross_source_episode import episode_from_payload
 from sre_agent.domain.incident_scope import alarm_time_to_iso, normalize_reference_time
@@ -88,13 +89,23 @@ from sre_agent.domain.playbook_readings import (
     enabled_readings,
     reading_params,
 )
+from sre_agent.domain.step_findings import (
+    BUDGET_SKIP,
+    default_because,
+    skip_because,
+    summarize,
+    when_because,
+)
 from sre_agent.infrastructure.tool_result_cache import BatchCaller, ToolResultCache
 
 logger = logging.getLogger(__name__)
 
-#: 플레이북 수집 예산(§8 수용 기준 6 — 수집+서술 ≤ 120s).
-DEFAULT_BUDGET_S = 120.0
-DEFAULT_STEP_TIMEOUT_S = 30.0
+#: 플레이북 수집 예산(§8 수용 기준 6). 120 → 240(plans/187 W22 · D-341 부기 13 — 설정
+#: `sre_playbook_budget_s` 기본값과 같다 · 조사 전체 600s 안).
+DEFAULT_BUDGET_S = 240.0
+#: 스텝 1개 대기 기본 상한. 30 → 90(plans/187 W22 · D-341 부기 13) — 도구 1건 상한(60s)보다 커야
+#: 도구 하나가 늦어도 스텝이 결과를 받는다. 대상 확정 스텝은 YAML `timeout_s`(120s)를 쓴다.
+DEFAULT_STEP_TIMEOUT_S = 90.0
 DEFAULT_MAX_WORKERS = 4
 
 _BASELINE_DAYS = {"prev_day": 1, "prev_week": 7}
@@ -274,6 +285,39 @@ def resolve_polestar_source(
     if configured:
         return configured, None
     return None, "페이로드에 폴스타 소스(event.dbId) 없음"
+
+
+#: 설정 매핑으로 폴스타 소스를 대체했을 때의 근거 문장(plans/187 W21 P6 — 결정적).
+POLESTAR_MAPPED_BASIS = (
+    "설정 매핑으로 대체({source_id}→{db_id}) — 존이 다른 알람이면 다른 서버를 조회할 수 있음"
+)
+
+
+def apm_source_id(payload: Mapping[str, Any]) -> str | None:
+    """APM 알람의 소스 ID — 트리거 힌트 `meta.hints.source_id`(게이트웨이 `apm.source_id` 원문).
+
+    APM 트리거가 아니거나 값이 없으면 None.
+    """
+    if not is_apm_trigger(payload):
+        return None
+    return str(_hints(payload).get("source_id") or "").strip() or None
+
+
+def mapped_polestar_source(
+    payload: Mapping[str, Any], mapping: Mapping[str, str] | None
+) -> tuple[str | None, str | None]:
+    """설정 매핑(APM 소스 ID → 폴스타 db_id)으로 정한 폴스타 소스와 근거 문장.
+
+    APM 알람이 아니거나 소스 ID·매핑 항목이 없으면 (None, None). 페이로드의
+    `meta.episode.infra_db_ids`가 우선인지는 `resolve_polestar_source`가 정한다(이 값은 대체값).
+    """
+    sid = apm_source_id(payload)
+    # 키도 앞뒤 공백을 걷어 비교한다(대소문자는 그대로 — 소스 ID 규칙이 소문자 고정)
+    table = {str(k).strip(): v for k, v in (mapping or {}).items()}
+    db_id = str(table.get(sid) or "").strip() if sid else ""
+    if not sid or not db_id:
+        return None, None
+    return db_id, POLESTAR_MAPPED_BASIS.format(source_id=sid, db_id=db_id)
 
 
 def initial_scope(
@@ -505,24 +549,32 @@ def run_playbook(
     max_workers: int = DEFAULT_MAX_WORKERS,
     for_each_max: int | None = None,
     polestar_source: str | None = None,
+    polestar_source_basis: str | None = None,
     reference_time: str | None = None,
     cache: ToolResultCache | None = None,
     steps: Mapping[str, StepFn] | None = None,
     synthesize: bool = False,
     narrator: PlaybookNarrator | None = None,
     xview_confirm_over: int | None = None,
+    activity: ActivityLog | None = None,
+    on_skip: Callable[[StepResult, str], None] | None = None,
+    retry_timed_out: bool = False,
 ) -> PlaybookRun:
     """플레이북을 실행한다. 예외를 내지 않는다 — 실패는 섹션의 상태·사유로 남긴다.
 
     polestar·apm:    축별 배치 콜러블(None이면 그 축 결손).
     clock:           예산·소요 측정용 단조 시계(초). now: 실시간 배지의 수집 시각 대체값.
-    budget_s:        전체 예산(기본 120s). 단계 시작 시 남은 예산이 없으면 이후 스텝
+    budget_s:        전체 예산(기본 240s). 단계 시작 시 남은 예산이 없으면 이후 스텝
     skipped(budget).
-    step_timeout_s:  스텝 1개 대기 상한(남은 예산보다 길지 않다). 타임아웃 스텝은 missing.
+    step_timeout_s:  스텝 1개 대기 기본 상한 — YAML `timeout_s`가 있으면 그 값(어느 쪽이든 남은
+                     예산보다 길지 않고, 단계 제출 시각부터 잰다 · W21 P3). 타임아웃 스텝은
+                     중단 신호(이후 새 호출 0)와 함께 missing + 진행 계수 사유(W21 P4).
     max_workers:     같은 단계 병렬 스레드 수(1이면 YAML 순서대로 하나씩 — 호출 순서 결정적).
     for_each_max:    `for_each: targets` 스텝이 도는 대상 수 상한(None = S0 대상 전원).
     polestar_source: 페이로드에 없을 때 쓸 폴스타 소스(호출자가 결정적으로 아는 경우만 — 없으면
     미확정).
+    polestar_source_basis: `polestar_source`를 실제로 썼을 때(페이로드에 소스 없음) run notes와
+                     S0·S4 사유에 남길 근거 문장(설정 매핑 대체 — W21 P6). 없으면 무동작.
     reference_time:  기준 시각 재정의(없으면 `event.alarmTime`).
     cache:           잡 단위 캐시(두 엔진 공용 — 주입 시 닫지 않는다).
     synthesize:      참이면 실행 후 처리(`finalize_playbook_run`)까지 한다.
@@ -531,6 +583,13 @@ def run_playbook(
     narrator:        단계 소견기·종합기(LLM 주입 — W4 배선). 기본 None = 기존 동작 그대로.
     xview_confirm_over: 기간 모드 `apm_app_health`의 X-View 사전 확인 상한(plans/190 W2 — 호출자가
                      `settings.apm_xview_confirm_over`를 넘긴다). None·0 이하 = 인자 미전송(비트 동일).
+    activity:        실행 기록(plans/187 W20) — `when` 거짓·예산 소진으로 건너뛴 스텝마다
+                     `step_skip` 1건(사유 문장 · 조건식 원문 없음). None이면 무동작.
+    on_skip:         건너뜀 통지 `(자리표시 StepResult, 사유 문장)` — 부분 브리핑용.
+                     None이면 무동작.
+    retry_timed_out: 참이면 수집 단계 뒤 남은 예산 안에서 「스텝 타임아웃」 결손 스텝만 YAML 순서로
+                     1회씩 다시 돈다(plans/187 W22 · `retry_timed_out_steps`).
+                     기본 거짓 = 종전 동일.
     """
     started = clock()
     library = STEP_LIBRARY if steps is None else steps
@@ -550,10 +609,14 @@ def run_playbook(
             max_workers=max(1, int(max_workers)),
             for_each_max=for_each_max,
             polestar_source=polestar_source,
+            polestar_source_basis=polestar_source_basis,
             reference_time=reference_time,
             library=library,
             started=started,
             xview_confirm_over=xview_confirm_over,
+            activity=activity,
+            on_skip=on_skip,
+            retry_timed_out=retry_timed_out,
         )
     finally:
         if own_cache:
@@ -591,15 +654,25 @@ def _run(
     library: Mapping[str, StepFn],
     started: float,
     xview_confirm_over: int | None = None,
+    polestar_source_basis: str | None = None,
+    activity: ActivityLog | None = None,
+    on_skip: Callable[[StepResult, str], None] | None = None,
+    retry_timed_out: bool = False,
 ) -> PlaybookRun:
     notes: list[str] = []
     source, source_reason = resolve_polestar_source(payload, polestar_source)
     scope = initial_scope(payload, source, source_reason)
     if source is None:
         notes.append(f"폴스타 서버 미확정 — {source_reason}")
+    elif polestar_source_basis and resolve_polestar_source(payload)[0] is None:
+        # 페이로드에 소스가 없어 호출자 대체값을 썼다 — 근거를 남긴다(W21 P6 · 침묵 대체 금지)
+        scope.polestar_basis = polestar_source_basis
+        notes.append(polestar_source_basis)
     alarm_time = _resolve_alarm_time(payload, reference_time)
     results: dict[str, StepResult] = {}
     contexts: dict[str, StepContext] = {}
+    #: 「스텝 타임아웃」으로 결손된 스텝 → (첫 시도 사유, when 메모) — 재시도 대상(W22).
+    timed_out: dict[str, tuple[str, str | None]] = {}
 
     if alarm_time is None:
         for step in playbook.steps:
@@ -612,7 +685,9 @@ def _run(
         )
 
     windows = compute_windows(alarm_time, playbook.window)
-    executor = ThreadPoolExecutor(max_workers=max_workers, thread_name_prefix="playbook-step")
+    # 실행기는 단계마다 새로 만든다(W21 교정) — 타임아웃으로 중단된 스텝 스레드가 워커를 붙잡아
+    # 다음 단계 스텝이 늦게 시작하지 않게 한다(중단된 스레드는 새 호출을 내지 않는다).
+    executor: ThreadPoolExecutor | None = None
     try:
         for stage in plan_stages(playbook):
             remaining = budget_s - (clock() - started)
@@ -621,15 +696,28 @@ def _run(
                     results[step.id] = _placeholder(
                         step, "skipped", f"budget — 남은 예산 없음(예산 {budget_s:.0f}s 소진)"
                     )
+                    _notify_skip(results[step.id], BUDGET_SKIP, activity, on_skip)
                 continue
             when_ctx = _when_context(results, _readings_of(playbook, results))
-            submitted: list[tuple[StepSpec, Future[StepResult], str | None]] = []
+            if executor is not None:
+                executor.shutdown(wait=False, cancel_futures=True)
+            executor = ThreadPoolExecutor(
+                max_workers=max_workers, thread_name_prefix="playbook-step"
+            )
+            # 실제 대기는 실시간 단조 시계로 잰다(`clock`은 주입된 가짜일 수 있다).
+            budget_end = time.monotonic() + remaining
+            # (스텝, future, 메모, 대기 상한) — 상한은 스텝이 실제로 시작한 시각부터(W21 P3)
+            submitted: list[tuple[StepSpec, Future[StepResult], str | None, float]] = []
             for step in stage:
                 verdict = (
                     step.when_expr.evaluate(when_ctx) if step.when_expr is not None else Tri.TRUE
                 )
                 if verdict is Tri.FALSE:
                     results[step.id] = _placeholder(step, "skipped", f"when_false — {step.when}")
+                    if activity is not None or on_skip is not None:
+                        assert step.when_expr is not None
+                        because = skip_because(step.when_expr, when_ctx, _titles(playbook))
+                        _notify_skip(results[step.id], because, activity, on_skip)
                     continue
                 # UNKNOWN(앞 스텝 결손으로 조건을 판정할 수 없음)은 실행한다 — 결손이 진단 단계를
                 # 침묵 생략시키면 운영자는 「조사했는데 이상 없음」과 「조사하지 못함」을 구분할
@@ -639,13 +727,7 @@ def _run(
                     if verdict is Tri.UNKNOWN
                     else None
                 )
-                entries = scope.target_entries()
-                if step.for_each == "targets":
-                    picked = (
-                        entries if for_each_max is None else entries[: max(1, for_each_max)]
-                    )
-                else:
-                    picked = entries[:1]
+                picked = _step_targets(step, scope, for_each_max)
                 ctx = StepContext(
                     payload=payload,
                     windows=windows,
@@ -660,27 +742,64 @@ def _run(
                     xview_confirm_over=xview_confirm_over,
                 )
                 contexts[step.id] = ctx
+                limit = step_wait_s(step, step_timeout_s, remaining)
                 submitted.append(
-                    (step, executor.submit(_exec_step, step, ctx, library, clock), note)
+                    (step, executor.submit(_exec_step, step, ctx, library, clock), note, limit)
                 )
-            wait_s = max(0.0, min(step_timeout_s, remaining))
-            for step, fut, note in submitted:
+            for step, fut, note, limit in submitted:
+                # 큐 대기(단계 스텝 수 > 워커 수)는 상한에 넣지 않는다 — 시작할 때까지는 남은
+                # 예산 안에서 기다리고, 상한은 시작 시각부터 잰다. 앞 스텝을 기다린 시간이 뒤 스텝
+                # 상한에 누적되지도, 그만큼 잘리지도 않는다.
+                ctx = contexts[step.id]
+                ctx.started.wait(max(0.0, budget_end - time.monotonic()))
+                end = budget_end
+                if ctx.started_at is not None:
+                    end = min(ctx.started_at + limit, budget_end)
                 try:
-                    res = fut.result(timeout=wait_s)
+                    res = fut.result(timeout=max(0.0, end - time.monotonic()))
                 except FutureTimeout:
-                    fut.cancel()
-                    ctx = contexts[step.id]
-                    res = _placeholder(step, "missing", f"스텝 타임아웃 {wait_s:.1f}s")
-                    res.tools = list(ctx.tools)
-                    res.elapsed_ms = int(wait_s * 1000)
+                    res = _timed_out(step, fut, ctx, limit)
+                    if (ctx.abort_reason or "").startswith(STEP_TIMEOUT_PREFIX):
+                        timed_out[step.id] = (ctx.abort_reason or "", note)
                 res.reason = _join(note, res.reason)
                 results[step.id] = res
                 new_scope = res.artifacts.get("scope") if step.action in SCOPE_ACTIONS else None
                 if isinstance(new_scope, RunScope):
                     scope = new_scope
+        if retry_timed_out and timed_out:
+            for step in playbook.steps:
+                if step.id not in timed_out:
+                    continue
+                remaining = budget_s - (clock() - started)
+                if remaining <= 0:
+                    break  # 남은 예산 없음 — 첫 시도 사유 그대로(재시도 0)
+                first, note = timed_out[step.id]
+                picked = _step_targets(step, scope, for_each_max)
+                ctx = StepContext(
+                    payload=payload, windows=windows, scope=scope, args=step.args,
+                    targets=[name for name, _ in picked],
+                    target_sources=[src for _, src in picked],
+                    polestar=polestar, apm=apm, now=now, prior=dict(results),
+                    xview_confirm_over=xview_confirm_over,
+                )
+                ctx.step_id, ctx.retry_of = step.id, first
+                # 재시도마다 새 실행기 — 앞 재시도가 다시 타임아웃돼 중단된 스레드가 워커를
+                # 붙잡아도 뒤 재시도가 「시작하지 못함」으로 굶지 않게 한다
+                # (단계 실행기와 같은 이유 · W21 교정).
+                if executor is not None:
+                    executor.shutdown(wait=False, cancel_futures=True)
+                executor = ThreadPoolExecutor(max_workers=1, thread_name_prefix="playbook-retry")
+                res = _retry_step(step, ctx, first, executor, library, clock,
+                                  step_wait_s(step, step_timeout_s, remaining))
+                res.reason = _join(note, res.reason)
+                results[step.id] = res
+                # 다시 타임아웃이면 받은 결과가 더 많은 쪽 문맥을 남긴다(부분 결과 보존 · W21 P4)
+                if res.status != "missing" or len(ctx.outputs) >= len(contexts[step.id].outputs):
+                    contexts[step.id] = ctx
     finally:
         # 타임아웃으로 남은 스레드는 기다리지 않는다(잡 캐시가 닫히면 그 호출은 오류로 끝난다).
-        executor.shutdown(wait=False, cancel_futures=True)
+        if executor is not None:
+            executor.shutdown(wait=False, cancel_futures=True)
 
     for step in playbook.steps:
         if step.action == _SYNTHESIZE:
@@ -692,10 +811,224 @@ def _run(
     )
 
 
+def _step_targets(
+    step: StepSpec, scope: RunScope, for_each_max: int | None
+) -> list[tuple[str, str | None]]:
+    """스텝이 도는 대상 `(이름, APM 소스 id)` — `for_each`(targets · host_was)면 상한까지, 아니면
+    첫 대상. 소스는 대상 확정 행의 `source_id`(plans/190 W1)이고, `host_was` 이름은 같은 이름의
+    대상 행 소스를 따른다(없으면 None = 소스 미확정)."""
+    entries = scope.target_entries()
+    if step.for_each == "host_was":
+        sources = dict(entries)
+        entries = [(name, sources.get(name)) for name in scope.host_was]
+    if step.for_each in ("targets", "host_was"):
+        return entries if for_each_max is None else entries[: max(1, for_each_max)]
+    return entries[:1]
+
+
+#: 결손 스텝 재시도 사유(plans/187 W22 · 결정적).
+RETRY_OK = "재시도 1회 — 성공(첫 시도: {first})"
+RETRY_DONE = "재시도 1회 — 상태 {status}(첫 시도: {first})"
+RETRY_SCOPE_KEPT = "범위는 초기 범위 유지(뒤 단계는 이미 실행됨)"
+RETRY_TIMED_OUT = "{first} · 재시도 1회 — 다시 타임아웃 {limit} — {progress}"
+RETRY_NOT_STARTED = "{first} · 재시도 1회 — 시작하지 못함(상한 {limit})"
+
+
+def _retry_step(
+    step: StepSpec,
+    ctx: StepContext,
+    first: str,
+    executor: ThreadPoolExecutor,
+    library: Mapping[str, StepFn],
+    clock: Callable[[], float],
+    limit: float,
+) -> StepResult:
+    """「스텝 타임아웃」 결손 스텝을 1회 다시 돈다(plans/187 W22 · 결정적 · LLM 0).
+
+    대기 상한 = `limit`(스텝 상한과 남은 예산 중 작은 값 · 시작 시각부터). 잡 도구 캐시를 거친
+    콜러블을 그대로 써 이미 받은(또는 첫 시도 스레드가 아직 기다리는) 호출은 다시 부르지 않는다.
+    다시 타임아웃이면 첫 시도처럼 중단 신호를 세우고 두 시도의 사유를 잇는다. 대상 확정 스텝이
+    성공해도 범위는 바꾸지 않는다(뒤 단계는 이미 초기 범위로 실행됐다).
+    """
+    fut = executor.submit(_exec_step, step, ctx, library, clock)
+    deadline = time.monotonic() + limit
+    ctx.started.wait(max(0.0, deadline - time.monotonic()))
+    end = deadline if ctx.started_at is None else min(ctx.started_at + limit, deadline)
+    try:
+        res = fut.result(timeout=max(0.0, end - time.monotonic()))
+    except FutureTimeout:
+        if fut.done():
+            return _retry_step_result(step, fut.result(), first)
+        if fut.cancel():
+            reason = RETRY_NOT_STARTED.format(first=first, limit=_secs(limit))
+        else:
+            reason = RETRY_TIMED_OUT.format(
+                first=first, limit=_secs(limit), progress=ctx.progress_text()
+            )
+        ctx.abort(reason)
+        res = _placeholder(step, "missing", reason)
+        res.tools = list(ctx.tools)
+        res.elapsed_ms = int(limit * 1000)
+        return res
+    return _retry_step_result(step, res, first)
+
+
+def retry_reason(action: str, status: str, first: str, reason: str | None) -> str:
+    """끝난 재시도의 사유 — 재시도 머리(성공 · 상태) + (대상 확정 스텝이면) 범위 유지 + 스텝 사유.
+
+    실행기(최종 섹션)와 dispatcher(부분 브리핑)가 같은 문장을 쓴다(W22 · 결정적).
+    """
+    head = (
+        RETRY_OK.format(first=first)
+        if status == "ok"
+        else RETRY_DONE.format(status=status, first=first)
+    )
+    if action in SCOPE_ACTIONS:
+        head = f"{head} · {RETRY_SCOPE_KEPT}"
+    return f"{head} · {reason}" if reason else head
+
+
+def _retry_step_result(step: StepSpec, res: StepResult, first: str) -> StepResult:
+    """재시도가 끝난 결과에 재시도 사유를 앞에 붙인다(`retry_reason`)."""
+    res.reason = retry_reason(step.action, str(res.status), first, res.reason)
+    return res
+
+
+def step_wait_s(step: StepSpec, default_s: float, remaining_s: float) -> float:
+    """스텝 대기 상한 — `min(스텝 timeout_s 또는 기본값, 남은 예산)`(plans/187 W21 P3)."""
+    return max(0.0, min(step.timeout_s or default_s, remaining_s))
+
+
+#: 스텝 타임아웃 사유의 머리(재시도 대상 판정 — W22).
+STEP_TIMEOUT_PREFIX = "스텝 타임아웃"
+#: 남은 예산 안에 시작하지 못한 스텝의 사유(큐 대기 · W21 교정).
+STEP_NOT_STARTED = "스텝 미시작 — 남은 예산 안에 실행 자리가 나지 않음(상한 {limit})"
+
+
+def _secs(value: float) -> str:
+    return f"{value:.3g}s"
+
+
+def _timed_out(
+    step: StepSpec, fut: Future[StepResult], ctx: StepContext, limit: float
+) -> StepResult:
+    """스텝 타임아웃 — 중단 신호를 세우고(이후 새 호출 0) 진행 계수를 사유에 담는다(W21 P4).
+
+    그 사이 끝났으면 그 결과를 쓴다. 끝난 호출의 도구 목록(`ctx.tools`)은 싣는다. 대상 확정
+    스텝이면 범위는 바꾸지 않는다(부분 결과로 비교 집합을 판정하지 않는다 — 초기 범위로 강등).
+    """
+    if fut.done():
+        try:
+            return fut.result()
+        except Exception:  # noqa: BLE001 — `_exec_step`은 예외를 내지 않는다(방어)
+            pass
+    if fut.cancel():  # 시작도 못 함 — 남은 예산 안에 실행 자리가 나지 않았다
+        reason = STEP_NOT_STARTED.format(limit=_secs(limit))
+    else:
+        reason = f"{STEP_TIMEOUT_PREFIX} {_secs(limit)} — {ctx.progress_text()}"
+    ctx.abort(reason)
+    res = _placeholder(step, "missing", reason)
+    res.tools = list(ctx.tools)
+    res.elapsed_ms = int(limit * 1000)
+    return res
+
+
+def _titles(playbook: Playbook) -> dict[str, str]:
+    """스텝 ID → 제목(액션 제목)."""
+    return {st.id: ACTION_TITLES.get(st.action, st.action) for st in playbook.steps}
+
+
+def _notify_skip(
+    res: StepResult,
+    because: str,
+    activity: ActivityLog | None,
+    on_skip: Callable[[StepResult, str], None] | None,
+) -> None:
+    """건너뜀 1건 — `step_skip` 기록 + 통지(둘 다 best-effort · 없으면 무동작)."""
+    safe_append(activity, "step_skip", engine="playbook", step=res.step,
+                label=f"{res.step} {res.title}", status="skipped", because=because)
+    if on_skip is None:
+        return
+    try:
+        on_skip(res, because)
+    except Exception as e:  # noqa: BLE001 — 통지(부분 브리핑) 실패가 실행을 막지 않는다
+        logger.warning("건너뜀 통지 실패(무시) %s: %s: %s", res.step, type(e).__name__, e)
+
+
+# ── 조사 흐름(plans/187 W20 · §5.6.4) — 단계 시작·끝의 결정적 문장 · 단계 끝 해석 요청 ──
+
+
+def flow_readings(playbook: Playbook, finished: Mapping[str, StepResult]) -> Readings:
+    """그 시점까지 끝난 스텝만으로 판독을 계산한다(C1 — 뒤 단계 결과 없음)."""
+    return _readings_of(playbook, finished)
+
+
+def step_because(
+    playbook: Playbook,
+    step: StepSpec,
+    finished: Mapping[str, StepResult],
+    findings: Mapping[str, str],
+    *,
+    alarm_name: str | None = None,
+) -> str:
+    """단계 시작의 「왜」(결정적 · LLM 0).
+
+    조건 없는 단계 = `narrate.why` → 「{focus}를 확인」 → 「{제목}을 확인」 · 첫 단계는 알람 요약을
+    앞에 붙인다. `when`으로 실행된 단계 = 참이 된 조건 원소 문장 + 근거 단계 결과 한 줄 인용
+    (판정 불가로 실행됐으면 판정 못 한 조건과 사유만 — 작성자 문장은 붙이지 않는다).
+    """
+    titles = _titles(playbook)
+    narrate = step.narrate
+    tail = default_because(
+        narrate.why if narrate else None, narrate.focus if narrate else None, titles[step.id]
+    )
+    if step.when_expr is not None:
+        readings = _readings_of(playbook, finished)
+        reading_steps = {n: list(ev.steps) for n, ev in readings.evidence.items() if ev.steps}
+        reasons = {n: ev.reason for n, ev in readings.evidence.items() if ev.reason}
+        return when_because(
+            step.when_expr, _when_context(finished, readings), titles=titles,
+            findings=findings, tail=tail, reading_steps=reading_steps, reading_reasons=reasons,
+        )
+    if alarm_name and playbook.steps and playbook.steps[0].id == step.id:
+        return f"알람 「{alarm_name}」 — {tail}"
+    return tail
+
+
+def step_finding(res: StepResult, readings: Readings) -> str | None:
+    """단계 끝의 결과 한 줄(결정적 · 표 밖 수치 0)."""
+    return summarize(res.action, res.to_dict(), readings.values)
+
+
+def step_narration_request(
+    step: StepSpec, res: StepResult, readings: Readings, prior_findings: Sequence[str]
+) -> StepNarration | None:
+    """단계 끝 해석 요청 1건 — 소견 대상(`narrate` 있음 · 상태 ok)이 아니면 None.
+
+    판독은 그 시점까지 끝난 스텝으로 계산한 것(C1), `prior_findings`는 앞 단계 결과 한 줄들이다.
+    """
+    if step.narrate is None or step.action == _SYNTHESIZE or res.status != "ok":
+        return None
+    return StepNarration(
+        step=step.id,
+        section=res.to_dict(include_data=False),
+        focus=step.narrate.focus,
+        max_sentences=step.narrate.max_sentences,
+        readings=_step_readings(step.action, readings),
+        realtime_badges=tuple(b for b in res.badges if b.startswith("현재값")),
+        prior_findings=tuple(prior_findings),
+    )
+
+
 def _exec_step(
     step: StepSpec, ctx: StepContext, library: Mapping[str, StepFn], clock: Callable[[], float]
 ) -> StepResult:
-    """스텝 1개 실행 — 개별 try/except(독립 신호 · 한 스텝 실패가 다른 스텝을 막지 않는다)."""
+    """스텝 1개 실행 — 개별 try/except(독립 신호 · 한 스텝 실패가 다른 스텝을 막지 않는다).
+
+    시작 시각을 문맥에 남긴다(실행기 대기 상한의 기준 — W21).
+    """
+    ctx.started_at = time.monotonic()
+    ctx.started.set()
     t0 = clock()
     fn = library.get(step.action)
     if fn is None:
@@ -927,17 +1260,22 @@ def finalize_playbook_run(
     known_errors: Sequence[KnownError] = (),
     payload: Mapping[str, Any] | None = None,
     today: date | None = None,
+    step_opinions: Mapping[str, Opinion] | None = None,
 ) -> PlaybookRun:
     """실행 후 처리 — 판독 → (알려진 오류 일치) → 가설 순위 → 대응·추가 확인 → 단계 소견 → 종합으로
     S9를 채운다.
 
     가설 순위·상태·대응 순서는 코드값이다(D-035) — 소견기(LLM)는 `opinions`·`synthesis.narrative`만
     채우고, 무엇을 쓰든 순위는 바뀌지 않는다. `narrator`가 None이면 소견은 비우고 사유
-    「소견기 미구성」. LLM 호출은 단계 ≤ `limits.max_step_calls` + 종합 1. `run`을 고쳐 돌려준다.
+    「소견기 미구성」. LLM 호출은 소견 대상 단계 + 종합 1
+    (`limits.max_step_calls`를 주면 그 안). `run`을 고쳐 돌려준다.
 
     W8: `known_errors`(기동 시 적재)를 결정적으로 판정해 validated 완전 일치만 가설 1순위에 고정하고
     그 우회를 대응 맨 앞에 둔다(not_validated는 표시만). `payload`는 환경 조건의 `solution`
     (`meta.hints.solution`) 출처, `today`는 런북·KE 검토 기한 판정일(기본 오늘).
+
+    W20(G-47): `step_opinions`(단계 끝 해석 — 스텝 ID → `Opinion`)를 주면 소견 대상 스텝 중
+    거기 있는 것은 **다시 부르지 않고** 그것을 쓴다(없는 스텝만 소견기 호출). None이면 종전 동작.
     """
     t0 = clock()
     today = today or date.today()
@@ -993,9 +1331,15 @@ def finalize_playbook_run(
     top_inconclusive = is_top_inconclusive(hyps, alarm_degraded=degraded)
 
     # 단계 소견
-    limit = narrator.limits.max_step_calls if narrator is not None else len(playbook.steps)
+    cap = narrator.limits.max_step_calls if narrator is not None else None
+    limit = len(playbook.steps) if cap is None else cap
     planned, skipped = _narration_plan(playbook, collected, hyps, limit)
     opinions: dict[str, Opinion] = {sid: Opinion(dropped_reason=r) for sid, r in skipped.items()}
+    if step_opinions is not None:
+        for step in planned:
+            if step.id in step_opinions:
+                opinions[step.id] = step_opinions[step.id]
+        planned = [step for step in planned if step.id not in step_opinions]
     if narrator is None:
         for step in planned:
             opinions[step.id] = Opinion(dropped_reason=NOT_CONFIGURED)
@@ -1086,9 +1430,13 @@ __all__ = [
     "alarm_facts_from_payload",
     "compute_windows",
     "finalize_playbook_run",
+    "flow_readings",
     "initial_scope",
     "normalize_event_type",
     "plan_stages",
     "resolve_polestar_source",
     "run_playbook",
+    "step_because",
+    "step_finding",
+    "step_narration_request",
 ]

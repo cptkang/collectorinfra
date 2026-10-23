@@ -4,7 +4,7 @@
 - 목록 범위: 사용자 = 자기 채팅 조사만(남의 채팅·자동·알람에서 연 조사 0건) · 관리자 = 전부
 - watch: 존 밖·없는 id → `denied`(사용자 `unavailable` · 운영자 구분)
   · watch 밖 조사의 `activity` 0건
-- 사용자 경로: 한 줄·발췌 D-325 ③ 마스킹 · `ai_note` 0건 / 관리자 경로: `ai_note` 있음
+- 사용자 경로: 한 줄·발췌·AI 메모 D-325 ③ 마스킹 · `ai_note`는 가린 뒤(G-48) / 관리자: 원문
 - 재연결: `watch` 커서·`Last-Event-ID`로 누락·중복 0
 - 종결 뒤(잡 TTL 경과) `activity_since` 조회 → 요약 JSONL
 - 인증: 토큰 없음·종류 다른 토큰·만료 401 · 운영자 토큰은 헤더로만(쿼리 401) · 사용자 토큰 type 검증
@@ -268,27 +268,31 @@ async def test_unwatched_investigation_gets_no_activity(tmp_path, fake_sre):  # 
 def _secret_events() -> list[dict]:
     return [
         ev(1, label=SECRET, excerpt=f"행 1\n{SECRET}"),
-        ev(2, kind="ai_note", engine="holmes", label="AI 메모", note="커넥션 대기 의심"),
+        ev(2, kind="ai_note", engine="holmes", label="AI 메모", note=f"커넥션 대기 의심\n{SECRET}"),
         ev(3, kind="tool_start", label="다음 도구"),
+        ev(4, kind="ai_note", engine="playbook", label="S1 소견 초안", note="가드 전 초안"),
     ]
 
 
-async def test_user_path_masked_without_ai_note(tmp_path, fake_sre):  # noqa: ANN001
+async def test_user_path_masked_with_ai_note(tmp_path, fake_sre):  # noqa: ANN001
+    """(plans/187 W20 · G-48) 사용자 경로도 HolmesGPT AI 메모를 받는다 — 두 겹 가림 뒤(비밀값 0).
+    플레이북 소견 초안(가드 전)은 사용자 경로에 없다."""
     seed(tmp_path, "chat-u1", kind="diagnosis", owner_sub="u1", origin="chat")
     fake_sre.jobs["chat-u1"] = FakeJob(events=_secret_events())
     app = _app(_config(tmp_path), U1)
     frames = await asyncio.wait_for(_stream(app, "chat-u1"), timeout=10)
     events = [e for f in _of(frames, "activity") for e in f["data"]["events"]]
-    assert [e["seq"] for e in events] == [1, 3]
+    assert [e["seq"] for e in events] == [1, 2, 3]
     assert events[0]["label"] == "***" and events[0]["excerpt"] == "행 1\n***"
+    assert events[1]["kind"] == "ai_note" and events[1]["note"] == "커넥션 대기 의심\n***"
     raw = json.dumps(frames, ensure_ascii=False)
-    assert SECRET not in raw and "ai_note" not in raw and "커넥션 대기 의심" not in raw
+    assert SECRET not in raw and "가드 전 초안" not in raw
     # 조회 경로 activity_since도 같은 규칙.
     resp = await _get(app, "/alarm/investigations/chat-u1", params={"activity_since": 0})
     assert resp.status_code == 200
     body = resp.json()
-    assert [e["seq"] for e in body["activity"]["events"]] == [1, 3]
-    assert SECRET not in resp.text and "ai_note" not in resp.text
+    assert [e["seq"] for e in body["activity"]["events"]] == [1, 2, 3]
+    assert SECRET not in resp.text and "ai_note" in resp.text and "가드 전 초안" not in resp.text
     assert body["phase"] == "collecting"
 
 
@@ -298,8 +302,9 @@ async def test_admin_path_has_ai_note(tmp_path, fake_sre):  # noqa: ANN001
     app = _app(_config(tmp_path), ADMIN)
     frames = await asyncio.wait_for(_stream(app, "chat-u1"), timeout=10)
     events = [e for f in _of(frames, "activity") for e in f["data"]["events"]]
-    assert [e["seq"] for e in events] == [1, 2, 3]
-    assert events[1]["kind"] == "ai_note" and events[1]["note"] == "커넥션 대기 의심"
+    assert [e["seq"] for e in events] == [1, 2, 3, 4]  # 운영자 — 두 엔진의 메모 모두
+    assert events[1]["kind"] == "ai_note" and events[1]["note"] == f"커넥션 대기 의심\n{SECRET}"
+    assert events[3]["engine"] == "playbook" and events[3]["note"] == "가드 전 초안"
     assert events[0]["label"] == SECRET  # 관리자는 sre_agent 가림 뒤 원문
 
 

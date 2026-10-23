@@ -1,0 +1,1368 @@
+{
+ "events": [
+  {
+   "at": 1792395001,
+   "engine": "system",
+   "kind": "started",
+   "label": "조사 시작",
+   "seq": 1
+  },
+  {
+   "at": 1792395002,
+   "engine": "playbook",
+   "kind": "started",
+   "label": "플레이북 host.cpu 선택",
+   "purpose": "알람의 알람 종류가 이 플레이북 조건과 일치",
+   "seq": 2
+  },
+  {
+   "at": 1792395003,
+   "because": "알람 「CPU 사용률 95%」 — CPU 사용률의 기준선 대비 변화와 포화 여부를 확인",
+   "engine": "playbook",
+   "kind": "step_start",
+   "label": "S4 호스트 자원 시간대별 추이",
+   "purpose": "CPU 사용률의 기준선 대비 변화와 포화 여부",
+   "seq": 3,
+   "step": "S4"
+  },
+  {
+   "at": 1792395004,
+   "engine": "playbook",
+   "kind": "tool_start",
+   "label": "polestar_metric_trend {\"kind\": \"cpu\", \"lookback_minutes\": 40, \"reference_time\": \"2026-10-19T10:10:00\", \"server_name\": \"SAE0011\"}",
+   "phrase": "폴스타 · SAE0011 CPU 시간대별 추이(09:30~10:10 · 전일·전주 비교)",
+   "seq": 4,
+   "step": "S4",
+   "tool": "polestar_metric_trend"
+  },
+  {
+   "at": 1792395005,
+   "engine": "playbook",
+   "excerpt": "{\"rows\": []}",
+   "kind": "tool_end",
+   "label": "polestar_metric_trend {\"kind\": \"cpu\", \"lookback_minutes\": 40, \"reference_time\": \"2026-10-19T10:10:00\", \"server_name\": \"SAE0011\"}",
+   "phrase": "폴스타 · SAE0011 CPU 시간대별 추이(09:30~10:10 · 전일·전주 비교)",
+   "rows": 0,
+   "seq": 5,
+   "status": "success",
+   "step": "S4",
+   "tool": "polestar_metric_trend"
+  },
+  {
+   "at": 1792395006,
+   "engine": "playbook",
+   "finding": "이상 지표 있음 — CPU 이상(최대 96% · 평소 평균 43%)",
+   "kind": "step_end",
+   "label": "S4 호스트 자원 시간대별 추이",
+   "purpose": "CPU 사용률의 기준선 대비 변화와 포화 여부",
+   "seq": 6,
+   "status": "ok",
+   "step": "S4"
+  },
+  {
+   "at": 1792395007,
+   "because": "CPU 상위 프로세스와 그 비중을 확인",
+   "engine": "playbook",
+   "kind": "step_start",
+   "label": "S6 프로세스 CPU 상위",
+   "purpose": "CPU 상위 프로세스와 그 비중",
+   "seq": 7,
+   "step": "S6"
+  },
+  {
+   "at": 1792395008,
+   "engine": "playbook",
+   "kind": "tool_start",
+   "label": "polestar_process_snapshot {\"server_name\": \"SAE0011\", \"sort\": \"cpu\", \"top_n\": 10}",
+   "phrase": "폴스타 · SAE0011 프로세스 목록(CPU 순 · 상위 10) · 현재값",
+   "seq": 8,
+   "step": "S6",
+   "tool": "polestar_process_snapshot"
+  },
+  {
+   "at": 1792395009,
+   "engine": "playbook",
+   "excerpt": "{\"rows\": []}",
+   "kind": "tool_end",
+   "label": "polestar_process_snapshot {\"server_name\": \"SAE0011\", \"sort\": \"cpu\", \"top_n\": 10}",
+   "phrase": "폴스타 · SAE0011 프로세스 목록(CPU 순 · 상위 10) · 현재값",
+   "rows": 0,
+   "seq": 9,
+   "status": "success",
+   "step": "S6",
+   "tool": "polestar_process_snapshot"
+  },
+  {
+   "at": 1792395010,
+   "engine": "playbook",
+   "finding": "상위 2개 중 1위 java 78% · 2위 sshd 3%",
+   "kind": "step_end",
+   "label": "S6 프로세스 CPU 상위",
+   "purpose": "CPU 상위 프로세스와 그 비중",
+   "seq": 10,
+   "status": "ok",
+   "step": "S6"
+  },
+  {
+   "at": 1792395011,
+   "engine": "playbook",
+   "kind": "llm_start",
+   "label": "S4 소견 작성",
+   "seq": 11,
+   "step": "S4"
+  },
+  {
+   "at": 1792395012,
+   "engine": "playbook",
+   "kind": "llm_end",
+   "label": "S4 소견 작성",
+   "seq": 12,
+   "status": "success",
+   "step": "S4"
+  },
+  {
+   "at": 1792395013,
+   "engine": "playbook",
+   "kind": "ai_note",
+   "label": "S4 소견 초안",
+   "note": "CPU가 높게 유지되고 있다.",
+   "seq": 13,
+   "step": "S4"
+  },
+  {
+   "at": 1792395014,
+   "engine": "playbook",
+   "kind": "llm_start",
+   "label": "S6 소견 작성",
+   "seq": 14,
+   "step": "S6"
+  },
+  {
+   "at": 1792395015,
+   "engine": "playbook",
+   "kind": "llm_end",
+   "label": "S6 소견 작성",
+   "seq": 15,
+   "status": "success",
+   "step": "S6"
+  },
+  {
+   "at": 1792395016,
+   "engine": "playbook",
+   "kind": "ai_note",
+   "label": "S6 소견 초안",
+   "note": "CPU가 높게 유지되고 있다.",
+   "seq": 16,
+   "step": "S6"
+  },
+  {
+   "at": 1792395017,
+   "because": "이 호스트 WAS 인스턴스의 이상 여부를 확인",
+   "engine": "playbook",
+   "kind": "step_start",
+   "label": "S0r 호스트의 WAS 인스턴스 영향",
+   "purpose": "이 호스트 WAS 인스턴스의 이상 여부",
+   "seq": 17,
+   "step": "S0r"
+  },
+  {
+   "at": 1792395018,
+   "engine": "playbook",
+   "kind": "tool_start",
+   "label": "apm_instance_map {\"hostname\": \"SAE0011\"}",
+   "phrase": "제니퍼 · SAE0011 호스트의 WAS 인스턴스 목록",
+   "seq": 18,
+   "step": "S0r",
+   "tool": "apm_instance_map"
+  },
+  {
+   "at": 1792395019,
+   "engine": "playbook",
+   "excerpt": "{\"rows\": []}",
+   "kind": "tool_end",
+   "label": "apm_instance_map {\"hostname\": \"SAE0011\"}",
+   "phrase": "제니퍼 · SAE0011 호스트의 WAS 인스턴스 목록",
+   "rows": 0,
+   "seq": 19,
+   "status": "success",
+   "step": "S0r",
+   "tool": "apm_instance_map"
+  },
+  {
+   "at": 1792395020,
+   "engine": "playbook",
+   "finding": "WAS 인스턴스 2개 응답·오류 정상",
+   "kind": "step_end",
+   "label": "S0r 호스트의 WAS 인스턴스 영향",
+   "purpose": "이 호스트 WAS 인스턴스의 이상 여부",
+   "seq": 20,
+   "status": "ok",
+   "step": "S0r"
+  },
+  {
+   "at": 1792395021,
+   "engine": "playbook",
+   "kind": "llm_start",
+   "label": "S0r 소견 작성",
+   "seq": 21,
+   "step": "S0r"
+  },
+  {
+   "at": 1792395022,
+   "engine": "playbook",
+   "kind": "llm_end",
+   "label": "S0r 소견 작성",
+   "seq": 22,
+   "status": "success",
+   "step": "S0r"
+  },
+  {
+   "at": 1792395023,
+   "engine": "playbook",
+   "kind": "ai_note",
+   "label": "S0r 소견 초안",
+   "note": "CPU가 높게 유지되고 있다.",
+   "seq": 23,
+   "step": "S0r"
+  },
+  {
+   "at": 1792395024,
+   "because": "호스트의 WAS 인스턴스 영향 결과가 정상이라 생략",
+   "engine": "playbook",
+   "kind": "step_skip",
+   "label": "S1 WAS 골든 시그널",
+   "seq": 24,
+   "status": "skipped",
+   "step": "S1"
+  },
+  {
+   "at": 1792395025,
+   "because": "이 호스트에 WAS 인스턴스가 있음(호스트의 WAS 인스턴스 영향: WAS 인스턴스 2개 응답·오류 정상) → 호스트 CPU를 WAS 프로세스가 쓰는지 가려 CPU 주인을 판단한다",
+   "engine": "playbook",
+   "kind": "step_start",
+   "label": "S2 JVM 런타임 · DB 커넥션 풀",
+   "purpose": "WAS 프로세스 CPU가 호스트 CPU 상승과 겹치는지",
+   "seq": 25,
+   "step": "S2"
+  },
+  {
+   "at": 1792395026,
+   "engine": "playbook",
+   "kind": "tool_start",
+   "label": "apm_runtime_health {\"instance_name\": \"A1\", \"metrics\": [\"process_cpu\"]}",
+   "phrase": "제니퍼 · A1 프로세스 CPU·액티브 서비스 추세",
+   "seq": 26,
+   "step": "S2",
+   "tool": "apm_runtime_health"
+  },
+  {
+   "at": 1792395027,
+   "engine": "playbook",
+   "excerpt": "{\"rows\": []}",
+   "kind": "tool_end",
+   "label": "apm_runtime_health {\"instance_name\": \"A1\", \"metrics\": [\"process_cpu\"]}",
+   "phrase": "제니퍼 · A1 프로세스 CPU·액티브 서비스 추세",
+   "rows": 0,
+   "seq": 27,
+   "status": "success",
+   "step": "S2",
+   "tool": "apm_runtime_health"
+  },
+  {
+   "at": 1792395028,
+   "engine": "playbook",
+   "finding": "A2 프로세스 CPU 최대 6% · A1 프로세스 CPU 최대 88%",
+   "kind": "step_end",
+   "label": "S2 JVM 런타임 · DB 커넥션 풀",
+   "purpose": "WAS 프로세스 CPU가 호스트 CPU 상승과 겹치는지",
+   "seq": 28,
+   "status": "ok",
+   "step": "S2"
+  },
+  {
+   "at": 1792395029,
+   "engine": "playbook",
+   "kind": "llm_start",
+   "label": "S2 소견 작성",
+   "seq": 29,
+   "step": "S2"
+  },
+  {
+   "at": 1792395030,
+   "engine": "playbook",
+   "kind": "llm_end",
+   "label": "S2 소견 작성",
+   "seq": 30,
+   "status": "success",
+   "step": "S2"
+  },
+  {
+   "at": 1792395031,
+   "engine": "playbook",
+   "kind": "ai_note",
+   "label": "S2 소견 초안",
+   "note": "CPU가 높게 유지되고 있다.",
+   "seq": 31,
+   "step": "S2"
+  },
+  {
+   "at": 1792395032,
+   "because": "「CPU 주인 = WAS 처리(부하 증가) 또는 WAS 처리(부하 증가 없음)」인지 판정할 수 없어(사유: TPS 결손 — 부하/로직 구분 불가) 확인을 위해 실행",
+   "engine": "playbook",
+   "kind": "step_start",
+   "label": "S3a 액티브 서비스",
+   "purpose": "CPU 시간·SQL 수·경과가 큰 실행 중 요청",
+   "seq": 32,
+   "step": "S3a"
+  },
+  {
+   "at": 1792395033,
+   "engine": "playbook",
+   "kind": "tool_start",
+   "label": "apm_active_services {\"instance_name\": \"A1\", \"n\": 5}",
+   "phrase": "제니퍼 · A1 실행 중 요청(상위 5) · 현재값",
+   "seq": 33,
+   "step": "S3a",
+   "tool": "apm_active_services"
+  },
+  {
+   "at": 1792395034,
+   "engine": "playbook",
+   "excerpt": "{\"rows\": [{\"instance_name\": \"A1\", \"application\": \"/order/101\", \"cpu_ms\": 900, \"elapsed_ms\": 5000, \"sql_count\": 7, \"txid\": \"101\", \"active_ref\": {\"source_id\": \"j1\", \"domain_id\": 1000, \"txid\": \"101\", \"thread_hash\": 7}}, {\"instance_name\": \"A1\", \"application\": \"/order/102\", \"cpu_ms\": 300, \"elapsed_ms\": 9000, \"sql_count\": 2, \"txid\": \"102\", \"active_ref\": {\"source_id\": \"j1\", \"domain_id\": 1000, \"txid\": \"102\", \"thread_hash\": 7}}, {\"instance_name\": \"A1\", \"application\": \"/order/103\", \"cpu_ms\": 700, \"elapsed_ms\": 3000, \"sql_count\": 4, \"txid\": \"103\", \"active_ref\": {\"source_id\": \"j1\", \"domain_id\": 1000, \"txid\": \"103\", \"thread_hash\": 7}}], \"queried_at\": \"2026-10-19T10:01:00\"}",
+   "kind": "tool_end",
+   "label": "apm_active_services {\"instance_name\": \"A1\", \"n\": 5}",
+   "phrase": "제니퍼 · A1 실행 중 요청(상위 5) · 현재값",
+   "rows": 3,
+   "seq": 34,
+   "status": "success",
+   "step": "S3a",
+   "tool": "apm_active_services"
+  },
+  {
+   "at": 1792395035,
+   "engine": "playbook",
+   "finding": "실행 중 요청 3건 — CPU 시간 1위 A1 /order/101 900ms · 경과 1위 A1 /order/102 9000ms · 현재값",
+   "kind": "step_end",
+   "label": "S3a 액티브 서비스",
+   "purpose": "CPU 시간·SQL 수·경과가 큰 실행 중 요청",
+   "seq": 35,
+   "status": "ok",
+   "step": "S3a"
+  },
+  {
+   "at": 1792395036,
+   "engine": "playbook",
+   "kind": "llm_start",
+   "label": "S3a 소견 작성",
+   "seq": 36,
+   "step": "S3a"
+  },
+  {
+   "at": 1792395037,
+   "engine": "playbook",
+   "kind": "llm_end",
+   "label": "S3a 소견 작성",
+   "seq": 37,
+   "status": "success",
+   "step": "S3a"
+  },
+  {
+   "at": 1792395038,
+   "engine": "playbook",
+   "kind": "ai_note",
+   "label": "S3a 소견 초안",
+   "note": "CPU가 높게 유지되고 있다.",
+   "seq": 38,
+   "step": "S3a"
+  },
+  {
+   "at": 1792395039,
+   "because": "사건창 직전 변경의 시간 근접순을 확인",
+   "engine": "playbook",
+   "kind": "step_start",
+   "label": "S7 최근 변경 대조",
+   "purpose": "사건창 직전 변경의 시간 근접순",
+   "seq": 39,
+   "step": "S7"
+  },
+  {
+   "at": 1792395040,
+   "engine": "playbook",
+   "kind": "tool_start",
+   "label": "polestar_change_history {\"server_name\": \"SAE0011\"}",
+   "phrase": "폴스타 · SAE0011 변경 이력",
+   "seq": 40,
+   "step": "S7",
+   "tool": "polestar_change_history"
+  },
+  {
+   "at": 1792395041,
+   "engine": "playbook",
+   "excerpt": "{\"rows\": []}",
+   "kind": "tool_end",
+   "label": "polestar_change_history {\"server_name\": \"SAE0011\"}",
+   "phrase": "폴스타 · SAE0011 변경 이력",
+   "rows": 0,
+   "seq": 41,
+   "status": "success",
+   "step": "S7",
+   "tool": "polestar_change_history"
+  },
+  {
+   "at": 1792395042,
+   "engine": "playbook",
+   "finding": "판정 없음 · 결과 0건",
+   "kind": "step_end",
+   "label": "S7 최근 변경 대조",
+   "purpose": "사건창 직전 변경의 시간 근접순",
+   "seq": 42,
+   "status": "ok",
+   "step": "S7"
+  },
+  {
+   "at": 1792395043,
+   "because": "알람 전후 선행·동시·후행 알람을 확인",
+   "engine": "playbook",
+   "kind": "step_start",
+   "label": "S5 전후 연관 알람",
+   "purpose": "알람 전후 선행·동시·후행 알람",
+   "seq": 43,
+   "step": "S5"
+  },
+  {
+   "at": 1792395044,
+   "engine": "playbook",
+   "kind": "tool_start",
+   "label": "polestar_incident_alarms {\"server_name\": \"SAE0011\"}",
+   "phrase": "폴스타 · SAE0011 전후 알람",
+   "seq": 44,
+   "step": "S5",
+   "tool": "polestar_incident_alarms"
+  },
+  {
+   "at": 1792395045,
+   "engine": "playbook",
+   "excerpt": "{\"rows\": []}",
+   "kind": "tool_end",
+   "label": "polestar_incident_alarms {\"server_name\": \"SAE0011\"}",
+   "phrase": "폴스타 · SAE0011 전후 알람",
+   "rows": 0,
+   "seq": 45,
+   "status": "success",
+   "step": "S5",
+   "tool": "polestar_incident_alarms"
+  },
+  {
+   "at": 1792395046,
+   "engine": "playbook",
+   "finding": "판정 없음 · 결과 0건",
+   "kind": "step_end",
+   "label": "S5 전후 연관 알람",
+   "purpose": "알람 전후 선행·동시·후행 알람",
+   "seq": 46,
+   "status": "ok",
+   "step": "S5"
+  },
+  {
+   "at": 1792395047,
+   "because": "액티브 서비스 결과 있음(액티브 서비스: 실행 중 요청 3건 — CPU 시간 1위 A1 /order/101 900ms · 경과 1위 A1 /order/102 9000ms · 현재값) → CPU 시간이 큰 요청이 어떤 SQL을 실행 중인지 본다",
+   "engine": "playbook",
+   "kind": "step_start",
+   "label": "S3b 실행 중 SQL",
+   "purpose": "CPU 시간 상위 요청이 실행 중인 SQL 문",
+   "seq": 47,
+   "step": "S3b"
+  },
+  {
+   "at": 1792395048,
+   "engine": "playbook",
+   "kind": "tool_start",
+   "label": "apm_active_detail {\"domain_id\": 1000, \"source_id\": \"j1\", \"thread_hash\": 7, \"txid\": \"101\"}",
+   "phrase": "제니퍼 · 실행 중 요청의 SQL 문 · 현재값",
+   "seq": 48,
+   "step": "S3b",
+   "tool": "apm_active_detail"
+  },
+  {
+   "at": 1792395049,
+   "engine": "playbook",
+   "kind": "tool_start",
+   "label": "apm_active_detail {\"domain_id\": 1000, \"source_id\": \"j1\", \"thread_hash\": 7, \"txid\": \"103\"}",
+   "phrase": "제니퍼 · 실행 중 요청의 SQL 문 · 현재값",
+   "seq": 49,
+   "step": "S3b",
+   "tool": "apm_active_detail"
+  },
+  {
+   "at": 1792395050,
+   "engine": "playbook",
+   "kind": "tool_start",
+   "label": "apm_active_detail {\"domain_id\": 1000, \"source_id\": \"j1\", \"thread_hash\": 7, \"txid\": \"102\"}",
+   "phrase": "제니퍼 · 실행 중 요청의 SQL 문 · 현재값",
+   "seq": 50,
+   "step": "S3b",
+   "tool": "apm_active_detail"
+  },
+  {
+   "at": 1792395051,
+   "engine": "playbook",
+   "excerpt": "{\"rows\": [{\"txid\": \"101\", \"sql\": \"SELECT o.id FROM orders o WHERE o.cust = ? AND o.amt > ? /* password=*** */\"}], \"queried_at\": \"2026-10-19T10:01:10\"}",
+   "kind": "tool_end",
+   "label": "apm_active_detail {\"domain_id\": 1000, \"source_id\": \"j1\", \"thread_hash\": 7, \"txid\": \"101\"}",
+   "phrase": "제니퍼 · 실행 중 요청의 SQL 문 · 현재값",
+   "rows": 1,
+   "seq": 51,
+   "status": "success",
+   "step": "S3b",
+   "tool": "apm_active_detail"
+  },
+  {
+   "at": 1792395052,
+   "engine": "playbook",
+   "excerpt": "{\"rows\": [{\"txid\": \"103\", \"sql\": \"SELECT ? FROM dual\"}], \"queried_at\": \"2026-10-19T10:01:10\"}",
+   "kind": "tool_end",
+   "label": "apm_active_detail {\"domain_id\": 1000, \"source_id\": \"j1\", \"thread_hash\": 7, \"txid\": \"103\"}",
+   "phrase": "제니퍼 · 실행 중 요청의 SQL 문 · 현재값",
+   "rows": 1,
+   "seq": 52,
+   "status": "success",
+   "step": "S3b",
+   "tool": "apm_active_detail"
+  },
+  {
+   "at": 1792395053,
+   "engine": "playbook",
+   "excerpt": "{\"rows\": [{\"txid\": \"102\", \"sql\": \"UPDATE t SET a = ?\"}], \"queried_at\": \"2026-10-19T10:01:10\"}",
+   "kind": "tool_end",
+   "label": "apm_active_detail {\"domain_id\": 1000, \"source_id\": \"j1\", \"thread_hash\": 7, \"txid\": \"102\"}",
+   "phrase": "제니퍼 · 실행 중 요청의 SQL 문 · 현재값",
+   "rows": 1,
+   "seq": 53,
+   "status": "success",
+   "step": "S3b",
+   "tool": "apm_active_detail"
+  },
+  {
+   "at": 1792395054,
+   "engine": "playbook",
+   "finding": "실행 중 SQL 3건 — 1위 A1 /order/101 CPU 900ms · 경과 5000ms: SELECT o.id FROM orders o WHERE o.cust = ? AND o.amt > ? /* password=*** */ · 현재값",
+   "kind": "step_end",
+   "label": "S3b 실행 중 SQL",
+   "purpose": "CPU 시간 상위 요청이 실행 중인 SQL 문",
+   "seq": 54,
+   "status": "ok",
+   "step": "S3b"
+  },
+  {
+   "at": 1792395055,
+   "engine": "playbook",
+   "kind": "llm_start",
+   "label": "S7 소견 작성",
+   "seq": 55,
+   "step": "S7"
+  },
+  {
+   "at": 1792395056,
+   "engine": "playbook",
+   "kind": "llm_end",
+   "label": "S7 소견 작성",
+   "seq": 56,
+   "status": "success",
+   "step": "S7"
+  },
+  {
+   "at": 1792395057,
+   "engine": "playbook",
+   "kind": "ai_note",
+   "label": "S7 소견 초안",
+   "note": "CPU가 높게 유지되고 있다.",
+   "seq": 57,
+   "step": "S7"
+  },
+  {
+   "at": 1792395058,
+   "engine": "playbook",
+   "kind": "llm_start",
+   "label": "S5 소견 작성",
+   "seq": 58,
+   "step": "S5"
+  },
+  {
+   "at": 1792395059,
+   "engine": "playbook",
+   "kind": "llm_end",
+   "label": "S5 소견 작성",
+   "seq": 59,
+   "status": "success",
+   "step": "S5"
+  },
+  {
+   "at": 1792395060,
+   "engine": "playbook",
+   "kind": "ai_note",
+   "label": "S5 소견 초안",
+   "note": "CPU가 높게 유지되고 있다.",
+   "seq": 60,
+   "step": "S5"
+  },
+  {
+   "at": 1792395061,
+   "engine": "playbook",
+   "kind": "llm_start",
+   "label": "S3b 소견 작성",
+   "seq": 61,
+   "step": "S3b"
+  },
+  {
+   "at": 1792395062,
+   "engine": "playbook",
+   "kind": "llm_end",
+   "label": "S3b 소견 작성",
+   "seq": 62,
+   "status": "success",
+   "step": "S3b"
+  },
+  {
+   "at": 1792395063,
+   "engine": "playbook",
+   "kind": "ai_note",
+   "label": "S3b 소견 초안",
+   "note": "CPU가 높게 유지되고 있다.",
+   "seq": 63,
+   "step": "S3b"
+  },
+  {
+   "at": 1792395064,
+   "engine": "playbook",
+   "kind": "llm_start",
+   "label": "종합 소견 작성",
+   "seq": 64
+  },
+  {
+   "at": 1792395065,
+   "engine": "playbook",
+   "kind": "llm_end",
+   "label": "종합 소견 작성",
+   "seq": 65,
+   "status": "success"
+  },
+  {
+   "at": 1792395066,
+   "engine": "system",
+   "kind": "finalize",
+   "label": "브리핑 조립 — 종결(done)",
+   "seq": 66,
+   "status": "done"
+  }
+ ],
+ "final_playbook": {
+  "sections": [
+   {
+    "action": "host.usage_trend",
+    "badges": [],
+    "missing": [],
+    "opinion": "CPU가 높게 유지되고 있다.",
+    "opinion_dropped_reason": null,
+    "opinion_guard": [],
+    "reason": null,
+    "status": "ok",
+    "step": "S4",
+    "table": {
+     "columns": [
+      "kind",
+      "peak_value",
+      "baseline_mean"
+     ],
+     "rows": [
+      [
+       "cpu",
+       96.0,
+       43.0
+      ]
+     ]
+    },
+    "title": "호스트 자원 시간대별 추이",
+    "tools": [
+     "polestar_metric_trend"
+    ],
+    "verdict": "degraded",
+    "verdict_source": "playbook_rule"
+   },
+   {
+    "action": "host.process_top",
+    "badges": [],
+    "missing": [],
+    "opinion": "CPU가 높게 유지되고 있다.",
+    "opinion_dropped_reason": null,
+    "opinion_guard": [],
+    "reason": null,
+    "status": "ok",
+    "step": "S6",
+    "table": {
+     "columns": [
+      "name",
+      "pcpu"
+     ],
+     "rows": [
+      [
+       "java",
+       78.0
+      ],
+      [
+       "sshd",
+       3.0
+      ]
+     ]
+    },
+    "title": "프로세스 CPU 상위",
+    "tools": [
+     "polestar_process_snapshot"
+    ],
+    "verdict": null,
+    "verdict_source": null
+   },
+   {
+    "action": "scope.host_to_was",
+    "badges": [],
+    "missing": [],
+    "opinion": "CPU가 높게 유지되고 있다.",
+    "opinion_dropped_reason": null,
+    "opinion_guard": [],
+    "reason": null,
+    "status": "ok",
+    "step": "S0r",
+    "table": {
+     "columns": [
+      "instance",
+      "verdict"
+     ],
+     "rows": [
+      [
+       "A1",
+       "normal"
+      ],
+      [
+       "A2",
+       "normal"
+      ]
+     ]
+    },
+    "title": "호스트의 WAS 인스턴스 영향",
+    "tools": [
+     "apm_instance_map"
+    ],
+    "verdict": "normal",
+    "verdict_source": "apm_gateway"
+   },
+   {
+    "action": "apm.golden_signals",
+    "badges": [],
+    "missing": [],
+    "opinion": "",
+    "opinion_dropped_reason": "단계 상태 skipped — 소견 없음",
+    "opinion_guard": [],
+    "reason": "when_false — S0r.status == 'ok' and S0r.verdict == 'degraded'",
+    "status": "skipped",
+    "step": "S1",
+    "table": null,
+    "title": "WAS 골든 시그널",
+    "tools": [],
+    "verdict": null,
+    "verdict_source": null
+   },
+   {
+    "action": "apm.runtime_and_pool",
+    "badges": [],
+    "missing": [],
+    "opinion": "CPU가 높게 유지되고 있다.",
+    "opinion_dropped_reason": null,
+    "opinion_guard": [],
+    "reason": null,
+    "status": "ok",
+    "step": "S2",
+    "table": {
+     "columns": [
+      "instance",
+      "metric",
+      "max"
+     ],
+     "rows": [
+      [
+       "A2",
+       "process_cpu_pct",
+       6.0
+      ],
+      [
+       "A1",
+       "process_cpu_pct",
+       88.0
+      ]
+     ]
+    },
+    "title": "JVM 런타임 · DB 커넥션 풀",
+    "tools": [
+     "apm_runtime_health"
+    ],
+    "verdict": "normal",
+    "verdict_source": null
+   },
+   {
+    "action": "apm.active_services",
+    "badges": [
+     "현재값 · 알람 후 1분"
+    ],
+    "missing": [],
+    "opinion": "(현재값 기준) CPU가 높게 유지되고 있다.",
+    "opinion_dropped_reason": null,
+    "opinion_guard": [
+     "실시간 단면 — 「현재값」 표기 보강"
+    ],
+    "reason": "when 판정 불가(결손) — 조건 `S2.status == 'ok' and cpu_owner in ['was_load', 'was_logic']` 무시하고 실행",
+    "status": "ok",
+    "step": "S3a",
+    "table": {
+     "columns": [
+      "application",
+      "elapsed_ms",
+      "cpu_ms",
+      "running_mode",
+      "running_text"
+     ],
+     "rows": [
+      [
+       "/order/101",
+       5000,
+       900,
+       null,
+       null
+      ],
+      [
+       "/order/102",
+       9000,
+       300,
+       null,
+       null
+      ],
+      [
+       "/order/103",
+       3000,
+       700,
+       null,
+       null
+      ]
+     ]
+    },
+    "title": "액티브 서비스",
+    "tools": [
+     "apm_active_services"
+    ],
+    "verdict": null,
+    "verdict_source": null
+   },
+   {
+    "action": "apm.active_sql",
+    "badges": [
+     "현재값 · 알람 후 1분"
+    ],
+    "missing": [],
+    "opinion": "(현재값 기준) CPU가 높게 유지되고 있다.",
+    "opinion_dropped_reason": null,
+    "opinion_guard": [
+     "실시간 단면 — 「현재값」 표기 보강"
+    ],
+    "reason": null,
+    "status": "ok",
+    "step": "S3b",
+    "table": {
+     "columns": [
+      "instance",
+      "application",
+      "cpu_ms",
+      "elapsed_ms",
+      "sql"
+     ],
+     "rows": [
+      [
+       "A1",
+       "/order/101",
+       900,
+       5000,
+       "SELECT o.id FROM orders o WHERE o.cust = ? AND o.amt > ? /* password=*** */"
+      ],
+      [
+       "A1",
+       "/order/103",
+       700,
+       3000,
+       "SELECT ? FROM dual"
+      ],
+      [
+       "A1",
+       "/order/102",
+       300,
+       9000,
+       "UPDATE t SET a = ?"
+      ]
+     ]
+    },
+    "title": "실행 중 SQL",
+    "tools": [
+     "apm_active_detail"
+    ],
+    "verdict": null,
+    "verdict_source": null
+   },
+   {
+    "action": "xsource.related_alarms",
+    "badges": [],
+    "missing": [],
+    "opinion": "CPU가 높게 유지되고 있다.",
+    "opinion_dropped_reason": null,
+    "opinion_guard": [],
+    "reason": null,
+    "status": "ok",
+    "step": "S5",
+    "table": {
+     "columns": [
+      "n"
+     ],
+     "rows": []
+    },
+    "title": "전후 연관 알람",
+    "tools": [
+     "polestar_incident_alarms"
+    ],
+    "verdict": null,
+    "verdict_source": null
+   },
+   {
+    "action": "change.recent",
+    "badges": [],
+    "missing": [],
+    "opinion": "CPU가 높게 유지되고 있다.",
+    "opinion_dropped_reason": null,
+    "opinion_guard": [],
+    "reason": null,
+    "status": "ok",
+    "step": "S7",
+    "table": {
+     "columns": [
+      "n"
+     ],
+     "rows": []
+    },
+    "title": "최근 변경 대조",
+    "tools": [
+     "polestar_change_history"
+    ],
+    "verdict": null,
+    "verdict_source": null
+   },
+   {
+    "action": "synthesize",
+    "badges": [],
+    "missing": [],
+    "opinion": "CPU가 높게 유지되고 있다.",
+    "opinion_dropped_reason": null,
+    "opinion_guard": [],
+    "reason": null,
+    "status": "ok",
+    "step": "S9",
+    "table": {
+     "columns": [
+      "순위",
+      "가설",
+      "상태",
+      "근거 스텝"
+     ],
+     "rows": [
+      [
+       1,
+       "호스트 CPU 포화",
+       "지지",
+       "S4, S6"
+      ]
+     ]
+    },
+    "title": "종합",
+    "tools": [],
+    "verdict": null,
+    "verdict_source": null
+   }
+  ],
+  "synthesis": {
+   "actions": [
+    {
+     "order": 1,
+     "risk": "low",
+     "rollback": "해당 없음",
+     "source": "runbook",
+     "text": "CPU 상위 프로세스를 확인해 해당 프로세스 담당에 이관",
+     "verification": "CPU 사용률 기준선 복귀"
+    },
+    {
+     "order": 2,
+     "risk": "low",
+     "rollback": "배치 일정을 원래대로 복원",
+     "source": "runbook",
+     "text": "배치 작업이 원인이면 배치 일정 조정을 배치 담당과 검토",
+     "verification": "다음 배치 시간대 CPU 사용률 임계 이내"
+    }
+   ],
+   "followups": [],
+   "hypotheses": [
+    {
+     "evidence_steps": [
+      "S4",
+      "S6"
+     ],
+     "rank": 1,
+     "rule_id": "H-HOST-CPU",
+     "status": "supported",
+     "status_label": "지지",
+     "title": "호스트 CPU 포화"
+    }
+   ],
+   "narrative": "CPU가 높게 유지되고 있다.",
+   "narrative_dropped_reason": null,
+   "narrative_guard": [],
+   "top_inconclusive": false
+  }
+ },
+ "partial": {
+  "deep_dive": {
+   "label": "심층 조사(HolmesGPT · 가설)",
+   "mode": "off",
+   "reason": null,
+   "status": "pending"
+  },
+  "partial": true,
+  "playbook": {
+   "id": "host.cpu",
+   "matched_by": "match:alarm_kind",
+   "sections": [
+    {
+     "action": "host.usage_trend",
+     "badges": [],
+     "elapsed_ms": 0,
+     "finding": "이상 지표 있음 — CPU 이상(최대 96% · 평소 평균 43%)",
+     "missing": [],
+     "opinion": {
+      "basis": "이 단계까지의 근거",
+      "status": "ok",
+      "text": "CPU가 높게 유지되고 있다."
+     },
+     "reason": null,
+     "status": "ok",
+     "step": "S4",
+     "table": {
+      "columns": [
+       "kind",
+       "peak_value",
+       "baseline_mean"
+      ],
+      "rows": [
+       [
+        "cpu",
+        96.0,
+        43.0
+       ]
+      ]
+     },
+     "title": "호스트 자원 시간대별 추이",
+     "tools": [
+      "polestar_metric_trend"
+     ],
+     "verdict": "degraded",
+     "verdict_source": "playbook_rule"
+    },
+    {
+     "action": "host.process_top",
+     "badges": [],
+     "elapsed_ms": 0,
+     "finding": "상위 2개 중 1위 java 78% · 2위 sshd 3%",
+     "missing": [],
+     "opinion": {
+      "basis": "이 단계까지의 근거",
+      "status": "ok",
+      "text": "CPU가 높게 유지되고 있다."
+     },
+     "reason": null,
+     "status": "ok",
+     "step": "S6",
+     "table": {
+      "columns": [
+       "name",
+       "pcpu"
+      ],
+      "rows": [
+       [
+        "java",
+        78.0
+       ],
+       [
+        "sshd",
+        3.0
+       ]
+      ]
+     },
+     "title": "프로세스 CPU 상위",
+     "tools": [
+      "polestar_process_snapshot"
+     ],
+     "verdict": null,
+     "verdict_source": null
+    },
+    {
+     "action": "scope.host_to_was",
+     "badges": [],
+     "elapsed_ms": 0,
+     "finding": "WAS 인스턴스 2개 응답·오류 정상",
+     "missing": [],
+     "opinion": {
+      "basis": "이 단계까지의 근거",
+      "status": "ok",
+      "text": "CPU가 높게 유지되고 있다."
+     },
+     "reason": null,
+     "status": "ok",
+     "step": "S0r",
+     "table": {
+      "columns": [
+       "instance",
+       "verdict"
+      ],
+      "rows": [
+       [
+        "A1",
+        "normal"
+       ],
+       [
+        "A2",
+        "normal"
+       ]
+      ]
+     },
+     "title": "호스트의 WAS 인스턴스 영향",
+     "tools": [
+      "apm_instance_map"
+     ],
+     "verdict": "normal",
+     "verdict_source": "apm_gateway"
+    },
+    {
+     "action": "apm.golden_signals",
+     "because": "호스트의 WAS 인스턴스 영향 결과가 정상이라 생략",
+     "status": "skipped",
+     "step": "S1",
+     "title": "WAS 골든 시그널"
+    },
+    {
+     "action": "apm.runtime_and_pool",
+     "badges": [],
+     "elapsed_ms": 0,
+     "finding": "A2 프로세스 CPU 최대 6% · A1 프로세스 CPU 최대 88%",
+     "missing": [],
+     "opinion": {
+      "basis": "이 단계까지의 근거",
+      "status": "ok",
+      "text": "CPU가 높게 유지되고 있다."
+     },
+     "reason": null,
+     "status": "ok",
+     "step": "S2",
+     "table": {
+      "columns": [
+       "instance",
+       "metric",
+       "max"
+      ],
+      "rows": [
+       [
+        "A2",
+        "process_cpu_pct",
+        6.0
+       ],
+       [
+        "A1",
+        "process_cpu_pct",
+        88.0
+       ]
+      ]
+     },
+     "title": "JVM 런타임 · DB 커넥션 풀",
+     "tools": [
+      "apm_runtime_health"
+     ],
+     "verdict": "normal",
+     "verdict_source": null
+    },
+    {
+     "action": "apm.active_services",
+     "badges": [
+      "현재값 · 알람 후 1분"
+     ],
+     "elapsed_ms": 0,
+     "finding": "실행 중 요청 3건 — CPU 시간 1위 A1 /order/101 900ms · 경과 1위 A1 /order/102 9000ms · 현재값",
+     "missing": [],
+     "opinion": {
+      "basis": "이 단계까지의 근거",
+      "status": "ok",
+      "text": "(현재값 기준) CPU가 높게 유지되고 있다."
+     },
+     "reason": null,
+     "status": "ok",
+     "step": "S3a",
+     "table": {
+      "columns": [
+       "application",
+       "elapsed_ms",
+       "cpu_ms",
+       "running_mode",
+       "running_text"
+      ],
+      "rows": [
+       [
+        "/order/101",
+        5000,
+        900,
+        null,
+        null
+       ],
+       [
+        "/order/102",
+        9000,
+        300,
+        null,
+        null
+       ],
+       [
+        "/order/103",
+        3000,
+        700,
+        null,
+        null
+       ]
+      ]
+     },
+     "title": "액티브 서비스",
+     "tools": [
+      "apm_active_services"
+     ],
+     "verdict": null,
+     "verdict_source": null
+    },
+    {
+     "action": "apm.active_sql",
+     "badges": [
+      "현재값 · 알람 후 1분"
+     ],
+     "elapsed_ms": 0,
+     "finding": "실행 중 SQL 3건 — 1위 A1 /order/101 CPU 900ms · 경과 5000ms: SELECT o.id FROM orders o WHERE o.cust = ? AND o.amt > ? /* password=*** */ · 현재값",
+     "missing": [],
+     "opinion": {
+      "basis": "이 단계까지의 근거",
+      "status": "ok",
+      "text": "(현재값 기준) CPU가 높게 유지되고 있다."
+     },
+     "reason": null,
+     "status": "ok",
+     "step": "S3b",
+     "table": {
+      "columns": [
+       "instance",
+       "application",
+       "cpu_ms",
+       "elapsed_ms",
+       "sql"
+      ],
+      "rows": [
+       [
+        "A1",
+        "/order/101",
+        900,
+        5000,
+        "SELECT o.id FROM orders o WHERE o.cust = ? AND o.amt > ? /* password=*** */"
+       ],
+       [
+        "A1",
+        "/order/103",
+        700,
+        3000,
+        "SELECT ? FROM dual"
+       ],
+       [
+        "A1",
+        "/order/102",
+        300,
+        9000,
+        "UPDATE t SET a = ?"
+       ]
+      ]
+     },
+     "title": "실행 중 SQL",
+     "tools": [
+      "apm_active_detail"
+     ],
+     "verdict": null,
+     "verdict_source": null
+    },
+    {
+     "action": "xsource.related_alarms",
+     "badges": [],
+     "elapsed_ms": 0,
+     "finding": "판정 없음 · 결과 0건",
+     "missing": [],
+     "opinion": {
+      "basis": "이 단계까지의 근거",
+      "status": "ok",
+      "text": "CPU가 높게 유지되고 있다."
+     },
+     "reason": null,
+     "status": "ok",
+     "step": "S5",
+     "table": {
+      "columns": [
+       "n"
+      ],
+      "rows": []
+     },
+     "title": "전후 연관 알람",
+     "tools": [
+      "polestar_incident_alarms"
+     ],
+     "verdict": null,
+     "verdict_source": null
+    },
+    {
+     "action": "change.recent",
+     "badges": [],
+     "elapsed_ms": 0,
+     "finding": "판정 없음 · 결과 0건",
+     "missing": [],
+     "opinion": {
+      "basis": "이 단계까지의 근거",
+      "status": "ok",
+      "text": "CPU가 높게 유지되고 있다."
+     },
+     "reason": null,
+     "status": "ok",
+     "step": "S7",
+     "table": {
+      "columns": [
+       "n"
+      ],
+      "rows": []
+     },
+     "title": "최근 변경 대조",
+     "tools": [
+      "polestar_change_history"
+     ],
+     "verdict": null,
+     "verdict_source": null
+    }
+   ],
+   "version": 3
+  }
+ }
+}

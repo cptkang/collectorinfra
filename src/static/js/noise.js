@@ -1891,9 +1891,9 @@
             .then(window.BriefingView.responseOf);
     }
 
-    // (plans/187 W15 · G-34) 장애 진단 실시간 화면이 켜져 있으면 드로어 진입은 본 화면 새 탭 `/?diagnosis=<id>`
+    // (plans/187 W15 · G-34 · W19 G-46) 장애 진단 실시간 화면이 켜져 있으면 드로어 진입은 열린 포털 창의 장애 진단 탭
     // (D-248 ① — 관제 페이지 안에 진단 화면을 만들지 않는다). 켜짐은 페이지를 열 때 `/active` 1회로 본다 —
-    // 404(꺼짐)·401·403이면 「장애 진단에서 보기」를 달지 않는다.
+    // 404(꺼짐)·401·403이면 진입 버튼이 「조사 대화로 열기」가 된다.
     var liveViewOn = false;
     if (window.BriefingView) {
         alarmCall("/api/v1/alarm/investigations/active").then(function (res) { liveViewOn = !!res.ok; }, function () {
@@ -1901,61 +1901,100 @@
         });
     }
 
-    // (plans/187 W16) ⓒ 머리의 「조사 대화로 열기」 — 조사 id가 있으면 브리핑 종류(플레이북·종전)·진행 상태·
-    // 장애 진단 켜짐과 무관하게 늘 단다. 누르면 열려 있는 포털 창의 「조사 대화」 탭에 연다(openPortalConversation).
-    // break-glass 운영자 토큰은 질의응답 API를 못 쓰므로 달지 않는다(드로어 안 상세형으로 대신 — §5.6.1 주의 1).
-    function conversationButton(view) {
-        var id = view && view.investigation_id && view.status !== "none" ? String(view.investigation_id) : "";
-        if (IS_BREAK_GLASS || !id || !investigationHead) return;
-        var btn = investigationHead.querySelector(".cause-conv-open");
-        if (!btn) {
-            btn = el("button", "cause-live-open cause-conv-open", "조사 대화로 열기");
-            btn.type = "button";
-            btn.addEventListener("click", function () { openPortalConversation(btn.getAttribute("data-investigation-id")); });
-            investigationHead.appendChild(btn);
-        }
-        btn.setAttribute("data-investigation-id", id);
-    }
-
-    // 포털 창은 이름(kbaiops-portal — app.js)으로 찾는다. 관제를 포털 머리글 링크로 열었으면 같은 창 묶음이라
-    // 빈 URL로 열면 이동 없이 그 창이 앞으로 오고, 그 창의 「조사 대화」 탭을 연다. 못 찾으면 브라우저가 빈 탭을
-    // 새로 열고 그 탭을 `/?conversation=<id>`로 보낸다(그 뒤로는 그 탭이 포털 창이 된다).
-    var PORTAL_WINDOW = "kbaiops-portal";
-
-    function openPortalConversation(investigationId) {
-        var url = "/?conversation=" + encodeURIComponent(investigationId);
-        var w = window.open("", PORTAL_WINDOW);
-        if (!w) return;   // 팝업 차단 — 브라우저가 차단 표시를 보인다
-        try {
-            if (w.KBPortal && typeof w.KBPortal.openInvestigationConversation === "function") {
-                w.KBPortal.openInvestigationConversation(investigationId);
-                w.focus();
-                return;
-            }
-            if (w.location.href === "about:blank") { w.location.replace(url); return; }
-        } catch (_err) { /* 다른 출처 창 — 아래 새 탭으로 */ }
-        window.open(url, "_blank");
-    }
-
-    function onInvestigationView(view) {
-        liveEntryButton(view);
-        conversationButton(view);
-    }
-
-    function liveEntryButton(view) {
-        var id = view && view.investigation_id && view.status !== "none" && view.status !== "rejected"
-            ? String(view.investigation_id) : "";
-        if (!liveViewOn || !id || !investigationHead) return;
+    // (plans/187 W19 · G-46) ⓒ 머리의 진입 버튼 1개 — 조사 id가 있으면 브리핑 종류·진행 상태와 무관하게 단다.
+    // 누르면 **열려 있는 포털 창**의 「장애 진단」 탭(그 조사 하위 탭)에 연다. 장애 진단이 꺼져 있으면 같은 버튼이
+    // 「조사 대화로 열기」가 되어 그 창의 「조사 대화」 탭에 연다(포털 openInvestigationEntry가 고른다).
+    // break-glass 운영자 토큰은 질의응답 API를 못 쓰므로 장애 진단이 꺼져 있으면 달지 않는다(§5.6.1 주의 1).
+    function portalEntryButton(view) {
+        var excluded = view && (view.status === "none" || (liveViewOn && view.status === "rejected"));
+        var id = view && view.investigation_id && !excluded ? String(view.investigation_id) : "";
+        if ((IS_BREAK_GLASS && !liveViewOn) || !id || !investigationHead) return;
         var btn = investigationHead.querySelector(".cause-live-open");
         if (!btn) {
-            btn = el("button", "cause-live-open", "장애 진단에서 보기");
+            btn = el("button", "cause-live-open", "");
             btn.type = "button";
             btn.addEventListener("click", function () {
-                window.open("/?diagnosis=" + encodeURIComponent(btn.getAttribute("data-investigation-id")), "_blank", "noopener");
+                var head = investigationHead;
+                openInPortal(btn.getAttribute("data-investigation-id"), function (result) {
+                    portalEntryNote(head, result);
+                });
             });
             investigationHead.appendChild(btn);
         }
+        btn.textContent = liveViewOn ? "장애 진단에서 보기" : "조사 대화로 열기";
         btn.setAttribute("data-investigation-id", id);
+    }
+
+    var PORTAL_ENTRY_TEXT = {
+        opened: "열려 있는 포털 창에 열었습니다 — 그 창으로 옮겨 확인하세요.",
+        refused: "포털 창이 열지 못했습니다 — 사유는 그 창에 보입니다.",
+    };
+
+    function portalEntryNote(head, result) {
+        if (!head) return;
+        var note = head.querySelector(".cause-entry-note");
+        var text = PORTAL_ENTRY_TEXT[result] || "";
+        if (!text) { if (note) note.remove(); return; }
+        if (!note) { note = el("span", "cause-entry-note cell-muted", ""); head.appendChild(note); }
+        note.textContent = text;
+    }
+
+    // 포털 창 찾기(plans/187 W19 · G-46): ① 이 관제를 연 포털 창(window.opener — 포털 머리글 링크가 rel="opener")
+    // ② 그 밖의 열린 포털 탭(BroadcastChannel — 즐겨찾기·관리자 화면에서 연 관제) ③ 열린 포털이 없을 때만 새 탭
+    // `/?diagnosis=<id>`. 이름 창(window.open("", 이름))은 못 찾으면 빈 탭을 새로 열어 쓰지 않는다.
+    // done(result): "opened"(포털이 열었다) · "refused"(포털이 거부 — 답변 중 등) · "new_tab".
+    var PORTAL_CHANNEL = "kbaiops-portal";
+    var PORTAL_WAIT_MS = 400;
+
+    function openInPortal(investigationId, done) {
+        var w = null;
+        try {
+            w = window.opener;
+            if (w && !w.closed && w.KBPortal && typeof w.KBPortal.openInvestigation === "function") {
+                var ok = w.KBPortal.openInvestigation(investigationId);
+                try { w.focus(); } catch (_e) { /* 브라우저가 다른 탭 포커스를 막을 수 있다 — 안내문으로 대신 */ }
+                done(ok ? "opened" : "refused");
+                return;
+            }
+        } catch (_err) { /* 다른 출처로 옮긴 창 — 아래 채널로 */ }
+        askPortalTabs(investigationId, function (result) {
+            if (result) { done(result); return; }
+            window.open("/?diagnosis=" + encodeURIComponent(investigationId), "_blank", "noopener");
+            done("new_tab");
+        });
+    }
+
+    // 포털 탭이 여럿이면 마지막으로 본 탭(seen이 가장 큰 탭) 하나에만 열게 한다 — 묻기(probe) → 답(here) →
+    // 지정(open) → 결과(result). 기다림은 단계마다 PORTAL_WAIT_MS(클릭 직후라 새 탭 폴백도 팝업 차단에 안 걸린다).
+    function askPortalTabs(investigationId, cb) {
+        if (typeof BroadcastChannel !== "function") { cb(null); return; }
+        var ch = new BroadcastChannel(PORTAL_CHANNEL);
+        var req = String(Date.now()) + "-" + Math.random().toString(36).slice(2);
+        var best = null;
+        var finished = false;
+        function finish(result) {
+            if (finished) return;
+            finished = true;
+            ch.close();
+            cb(result);
+        }
+        ch.onmessage = function (ev) {
+            var m = ev.data || {};
+            if (m.req !== req) return;
+            if (m.type === "here" && (!best || m.seen > best.seen)) best = m;
+            else if (m.type === "result") finish(m.ok ? "opened" : "refused");
+        };
+        ch.postMessage({ type: "probe", req: req });
+        setTimeout(function () {
+            if (finished) return;
+            if (!best) { finish(null); return; }
+            ch.postMessage({ type: "open", req: req, portal: best.portal, id: investigationId });
+            setTimeout(function () { finish(null); }, PORTAL_WAIT_MS);   // 그 사이 닫힌 탭 — 새 탭으로
+        }, PORTAL_WAIT_MS);
+    }
+
+    function onInvestigationView(view) {
+        portalEntryButton(view);
     }
 
     function probeAnalyze(alarmId) {
@@ -2026,8 +2065,8 @@
                 initial: block,
                 load: function () { return reloadInvestigation(block, alarmId); },
                 // plans/187 W5b: 플레이북 브리핑이면 요약형. break-glass 운영자 토큰은 질의응답 API를 못 쓰므로
-                // 드로어 안에서 상세형을 펼친다(§5.6.1 주의 1). (W15) 장애 진단이 켜져 있으면 머리에
-                // 「장애 진단에서 보기」(새 탭 `/?diagnosis=`) · (W16) 머리에 늘 「조사 대화로 열기」(포털 「조사 대화」 탭)
+                // 드로어 안에서 상세형을 펼친다(§5.6.1 주의 1). (W19 · G-46) 머리의 진입 버튼은 열린 포털 창의
+                // 「장애 진단」 탭에 연다(꺼져 있으면 「조사 대화로 열기」 → 그 창의 「조사 대화」 탭)
                 render: IS_BREAK_GLASS ? { mode: "detail" } : { mode: "summary" },
                 analyze: analyzeOptions(alarmId),
                 onView: onInvestigationView,
@@ -2041,7 +2080,7 @@
     }
 
     // ⓒ 칸 골격(제목 + 본문 자리)을 ⓐ·ⓑ 뒤에 붙이고 본문 자리를 돌려준다.
-    var investigationHead = null;   // (W15) 「장애 진단에서 보기」를 붙일 ⓒ 머리
+    var investigationHead = null;   // (W15 · W19) 진입 버튼을 붙일 ⓒ 머리
 
     function investigationBox(BV) {
         var box = el("div", "cause-block cause-briefing");

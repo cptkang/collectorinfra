@@ -1,7 +1,7 @@
 # 187. 알람 유형별 자동 조사 플레이북 — PAGE 알람마다 정해진 조사 단계를 결정적으로 일괄 수집하고, 단계별 LLM 소견과 종합 원인·대응 의견을 운영자에게 보인다
 
 > **작성일**: 2026-10-17 · **v1.0** · **v1.1**(같은 날 — 사용자 지시 *"문헌 조사를 인터넷으로 접속하여 직접 다시 조사하여 계획서에 반영하라"*: 제니퍼 공식 백서 2·사례 4 원문 확보(이미지 PDF는 OCR) · 출처 검증 수준 재표기 · Datadog 3상태 서술 정정 · 결정적 판독 규칙 §4.2 신설 · S0 범위 비교 · S3 커넥션 획득 분리 · S2 WAS/호스트 CPU 대조) · **v1.2**(같은 날 — 사용자 지시 *"장애 대응에 대한 지식 저장소나 Troubleshooting Guide, 런북/플레이북, 인시던트 대응 매뉴얼, 알려진 문제 및 우회 방법 등을 자세히 조사하여 계획을 업데이트하라"*: 지식 유형 문헌 §3.7 신설 · **장애 대응 지식 저장소(KB) 설계 §5.7** — 런북 블록·알려진 오류(KEDB, KCS 구조·상태) 결정적 일치·우회 표시·매뉴얼 RAG 참고·초안→승인 수명주기 · 요건 R-14~R-17 · Wave W8~W9 · 수용 기준 8~10 · 게이트 G-13~G-17)
-> **상태**: **WIP · 잔여 작업 일람은 §10.1(남은 9건 — 내부망·SME·캡처·커밋 · 2026-10-22 R-D 완화·G-26 공용·W12 2단·2차 가림·실프로세스 종단 처리)** · **v2.0 W13~W15(장애 진단 탭 · 실행 기록 · SSE) 구현 완료(2026-10-19 · 미커밋 · 두 플래그 기본 off) · 잔여: 사용자 경로 2차 마스킹 실효(사용자 결정) · 실프로세스 종단 1회 · 매뉴얼 캡처 · 내부망 실 출력 가림 표본** · **W0~W6·W8~W12 구현 완료(2026-10-19 · 미커밋) · 잔여: W7 내부망 shadow · R-D(게이트웨이 acquire/execute 구조화 필드 부재 → `db_split` n/a · 수용 기준 2·2′·9 부분) · G-26 HolmesGPT 도구 경로 캐시 공용 미구현 · 수용 기준 6(120s)·7 내부망 측정 · SME 자료(G-10) · 매뉴얼 캡처** · 모든 신규 플래그 기본 off(비트 동일 검증) · 검증·보안 감사 지적 교정 완료 · (구: TODO — 계획(코드 0건)) · **게이트 G-1~G-17 확정(2026-10-17 · 권고안 전부 · 사용자 「게이트 권고안대로 확정」)** · **G-18~G-21 확정(같은 날 · 권고안 · 사용자 「권고한데로 반영하라」)** · **G-22~G-27 확정(같은 날 · 권고안 · 사용자 「권고대로 정리하라」)** · **G-28~G-33 확정(같은 날 · 권고안 · 사용자 「권고안대로 확정하여 계획서에 반영하라」)** — 게이트 전건 확정 · **D-341 확정**
+> **상태**: **WIP · v3.1 W22 조사 시간 사슬 상향·정합(§5.6.6 — 기본값 상향 · 기동 시 사슬 정합 경고 · 결손 스텝 1회 재시도) 구현 완료(2026-10-23 · 미커밋)** · v3.0 W21 수집 타임아웃 개선(§5.6.5 — P1·P3~P6 적용 · P2 미적용 · P0·P7 내부망) 구현 완료(2026-10-23 · 미커밋)** · v2.9 W20 장애 진단 「조사 흐름」(§5.6.4 · G-47~G-50) 구현 완료(2026-10-22 · 미커밋 · 두 플래그 아래) · 잔여 작업 일람은 §10.1(남은 13건 — W22 X-View 도구 상한·조사 흐름 넘침 표기 추가 — 내부망·SME·커밋 · R-E 임계 보정 판단 · 2026-10-22 R-D 완화·G-26 공용·W12 2단·2차 가림·실프로세스 종단 처리 · v2.4 W19 관제 → 기존 포털 장애 진단 탭(G-46) · W19 실화면 확인·매뉴얼 캡처 U-63·U-70 처리)** · **v2.0 W13~W15(장애 진단 탭 · 실행 기록 · SSE) 구현 완료(2026-10-19 · 미커밋 · 두 플래그 기본 off) · 잔여: 사용자 경로 2차 마스킹 실효(사용자 결정) · 실프로세스 종단 1회 · 매뉴얼 캡처 · 내부망 실 출력 가림 표본** · **W0~W6·W8~W12 구현 완료(2026-10-19 · 미커밋) · 잔여: W7 내부망 shadow · R-D(게이트웨이 acquire/execute 구조화 필드 부재 → `db_split` n/a · 수용 기준 2·2′·9 부분) · G-26 HolmesGPT 도구 경로 캐시 공용 미구현 · 수용 기준 6(120s)·7 내부망 측정 · SME 자료(G-10) · 매뉴얼 캡처** · 모든 신규 플래그 기본 off(비트 동일 검증) · 검증·보안 감사 지적 교정 완료 · (구: TODO — 계획(코드 0건)) · **게이트 G-1~G-17 확정(2026-10-17 · 권고안 전부 · 사용자 「게이트 권고안대로 확정」)** · **G-18~G-21 확정(같은 날 · 권고안 · 사용자 「권고한데로 반영하라」)** · **G-22~G-27 확정(같은 날 · 권고안 · 사용자 「권고대로 정리하라」)** · **G-28~G-33 확정(같은 날 · 권고안 · 사용자 「권고안대로 확정하여 계획서에 반영하라」)** — 게이트 전건 확정 · **D-341 확정**
 > **v1.3**(같은 날): 게이트 확정 반영 · §5.6 화면 설계 상세화(요약형 카드·드로어 + 조사 상세 화면 + 관리자 「조사 지식」 탭) · W5·W9 산출물 보강 · G-18 신설
 > **v2.0**(2026-10-19 · 검토안 → 같은 날 인터뷰로 확정): 사용자 제기 *"holmesgpt나 playbook 기반 조사시 시간이 오래 걸리고 다수의 조사가 진행되어 사용자가 진행상황을 못보고 멈춰있는 것으로 보인다. 알람이나 조사를 눌렀을경우 별도의 장애 진단 탭(이벤트 알람 탭 옆에)을 열어서 현재 진행중인 명령어나 api등을 보여주고 중간 단계을 조회내용도 볼 수 있도록 하라. 진행중에 새로운 이벤트를 조사하면 새로운 탭이 열리면서 조사가 진행되도록 하라."* → 실측(§5.6.3 ⓐ — 「멈춘 것처럼」 보이는 원인 5건: 화면 재조회 300초 상한 · 동시 상한 대기 비표시 · HolmesGPT 진행 무노출 · 플레이북 스텝 안 도구 호출 무노출 · 진행 중 조사 목록 없음) → §5.6.3 신설(「장애 진단」 뷰 탭 · 조사별 하위 탭 · 실행 기록(도구·명령 한 줄 · 상태 · 소요) · 중간 결과 · 대기 순번) · R-20~R-22 · W13~W15 · 수용 기준 14~20 · G-34~G-40 검토안 → **같은 날 인터뷰로 G-34~G-42 확정**(§9 — 권고와 다른 선택: G-36 발췌도 사용자에게·가림 후 모두 · G-38 AI 메모 관리자 표시 · G-39 SSE · G-40 상한 없음 · 추가 G-41 목록 범위 · G-42 상세 푸시 범위) → D-341 부기 4 · D-325 부기(② SSE 도입 · ③ 발췌 노출)
 > **v1.9**(같은 날): 사용자 제기 *"사용자는 이벤트 알람을 보거나 봤던 것을 찾아 알람에 대해 다시 분석을 진행할 수 있어야 한다. 알람이나 현상에 대해 사용자가 질의하면 플레이북이나 HolmesGPT로 조사를 해야 한다"* → 검토(현행: 지난 알람 검색은 노이즈 콘솔만 · 재분석 경로 없음 · 채팅 질의는 기본 off 동기 `fault_diagnosis`만) → 권고안 확정. §5.6.2 신설(「이 알람 분석」 버튼 · 채팅 「지난 알람」 검색 · 증상 질의 결정적 라우팅 · 비동기 조사 카드) · R-18·R-19 · §5.0 잡 경로 2행 · W11·W12 · 수용 기준 11~13 · G-28~G-33 · G-9 수동 재실행 부분 개정(D-325 ⑩ 후속 계획 = 이 계획) · D-341 부기 3 ㉑~㉖
@@ -18,7 +18,7 @@
 > **D-번호**: **D-341**(구 D-338 · 2026-10-19 원격 D-338·D-339와 충돌해 재채번 · 2026-10-17 예약 → 같은 날 본문 등재 `docs/decisions/D-341.md`)
 > **실측 기준**: `main` `384f97f`(2026-10-17). `file:line`은 이 시점 값이다 — W0에서 다시 대조한다.
 > **계획 시작 SHA**: `99ec1ea4`(2026-10-19 · 구현 착수 · 회귀 `--base`)
-> **회귀 대상 파일**: 131개 — 본체 `src/api/{investigation_poll.py,settings_catalog.py,routes/alarm.py,routes/admin_incident_kb.py,server.py,thread_history.py}` · `src/config/alarm.py` · `src/domain/{investigation_followup,kb_draft,symptom_router}.py` · `src/infrastructure/investigation_request_limit.py` · `src/nodes/fault_diagnosis.py` · `src/prompts/investigation_followup.py` · `src/static/{index.html,noise.html,admin/*.html,css/style.css,js/{app,briefing-view,noise,admin-incident-kb}.js,manual/*}` · `noise_gate/{application/nodes/{alarm_notifier,investigation_trigger,notification_gate}.py,infrastructure/{decision_store,investigation_store,incident_kb_store,sre_agent_client}.py}` · `config/{rag_collections.yaml,settings_help/noise_gate_investigation.yaml}` · `scripts/manual/**` · sre_agent `application/{briefing_builder,investigation_dispatcher,investigation_guidance,investigation_jobs,playbook_*}.py`·`domain/{playbook*,known_error,engine_agreement,source_adapter,remediation}.py`·`infrastructure/{playbook_loader,known_error_loader,tool_result_cache,mcp_tool_client}.py`·`interface/mcp_service.py`·`settings.py`·`config/{playbooks/*.yaml,known_errors/README.md}`·`scripts/{runbook_coverage.py,investigation_bench/*}` · 테스트(`tests/**/test_plan187_*` · `sre_agent/tests/test_plan187_*` · 픽스처) · 목록 정본: `git status` 미커밋 변경
+> **회귀 대상 파일**: 131개 — 본체 `src/api/{investigation_poll.py,settings_catalog.py,routes/alarm.py,routes/admin_incident_kb.py,server.py,thread_history.py}` · `src/config/alarm.py` · `src/domain/{investigation_followup,kb_draft,symptom_router}.py` · `src/infrastructure/investigation_request_limit.py` · `src/nodes/fault_diagnosis.py` · `src/prompts/investigation_followup.py` · `src/static/{index.html,noise.html,admin/*.html,css/style.css,js/{app,briefing-view,noise,admin-incident-kb}.js,manual/*}` · `noise_gate/{application/nodes/{alarm_notifier,investigation_trigger,notification_gate}.py,infrastructure/{decision_store,investigation_store,incident_kb_store,sre_agent_client}.py}` · `config/{rag_collections.yaml,settings_help/noise_gate_investigation.yaml}` · `scripts/manual/**` · sre_agent `application/{briefing_builder,investigation_dispatcher,investigation_guidance,investigation_jobs,playbook_*}.py`·`domain/{playbook*,known_error,engine_agreement,source_adapter,remediation}.py`·`infrastructure/{playbook_loader,known_error_loader,tool_result_cache,mcp_tool_client}.py`·`interface/mcp_service.py`·`settings.py`·`config/{playbooks/*.yaml,known_errors/README.md}`·`scripts/{runbook_coverage.py,investigation_bench/*}` · 테스트(`tests/**/test_plan187_*` · `sre_agent/tests/test_plan187_*` · 픽스처) · (W22 가산) `apm_gateway/{apm_gateway/config.py,.env.example,tests/test_config.py}` · `src/api/routes/alarm_schemas.py` · `src/static/js/briefing-view.js` · 루트 `.env.example` · `tests/test_api/{test_alarm_capabilities,test_plan153_w3_briefing_view}.py` · `sre_agent/.env.example` · 목록 정본: `git status` 미커밋 변경
 > **계획 끝 회귀(2026-10-19)**: `regress.py --base 99ec1ea4 --files <130>` — 본체 통과 4,314 · 원래 실패 6(TestProcessApiClient 2 · prometheus_client 부재 2 · settings_catalog `.env` 2) · sre_agent 통과 1,785 · 실패 0 · arch/overfit/config_fallback 통과 · ruff·mypy 이번 diff 줄 0 · 범위: 모듈 단위 — 전체 미실행 · `[전체 회귀 권고]` 허브 모듈 src.config.alarm 88% · 본체 레인은 plans/186 시각 의존 parametrize id의 xdist 수집 불일치로 직렬 실행(docs/18 2026-10-19)
 > **전체 회귀(2026-10-19 · 사용자 요청)**: `regress.py --full --base 99ec1ea4` — 본체 통과 23,483 · 실패 55 · 에러 7 · 건너뜀 93(xdist -n 7 수집 정상) → 귀속 원래 실패 67 · 이번 변경 탓 1(`test_every_noise_key_has_section` — plans/187 `NOISE_INVESTIGATION_*` 13키 `SECTION_BY_KEY` 미등재 → `src/api/settings_catalog.py`에 「자동 장애 조사」로 등재, 재실행 통과) · mcp_server 통과 204 · 에러 6(prometheus_client·pymysql 부재) · apm_gateway 도구 TIMEOUT(2400초 — `test_plan134_w0b_verify.py::test_disconnect_before_promotion_cancels_job` 기준에서도 무한 대기) → 그 1건 제외 별도 실행 통과 1,628 · 실패 2(tool_list snapshot — 기준에서도 실패) · sre_agent(도구 미실행 — 자체 venv 없음) 타 체크아웃 venv로 통과 1,785 · 정적 게이트 통과 · 범위: 전체(사용자 요청)
 > **origin/main 병합(2026-10-19 · plans/188 D-342·D-343과 통합)**: `_agent_getter`에 188 C1 재생성(툴셋 FAILED면 1회 새로 생성 · 잠금)을 합치고 `_default_diagnose_fn(settings, toolset_check, agent_getter)`로 두 배선 유지 · 플레이북 심층 결과도 188 A안·C7 기준(`tools_unavailable`·도구 호출 마크업)이면 서술 없이 `deep_dive.status=skipped`+사유(`_deep_skip_reason` · `sre_agent/tests/test_plan187_merge188_deep_skip.py`) · sre_agent 전체 2,059 통과
@@ -28,6 +28,15 @@
 > **v2.2(2026-10-21 · W17 · 사용자 지시)**: *"조사페이지에서 알람의 내용이 없어 어떤 알람으로 조사하고 있는지가 보이지 않는다. 그리고 조사하는 프로세스는 무엇때문에 어떤것을 조사하는지에 대한 정보도 같이 보여줘야한다."* → **실측**: 「장애 진단」 하위 탭 머리는 조사 대상(`subject`) 또는 조사 id와 종류·엔진·진척뿐이고 알람명·서버·심각도가 없었다. 실행 기록은 「S2 동작명」처럼 무엇을 했는지만 있고 왜(플레이북을 고른 근거 · 스텝이 보는 것 · HolmesGPT로 간 이유)가 없었다. **변경(G-44)**: ① 본체 조회 응답(실시간 화면 켜짐 + `activity_since` 조회에만)에 판정 기록 요약 `alarm`(알람명·서버·자원·발생 시각·판정·심각도 · 조건 로그는 운영자만 · 사용자 경로 마스킹)을 붙인다. ② sre_agent 실행 기록 이벤트에 선택 키 `purpose` — 플레이북 선택(`started`·playbook: 「플레이북 X 선택」 + 일치 조건/fallback 사유) · 스텝 시작·끝(`narrate.focus`) · HolmesGPT 시작(조사 이유 · 플레이북 미선택 사유 · 심층 모드 의미). 허브 사용자 키·보관 요약 키에 `purpose`(마스킹·상한 대상). ③ 화면 머리에 「알람 / 조건(운영자) / 대상 / 조사 이유」 줄(`dv-target`), 탭 이름은 「서버 · 알람명」, 스텝 행 아래 「목적: …」, 도구 행은 마우스 올림 설명. 판정 기록이 없으면 「알람 정보를 찾지 못했습니다」. 플래그 off = 비트 동일. 산출물: `sre_agent/sre_agent/{domain/activity_log.py,application/investigation_dispatcher.py}` · `src/api/{routes/alarm.py,investigation_live_hub.py}` · `noise_gate/infrastructure/investigation_activity_store.py` · `src/static/{js/diagnosis-view.js,css/style.css,index.html}`(캐시 diagnosis-view 3·style 34) · 테스트 `sre_agent/tests/test_plan187_w17_purpose.py`·`tests/test_api/test_plan187_w17_alarm_brief.py`·`tests/test_api/test_ui_plan187_w17_diagnosis_head.py` · 매뉴얼 U-70.
 
 > **v2.3(2026-10-21 · W18 · 사용자 지시)**: *"조사 탭에서 시간, 알람, 서버 등의 정보로 이벤트에 대해 검색하여 바로 조사를 진행할 수 있는 기능도 추가하라."* → **변경(G-45)**: 「장애 진단」 탭의 「진행 중 목록」 위에 **「이벤트 찾아 조사」** 칸 — 시작·끝 시각(판정 시각 기준 · 비우면 최근 24시간 · 보존 30일)·알람명·서버(부분일치)로 판정 기록을 찾고(최근 30건), 행의 **[조사 시작]**이 §5.6.2 ① 「분석 요청」과 **같은 접수 라우트**(`POST /alarm/{alarm_id}/investigations` — 존 검사 fail-closed · 상한 공유 · 10분 합류 · 통보 없음)로 접수한 뒤 그 조사의 하위 탭을 연다. 검색은 G-29처럼 **새 API 없이** `/noise/decisions` 사용자 경로를 쓰고, 칸을 나눠 거르도록 선택 쿼리 `alarm_q`(알람명)·`server_q`(서버명·hostname) 부분일치를 가산한다(미지정 = 종전과 같음). 칸은 `/active` 응답 `event_search`(= `NOISE_INVESTIGATION_MANUAL_ENABLED`)가 true일 때만 보인다 — 새 플래그 없이 기존 두 옵트인(실시간 화면·다시 분석)이 모두 켜졌을 때만 동작한다. 진단 화면 파일에는 여전히 쓰기 요청이 없다(접수 함수는 app.js가 주입 · D-003 정적 테스트 유지). 실패·거부·합류 사유는 그 행에 보인다. 산출물: `noise_gate/infrastructure/decision_store.py`(`list_decisions` 인자 2) · `src/api/routes/{noise_dashboard.py,alarm.py}` · `src/static/{js/diagnosis-view.js,js/app.js,css/style.css,index.html}`(캐시 diagnosis-view 4·app 33·style 35) · 테스트 `tests/test_api/test_ui_plan187_w18_event_search.py`·`tests/test_api/test_plan187_w18_event_search_api.py` · 매뉴얼 U-70. **실브라우저 확인(2026-10-21 · Playwright headless Chromium · 별 포트 8765 · 인증 off)**: 검색 칸 표시 · 서버/알람명/시간 구간 필터 · 시작>끝 안내 · 조사 서비스 미가동 시 행 안의 실패 사유 · (목 응답으로) 하위 탭 「서버 · 알람명」·머리 줄·「목적:」 확인 · 버튼·날짜 입력 기본 모양과 없는 토큰 `--border-color`를 교정(`--border` · style 캐시 35 유지). 미확인은 §10.1 8·10.
+
+> **v2.4(2026-10-22 · W19 · 사용자 지시)**: *"웹 UI가 아직도 조사대화로 열기하면 질의응답페이지로 넘어가는 경우도 있고, 아직도 새로운 창으로 열린다. 노이즈관제화면과 질의응답화면이 달라서 새로운 창으로 열리는데 기존 창에 장애 진단 탭에서 열리도록 수정되어야 한다."* + 사용자 결정 「장애 진단 탭(권장)」(관제의 「조사 대화로 열기」도 장애 진단 탭으로). → **실측**: 관제 드로어 ⓒ 머리에 버튼이 2개였다 — ① 「장애 진단에서 보기」는 **늘** `window.open("/?diagnosis=", "_blank")` 새 브라우저 탭(G-34) ② 「조사 대화로 열기」는 이름 창 `window.open("", "kbaiops-portal")`로 포털을 찾는데, 관제를 포털 머리글 링크가 아니라 주소·즐겨찾기·관리자 화면(`/static/admin/noise.html`)으로 열면 이름 창을 못 찾아 **빈 탭을 새로 연 뒤** `/?conversation=`으로 보냈다(W16 「미확인」이 이 경우) ③ 찾은 경우에도 「조사 대화」 탭은 대화 화면을 질의응답과 함께 써서 질의응답 페이지로 넘어간 것처럼 보였다. **변경(G-46)**: 관제 ⓒ 머리의 진입 버튼을 **1개**로 합친다 — 장애 진단 켜짐이면 「장애 진단에서 보기」, 꺼짐이면 「조사 대화로 열기」(이름만 다름). 누르면 **열려 있는 포털 창**에 연다 — 포털은 `openInvestigationEntry`로 장애 진단 탭의 그 조사 하위 탭(꺼져 있으면 조사 대화 탭)을 연다. 포털 찾기 순서: ① `window.opener`(머리글 링크 `rel="opener"`) 직접 호출 ② `BroadcastChannel("kbaiops-portal")` 묻기→답→지정→결과(포털 탭이 여럿이면 마지막으로 본 탭 하나 · 단계마다 400ms) ③ 열린 포털이 없을 때만 새 탭 `/?diagnosis=<id>`(꺼져 있으면 포털이 조사 대화로 연다). 이름 창 탐색·`window.name`은 폐기. 관제 서랍에 결과 안내(「열려 있는 포털 창에 열었습니다 — 그 창으로 옮겨 확인하세요」 · 거부 시 「포털 창이 열지 못했습니다」) — 브라우저가 다른 탭으로 포커스를 못 옮길 수 있어서다. break-glass 토큰은 장애 진단이 켜져 있을 때만 버튼(종전과 같음). `/?conversation=` 쿼리 진입은 하위 호환으로 남긴다. 산출물: `src/static/js/{noise.js,app.js}` · `index.html` 주석 · 캐시 app 34·noise 18(`noise.html`·`admin/noise.html`) · 테스트 `tests/test_api/test_ui_plan187_w16_conversation_tab.py`(포털 node 실행 5건 교체) + 고정값 갱신 4파일 · 매뉴얼 U-63·U-70·A-81 문구. **실브라우저 확인(2026-10-22 · Playwright headless Chromium · 실제 함수 본문을 뽑은 최소 페이지 2개)**: 관계없는 탭의 관제 → 채널로 기존 포털(창 2→2) · 포털 2개 → 1개만 열림(창 3→3) · 머리글 링크로 연 관제 → opener(창 2→2) · 포털 없음 → 새 탭 `/?diagnosis=inv-9`. 같은 날 후속으로 본체 실화면 확인(켜짐 3 진입 · 꺼짐 2 진입 · 포털 없음)과 매뉴얼 캡처 U-63·U-70 처리 — §10.1 「처리함」 9·16.
+> **v2.5(2026-10-22 · 검토안 · 사용자 지시)**: *"장애 진단 페이지에서 실행기록, 조사결과 등이 나오는데 그 시간의 로그만 나와 뭘하고 있는지가 보이지 않는다. … 운영자가 봤을때 이해할 수 있는 내용이 표시되어야 한다. … 이 요건에 맞게 계획파일을 정리하라."* → 실측(§5.6.4 ⓐ — 원인 8건: 기계어 한 줄 · 단계 결과 문장 없음 · 해석은 종결 뒤 상한 안 일부 단계만 · 건너뛴 단계 미표시 · 단계 연결 없음 · 조회/결과 두 칸 분리 · HolmesGPT 사용자 노출 0 · host.cpu에 WAS 프로세스 CPU·실행 중 요청·실행 중 SQL 단계 없음(R-E 판단 보류)) → **§5.6.4 신설**(단계 카드 = 왜·조회·결과·해석 · 결정적 문장 4종 + LLM 해석 · 지금까지 줄 · 플레이북 사슬 보강) · W20 · 수용 기준 21~27 · 위험 3건 · **G-47~G-50 확정 대기** · §10.1 17 · D-341 부기 11
+> **v2.6(2026-10-22 · 검토 · 사용자 지시)**: *"문장을 만드는 것도 AI를 이용하는 것에 대해 검토하라."* → §5.6.4 ⓕ 신설(문장 종류별 AI 적합성 표 · 기존 소견기·가드·상한 실측) → **혼합안 권고**(사실 문장은 문형으로 즉시 · AI는 단계 끝 즉시 「결과 요약 + 해석」 — 소견 호출을 앞당겨 호출 수 무증가 · 실패 시 문형 문장 유지) · 전면 AI안 비권고 사유 5 · G-47 개정 · 수용 28 · 정교 문형 대상을 8종으로 축소
+> **v2.7(2026-10-22 · 확정 · 사용자 결정)**: *"g-47은 단계가 끝날때 마다 작성하고 주의 사항을 명기하라. g48은 사용자에게도 보여준다. g49는 권고, g50은 다른 선택지"* → **G-47 단계 끝마다 AI 해석 + 주의 사항 명기**(§5.6.4 ⓖ — 계획서·화면 양쪽) · **G-48 사용자에게도 AI 판단 표시**(G-38 개정) · **G-49 권고안**(host.cpu·host.process 3단계 보강) · **G-50 「조사 흐름」·「실행 기록」 전환 탭**(현행 화면은 「실행 기록」 탭에 그대로) · 수용 15·28 개정 · 29 신설 · 위험 「AI 메모 오독」 개정
+> **v2.8(2026-10-22 · 사용자 지시)**: *"호출수 상한은 왜 있는거냐?"* → 근거 설명(v1.0 [제안] 값 — was.latency 수집 7단계 + 종합에 맞춘 수 · FabriX 공유 용량·지연 우려 · 과금 아님) → *"호출수 상한을 없애라"* → **단계 소견 호출 상한 제거**(`NarratorLimits.max_step_calls` 기본 7 → None — 소견 대상 단계 전부 + 종합 1 · 명시하면 종전 절단) · 구현 완료(미커밋) · §5.4·수용 6·28·ⓕ·ⓖ C5·C8·G-47·§10.1 2 개정 · 지연은 단계당 타임아웃 20s·동시 4·전체 예산·시간당 예산 가드로만 관리
+> **v2.9 W20 구현(2026-10-22 · 세션 시작 `394cc4b1` · 미커밋)**: **a** sre_agent `domain/step_findings.py`(신규 — 결과 한 줄 정교 문형 8종 + 일반 문형 · `tool_phrase` 사전 · `when`/건너뜀 문장 · 판정 불가 실행은 「판정할 수 없어(사유) 확인을 위해 실행」 · `narrate.why`는 조건 참일 때만) · `domain/{activity_log,playbook}.py`(`finding`·`because`·`phrase` · kind `step_skip` · `narrate.why`) · `application/{playbook_runner,playbook_narrator,playbook_prompts,investigation_dispatcher,playbook_steps}.py`(`step_skip` · 단계 끝 해석 `StepOpinionStream` — 별 실행기 · 그 시점까지 끝난 단계 판독만 · `prior_findings` 줄 때만 「앞 단계 결과」·추측·순위 금지 지시(없으면 프롬프트 비트 동일) · finalize 재호출 0 · partial `finding`/`opinion{status,text,reason,basis}`/건너뜀 항목 · 활동 기록 off면 종전 경로) · **b** host.cpu·host.process `version: 2`(S2 `apm.runtime_and_pool` `for_each: host_was` when `S0r.status == 'ok' and S0r.verdict != 'no_was'` · S3a `apm.active_services` `target: was_cpu_top` when `S2.status == 'ok' and cpu_owner in [...]` · S3b 신규 `apm.active_sql` — `apm_active_detail` · S3a CPU 시간 상위 3 · 리터럴 `?`(이스케이프·큰따옴표·`$$`·16진·지수·음수) → `mask_secrets` → 1KB · 발췌도 재가림) · `RunScope.host_was`(정상 WAS 포함 · `to_dict` 제외 — S5·S7 대상 비트 동일) · S1을 S0r 바로 뒤로(R-E TPS 근거) · host.process에 S4(cpu)·S6 추가 · `plan_stages` 수정 없이 `[S4,S6] [S0r] [S1,S2] [S3a] [S3b,S5,S7]` · **c** 본체 `src/api/investigation_live_hub.py`(사용자 경로 새 키 3종·`note` 가림 · HolmesGPT `ai_note` 사용자 허용(G-48) · 플레이북 소견 초안 `ai_note`는 사용자 경로 차단 — 가드 전 문장) · `noise_gate/infrastructure/investigation_activity_store.py`(`SUMMARY_EVENT_KEYS` +3 · `ai_note` 제외 유지) · `src/static/js/diagnosis-view.js`(「조사 흐름」·「실행 기록」 전환 탭 · 카드 순서 = 플레이북 순서 · 지금까지 줄(이상 판정 + 판정 없는 1행 이상 · 최근 4) · 건너뜀 카드(조건식 원문 대신 문장) · ⓘ C1~C8 · 「종합과 다름」 칩(1위 가설 evidence_steps · supported/refuted vs degraded/normal) · HolmesGPT 회차 카드) · css · 캐시 v(diagnosis-view 6·style 36) · 매뉴얼 U-70·A-81 · 캡처 `diagnosis-tab`(픽스처 `inv-manual-flow`) · **테스트** sre_agent 새 4파일(w20a_findings·w20a_flow·w20b_playbook_chain·w20_verify — 종단 픽스처 `w20_flow_hostcpu.json`) · 본체 새 2파일(`test_ui_plan187_w20_flow.py`·`test_plan187_w20_verify.py`) + 기존 9파일 갱신 · **회귀** `regress.py --base 394cc4b1 --files <36>` — 본체 통과 1,159 · sre_agent 통과 2,234 · 실패 0 · arch/overfit/config_fallback 통과 · ruff·mypy 이번 diff 줄 0 · 범위: 모듈 단위 — 전체 미실행 · **MLX 1회**(단계 끝 프롬프트 대표 2단계): 1건 가드 통과 · 1건 극성 가드 탈락(다중 인스턴스 「정상 범위」 언급 — 종전 가드 동작 · 「AI 해석 없음 — 사유」 경로 확인) · **잔여**: R-E 임계(`cpu_gap_pct`)로 계획 ⓑ 예시 수치(호스트 96 · A1 74/78)는 `other_process` → S3a·S3b 생략(테스트 strict xfail 2로 고정 — 임계·규칙 변경은 결정 필요) · WAS 정상이면 S1 생략 → TPS 결손 → `cpu_owner` 판정 불가로 S3a 실행(정상 경로) · 내부망 FabriX 단계 끝 지연·실 SQL 가림 표본(§10.1 2·7)
+> **v3.0(2026-10-22 · W21 · 사용자 지시)**: 내부망 was.latency 조사에서 *"대부분이 타임아웃이고 제대로된 분석을 못하고 있다. 개선 방안을 검토하라"* → 원인 5건 실측·권고(§5.6.5) → *"권고에 맞게 계획서에 기록하고 구현하라"* → **W21 구현(2026-10-23 · 미커밋)**: P1 배치 동시 호출(기본 4) · P3 스텝별 `timeout_s`(S0·S0r 60) · P4 타임아웃 진행 사유·중단 · P5 소견 타임아웃 설정(45s) · P6 APM 소스 → 폴스타 매핑 · **P2 미적용**(S0+S1 합계 증가 — 사유 §5.6.5 ⓓ) · P0·P7 내부망 이월 · 수용 30~35 · D-341 부기 12 · 회귀 `regress.py --base 394cc4b1 --files <W21 22개>` 종료 0(교정 뒤 재실행 · 본체 925·sre_agent 2,276 통과 · 실패 0 · 모듈 단위 — 전체 미실행)
+> **v3.1(2026-10-23 · W22 · 사용자 지시)**: *"원인 분석을 위한 각종 타임아웃이 너무 짧아 끊기는 경우가 많다. 기본적인 타임아웃 시간을 조절하거나 대책을 마련하라."* + *"제니퍼 api 호출건은 20초말고 30초로 늘리자."* → **W22 구현(2026-10-23 · 미커밋)**: 시간 사슬 기본값 상향(제니퍼 API 30 · MCP 도구 1건 60 · 스텝 90 · S0/S0r 120 · 수집 240 · 소견 60 · 종합 90 설정화 · 조사 600 · 캐시 대기 = 조사 상한 · 본체 후속 poll 600) · sre_agent 기동 시 사슬 정합 경고 1줄 · 「스텝 타임아웃」 결손 스텝 1회 재시도(`SRE_PLAYBOOK_RETRY_TIMED_OUT_STEPS` 기본 on) — §5.6.6 · 수용 36~41 · D-341 부기 13.
 
 ---
 
@@ -440,7 +449,7 @@ S9 가설 순위 규칙은 이 enum의 조합으로 정한다. 예를 들어 `do
 |---|---|---|
 | 판단 | 서로 독립인 두 의견을 받는다. 플레이북 결과에 끌려가지 않는 「두 번째 의견」이 된다 | 새벽 당직에게 결론 두 개는 인지 부담이다 → 같은 틀로 나란히 보이고, 일치 여부를 먼저 보여 줘야 한다 |
 | 시간 | 순차(플레이북 ≤120s → 심층) 대비 벽시계 시간이 줄어든다. 플레이북이 먼저 끝나 먼저 보인다 | — |
-| LLM 부하 | — | HolmesGPT는 조사당 최대 40 step(`settings.py:26` `max_steps=40` · 넓은 트리아지는 30 step을 넘긴다는 주석)이다. 플레이북은 ≤8회다. 모든 PAGE에 두 엔진을 다 돌리면 조사당 LLM 호출이 최대 약 48회가 된다. 운영 FabriX는 과금 대상은 아니지만 처리 용량을 쓴다 |
+| LLM 부하 | — | HolmesGPT는 조사당 최대 40 step(`settings.py:26` `max_steps=40` · 넓은 트리아지는 30 step을 넘긴다는 주석)이다. 플레이북은 소견 대상 단계 수 + 종합 1회다(v2.8 — 호출 상한 없음). 모든 PAGE에 두 엔진을 다 돌리면 조사당 LLM 호출이 최대 약 48회가 된다. 운영 FabriX는 과금 대상은 아니지만 처리 용량을 쓴다 |
 | 데이터 소스 부하 | — | sre_agent MCP 클라이언트에 결과 캐시가 없다(`mcp_tool_client.py` 실측). 두 엔진이 같은 제니퍼·폴스타 도구를 각자 부르면 호출이 두 배가 되고, 제니퍼 프로파일 예산과도 겹친다 |
 | 품질 | — | 결과(`prior_findings`)를 넘기지 못해 순차 방식의 이점 일부를 잃는다. 다만 CNCF/STCLab의 개선(4.6 vs 3.6)은 **런북(지시문)** 효과였다 → 병렬에서도 플레이북 YAML의 정적 지시(`runbook`·`deep_dive.focus`)는 처음부터 넘길 수 있다 |
 | 평가 | 같은 사건에서 두 엔진을 비교한 운영 데이터가 생긴다(`plans/154` · W7 보강) | — |
@@ -540,7 +549,7 @@ response_hints:                         # 대응 제안 문구(실행 아님)
 - 결정적 가드(후처리): 소견이 판정과 반대 극성(판정 normal인데 「이상」 서술 등)이면 소견을 버리고 「판정과 불일치 — 소견 생략」 표기 · 소견에 등장하는 수치가 표에 없으면 제거(환각 수치 가드) · 문장 수 상한.
 - 단계 소견: 단계 데이터(요약 직렬화 · 토큰 상한) + 판정 + 플레이북 `narrate.focus` → ≤4문장. 단계 간 독립이라 병렬.
 - 종합(S9): 입력 = 단계 판정·소견·지배 계층·타임라인·변경 후보 + **결정적 가설 순위**(규칙: 예 — S3 지배 계층 SQL ∧ S2 풀 고갈 → 「DB 지연 → 풀 고갈 → 응답 지연」 1순위 · 근거 스텝 ID 첨부) + 플레이북 `response_hints`. 출력 = 원인 가설(상태 = 지지/반박/판단 보류 — 이 계획의 [제안] 어휘. 「판단 보류」는 Datadog Bits AI의 inconclusive[공식 문서]와 같은 뜻) · 대응 순서(제안) · 추가 확인 필요 항목. LLM은 가설 순위를 바꾸지 않고 서술한다(G-5).
-- LLM 호출 수: 단계 소견 ≤7 + 종합 1 = ≤8회/알람. 대안(단일 호출 섹션 출력)은 G-5.
+- LLM 호출 수: ~~단계 소견 ≤7 + 종합 1 = ≤8회/알람~~ → **v2.8(2026-10-22 · 사용자 지시 「호출수 상한을 없애라」): 상한 없음 — `narrate` 지시가 있고 ok인 단계 전부 + 종합 1**(플레이북 단계 수가 곧 상한 · `NarratorLimits.max_step_calls=None` · 명시하면 종전처럼 결정적 우선순위로 자른다). 대안(단일 호출 섹션 출력)은 G-5.
 
 ### 5.5 브리핑 계약 확장 (하위 호환)
 
@@ -734,7 +743,7 @@ response_hints:                         # 대응 제안 문구(실행 아님)
   - `event: partial` — 열린 탭 조사의 `partial_briefing` 변경분 · `event: done` — 종결(최종 브리핑은 기존 `GET /investigations/{id}`로 다시 읽는다).
   - 탭을 열고 닫으면 브라우저가 `watch`(조사별 마지막 `seq` 포함)를 바꿔 다시 연결한다 — 커서가 있어 빠지거나 겹치는 이벤트가 없다. `id:` 필드에 이벤트 키를 실어 EventSource 자동 재연결(`Last-Event-ID`)에도 이어 받는다.
   - `watch`의 각 조사는 연결 때 권한을 검사하고, 권한 없는 id는 조용히 빼지 않고 `event: denied {id}`로 알린다.
-  - 노이즈 관제 페이지(break-glass 운영자 토큰 · 헤더 전용)는 기존 `noise_stream`처럼 fetch 스트림으로 같은 경로를 읽는다 — 다만 G-34에 따라 노이즈 쪽 진입은 본 화면 `/?diagnosis=<id>` 새 브라우저 탭이 기본이다.
+  - 노이즈 관제 페이지(break-glass 운영자 토큰 · 헤더 전용)는 기존 `noise_stream`처럼 fetch 스트림으로 같은 경로를 읽는다 — 다만 G-34에 따라 노이즈 쪽 진입은 본 화면 `/?diagnosis=<id>` 새 브라우저 탭이 기본이다(**v2.4 G-46 개정**: 열려 있는 포털 창의 장애 진단 탭이 먼저 · 새 탭은 열린 포털이 없을 때만).
 - **목록 범위(G-41 확정)**: **관리자**(`is_admin` — role admin 사용자 · break-glass 운영자 토큰) = **모든 미종결 조사**(자동·요청·채팅 · 존 무관). **사용자** = **내가 채팅으로 시작한 조사**(`owner_sub` = 나 · 채팅 기원 `kind=diagnosis`/증상 라우팅). 사용자가 알람 카드·분석 요청에서 직접 연 조사는 목록에는 없지만 그 하위 탭은 열린다(기존 존 검사 · D-325 ④ fail-closed) — 「목록에 안 보이는 것」과 「열 수 없는 것」을 구분한다.
 - **경로 보강**: 기존 `GET /api/v1/alarm/investigations/{id}`(및 `by-alarm`)에 `activity_since` 쿼리를 가산한다(SSE를 못 쓰는 환경·종결 뒤 재조회용 · 없으면 종전과 같다). `GET /api/v1/alarm/investigations/active` 신설 — 위 목록 범위 · 첫 화면과 SSE 끊김 대체에 쓴다. 저장소 미종결 레코드 + 허브 진척(sre_agent 추가 호출 0).
 - **노출 범위(G-36 확정)**: 한 줄·상태·소요·행 수 **와 응답 발췌** 모두 사용자·관리자에게 보인다. 사용자 경로는 sre_agent `mask_secrets` 뒤에 **D-325 ③ 텍스트 마스킹을 한 번 더** 거친다(`_investigation_mask_fn` 재사용 · 발췌 포함). **AI 메모(`ai_note`)는 관리자에게만**(G-38) — 사용자 경로에서는 키·이벤트 자체를 뺀다.
@@ -779,6 +788,209 @@ response_hints:                         # 대응 제안 문구(실행 아님)
 - 플래그 off(`SRE_ACTIVITY_LOG_ENABLED`·`NOISE_INVESTIGATION_LIVE_VIEW_ENABLED`)면 탭이 보이지 않고 SSE 경로는 404이며, MCP 응답·API 응답·카드 동작이 종전과 비트 동일하다.
 
 **하지 않는 것**: 프롬프트 원문 노출 · 사용자 경로의 AI 메모 노출(G-38) · 원시 도구 출력 전체 보관 · 조사 취소/재시도 버튼(재분석은 기존 「다시 분석」) · 하위 탭마다 별도 SSE 연결 · 동시 상한(2) 자체 상향(대기 가시화가 먼저 — 운영 측정 뒤 `INVESTIGATION_MAX_CONCURRENT`로 별도 판단).
+
+#### 5.6.4 (v2.5 · **v2.7 확정 2026-10-22 — G-47~G-50**) 「조사 흐름」 — 단계마다 왜 · 무엇을 조회 · 무엇이 나왔나 · 해석 · 다음을 문장으로
+
+사용자 제기(2026-10-22): *"장애 진단 페이지에서 실행기록, 조사결과 등이 나오는데 그 시간의 로그만 나와 뭘하고 있는지가 보이지 않는다. 그 시간에 어떤 작업을 했고 어떤 조사를 했고 어떤 결과가 나와서 분석내용은 뭐다 라는 내용이 표시가 되어야 한다. 예를 들어 cpu가 높아서 해당 서버의 프로세스 리스트를 조사했다. 그리고 프로세스의 cpu 사용량을 조사했다. 그랬더니 was프로세스가 높게 나왔고 제니퍼의 인스턴스를 보니 어떤 인스턴스가 cpu를 많이 쓰고 있고 어떤 쿼리를 사용 중에 있다 등의 예시 처럼 운영자가 봤을때 이해할 수 있는 내용이 표시되어야 한다."*
+
+**ⓐ 실측 — 「로그만 보이는」 원인 (2026-10-22 · `394cc4b1` + 미커밋 W19)**
+
+| # | 원인 | 근거(`file:line`) | 결과 |
+|---|---|---|---|
+| H1 | **실행 기록 행이 기계어 한 줄이다.** 단계 행 = `"{sid} {ACTION_TITLES[action]}"`, 도구 행 = 도구명+인자 | `investigation_dispatcher.py:1022` · `playbook_steps.py:95`(`ACTION_TITLES`) · `StepContext.call` | 도구 어휘를 알아야 읽힌다 |
+| H2 | **단계가 끝나도 「무엇이 나왔나」 문장이 없다.** 중간 결과는 표·판정 배지(`StepResult.to_dict(include_data=False)`)뿐 | `investigation_dispatcher.py:1002~1013`(`publish` — `sections`) | 운영자가 표를 직접 해석해야 한다 |
+| H3 | **해석(단계 소견 · LLM)은 모든 단계가 끝난 뒤 한꺼번에, 호출 상한 안의 우선순위 단계만** 만든다 | `playbook_runner.py:808~837`(`_narration_plan` — 상한·우선순위 · 나머지는 `dropped_reason`) · `:986` | 진행 중 해석 0 · 종결 뒤에도 소견 없는 단계가 있다 |
+| H4 | **건너뛴 단계가 기록에 안 나온다.** `when` 거짓·예산 소진은 자리표시만 만들고 라이브러리를 거치지 않아 단계 이벤트 0 · 사유는 조건식 원문(`when_false — S0r.status == 'ok' and …`) | `playbook_runner.py:614~627` · `wrap`은 실행 단계만(`investigation_dispatcher.py:1015~`) | 「왜 WAS를 안 봤나」가 안 보인다 |
+| H5 | **단계 사이 연결이 없다.** 목적(`narrate.focus` — G-44)은 「무엇을 볼지」이지 「앞 결과 때문에 지금 본다」가 아니다 | `diagnosis-view.js:268` | 서사가 끊긴다 |
+| H6 | **조회와 결과가 두 칸에 갈라져 있다** — 실행 기록(좌)·중간 결과(우)를 시각으로 맞춰 봐야 한다 | §5.6.3 ⓓ · `diagnosis-view.js` `dv-log`·`dv-partial` | |
+| H7 | **HolmesGPT는 도구 행 + AI 메모(관리자만 · G-38)뿐** — 사용자에게는 무엇을 왜 조회했는지 0 | §5.6.3 ⓑ | |
+| H8 | **사용자 예시의 사슬 중 host.cpu 플레이북에 없는 고리** — ① WAS 프로세스 CPU(`apm.runtime_and_pool` 스텝 없음 → R-E `cpu_owner`가 CPU 이상이어도 「WAS 프로세스 CPU 미수집 — 귀속 불가」로 판단 보류) ② 인스턴스의 실행 중 요청별 CPU 시간·SQL 수(`apm.active_services` — 액션은 있으나 host.cpu 미사용) ③ 실행 중 SQL 문(게이트웨이 `apm_active_detail` — 도구는 있으나 액션 없음). S1 골든 시그널은 `S0r` 이상일 때만 돈다 | `sre_agent/config/playbooks/host.cpu.yaml` · `playbook_readings.py:44,564~600` · `playbook_steps.py:67` · `apm_gateway/apm_gateway/application/transaction_tools.py:124`(`cpu_ms`·`sql_count`) · `manage_tools.py:1064` | 「어떤 인스턴스가 CPU를 많이 쓰고 어떤 쿼리를 쓰는가」에 답하지 못한다 |
+
+**ⓑ 목표 화면 — 단계 카드 1장 = 왜 → 조회 → 결과 → 해석 → (다음 카드의 「왜」로 이어짐)**
+
+```
+┌ SAE0011 CPU 사용률 95% · 플레이북 host.cpu · 진행 4/8 · 1분 52초 · ● 실시간 ─────────────┐
+│ 지금까지  CPU 포화(전일의 2.2배) → java(WAS) 프로세스 78% → 인스턴스 A1이 CPU 대부분       │
+│           → A1 실행 중 요청 확인 중 ⟳                                                     │
+├─────────────────────────────────────────────────────────────────────────────────────┤
+│ ① 14:02:01 CPU 사용률 추이                                             ✓ 1.2s [이상]  │
+│   왜    알람 「CPU 사용률 95%」 — 평소보다 얼마나 높은지부터 본다                          │
+│   조회  폴스타 · SAE0011 CPU 사용률 시간대별(13:30~14:10 · 전일·전주 같은 시간 비교)        │
+│   결과  최대 96% · 전일 같은 시간 43%의 2.2배 · 30분째 90% 이상(포화)          표 보기 ▸  │
+│   해석  [AI · 이 단계까지의 근거] 전일 대비 급상승이며 포화가 지속되고 있다 ⓘ주의          │
+│ ② 14:02:03 프로세스 CPU 상위                                           ✓ 0.8s         │
+│   왜    CPU 포화 → 어느 프로세스가 쓰는지 확인                                             │
+│   조회  폴스타 · SAE0011 프로세스 목록(CPU 순 상위 10) · 현재값                            │
+│   결과  1위 java(WAS A1) 78% · 2위 sshd 3% — 1위가 상위 10개 합의 85%                       │
+│ ③ 14:02:05 WAS 프로세스 CPU                                            ✓ 1.9s [이상]  │
+│   왜    1위가 WAS 프로세스 → 제니퍼에서 인스턴스별 CPU 확인                                 │
+│   조회  제니퍼 · A1·A2 JVM 런타임(프로세스 CPU·GC·힙 · 사건창)                              │
+│   결과  A1 프로세스 CPU 최대 74%(호스트 96%의 대부분) · A2 6% → CPU 주인 = WAS 처리(R-E)    │
+│ ④ 14:02:08 실행 중 요청                                                ⟳ 진행 중      │
+│   왜    A1이 CPU 대부분 → 지금 무엇을 처리 중인지                                          │
+│   조회  제니퍼 · A1 실행 중 요청(CPU 시간 순 상위 5) · 현재값                               │
+│ ⑤ 건너뜀  WAS 골든 시그널 — 이 호스트 WAS 인스턴스의 응답·오류가 정상이라 생략               │
+│ 위 카드 목록은 [조사 흐름] 탭 · [실행 기록] 탭 = 현행 실행 기록·중간 결과 화면 그대로(G-50) │
+└─────────────────────────────────────────────────────────────────────────────────────┘
+  끝나면: 「지금까지」 줄 → 종합(가설 1위 · 서술) · 상세형 브리핑 전체 (단계 해석은 단계가 끝날 때 이미 붙어 있다 — 다시 쓰지 않음)
+```
+
+**ⓒ 구성 — 결정적 문장 4종 + LLM 해석 1종**
+
+1. **결과 한 줄(`finding` · 결정적 · LLM 0)** — sre_agent `domain/step_findings.py`(순수 · 신규) 액션별 문형 함수 `summarize(action, StepResult, readings) -> str | None`. 표 상위 행·판정·배지·판독 enum만 고정 문형에 꽂는다. **수치는 그 단계 표에 있는 값만**(반올림 규칙만 허용 — 소견 가드와 같은 「표 밖 수치 0」 테스트). 액션 18종(`ACTION_TITLES`) 모두 문형을 둔다(커버리지 테스트) · 결손·실패 단계는 사유 문장. `step_end` 이벤트 `finding` 키 + `partial_briefing.sections[]` `finding` 키로 가산한다.
+2. **왜(`because` · 결정적)** — ⓐ 조건 없는 단계: 플레이북 YAML 새 선택 키 `narrate.why`(작성자 한 문장 · 없으면 「{focus}를 확인」) · 첫 단계는 알람 요약을 앞에 붙인다. ⓑ `when`으로 실행된 단계: 조건식 원소별 문형 사전(`when` 화이트리스트 연산 단위 — 예 `S0r.verdict == 'degraded'` → 「{S0r 제목}에서 이상 판정」 · `cpu_owner in ['was_load', …]` → 「CPU 주인 = {enum 한국어}」) + 그 근거 단계의 `finding` 인용. `step_start` 이벤트 `because` 키.
+3. **조회(`phrase` · 결정적)** — 도구별 문형 사전 `TOOL_PHRASES`(sre_agent domain · 도구명 → 「{출처} · {대상} {무엇}({조건})」 · 인자에서 대상·시간창·개수만 꺼낸다 · 현재값 전용 도구는 「현재값」 꼬리). 사전에 없는 도구(HolmesGPT의 임의 도구 포함)는 현행 한 줄을 그대로 쓴다(빈칸 0). 현행 한 줄은 「상세 기록」에 남는다. `tool_start`·`tool_end` 이벤트 `phrase` 키.
+4. **건너뜀(`step_skip` 이벤트 · 결정적)** — runner가 `when_false`·`budget` 자리표시를 만들 때 이벤트 1건(`run_playbook`에 선택 인자 `activity` — 없으면 무동작). 사유는 ②의 문형 사전으로 문장화(「{근거 단계 제목} 결과가 정상이라 생략」 · 「시간 예산 소진으로 생략」). 조건식 원문은 상세 기록에만.
+5. **해석(단계 소견 · LLM)** — **G-47 확정: 단계가 끝날 때마다 작성**(ⓕ 혼합안 · 주의 사항 ⓖ). 「AI 소견」 표지 · 가드 탈락(`dropped_reason`)이면 「소견 없음 — 사유」. 소견은 결과 한 줄을 대체하지 않는다(사실 = 결정적 · 의미 = LLM — D-035).
+6. **지금까지 줄(결정적 · 본체 화면 계산 — sre_agent 무변경)** — 판정이 이상인 단계의 `finding` 핵심 구와 판독 enum(R-E 등)을 화살표로 최대 4고리 · 진행 중 단계는 「확인 중 ⟳」. 종결하면 종합(가설 1위 + 서술 첫 문장)으로 바꾼다.
+7. **HolmesGPT 카드** — 판단 회차 단위: 「조회」(③ 문형) · 「결과」(상태·행 수 · 발췌 펼침) · 「AI 판단」(`ai_note`) — **G-48 확정: 사용자·관리자 모두에게 「AI 판단 — 검증 전」 배지로 표시**(G-38 개정 · 두 겹 가림 · 브리핑·통보에는 쓰지 않음). `parallel`이면 엔진별 카드 줄을 나눈다(현행 엔진 필터 유지).
+8. **화면 배치** — **G-50 확정(대안 1): 조사 하위 탭 안에 「조사 흐름」·「실행 기록」 전환 탭** · 처음 열면 「조사 흐름」(단계 카드 · 표는 카드 안 「표 보기 ▸」) · 「실행 기록」 = 현행 실행 기록·중간 결과 좌우 화면 그대로(엔진 필터·자동 스크롤·발췌 · 새 렌더 0) · 탭을 바꿔도 SSE 연결·커서는 그대로(같은 이벤트를 두 보기로 그린다).
+
+**ⓓ 플레이북 보강 — 사용자 예시 사슬 잇기 (G-49)**
+
+host.cpu(그리고 같은 사슬을 쓰는 host.process)에 조건부 단계 3개를 더하고 버전을 올린다(`version: 2`).
+
+| 단계 | 액션 | 조건(`when`) | 보이는 결과 |
+|---|---|---|---|
+| S2 | `apm.runtime_and_pool`(기존 · for_each targets) | `S0r.status == 'ok'`(이 호스트에 WAS가 있음) | 인스턴스별 프로세스 CPU·GC·힙 → **R-E `cpu_owner` 판단 가능**(H8 ①) |
+| S3a | `apm.active_services`(기존 액션) | `cpu_owner in ['was_load', 'was_logic']` | CPU 주인 인스턴스의 실행 중 요청 — CPU 시간·SQL 수·경과 상위 5 |
+| S3b | `apm.active_sql`(**신규 액션** — `apm_active_detail`) | `S3a.status == 'ok'` | S3a CPU 시간 상위 3건의 실행 중 SQL 문(리터럴 가림) · 애플리케이션 |
+
+- S3a·S3b는 **현재값**이다 — 알람 시각이 아니라 조사 시각 기준이라 배지 「현재값 · 조사 시각 hh:mm」을 달고, 알람과 조사 시각 차이가 10분 [제안] 넘으면 결과 한 줄에 「알람 시점과 다를 수 있음」을 붙인다(§8 위험 「실시간 전용 데이터」).
+- SQL 문은 리터럴을 `?`로 바꾸고 `mask_secrets`를 거친다(게이트웨이 `mask_text` 재사용 가능 여부는 W20b에서 실측). 길이 상한 1KB [제안].
+- 판독 enum을 참조하는 `when`(S3a)이 근거 단계(S2·S4·S6) 뒤 단계로 배치되는지 `plan_stages` 의존 분석을 W20b에서 확인한다(조건 문법 `in [..]`은 `playbook_expr.py:14`에 있음).
+- LLM 호출 수는 늘지 않는다(소견 상한 8 그대로 · 결정적 수집만 +3).
+
+**ⓔ 계약 · 보관 · 가림 · 플래그**
+
+- **계약(가산만)**: 이벤트 키 `finding`·`because`·`phrase` · kind `step_skip` · `partial_briefing.sections[].finding`. 모두 `SRE_ACTIVITY_LOG_ENABLED`가 켜졌을 때만 붙는다 — 꺼지면 MCP 응답 비트 동일(새 플래그 없음).
+- **보관(G-37 연장)**: `finding`·`because`·`phrase`는 결정적·가림 처리분이라 종결 요약(`investigation_activity_store.py` `SUMMARY_EVENT_KEYS`)에 넣는다 — 잡 TTL 뒤에도 흐름 카드를 다시 그린다. 해석(소견)은 종결 브리핑에서 읽는다(중복 저장 0).
+- **가림**: 새 키 전부 `label`과 같은 두 겹(sre_agent `mask_secrets` → 사용자 경로 `_investigation_mask_fn`)을 탄다 — 허브 중계·사용자 경로 가림 대상 키 목록에 더한다(누락 시 원문 노출 — 표본 테스트로 고정).
+- **화면**: 기존 `NOISE_INVESTIGATION_LIVE_VIEW_ENABLED` 아래에서 바꾼다(아직 운영 미투입 · 꺼지면 탭 자체가 없음 — 비트 동일 유지). 새 키가 없는 이벤트(구버전 sre_agent)는 현행 한 줄로 그린다.
+- **플레이북 보강(G-49)**은 플레이북 모드가 켜진 환경에만 영향 — YAML 버전 올림으로 브리핑에 판이 남는다.
+
+**ⓕ (v2.6 검토 · 2026-10-22) 문장 생성에 AI(LLM)를 쓰는 안** — 사용자 지시 *"문장을 만드는 것도 AI를 이용하는 것에 대해 검토하라."*
+
+실측 전제: 단계 소견기는 이미 있다 — `PlaybookNarrator.narrate_steps`(`playbook_narrator.py:456` · 병렬 4 · 단계당 타임아웃 20s) · 결정적 가드 `guard_text`(`:364` — ① 극성 역전 버림 ② 표·판정·판독에 없는 수치 버림 ③ 순위·확정 어휘 ④ 문장 수 ⑤ 길이) · 상한 `NarratorLimits.max_step_calls=7` + 종합 1 = 8(수용 기준 6). 가드에 걸리면 **소견 전체를 버린다**(`dropped_reason`) — 고쳐 쓰지 않는다.
+
+| 문장 | AI로 만들면 나아지는 것 | 위험 · 비용 | 판단 |
+|---|---|---|---|
+| **결과 한 줄** | 표 여러 열을 엮은 자연스러운 문장(「1위가 상위 10개 합의 85%」) · 액션 18종 문형 작성·유지 비용 감소 | 단계마다 호출 +1(보강 host.cpu는 실행 단계 8 — v2.6 당시 상한 7 초과 · v2.8 상한 없음) · 단계 끝 → 문장 표시까지 FabriX 지연(수 초~타임아웃 20s) · 가드 탈락·타임아웃이면 빈칸 · 수치 환각은 가드가 막지만 막으면 문장이 사라진다 | **혼합** — 결정적 한 줄을 즉시 보이고(사실 뼈대 · 항상 있음), AI 문단은 아래 「AI 요약」으로 덧붙인다 |
+| **해석** | (이미 AI) | 지금은 종결 뒤 일괄 | **단계 끝 즉시로 앞당겨 결과 요약과 한 호출로 합친다**(아래 권고) |
+| **왜(단계 연결)** | 앞 결과를 엮은 매끄러운 이유 | 다음 단계는 YAML `when`이 이미 결정했다. AI가 쓰면 **실제 선택 근거와 다른 이유를 지어낼 수 있다**(사후 합리화) — 「왜 이걸 봤나」가 틀리면 운영자가 조사 논리를 오해한다 | **결정적 유지** — 문장은 실제 조건의 번역이어야 한다 |
+| **조회** | 사전 없이 모든 도구 서술 | 도구 호출마다 AI = 호출 폭증(조사 1건 도구 20~40회) · 인자 오기술 | **결정적 유지**(사전 밖 도구는 현행 한 줄) |
+| **건너뜀** | — | 「왜」와 같은 사후 합리화 | **결정적 유지** |
+| **지금까지 줄** | 고리 요약이 자연스러움 | 진행 중 갱신마다 재생성 = 호출 폭증 · 덜 모인 증거로 결론 단정 | **진행 중 결정적 · 종결 시 종합(이미 AI)** |
+| **HolmesGPT 회차 요약** | 문형 사전이 없는 영역(임의 도구·bash) — AI 말고는 문장을 만들 방법이 없다 | 검증 전 서술(G-38) · 회차마다 호출 +1 | **G-48과 함께 결정** — 사용자 노출이면 회차 요약에 가드(①②)를 거는 별 호출, 관리자만이면 `ai_note` 그대로 |
+
+**권고(혼합안) → v2.7 확정(G-47)**: 사실 문장 4종(결과 한 줄·왜·조회·건너뜀)과 진행 중 「지금까지」는 결정적으로 즉시 보인다. **AI는 단계가 끝나는 즉시 그 단계의 「결과 요약 + 해석」 한 문단을 만든다** — 현행 단계 소견 호출을 종결 뒤에서 단계 끝으로 앞당기고 결과 요약까지 맡기는 것이라 **호출 수는 늘지 않는다**(상한 7 그대로). 가드를 통과한 문단만 카드에 「AI 요약 · 이 단계 시점」 표지로 붙고, 탈락·타임아웃·상한 밖 단계는 결정적 문장만 남는다(빈칸 0).
+- ~~상한 배분~~(v2.8 상한 없음으로 불필요): 소견 대상 단계는 모두 끝나는 즉시 부른다. 상한을 명시로 다시 줄 때만 이상 판정 단계를 끝난 순서대로 먼저 배분한다.
+- 수집과 겹쳐 돈다: 소견 호출은 별 실행기에서 돌고 다음 단계 수집을 막지 않는다. 종합은 마지막 단계 문단까지 기다린 뒤 1회.
+- 뒤 증거와의 어긋남: 단계 문단은 그 시점 증거만 본다 — 「이 단계 시점」 표지 · 종합이 최종 판단이다(D-035). 종결 뒤 재작성은 하지 않는다(호출 2배).
+- 가림·PII: 단계 표는 지금도 소견 프롬프트로 LLM에 간다 — 새 노출 범주 없음. AI 문단은 `label`과 같은 두 겹 가림을 탄다.
+- 결정적 문형 작성 부담 완화: 액션 18종 모두에 정교한 문형을 두지 않는다 — 사용자 예시 사슬 6종(`host.usage_trend`·`host.process_top`·`scope.host_to_was`·`apm.runtime_and_pool`·`apm.active_services`·`apm.active_sql`)과 `apm.slow_tx_breakdown`·`apm.golden_signals`만 정교 문형, 나머지는 일반 문형(「판정 · 표 n행 · 첫 행 핵심 열」).
+
+**전면 AI안(결과·왜·조회·건너뜀까지 AI)을 권하지 않는 이유**: ① 호출 수가 단계 수 × 2 이상(조회 문장은 도구 호출마다)으로 늘어 FabriX 부하·지연이 커진다(v2.8 상한 제거 뒤에도 유효) ② 결과가 AI 응답을 기다려 늦게 뜬다(진행 가시성이라는 원 요건과 반대) ③ 가드 탈락·타임아웃·FabriX 장애 때 화면이 비거나 원문 로그로 돌아간다 ④ 「왜」를 AI가 쓰면 실제 조건과 다른 이유가 나올 수 있다 ⑤ Known Mistakes 「LLM 출력에 정합성을 의존하지 않는다 — 결정적 가드로 후처리」.
+
+**검증**: 가짜 LLM으로 단계 끝 호출 시점·상한 배분·가드 탈락 시 결정적 문장 유지를 단위·종단으로 고정 · MLX는 바뀐 프롬프트 1종 대표 소수 1회(D-127) · FabriX 단계당 지연은 내부망 측정(§10.1 2와 함께).
+
+**ⓖ (v2.7 확정 · G-47) 단계 끝 AI 해석의 주의 사항 — 계획서와 화면에 모두 적는다**
+
+| # | 주의 사항 | 화면 표기(카드 「해석」 줄 · ⓘ주의 펼침) | 설계 대응 |
+|---:|---|---|---|
+| C1 | **그 단계까지의 근거만 보고 쓴 해석이다** — 뒤 단계 결과로 달라질 수 있다 | 표지 「AI · 이 단계까지의 근거」 · ⓘ「뒤 단계 결과에 따라 달라질 수 있습니다. 최종 판단은 종합을 따르세요」 | 프롬프트에 「앞 단계 결과 한 줄」만 넣고 뒤 단계 추측 금지 지시 · 종결 뒤 재작성 0(호출 2배 방지) |
+| C2 | **원인 판정이 아니다** — 원인 순위·결론은 종합(가설 순위 = 코드값)이다(D-035) | ⓘ「원인 확정이 아닌 단계 해석입니다」 | 가드 ③ 순위·확정 어휘 차단을 단계 해석에도 적용 |
+| C3 | **종합과 어긋나 보이면 종합을 따른다** | 종결 뒤 판정 극성이 종합 1위 가설과 반대인 단계 해석에 「종합과 다름 — 종합 기준」 칩(결정적 비교) | 단계 판정(verdict)·종합 가설 상태로 비교 — LLM 0 |
+| C4 | **현재값 단계(프로세스 상위·실행 중 요청·실행 중 SQL)는 조사 시각 기준이다** — 알람 시점과 다를 수 있다 | 「현재값 · 조사 시각 hh:mm」 배지 · 알람과 10분 [제안] 넘게 차이 나면 ⓘ에 「알람 시점과 다를 수 있음」 | 소견 프롬프트에 「현재값」 명시(기존 실시간 배지 규칙) |
+| C5 | **해석이 없는 단계가 있다** — 가드 탈락(표 밖 수치·극성 반대)·타임아웃(20s) | 「AI 해석 없음 — {사유}」(빈칸 아님) · 사실 문장(결과 한 줄)은 그대로 | 호출 상한 없음(v2.8) — 소견 대상 단계 전부 호출 |
+| C6 | **수치는 표에 있는 값만 쓴다** — 그래도 표 해석의 오독은 있을 수 있다 | 「표 보기 ▸」로 원 표 확인 유도 | 가드 ② 환각 수치 버림 |
+| C7 | **사용자에게도 보인다**(G-48과 함께) — 가림이 놓친 값이 문장에 실릴 수 있다 | — | 두 겹 가림(sre_agent `mask_secrets` → 사용자 경로 `_investigation_mask_fn`) · 내부망 표본 확인(§10.1 7) |
+| C8 | **지연·비용** — 단계가 끝난 뒤 해석이 붙기까지 FabriX 응답 시간만큼 늦다 · 호출은 소견 대상 단계 수 + 종합 1(v2.8 상한 없음) | 해석 자리에 「AI 해석 작성 중 ⟳」 | 별 실행기 — 다음 단계 수집을 막지 않음 · FabriX 지연은 내부망 측정(§10.1 2) · MLX 수치는 로직 확인용 |
+
+같은 주의 사항을 HolmesGPT 「AI 판단」(G-48)에도 적용한다 — 표지 「AI 판단 — 검증 전」 · ⓘ에 C1·C2·C7. HolmesGPT 판단 문장은 단계 해석과 달리 가드를 거치지 않은 원문(가림만)이므로 ⓘ에 「자동 검사를 거치지 않은 AI 중간 판단입니다」를 더한다.
+
+**하지 않는 것**: LLM이 결과 한 줄을 쓰게 하기(수치 환각 — 결정적 문형만) · 조사 순서를 LLM이 그때그때 고르기(플레이북은 선언형 조건부 유지 — 적응형은 HolmesGPT 담당) · 실행 중 SQL 원문(리터럴 포함) 노출 · 새 SSE 이벤트 종류(기존 `activity`·`partial`에 키만 가산).
+
+#### 5.6.5 (v3.0 · **확정 2026-10-22 — 사용자 「권고에 맞게 계획서에 기록하고 구현하라」**) W21 수집 타임아웃 개선
+
+**ⓐ 증상 (내부망 실화면 · was.latency · 제니퍼 소스 `cm_prd` · 도메인 10020)** — S0 대상 확정 결손(「스텝 타임아웃 30.0s」 · `apm_instance_map`) · S1 골든 시그널 결손(30.0s) · S2 정상이나 일부 결손(실시간 조회 `apm_api_error` 도메인 10020 · `apm_resource_pool` `source_unavailable`) + 「소견기 타임아웃 20s」 · S3 완료(1위 73초 · SQL 0)이나 「소견기 타임아웃 20s」 · `when` 판정 불가로 실행 · S4 결손(폴스타 서버 미확정 — APM 페이로드에 `meta.episode.infra_db_ids` 없고 설정된 소스 없음 — `plans/165` F3).
+
+**ⓑ 원인 (코드 실측 · `394cc4b1` + 미커밋 W19·W20)**
+
+| # | 원인 | 위치 |
+|---:|---|---|
+| 1 | 배치 콜러블이 SSE 세션 1개에서 calls를 **순차** 호출(호출당 `evidence_prefetch_timeout_seconds` 20s) · S0은 instance_map 1 + host·business 2 + 비교 인스턴스 app_health 최대 8 + 기준선 2 = 최대 13건 순차 | `sre_agent/sre_agent/infrastructure/mcp_tool_client.py` `run_tool_batch_async` · `application/playbook_steps.py` `resolve_was_targets` |
+| 2 | 스텝 타임아웃 30s 고정 · 타임아웃이면 받아 둔 응답을 버리고 사유는 「스텝 타임아웃 30.0s」뿐 | `application/playbook_runner.py` `DEFAULT_STEP_TIMEOUT_S` · `_run` |
+| 3 | 타임아웃 스텝의 스레드가 계속 돌며 새 호출을 내 다음 단계와 게이트웨이를 경합(`fut.cancel()`은 실행 중이면 무효) | `_run` |
+| 4 | 단계 소견 타임아웃 20s 코드 고정(설정 없음) · `_narrator`가 남은 시간이 적으면 더 줄인다 | `application/playbook_narrator.py` `NarratorLimits` · `investigation_dispatcher.py` `_narrator` |
+| 5 | `resolve_polestar_source(payload, configured)`의 `configured`를 아무도 넘기지 않는다(설정 미배선) | `playbook_runner.py` `resolve_polestar_source` · dispatcher `_collect_playbook` |
+
+**ⓒ 개선 (권고안 = 확정)**
+
+| # | 개선 | 내용 | 할 곳 |
+|---|---|---|---|
+| P0 | 호출별 소요 실측 | 실행 기록 탭·게이트웨이 로그로 S0·S1 호출별 소요를 잰다 — 코드 작업 없음 | 내부망(§10.1) |
+| P1 | 배치 동시 호출 | 한 MCP 세션 안에서 상한 있는 동시 `call_tool`(asyncio Semaphore) · 응답 순서 = calls 순서 · 호출별 오류 격리 유지 · 폴스타·APM 콜러블 둘 다 · 설정 `SRE_TOOL_BATCH_CONCURRENCY`(기본 **4** — 사용자 확정 · 1 = 종전 순차) | sre_agent |
+| P2 | S0 호출 축소 | 알람 호스트 인스턴스의 app_health를 `apm_app_health(hostname=…)` 1건으로 묶고 응답을 인스턴스별로 나눠 기존 판정 입력(`_window_stats`·`_signals`·`target_verdict`)에 그대로 넣는다 — 판정 로직 재구현 금지(D-195 ②·D-274 ⑤) · 필요한 필드가 없으면 미적용·사유 기록 | sre_agent |
+| P3 | 단계별 타임아웃 | 플레이북 스텝 선택 키 `timeout_s`(미지정 = 기본 30s) · was.latency S0 = 60 · host.cpu·host.process S0r = 60 · 남은 예산(`sre_playbook_budget_s` 120s)보다 길지 않다 | sre_agent · YAML |
+| P4 | 부분 결과 보존 + 중단 | 타임아웃 사유에 진행 표시(「스텝 타임아웃 60s — 요청 13건 중 9건 완료 · 대기 apm_app_health」) · 타임아웃 스텝은 이후 새 호출을 내지 않는다(취소 이벤트를 `StepContext.call`이 확인) · S0 타임아웃이면 범위는 초기 범위(알람 인스턴스 단독)로 강등 — 부분 응답으로 범위를 정하지 않는다(비교 집합이 불완전해 오판 위험) | sre_agent |
+| P5 | 소견기 타임아웃 설정화 | `SRE_NARRATOR_STEP_TIMEOUT_S`(기본 **45s**) → `NarratorLimits.step_timeout_s` · `_narrator` 축소 로직·조사 전체 300s 상한 유지 · W20 단계 끝 해석은 별 실행기라 수집을 늦추지 않는다 | sre_agent |
+| P6 | 폴스타 소스 대체 매핑 | `SRE_PLAYBOOK_POLESTAR_SOURCE_MAP`(APM 소스 ID → 폴스타 db_id JSON · 기본 빈 매핑 = 현행) · 페이로드 `infra_db_ids`가 우선 · 매핑으로 정하면 「설정 매핑으로 대체(cm_prd→polestar_cm_gp)」와 존 오조회 위험을 사유·화면에 표시 · hostname 브리지(`plans/165` F3)는 범위 밖 | sre_agent |
+| P7 | 게이트웨이 실패 진단 | 실시간 API(도메인 10020) `apm_api_error` · `apm_resource_pool` `source_unavailable` 원인 진단 — 코드 작업 없음 | 내부망(§10.1) |
+
+P5 기본값 45s 근거: 조사 전체 300s − 수집 예산 120s = 소견에 최소 180s가 남는다. 소견 동시 4 × 약 3회차 × 45s = 135s + 종합 30s는 그 안에 들어가지만, 60s면 3 × 60 = 180s로 종합 여유가 없다.
+
+**ⓓ 구현 결과 (2026-10-23 · 세션 시작 `394cc4b1` · 미커밋)**
+
+| # | 처리 | 내용 |
+|---|---|---|
+| P1 | **적용** | `infrastructure/mcp_tool_client.py` `run_tool_batch_async(concurrency=)` — Semaphore + gather · 순서 유지 · 호출별 격리 · ≤ 1이면 종전 순차 루프. 동시 요청 안전성 실측: mcp 1.25.0 `shared/session.py` `send_request`가 요청 id별 응답 스트림(`_response_streams[request_id]`)을 등록하고 `_handle_response`가 id로 배달 — 잠금 없음. 사전수집(evidence_prefetch)도 같은 콜러블이라 함께 적용된다 |
+| P2 | **미적용** | 게이트웨이 `apm_app_health(hostname=…)` 응답은 인스턴스별 행(`inst_meta` + `window`)과 instance_id가 달린 신호를 내므로 모양은 맞다. 그러나 잡 캐시는 (도구, 인자) 키라 종전엔 S0의 인스턴스별 호출이 S1을 캐시 적중시켰다. 가짜 콜러블 비교(was.* 픽스처 10종 × `for_each_max` 2): S0 8 → 7건, S0+S1 합계는 20회 중 18회 동일·2회(latency_sql·case2_ldap_external · 운영 설정 `for_each_max` 미지정) 18 → 19건으로 늘어 중단 기준(합계 증가 시 미적용)에 걸렸다. 호스트 인스턴스가 대상보다 많은 실제 13건 사례에서는 줄겠지만, 순증을 없애려면 S1이 S0 결과를 재사용해야 해 범위 밖이다. P1(동시 4)로 S0 13건이 4회차로 줄어 효과가 대부분 흡수된다 — P0 실측 뒤 재검토(§10.1 18) |
+| P3 | **적용** | `domain/playbook.py` `StepSpec.timeout_s`(선택 · > 0) · runner `step_wait_s` = min(스텝 값 또는 기본 30s, 남은 예산) · 스텝마다 제출 시각부터 실시간으로 잰다(앞 스텝 대기가 누적되지 않음) · YAML was.latency S0 · host.cpu·host.process S0r = 60 · 버전 was.latency 1 → 2 · host.cpu·host.process 2 → 3 |
+| P4 | **적용**(verifier Major 2건 교정 반영) | `StepContext` 중단 신호·진행 계수(요청·완료·대기 도구) · 중단 뒤 `call`은 부르지도 기록하지도 않고 「스텝 타임아웃으로 중단」 오류 · runner `_timed_out` 사유 「스텝 타임아웃 60s — 요청 13건 중 9건 완료 · 대기 apm_app_health」 꼴 · 그 순간 끝나 있으면 결과를 쓴다 · 대기 상한은 스텝이 실제로 시작한 시각부터 잰다(큐 대기 제외 · 예산 안에 시작 못 하면 「스텝 미시작」) · 스레드 풀은 단계마다 새로 만들어 중단된 스레드가 다음 단계 워커를 붙잡지 않는다 · 중단 뒤 돌아온 배치는 기록·적재하지 않는다 · **한계**: 중단은 배치 단위다 — 이미 보낸 배치 안의 남은 호출(동시 상한 대기분)은 타임아웃 뒤에도 게이트웨이로 나간다 · dispatcher가 단계 끝을 스텝당 1회만 내고(타임아웃 즉시 `step_end`·부분 브리핑) 늦게 끝난 결과는 기록·해석 제출 0 · 사유는 실행 기록 `step_end.finding`(「수집 결손 — 사유」)·부분 브리핑·최종 섹션 `reason`에 실리고 화면(`diagnosis-view.js`)은 기존 필드로 그대로 보인다(JS 무수정). S0 타임아웃이면 범위는 초기 범위(알람 인스턴스 단독) |
+| P5 | **적용** | `interface/mcp_service.py` `NarratorLimits(step_timeout_s=settings.sre_narrator_step_timeout_s)` · W20 단계 끝 해석 실행기는 같은 `wiring.narrator_limits`를 쓴다 · `_narrator` 축소 유지 |
+| P6 | **적용** | APM 소스 ID 경로 실측: 게이트웨이 `apm.source_id` → noise_gate `apm_trigger_hints` → 잡 payload `meta.hints.source_id`(`event`에는 `dbId`만). runner `mapped_polestar_source`·dispatcher `_collect_playbook` → `run_playbook(polestar_source=, polestar_source_basis=)` · 우선순위 `infra_db_ids[0]` → 매핑 → 미확정 · 매핑을 실제로 쓴 경우에만 근거 문장이 run notes·S0·S4 사유·`scope.polestar_basis`에 실린다(값 없으면 키 없음 = 종전 모양) · 폴스타 알람 경로 불변 |
+
+새 설정(sre_agent `.env` · 접두사 없음): `SRE_TOOL_BATCH_CONCURRENCY`=4(1~8 · 실효 동시 호출 = 스텝 워커 4 × 이 값 × 동시 조사 수) · `SRE_NARRATOR_STEP_TIMEOUT_S`=45 · `SRE_PLAYBOOK_POLESTAR_SOURCE_MAP`={}(JSON). `sre_agent/.env.example`·관리자 매뉴얼 A-77 표 갱신.
+
+#### 5.6.6 (v3.1 · **사용자 지시 2026-10-23**) W22 조사 시간 사슬 상향·정합
+
+**ⓐ 지시** — *"원인 분석을 위한 각종 타임아웃이 너무 짧아 끊기는 경우가 많다. 기본적인 타임아웃 시간을 조절하거나 대책을 마련하라."* + *"제니퍼 api 호출건은 20초말고 30초로 늘리자."* 배경: W21 적용 뒤에도 내부망(FabriX · 제니퍼 `cm_prd`) 실화면에서 S0·S1 스텝 타임아웃·소견기 타임아웃이 남았다. 이번은 **기본값 상향 + 사슬 정합 + 결손 스텝 재시도**다. 신규 플래그가 아니라 기존 값 상향이라 「기본 off」 원칙 대상이 아니며(재시도 스위치만 예외 — 아래), 사용자 확정 값은 `.env`가 아니라 코드 기본값으로 바꿨다.
+
+**ⓑ 시간 사슬 (안쪽 → 바깥 · 실제 적용 값)**
+
+| 층 | 위치 | 전 | 후 |
+|---|---|---:|---:|
+| 제니퍼 API 1건(httpx 단계별 상한) | `apm_gateway/apm_gateway/config.py` `JENNIFER_API_TIMEOUT_SECONDS`(소스별 `JENNIFER_<ID>_API_TIMEOUT_SECONDS`는 전역 승계) | 10s | **30s** |
+| sre_agent MCP 도구 1건 | `sre_agent/sre_agent/settings.py` `evidence_prefetch_timeout_seconds`(단일 출처 `TOOL_CALL_TIMEOUT_S` · `mcp_tool_client.py` 폴백 같은 상수) | 20s | **60s** |
+| 플레이북 스텝 기본 | `application/playbook_runner.py` `DEFAULT_STEP_TIMEOUT_S` | 30s | **90s** |
+| S0 / S0r(대상 확정) | YAML `timeout_s` — was.latency(v3) · host.cpu·host.process(v4) | 60s | **120s** |
+| 플레이북 수집 예산 | `sre_playbook_budget_s` · runner `DEFAULT_BUDGET_S` | 120s | **240s** |
+| 소견기 단계 | `sre_narrator_step_timeout_s` | 45s | **60s** |
+| 소견기 종합 | `sre_narrator_synthesis_timeout_s`(**신설** · 종전 `NarratorLimits` 코드 고정) | 30s | **90s** |
+| 조사 1건 전체 | `investigation_timeout_seconds` | 300s | **600s** |
+| 사전수집 타임박스 | dispatcher `max(60, 조사/2)`(무변경) | 150s | 300s |
+| 도구 캐시 대기 | dispatcher 잡 캐시 `ToolResultCache(wait_timeout_s=조사 전체)` · 모듈 기본 `DEFAULT_WAIT_TIMEOUT_S` | 300s 고정 | **조사 상한(600s)** |
+| 본체 후속 poll | `src/config/alarm.py` `investigation_followup_timeout_seconds` · 폴백(`routes/alarm.py` · `alarm_schemas.py` · `noise_gate/.../alarm_notifier.py`) · 웹 재조회 상한 `briefing-view.js` `DEFAULT_LIMIT_S`(관제 드로어는 capabilities를 읽지 않아 이 값을 쓴다) | 300s | **600s** |
+| 본체 즉시 경로 | `investigation_mcp_call_timeout_seconds` 10 · `investigation_total_timeout_seconds` 45 | — | 무변경(즉시 통보 경로 · 비동기 후속이 본 경로) |
+| 화면 SSE | `investigation_live_hub.py` `STREAM_MAX_SECONDS` 3600 · 이벤트 300건 | — | 무변경 |
+
+관계: 제니퍼 API 30 < MCP 1건 60 < 스텝 90 ≤ S0 120 ≤ 수집 240 < 조사 600 · 수집 240 + 소견 60 + 종합 90 = 390 ≤ 600 · 수집 뒤 남는 360s 안에 소견 동시 4 × 약 3회차 × 60 = 180 + 종합 90 = 270.
+
+**MCP 1건 60s 근거(게이트웨이 코드 실측 · 2026-10-23)** — 게이트웨이 도구 하나가 부르는 제니퍼 API는 전부 **순차**(병렬·재시도 없음)이고 소스당 초당 5회 스로틀을 동시 MCP 호출이 나눠 쓴다. 호출 수(대상 1개 기준): `apm_instance_map`(query/hostname) 0(인벤토리 캐시) · `apm_active_services`·`apm_source_changes`·`apm_status_stats` 1~2 · `apm_period_compare`·`apm_resource_pool`·`apm_events` 2 · `apm_runtime_health`·`apm_transaction_profile` 3 · **`apm_app_health`(과거 시각)·`apm_slow_transactions` 41(X-View 조각 40 + 시 단위 1)** · `apm_change_impact`(24h · n 미지정) 1 + 변경 건수 × 122. 「최악 횟수 × 30s」로는 X-View 도구를 덮을 상한이 없다(41 × 30 = 1230s). 60s는 호출 1~3회 도구는 덮고 X-View 도구는 대기 포함 건당 약 1.4s 이하일 때 버틴다. 90으로 올리면 스텝 기본 90과 같아져 「도구 < 스텝」이 깨진다 → **60s 유지** · X-View 도구 대책은 별 결정(§10.1 21).
+
+**ⓒ 대책 (구현)**
+
+| # | 대책 | 내용 |
+|---|---|---|
+| 1 | **사슬 정합 검사** | `settings.py` `timechain_warnings()`(순수 함수) · `interface/mcp_service.py` `_log_timechain` — 플레이북 배선 적재 직후 1회. 관계 5종(MCP 1건 < 스텝 기본 · 스텝 기본 ≤ 수집 예산 · YAML 스텝 `timeout_s` 최대 ≤ 수집 예산 · 수집 예산 < 조사 전체 · 수집 + 소견 + 종합 ≤ 조사 전체)이 어긋나면 **경고 1줄**(값 나열), 정합이면 info 1줄 「조사 시간 사슬」. 기동은 막지 않는다. 게이트웨이·본체 값은 다른 프로세스라 검사 밖 — 설정 주석에 상대값을 적었다 |
+| 2 | **결손 스텝 1회 재시도** | `SRE_PLAYBOOK_RETRY_TIMED_OUT_STEPS`(기본 **on** — 사용자 대책 요청의 일부 · D-161 기본 off 원칙의 예외 · off = W21과 비트 동일). 수집 단계가 모두 끝난 뒤 남은 예산이 있으면 첫 시도 사유가 「스텝 타임아웃」인 스텝만 YAML 순서로 1회씩 순차 재실행(「스텝 미시작」은 예산 끝까지 기다린 뒤에만 나와 남은 예산이 0이므로 제외 · 실패·when_false·budget 건너뜀 제외). 상한 = min(스텝 상한, 남은 예산) · 새 `StepContext`(prior = 현재 결과) · 잡 도구 캐시를 그대로 거쳐 이미 받은 호출과 첫 시도가 아직 기다리는 호출은 다시 부르지 않는다(진행 중 항목을 기다려 받음). 사유: 「재시도 1회 — 성공(첫 시도: …)」 / 「… · 재시도 1회 — 다시 타임아웃 90s — 요청 n건 중 m건 완료 · 대기 …」. **범위 불변** — S0이 재시도로 성공해도 범위를 바꾸지 않고 뒤 단계를 다시 돌리지 않는다(「범위는 초기 범위 유지(뒤 단계는 이미 실행됨)」 · 뒤 단계를 다시 돌리면 예산이 두 배로 들고 다른 범위의 결과가 섞여 결정성이 깨진다). dispatcher는 러너가 단 `ctx.step_id`·`retry_of`로 sid를 확정하고 단계 끝을 (스텝, 시도)마다 1회 낸다 — 재시도는 실행 기록 `step_start`(라벨 「(재시도)」 · 「첫 시도가 시간 안에 끝나지 않아 1회 다시 확인」)·`step_end`·부분 브리핑 항목 교체·(성공 시) 단계 끝 해석 제출을 다시 내고, 첫 시도 스레드의 늦은 완료는 기록 0(W21 계약 유지). 결정적 · LLM 0 |
+| 3 | 소견기 재호출 없음 | 소견기 타임아웃 단계의 종결 시 재호출은 하지 않는다(수용 기준 28 유지) — 재시도는 수집 단계에만 |
+| 4 | HolmesGPT 시간(보고) | parallel 모드는 잡 시작과 함께 데몬 스레드로 돌고 플레이북과 같은 deadline(시작 + 600s)을 쓴다 → 심층은 최대 약 600s까지 쓸 수 있고 잡이 `running`인 시간도 길어진다. sre_agent에 HolmesGPT 자체 전체 시간 상한은 없고 `max_steps=40`(도달 시 `[미완주]`)뿐이다(LLM·MCP 1건은 holmes/litellm 기본). deadline에 걸리면 기다림만 끊고, 잡 종료로 캐시가 닫혀 이후 도구 호출은 오류로 돌아온다(외부 호출 정지 · LLM 턴은 max_steps까지 더 돌 수 있고 결과는 버려진다). conditional 모드는 남은 30s 이상이면 시작하므로 시작 빈도가 늘어난다 |
+
+**ⓓ 화면 이벤트 상한 (확인만 · 무변경)** — 600s parallel 조사 추정 이벤트: 플레이북 약 130~180 + HolmesGPT 20턴 약 100(40턴이면 160~240) = 약 230~420건으로 링 버퍼 300건(또는 잡당 256KB)을 넘을 수 있다. 넘치면 sre_agent 링 버퍼·본체 허브가 오래된 것부터 버리고 `truncated`를 달며, 「장애 진단」 화면은 「오래된 기록 일부는 버퍼 상한으로 빠졌습니다.」를 띄운다(화면 행 300 초과 시 「화면 상한 300행을 넘어 오래된 행을 접었습니다.」). 조사 이유·스텝 목적·부분 브리핑 섹션은 따로 보관돼 남고, 빠지는 것은 초반 수집 단계의 시작·도구 줄이다. 조사 흐름 이벤트는 같은 300건에서 잘리지만 별도 표기는 없다(§10.1 22). STREAM_MAX 3600s > 600s라 스트림 수명 문제는 없다.
+
+**ⓔ 운영 주의** — 폐쇄망 `sre_agent/.env`에 옛 값(`INVESTIGATION_TIMEOUT_SECONDS=300` 등)을 명시해 두었으면 코드 기본값 상향이 적용되지 않는다 — 기동 로그 「조사 시간 사슬」 1줄로 실제 값을 확인한다. 반영에는 sre_agent(9098)·apm_gateway(9096)·본체 재기동이 필요하다.
 
 ### 5.7 (v1.2) 장애 대응 지식 저장소(KB) — 런북 · 알려진 오류 · 매뉴얼 참조 · 축적
 
@@ -906,6 +1118,10 @@ review_every_days: 90
 | **W16** (v2.1) | 「조사 대화」 뷰 탭 · 노이즈 관제 상시 버튼(G-43) — 탭 마크업(숨김 · × 닫기) · 대화 바꿔 끼우기(capture/restore · 스트리밍 중 거부 · 떼어 낸 패널 재조회 재개) · `openInvestigationConversation` → 조사 대화 탭 · `?conversation=` · `window.KBPortal` · 관제 `conversationButton`·`openPortalConversation` · 매뉴얼 U-63 | `src/static/{index.html,css/style.css,js/app.js,js/noise.js,noise.html,admin/noise.html}` · `scripts/manual/` | node 실행 — 질의응답 대화 보존·복원 · 스트리밍 중 전환 거부 · 닫기 = 재조회 정지 · 포털 창 재사용(이동 0) · 못 찾으면 `/?conversation=` · 정적 — 상시 조건(`liveViewOn` 무관) · `pytest tests/test_manual` |
 | **W17** (v2.2) | 장애 진단 머리 「어떤 알람을 · 왜」(G-44) — 조회 응답 `alarm`(판정 기록 요약 · 조건 로그 운영자만) · 실행 기록 `purpose`(플레이북 선택 근거 · 스텝 초점 · HolmesGPT 이유) · 허브·보관 요약 키 · 화면 `dv-target`·`dv-purpose`·탭 이름 · 매뉴얼 U-70 | `sre_agent/sre_agent/{domain/activity_log.py,application/investigation_dispatcher.py}` · `src/api/{routes/alarm.py,investigation_live_hub.py}` · `noise_gate/infrastructure/investigation_activity_store.py` · `src/static/{js/diagnosis-view.js,css/style.css,index.html}` | sre_agent — `purpose` 가림·상한 · 선택 근거 문구 · 선택 줄이 스텝보다 먼저 · 스텝 초점 · 본체 — 사용자 조건 로그 제외 · 관리자 포함 · 커서 없음·기록 없음·채팅 조사 = 키 없음 · 플래그 off = 키 없음 · node 렌더 — 머리 줄·탭 이름·목적 줄·도구 행 설명 · 판정 기록 없음 문구 · `pytest tests/test_manual` |
 | **W18** (v2.3) | 장애 진단 「이벤트 찾아 조사」(G-45) — `/noise/decisions` `alarm_q`·`server_q` 부분일치(가산) · `/active` `event_search` · 진단 화면 검색 칸(시작·끝·알람명·서버 · 최근 30건) · [조사 시작] → 기존 다시 분석 접수(app.js 주입) → 하위 탭 · 매뉴얼 U-70 | `noise_gate/infrastructure/decision_store.py` · `src/api/routes/{noise_dashboard.py,alarm.py}` · `src/static/{js/diagnosis-view.js,js/app.js,css/style.css,index.html}` | 부분일치 칸별 필터·AND·미지정 종전 · 사유는 서버 칸에 안 걸림 · 길이 상한 422 · `event_search` 플래그 반영 · node — 칸 숨김(플래그 off·접수 함수 없음) · 검색 쿼리 · 행·[조사 시작] → 하위 탭 · 실패/거부/합류 문구 · 진단 파일 쓰기 요청 0 · `pytest tests/test_manual` |
+| **W19** (v2.4) | 노이즈 관제 → 기존 포털 창 장애 진단 탭(G-46) — 관제 진입 버튼 1개 · `openInPortal`(opener → `askPortalTabs` BroadcastChannel → 새 탭 폴백) · 포털 `KBPortal.openInvestigation` + 채널 수신부(지정 탭만) · 이름 창 폐기 · 매뉴얼 U-63·U-70·A-81 | `src/static/js/{noise.js,app.js}` · `src/static/{index.html,noise.html,admin/noise.html}` | node — opener 재사용·거부 · 채널 2탭 중 1개 · 포털 없음 새 탭 · 진단 우선/꺼짐 조사 대화 · 정적 배선 · Playwright 4 시나리오 · `pytest tests/test_manual` |
+| **W20** (v2.5 · **구현 2026-10-22** — v2.9 부기) | 「조사 흐름」(§5.6.4 · G-47~G-50 확정 뒤) — **a** sre_agent: `domain/step_findings.py`(액션 18종 결과 문형 · 표 밖 수치 0) · `TOOL_PHRASES`·`when` 문장 사전 · YAML `narrate.why` · `step_skip` 이벤트(`run_playbook` 선택 인자 `activity`) · 이벤트 `finding`·`because`·`phrase` · partial `finding` · 종결 요약 키 · 단계 끝 소견 호출(G-47 — 별 실행기 · 「이 단계까지의 근거」 · partial `opinion` · 주의 프롬프트) · **b** 플레이북 보강(G-49): host.cpu·host.process v2 · 신규 액션 `apm.active_sql`(리터럴 가림) · `plan_stages` 판독 의존 확인 · **c** 본체: 허브·사용자 경로 가림 키 · 사용자 경로 `ai_note` 허용(G-48 · 두 겹 가림) · 화면 「조사 흐름」·「실행 기록」 전환 탭(G-50) · 단계 카드·지금까지 줄·건너뜀 카드·주의 표지·ⓘ·「종합과 다름」 칩(ⓖ) · HolmesGPT 회차 카드 · 매뉴얼 U-70 문구·캡처(픽스처 `activity`에 새 키) | `sre_agent/sre_agent/{domain/step_findings.py,domain/activity_log.py,application/{playbook_runner.py,playbook_steps.py,investigation_dispatcher.py}}` · `sre_agent/config/playbooks/host.{cpu,process}.yaml` · `src/api/investigation_live_hub.py` · `src/api/routes/alarm.py` · `noise_gate/infrastructure/investigation_activity_store.py` · `src/static/js/diagnosis-view.js` · `scripts/manual/` | 수용 15·21~29 · 문형 커버리지 · 표 밖 수치 0 · 건너뜀 문장 · 가림 키 단언 · node 렌더(새 키 유무) · 사용자 예시 픽스처 종단(가짜 LLM) · Playwright 캡처 · `pytest tests/test_manual` |
+| **W21** (v3.0 · **구현 2026-10-23**) | 수집 타임아웃 개선(§5.6.5) — P1 배치 동시 호출 · P3 스텝별 `timeout_s` · P4 타임아웃 진행 사유·중단 · P5 소견 타임아웃 설정 · P6 폴스타 소스 매핑 · P2 미적용 · P0·P7 내부망 | `sre_agent/sre_agent/{infrastructure/mcp_tool_client.py,settings.py,domain/playbook.py,application/{playbook_runner,playbook_steps,investigation_dispatcher}.py,interface/mcp_service.py}` · `sre_agent/config/playbooks/{was.latency,host.cpu,host.process}.yaml` · `sre_agent/.env.example` · `scripts/manual/` A-77 | 수용 30~35 · `test_plan187_w21_{batch_concurrency,timeouts}.py` |
+| **W22** (v3.1 · **구현 2026-10-23**) | 조사 시간 사슬 상향·정합(§5.6.6) — 기본값 상향(제니퍼 API 30 · MCP 1건 60 · 스텝 90 · S0/S0r 120 · 수집 240 · 소견 60 · 종합 90 · 조사 600 · 캐시 대기 = 조사 상한 · 본체 후속 600) · 기동 시 사슬 정합 경고 · 「스텝 타임아웃」 결손 스텝 1회 재시도(기본 on) | `sre_agent/sre_agent/{settings.py,infrastructure/{mcp_tool_client,tool_result_cache}.py,application/{playbook_runner,playbook_steps,investigation_dispatcher}.py,interface/mcp_service.py}` · YAML 3종 · `apm_gateway/apm_gateway/config.py` · `src/config/alarm.py` · `src/api/routes/{alarm,alarm_schemas}.py` · `noise_gate/application/nodes/alarm_notifier.py` · `src/static/js/briefing-view.js` · `.env.example` 3종 · 매뉴얼 A-77 · 테스트 `sre_agent/tests/test_plan187_w22_{timechain,verify}.py` | 수용 기준 36~41 |
 | **W7** | 평가 — `plans/154` 합성 장애 세계에서 「플레이북 모드 vs HolmesGPT 단독」 원인 적중·소요·LLM 호출 수 비교(MLX 대표 소수 · D-127) · 내부망 shadow(**`parallel` 모드** · 브리핑만 저장 · 통보 무변경 · 운영자 선택 수집 시작) | 결과 보고 | 수용 기준 §8 |
 
 회귀: Wave 중간은 자기 테스트 + `regress.py --no-tests --files …` · 계획 끝 `regress.py --base <계획 시작 SHA> --files …` 1회(D-303) · sre_agent는 자체 venv pytest.
@@ -919,7 +1135,7 @@ review_every_days: 90
 3. 판정 극성과 반대인 소견·표에 없는 수치는 0건으로 남는다(가드 테스트).
 4. 어느 스텝이 실패해도 나머지 섹션과 종합이 나오고, 실패 섹션은 사유를 보인다.
 5. 플래그 off에서 sre_agent·noise_gate 기존 테스트 비트 동일.
-6. LLM 호출 ≤ 8회/알람 · 플레이북 수집+서술 ≤ 120s(내부망 측정 — MLX 수치는 로직 확인용).
+6. (v2.8 개정) LLM 호출 = 소견 대상 단계 수 + 종합 1(상한 없음 · 단계마다 1회 초과 0) · 플레이북 수집+서술 ≤ 120s(내부망 측정 — MLX 수치는 로직 확인용).
 7. W7 평가에서 원인 적중률이 HolmesGPT 단독 대비 악화 없음.
 8. (v1.2) 활성 플레이북 전부가 런북 블록을 갖고(커버리지 100%), 검토 기한 경과 시 배지가 뜬다.
 9. (v1.2) JDBC 획득 지연 픽스처에서 validated KE가 「일치」로, 같은 증상이지만 `db_split=execute`인 픽스처에서는 「불일치」로 나온다(KCS Environment·Cause Test가 가르는 경우). 필요한 스텝이 결손이면 「판단 보류」. (2026-10-22 완화) `db_split` 필드가 없는 실 게이트웨이 응답에서는 「판단 보류」로 나오면 충족이다 — 「일치/불일치」 분기는 필드 주입 픽스처로 확인한다.
@@ -928,26 +1144,51 @@ review_every_days: 90
 12. (v1.9) 「A1 응답 지연 원인 알려줘」처럼 대상·증상이 결정적으로 확정되는 질의는 `was.latency` 플레이북으로, 「그 서버 이상해」처럼 확정되지 않는 질의는 HolmesGPT로 간다 — 라우팅 판정에 LLM 호출 0회.
 13. (v1.9) 사용자 요청 조사는 D-335 ⑥ 상한을 자동 조사와 공유하고, 통보·승격을 일으키지 않는다.
 14. (v2.0) 플레이북 조사에서 각 도구 호출이 시작 후 폴러 한 주기(5초) + 푸시 지연 안에 실행 기록에 「진행」으로 나타나고, 끝나면 상태·소요·행 수로 바뀐다.
-15. (v2.0) HolmesGPT 조사(심층·진단)도 도구 호출마다 실행 기록이 쌓인다 — 종결 전 빈 화면 0. 관리자에게는 AI 메모가 「검증 전」 배지로, 사용자에게는 보이지 않는다.
+15. (v2.0 · v2.7 개정) HolmesGPT 조사(심층·진단)도 도구 호출마다 실행 기록이 쌓인다 — 종결 전 빈 화면 0. AI 메모는 사용자·관리자 모두에게 「검증 전」 배지로 보이고(G-48 — v2.0에서는 관리자만), 사용자 경로는 두 겹 가림을 거친다.
 16. (v2.0) 동시 상한 2에서 조사 3건을 접수하면 3번째는 「대기 — 앞 n건」으로 보이고, 차례가 오면 진행으로 바뀐다.
 17. (v2.0) 조사 A 진행 중에 조사 B를 열면 하위 탭이 2개가 되고, A는 배경에서 상태를 이어 받아 종결까지 바뀐다. 같은 조사를 다시 누르면 탭이 늘지 않는다. 하위 탭이 몇 개든 브라우저의 조사 스트림 연결은 1개다.
 18. (v2.0) 조사가 300초를 넘어도(대기 포함) 화면 갱신이 종결 전에 멈추지 않는다. 연결 끊김·강등·60초 무수신은 사유와 함께 보인다.
 19. (v2.0) 비밀값(명령행 표본 포함)은 sre_agent 응답에 나오지 않고, 사용자 경로의 한 줄·발췌는 D-325 ③ 마스킹을 한 번 더 거친다. 사용자 진행 중 목록에는 자기 채팅 조사만, 관리자 목록에는 전부가 보인다.
 20. (v2.0) 두 플래그 off에서 MCP·API 응답과 화면이 종전과 비트 동일하고 조사 스트림 경로는 404다(기존 테스트).
+21. (v2.5) host.cpu 사용자 예시 픽스처(java WAS 78% · 인스턴스 A1 CPU 대부분 · 실행 중 요청·SQL)에서 단계 카드가 CPU 추이 → 프로세스 상위 → WAS 프로세스 CPU → 실행 중 요청 → 실행 중 SQL 순으로 나오고, 카드마다 왜·조회·결과 문장이 있으며 「지금까지」 줄이 이 고리를 잇는다(G-49 권고안 기준).
+22. (v2.5) 결과 한 줄의 수치는 모두 그 단계 표에 있는 값이다(표 밖 수치 0 · 가드 테스트) · 결과 한 줄·왜·조회·건너뜀 문장 생성에 LLM 호출 0.
+23. (v2.5) 건너뛴 단계(`when` 거짓·예산 소진)도 카드로 나오고 사유가 조건식 원문이 아닌 문장이다.
+24. (v2.5) 단계가 끝나면 폴러 한 주기 + 푸시 지연 안에(종결 전) 그 카드에 결과 한 줄이 보인다.
+25. (v2.5) 액션 18종 모두 결과 문형이 있고(커버리지 테스트) · 문형 사전에 없는 도구는 현행 한 줄로 보인다(빈칸 0) · 새 키가 없는 이벤트(구버전)도 그려진다.
+26. (v2.5) `finding`·`because`·`phrase`·실행 중 SQL이 `label`과 같은 두 겹 가림을 탄다(표본: 비밀값·명령행·SQL 리터럴) · 종결 요약 보관에 세 키가 남아 잡 TTL 뒤에도 카드가 다시 그려진다.
+27. (v2.5) `SRE_ACTIVITY_LOG_ENABLED` off에서 MCP 응답 비트 동일 · `NOISE_INVESTIGATION_LIVE_VIEW_ENABLED` off에서 화면 비트 동일 · 현행 실행 기록은 「상세 기록」 안에 그대로 있다.
+28. (v2.6 · v2.7 확정) AI 단계 해석은 그 단계가 끝난 뒤 소견 타임아웃(20s) 안에 카드에 붙고(종결 전), 가드 탈락·타임아웃 단계는 「AI 해석 없음 — 사유」와 결정적 문장이 그대로 있다(빈칸 0) · 알람당 LLM 호출 = 소견 대상 단계 + 종합 1 · 「왜」·「조회」·「건너뜀」 생성에 LLM 호출 0.
+29. (v2.7) 단계 해석·HolmesGPT AI 판단 모두 주의 표지와 ⓘ 문구(ⓖ C1~C8)가 붙고, 종결 뒤 종합과 극성이 다른 단계 해석에 「종합과 다름」 칩이 붙는다 · 「조사 흐름」·「실행 기록」 탭을 오가도 스트림 연결은 1개이고 실행 기록 탭 화면은 v2.4와 같다.
+30. (v3.0) 배치 동시 상한 c에서 지연 d인 호출 n건의 벽시계가 약 ⌈n/c⌉×d이고, 응답 순서는 요청 순서이며, 한 건 실패가 다른 응답에 영향이 없다 · c = 1이면 종전 순차와 같다.
+31. (v3.0) 스텝 `timeout_s`가 있으면 그 값, 없으면 30s를 쓰고 어느 쪽이든 남은 예산보다 길지 않다 · 같은 단계 스텝들의 대기 상한이 서로 누적되지 않는다.
+32. (v3.0) 스텝 타임아웃 사유에 요청·완료 건수와 대기 중 도구가 있고, 그 사유가 실행 기록 단계 끝·부분 브리핑·최종 섹션에 같은 문구로 보인다 · 타임아웃 뒤 그 스텝은 새 도구 호출을 내지 않는다.
+33. (v3.0) 소견 타임아웃이 설정값으로 배선되고, 남은 시간이 적으면 종전대로 줄어든다 · 단계 끝 해석 LLM이 느려도 수집 단계 진행이 늦어지지 않는다.
+34. (v3.0) 폴스타 소스 매핑이 비면 현행과 같다 · 페이로드 `infra_db_ids`가 매핑보다 우선한다 · 매핑으로 정하면 「설정 매핑으로 대체(소스→db_id)」와 오조회 위험이 run notes·S0·S4 사유에 보인다.
+35. (v3.0) 새 설정 3개의 기본값에서 기존 sre_agent·본체 테스트가 통과한다(모듈 단위 회귀) · 내부망에서 S0·S1 결손이 줄었는지는 P0 실측으로 확인한다(§10.1 18).
+36. (v3.1) 시간 사슬 기본값이 §5.6.6 ⓑ 표와 같다(제니퍼 API 30 · MCP 1건 60 · 스텝 90 · S0/S0r 120 · 수집 240 · 소견 60 · 종합 90 · 조사 600 · 본체 후속 600) · 즉시 경로 10/45s는 무변경 · 수용 기준 31의 「없으면 30s」는 90s로, 수용 기준 6의 수집 상한 120s는 240s로 읽는다.
+37. (v3.1) sre_agent 기동 시 사슬 관계 5종 중 하나라도 어긋나면 경고 1줄(값 나열)이 나오고 기동은 계속된다 · 정합이면 경고가 없다.
+38. (v3.1) 재시도가 켜져 있으면 「스텝 타임아웃」 결손 스텝만 남은 예산 안에서 YAML 순서로 1회 다시 돌고, 성공·다시 타임아웃 사유가 최종 섹션·실행 기록 단계 끝·부분 브리핑에 같은 문장으로 보인다 · 남은 예산이 없으면 재시도 0 · 꺼져 있으면 W21과 같다.
+39. (v3.1) 재시도는 잡 도구 캐시를 거쳐 이미 받은(또는 첫 시도가 기다리는) 호출을 다시 부르지 않는다 · 대상 확정 스텝이 재시도로 성공해도 범위와 뒤 단계 결과는 바뀌지 않고 그 사실이 사유에 보인다 · 첫 시도의 늦은 완료는 기록되지 않는다.
+40. (v3.1) 소견기 재호출은 없다(수용 기준 28 유지) · 재시도는 LLM 호출 0.
+41. (v3.1) 잡 도구 캐시 대기 상한이 조사 전체 상한과 같다 · 바뀐 값의 기본값에서 기존 테스트가 통과한다(모듈 단위 회귀) · 내부망 실효는 P0 실측으로 확인한다(§10.1 18).
 
 **위험**
 - **호스트 브리지**: 제니퍼 hostname ↔ 폴스타 서버명 정확 일치 결함(`plans/165` F3) — S4~S6이 0건이 될 수 있다. W0에서 F3 해결 여부 확인 · 미해결이면 S0가 「폴스타 서버 미확정」을 명시하고 폴스타 스텝을 결손 처리(침묵 0건 금지).
 - **실시간 전용 데이터**: 풀·프로세스 Top은 알람 시점이 아니다 — 배지 + 소견 프롬프트에 「현재값」 명시. 지연(조사 대기열) 크면 가치 하락 → G-9.
 - **폴스타 시간 단위**: 시간(h) 집계라 10분짜리 스파이크는 희석된다 — Prometheus 구성 시 `prom_metric_range` 우선(G-8).
-- **LLM 비용·지연**(FabriX 운영): 알람당 8회 × PAGE 건수 — `plans/162`로 PAGE 모수가 줄기 전에는 시간당 예산 가드(`investigation_hourly_budget`) 공유.
+- **LLM 비용·지연**(FabriX 운영 · v2.8 상한 제거로 알람당 단계 수 + 1회 — 보강 host.cpu 약 9~10회): 알람당 호출 × PAGE 건수 — `plans/162`로 PAGE 모수가 줄기 전에는 시간당 예산 가드(`investigation_hourly_budget`) 공유.
 - 제니퍼 프로파일 예산 · 게이트웨이 부하 — S0 대상 상한 3 · 프로파일 1건.
 - (v1.2) **KB 신뢰 붕괴**: 낡은 Validated KE가 잘못 일치하면 운영자가 엉뚱한 우회를 따른다 — `cause_test` 필수 · 검토 기한 · 「아님」 피드백 재검토 · 일치 카드에 충족 조건을 그대로 노출(근거 없는 권고 금지).
 - (v1.2) **KB 공동화**: 쓰는 사람이 없으면 비어 있다(SRE Workbook — 런북은 운영 변화 속도로 낡는다) — 초안 생성을 한 번 클릭으로 낮추고, 커버리지·검토 대상 목록을 관리자 화면 기본 노출. 운영 책임자 지정은 G-17.
 - (v2.0) **명령·출력 노출**: HolmesGPT bash 명령 한 줄·도구 인자·발췌에 호스트·IP·SQL 조각·프로세스 명령행이 실리고, G-36 확정으로 **사용자에게도** 발췌가 보인다. 방어는 가림 두 겹(sre_agent `mask_secrets` → 본체 D-325 ③)뿐이라 **가림 규칙이 놓친 꼴은 그대로 노출된다** — W13 표본 테스트로 꼴을 고정하고, 운영 투입 전 내부망 실 출력 표본으로 한 번 더 확인한다[내부망 확인 필요]. 놓친 꼴이 나오면 `log_masking.py`에 더하는 것으로 대응한다(제외 목록 부활은 사용자 재결정 사항).
-- (v2.0) **AI 메모 오독**: 관리자에게 보이는 HolmesGPT 중간 서술이 결론처럼 읽힐 수 있다 — 배지·배경색·필터 끄기 · 브리핑·통보에는 쓰지 않는다(D-035).
+- (v2.0 · v2.7 개정) **AI 메모·단계 해석 오독**: 검증 전 AI 서술이 결론처럼 읽힐 수 있고, G-48로 **사용자에게도** 보인다 — 배지·ⓘ 주의 문구(ⓖ)·「종합과 다름」 칩 · 브리핑·통보에는 쓰지 않는다(D-035).
 - (v2.0) **갱신 부하**: 미종결 조사 수 × (60/5) MCP poll/분(보는 사람·탭 수와 무관) — poll마다 MCP SSE 연결을 새로 연다. W14에서 측정하고 기준 초과 시 간격 상향 또는 연결 재사용(별 결정). 브라우저 쪽은 연결 1개.
 - (v2.0) **메모리**: 잡당 실행 기록 256KB × 보관 잡 500(`_DEFAULT_MAX_JOBS`) = 최대 약 128MB(sre_agent) + 본체 허브 같은 차수 — 종결 잡은 발췌·AI 메모를 버리고 요약만 남겨 상한을 낮춘다 [W13·W14에서 실측 후 확정]. 하위 탭 무제한은 브라우저 메모리 문제로 돌아온다 — 탭당 화면 행 300건 상한.
 - (v1.2) 사내 매뉴얼에 민감 정보(계정·IP) — RAG 색인 전 `pii_filter`·마스킹 경로 통과(plans/126 기존 규칙).
+- (v2.5) **결정적 문장의 오독**: 결과 한 줄이 표 상위 행만 요약하므로 「1위만 원인」처럼 읽힐 수 있다 — 문형에 범위(「상위 10 중」·「현재값」)를 항상 넣고, 해석·원인 단정은 종합(가설 순위)에만 둔다.
+- (v2.5) **실행 중 SQL 노출**(G-49): 리터럴 가림이 놓친 값(주민번호·계좌 등이 SQL 상수로 실린 경우) — 리터럴 전부 `?` 치환 후 `mask_secrets` · 내부망 실 SQL 표본으로 확인(§10.1 7과 함께)[내부망 확인 필요].
+- (v3.1) **조사가 길어짐**: 조사 전체 600s · 수집 240s로 조사 1건이 동시 상한(`investigation_max_concurrent` 2) 자리를 더 오래 잡아 알람 폭주 때 대기가 늘고, 본체 후속 메시지도 최대 10분 뒤에 올 수 있다 — 화면에서 진행(장애 진단 실행 기록·대기 순번)이 보이므로 수용한다. 동시 호출은 스텝 워커 4 × 배치 동시 4 × 동시 조사 2가 그대로라 게이트웨이 부하 상한은 늘지 않고 시간만 길어진다. X-View 도구(호출 41회)는 60s 상한에도 끊길 수 있다(§10.1 21).
+- (v2.5) **새 키 가림 누락**: 허브 중계·사용자 경로 가림 대상 키 목록에 `finding`·`because`·`phrase`를 빠뜨리면 원문이 나간다 — 키 목록 단언 테스트.
 
 ## 9. 사용자 확정 게이트
 
@@ -995,27 +1236,32 @@ review_every_days: 90
 | G-31 (v1.9 · **확정**) | 결과 보관 · 비용 | **새 레코드 + 이전 조사 나열 · D-335 ⑥ 상한 공유 · 같은 알람 10분 합류 · 통보·승격 없음** [10분은 제안 값] |
 | G-32 (v1.9 · **확정**) | 증상 질의 라우팅 | **대상 1건 × 증상 유형 1건이 결정적으로 확정되면 플레이북(가상 알람 맥락 · 저장 0), 아니면 HolmesGPT(`sre_diagnose`) · LLM 분류 미의존** · 또는 전부 HolmesGPT(§5.0 v1.8) |
 | G-33 (v1.9 · **확정**) | 채팅 응답 방식 | **대화 안 비동기 조사 카드(W10 재사용) + 경로 표기 · `SRE_CHAT_INVESTIGATION_ENABLED` 기본 off(off = `fault_diagnosis` 비트 동일)** · 또는 동기 45초 유지 |
-| G-34 (v2.0 · **확정**) | 알람·조사를 눌렀을 때 여는 곳 | **항상 「장애 진단」 탭의 그 조사 하위 탭(진행 중·종결 모두) — 카드 [진행 보기] · 분석 접수 직후 · 채팅 조사 카드 · 노이즈 드로어(`/?diagnosis=` 새 브라우저 탭) · workb 링크. 「조사 대화」는 종결 화면 버튼**(권고안 · D-341 ⑪ 진입 부분 개정) · ~~진행 중일 때만 진단 탭~~ |
+| G-34 (v2.0 · **확정** · 노이즈 드로어 진입은 G-46으로 개정) | 알람·조사를 눌렀을 때 여는 곳 | **항상 「장애 진단」 탭의 그 조사 하위 탭(진행 중·종결 모두) — 카드 [진행 보기] · 분석 접수 직후 · 채팅 조사 카드 · 노이즈 드로어(~~`/?diagnosis=` 새 브라우저 탭~~ → 열린 포털 창 · G-46) · workb 링크. 「조사 대화」는 종결 화면 버튼**(권고안 · D-341 ⑪ 진입 부분 개정) · ~~진행 중일 때만 진단 탭~~ |
 | G-35 (v2.0 · **확정**) | 「새로운 탭」의 뜻 | **장애 진단 화면 안의 하위 탭**(권고안) · ~~브라우저 새 탭~~ |
 | G-36 (v2.0 · **확정**) | 실행 기록 노출 범위 | **한 줄·상태·소요·행 수·응답 발췌 모두 사용자·관리자에게 — 가림 처리 후 모두 보임(발췌 제외 목록 없음 · 사용자 경로는 D-325 ③ 마스킹 한 번 더)**(권고와 다름 — 권고는 발췌 운영자만) · ~~발췌 운영자만~~ · ~~발췌 없음~~ |
 | G-37 (v2.0 · **확정**) | 실행 기록 보관 | **종결 시 요약(발췌·AI 메모 제외)을 본체 JSONL에 1행**(권고안) · ~~보관 안 함~~ |
-| G-38 (v2.0 · **확정**) | LLM 중간 서술(HolmesGPT `AI_MESSAGE` · 소견 초안) | **관리자에게만 「AI 메모 — 검증 전」 배지로 표시 · 사용자 경로에는 없음 · 브리핑·통보에 쓰지 않음**(권고와 다름 — 권고는 표시 안 함) · ~~표시 안 함~~ |
+| G-38 (v2.0 · **확정** · **v2.7 G-48로 개정**) | LLM 중간 서술(HolmesGPT `AI_MESSAGE` · 소견 초안) | **v2.7: 사용자·관리자 모두에게 「AI 판단 — 검증 전」 배지로 표시(두 겹 가림) · 브리핑·통보에 쓰지 않음** · ~~관리자에게만 · 사용자 경로에는 없음~~(v2.0 확정 — 권고와 다름) · ~~표시 안 함~~ |
 | G-39 (v2.0 · **확정**) | 갱신 방식 | **본체→브라우저 SSE 푸시 — 브라우저당 연결 1개 다중화 · 본체 허브가 조사당 sre_agent poll 1회/5초 · 300초·안전 상한 없이 종결로 멈춤 · 끊기면 15초 조회로 강등 표시**(권고와 다름 — 권고는 커서 poll · D-325 ② 부분 개정) · ~~커서 poll 5s/30s~~ |
 | G-40 (v2.0 · **확정**) | 하위 탭 상한·정리 | **상한 없음 · 자동 닫기 없음 · 「▾ 열린 탭 n」 메뉴 · 종결 탭 모두 닫기 · `sessionStorage` 복원**(권고와 다름 — 권고는 8개) · ~~8개~~ |
 | G-41 (v2.0 · **확정** · 인터뷰 추가) | 「진행 중 목록」 범위 | **관리자 = 모든 조사(자동·요청·채팅 · 존 무관) · 사용자 = 내가 채팅으로 시작한 조사**(사용자 지정 — 「관리자는 모든요청을 보여주고 사용자는 내 채팅 조사를 보여줘라」). 사용자가 알람에서 직접 연 조사는 목록에 없어도 하위 탭으로 열린다(존 검사) · ~~내 존 알람 조사 + 내 채팅 조사(권고)~~ · ~~내 존 모든 조사~~ · ~~내가 요청한 것만~~ |
 | G-42 (v2.0 · **확정** · 인터뷰 추가) | SSE 상세 기록 푸시 범위 | **열린 하위 탭의 조사만 — 탭을 열면 누적분을 한 번에 받고 이후 새 이벤트만 · 진행률·상태 요약은 목록 전체에 항상**(권고안) · ~~목록의 모든 조사~~ |
-| G-43 (v2.1 · **확정** · 사용자 지시 2026-10-21) | 조사 대화를 여는 곳 · 노이즈 관제 버튼 | **본 화면 「조사 대화」 뷰 탭(질의응답과 같은 줄 · 대화 화면 공유 · 바꿔 끼우기) · 노이즈 관제 ⓒ 머리에 조사 id가 있으면 늘 버튼 → 열린 포털 창의 그 탭(못 찾으면 새 탭 `/?conversation=`)** · ~~질의응답 탭에서 새 대화~~ · ~~관제는 `/?investigation=` 새 탭 · 진단 켜지면 숨김~~ |
+| G-43 (v2.1 · **확정** · 사용자 지시 2026-10-21 · 관제 버튼은 G-46으로 개정) | 조사 대화를 여는 곳 · 노이즈 관제 버튼 | **본 화면 「조사 대화」 뷰 탭(질의응답과 같은 줄 · 대화 화면 공유 · 바꿔 끼우기) · 노이즈 관제 ⓒ 머리에 조사 id가 있으면 늘 버튼 → 열린 포털 창의 그 탭(못 찾으면 새 탭 `/?conversation=`)** · ~~질의응답 탭에서 새 대화~~ · ~~관제는 `/?investigation=` 새 탭 · 진단 켜지면 숨김~~ |
 | G-44 (v2.2 · **확정** · 사용자 지시 2026-10-21) | 장애 진단 화면에 보일 조사 맥락 | **머리에 알람 요약(알람명·서버·자원·발생·판정·심각도 · 조건 로그 운영자만)·채팅 대상·조사 이유(플레이북 선택 근거/HolmesGPT 이유) · 실행 기록 스텝마다 목적(`narrate.focus`)** · 알람 요약은 판정 기록에서(보존 범위 밖이면 「찾지 못함」) |
 | G-45 (v2.3 · **확정** · 사용자 지시 2026-10-21) | 조사 탭에서 이벤트를 찾아 바로 조사 | **장애 진단 「진행 중 목록」 위 검색 칸(시간·알람명·서버) → 판정 기록 `/noise/decisions`(G-29와 같은 경로 · 칸별 부분일치 가산) → [조사 시작] = §5.6.2 ① 접수(권한·상한·합류 동일)** · 새 플래그 없음(실시간 화면 + 다시 분석 둘 다 켜졌을 때만) |
+| G-46 (v2.4 · **확정** · 사용자 지시·결정 2026-10-22) | 노이즈 관제에서 조사를 여는 곳 | **열려 있는 포털 창의 「장애 진단」 탭 그 조사 하위 탭(꺼져 있으면 「조사 대화」 탭) — 관제 버튼 1개(켜짐 「장애 진단에서 보기」·꺼짐 「조사 대화로 열기」) · 포털 찾기 opener → BroadcastChannel(마지막으로 본 탭 1개) → 없을 때만 새 탭 `/?diagnosis=`** · 이름 창 탐색 폐기 · G-34 노이즈 드로어·G-43 관제 버튼 개정 |
+| G-47 (v2.5 · **v2.7 확정** · 사용자 결정 2026-10-22) | 문장을 누가 만드나 · AI 해석은 언제 보이나 (§5.6.4 ⓕ·ⓖ) | **단계가 끝날 때마다 AI 해석 작성 + 주의 사항 명기(ⓖ C1~C8 — 계획서·화면 ⓘ)** · 사실 문장(결과 한 줄·왜·조회·건너뜀)은 정해진 문형으로 즉시 · 호출 상한 없음(v2.8) · 실패 시 문형 문장만 · ~~문형만·종결 뒤 일괄~~ · ~~문장 전부 AI~~ |
+| G-48 (v2.5 · **v2.7 확정** · 사용자 결정 2026-10-22) | HolmesGPT 카드의 「AI 판단」을 사용자에게도 보이나 | **사용자에게도 보인다 — 「AI 판단 — 검증 전」 배지 · 두 겹 가림 · ⓘ 주의(C1·C2·C7 + 자동 검사 미적용)** · G-38 개정 · ~~관리자만~~ · ~~사용자에게 첫 문장만~~ |
+| G-49 (v2.5 · **v2.7 확정 — 권고안** · 사용자 결정 2026-10-22) | 사용자 예시 사슬(프로세스 → WAS 인스턴스 CPU → 실행 중 SQL)을 플레이북에 넣나 | **host.cpu·host.process에 조건부 3단계(S2 WAS 프로세스 CPU · S3a 실행 중 요청 · S3b 실행 중 SQL — 리터럴 가림 · 사용자·관리자 모두 · 현재값 배지)** · ~~S2만~~ · ~~추가 없음~~ |
+| G-50 (v2.5 · **v2.7 확정 — 대안 1** · 사용자 결정 2026-10-22) | 장애 진단 화면 배치 | **조사 하위 탭 안 「조사 흐름」·「실행 기록」 전환 탭 — 처음은 조사 흐름 · 실행 기록 = 현행 화면 그대로**(권고와 다름 — 권고는 카드 기본 + 상세 기록 접힘) · ~~카드 기본 + 접힘~~ · ~~현행 좌우 + 카드 덧붙임~~ |
 | G-17 (v1.2) | KB 운영 책임 | 유형별 `owner` 팀 지정 · KE 승인권자(문제 관리 담당) · 검토 주기 기본값(런북 180일 · KE 90일 [제안]) |
 
 ## 10. 다음 단계
 
-(v2.0 · 2026-10-19 · **W13~W15 구현 완료**) 다음: ① 사용자 경로 2차 마스킹 강화 여부 사용자 결정(토큰 단위 대조 — D-325 ③ 범위 확대) ② 두 플래그를 켠 실프로세스 종단 1회(가짜 LLM · 플레이북·HolmesGPT 동시) + 매뉴얼 U-70·A-81 캡처 ③ 내부망 실 도구 출력 표본으로 가림 확인 후 투입 ④ W7 shadow. 이하 이전 기록: (v2.0 · 2026-10-19) **G-34~G-42 확정 · D-341 부기 4 · D-325 부기 등재 완료 → W13(sre_agent 실행 기록·가림 보강) → W14(본체 허브·SSE) → W15(장애 진단 탭·매뉴얼) 순서로 team-lead 위임.** W13은 다른 Wave와 독립이고, W15는 W14 뒤에 둔다. W7(shadow)은 W13~W15와 병행할 수 있으며 실행 기록이 shadow 관찰에도 쓰인다. 아래는 v1.9까지의 다음 단계다.
+(v2.7 · 2026-10-22 · G-47~G-50 확정) **다음: W20 a(sre_agent 문장·이벤트) → b(플레이북 보강 — G-49 결과에 따라) → c(본체 가림 키·화면·매뉴얼) 순서로 위임.** a와 b는 독립이고 c는 a 뒤에 둔다. 이하 이전 기록: (v2.0 · 2026-10-19 · **W13~W15 구현 완료**) 다음: ① 사용자 경로 2차 마스킹 강화 여부 사용자 결정(토큰 단위 대조 — D-325 ③ 범위 확대) ② 두 플래그를 켠 실프로세스 종단 1회(가짜 LLM · 플레이북·HolmesGPT 동시) + 매뉴얼 U-70·A-81 캡처 ③ 내부망 실 도구 출력 표본으로 가림 확인 후 투입 ④ W7 shadow. 이하 이전 기록: (v2.0 · 2026-10-19) **G-34~G-42 확정 · D-341 부기 4 · D-325 부기 등재 완료 → W13(sre_agent 실행 기록·가림 보강) → W14(본체 허브·SSE) → W15(장애 진단 탭·매뉴얼) 순서로 team-lead 위임.** W13은 다른 Wave와 독립이고, W15는 W14 뒤에 둔다. W7(shadow)은 W13~W15와 병행할 수 있으며 실행 기록이 shadow 관찰에도 쓰인다. 아래는 v1.9까지의 다음 단계다.
 
 G-1~G-33 전건 확정 · D-341 등재·부기 3건 완료(2026-10-17) → W0 착수(team-lead 위임 · 계획 시작 SHA 기록). W10은 `plans/155` 공용부(조사 저장소 `kind=diagnosis` · 접수·조회 라우트 · 지연 poll 공용 모듈)가 먼저 있어야 한다 — 155가 먼저 끝나지 않으면 W10에서 그 공용부를 155 설계 그대로 구현하고 155에 완료를 표기한다. G-19 2단계(결정적 문맥 시드)와 G-20(브리핑 질문)은 별 계획. W11은 W4(엔진 배선) 뒤, W12는 W10(비동기 `sre_diagnose`·조사 카드) 뒤에 둔다.
 
-### 10.1 잔여 작업 일람 (2026-10-22 갱신 · 처음 2026-10-21)
+### 10.1 잔여 작업 일람 (2026-10-23 갱신 · 처음 2026-10-21)
 
 머리 각 판(v1.x~v2.3)과 §10에 흩어져 있던 잔여를 한곳에 모았다. 끝나면 「처리」 칸에 적고 머리 상태·`plans/INDEX.md` 상태 칸을 함께 고친다. 2026-10-22 사용자 지시 *"잔여 작업을 진행하라."* + 결정 3건(아래 3·6·14)으로 처리했다 — D-341 부기 9.
 
@@ -1024,14 +1270,19 @@ G-1~G-33 전건 확정 · D-341 등재·부기 3건 완료(2026-10-17) → W0 �
 | # | 잔여 | 근거(Wave · 수용 기준 · 게이트) | 막힌 이유 · 필요한 것 | 할 곳 |
 |---:|---|---|---|---|
 | 1 | **W7 내부망 shadow** — `parallel` 모드 · 브리핑만 저장 · 통보 무변경 · 운영자 선택 수집. (외부망 가짜 LLM 평가는 끝남 — 합성 세계 응답 모양이 실 도구와 달라 플레이북 판정 비교는 불가 · D-341 구현 부기 ③) | W7 · 수용 7 | 내부망 실 알람·FabriX | 내부망 |
-| 2 | **수용 기준 6 측정** — LLM ≤ 8회/알람 · 수집+서술 ≤ 120s | 수용 6 | MLX·가짜 LLM 수치는 로직 확인용 | 내부망 |
+| 2 | **수용 기준 6 측정** — 단계마다 AI 해석(호출 상한 없음 · v2.8)일 때 수집+서술 ≤ 120s · FabriX 단계당 지연 | 수용 6 | MLX·가짜 LLM 수치는 로직 확인용 | 내부망 |
 | 3 | **R-D 필드 확보** — 게이트웨이 프로파일 응답의 커넥션 획득/SQL 실행 구조화 필드(있으면 판독 규칙이 바로 쓴다) | W0·W3 · 수용 2·2′·9(**2026-10-22 완화로 충족**) | 제니퍼 API에 값이 있는지 내부망 확인 · 로컬 제니퍼는 라이선스 없음 | 내부망 → `apm_gateway` |
 | 5 | **SME 자료(G-10)로 카탈로그 보정** | W6 · G-10 · §4.1 [미확인] | 자료 미입수 | 사용자 · SME |
 | 7 | **내부망 실 도구 출력 표본으로 가림 확인** — 놓친 꼴은 `log_masking.py`·`activity_masking.py`에 더한다 | W13 · §8 위험 「명령·출력 노출」 | 운영 투입 전 필수 · 표본은 내부망에만 | 내부망 |
-| 9 | **매뉴얼 캡처** — U-63 · U-70(장애 진단 · 이벤트 찾아 조사)(A-81은 `no_ui`라 대상 아님) | D-255 | 캡처 하네스(`scripts/manual/run_capture`)가 로그인·캡처 DB에 PostgreSQL을 쓰는데 **Docker 데몬 미가동**. U-70은 진행 화면용 가짜 조사 서비스 프로필(`snapshot.py` PROFILES)도 새로 필요 | 로컬(Docker 기동 뒤) |
 | 12 | **알려진 한계 확정** — `/active`·summary의 엔진 키는 이벤트를 본 조사에만 · 종결 잡 발췌 TTL까지 유지(최악 약 128MB · 전형 43MB) | W13·W14 · §8 위험 「메모리」 | 내부망 메모리 실측 뒤 유지 또는 조기 폐기 결정 | 내부망 → 결정 |
 | 13 | **커밋** — v2.1~v2.3(W16~W18)과 2026-10-22 잔여 처리분 미커밋 | — | 사용자 요청 시 | 사용자 |
 | 15 | **G-26 캐시 적중 실관측** — 실프로세스에서 HolmesGPT는 돌았으나 가짜 LLM이 비MCP 도구(`TodoWrite`)만 불러 적중 0(설계상 우회). 적중은 단위 테스트(16 스레드 · 실호출 1·적중 8)로만 확인 | G-26 · D-341 부기 9 ② | 실 데이터 도구·실 LLM 필요 | 내부망 shadow(감사 `cache_hits`) |
+| 17 | **W20 「조사 흐름」(v2.5~v2.7 · §5.6.4)** — 단계 카드(왜·조회·결과·단계 끝 AI 해석 + 주의) · 사용자에게도 AI 판단 · host.cpu·host.process 사슬 보강 · 「조사 흐름」·「실행 기록」 전환 탭 | W20 · 수용 15·21~29 · G-47~G-50(**2026-10-22 확정**) | **처리함(2026-10-22 · W20 구현 · 미커밋)** — 잔여: R-E 임계 보정(사용자 예시 수치에서 `other_process`) · 내부망 지연·가림 표본 | 외부망 구현 → 내부망 지연·가림 확인 |
+| 18 | **W21 P0 호출별 소요 실측 + W22 값 재보정** — 실행 기록 탭·게이트웨이 로그로 S0·S1 호출별 소요 · W21·W22 적용 뒤 S0·S1 결손·재시도 성공률이 줄었는지 · 기동 로그 「조사 시간 사슬」 1줄로 폐쇄망 `.env`가 옛 값(300·120 등)을 덮고 있지 않은지 · 실측으로 W22 사슬 값(MCP 1건 60 · 스텝 90 · S0 120 · 수집 240 · 조사 600) 재보정 · P2(app_health 호스트 묶음) 재검토 근거 | W21·W22 · 수용 35·41 · §5.6.5·§5.6.6 | 내부망 실 조사 | 내부망 |
+| 19 | **W21 P7 게이트웨이 실패 진단** — 실시간 API(도메인 10020) `apm_api_error` · `apm_resource_pool` `source_unavailable` 원인 | W21 · §5.6.5 | 내부망 제니퍼·게이트웨이 로그 | 내부망 → `apm_gateway` |
+| 20 | **W21 폴스타 소스 매핑 운영 값** — `SRE_PLAYBOOK_POLESTAR_SOURCE_MAP`(예 `{"cm_prd":"polestar_cm_gp"}`)을 폐쇄망 sre_agent `.env`에 둘지 · 근본 해결은 hostname 브리지(`plans/165` F3) | W21 P6 | 운영자 결정 | 내부망 `.env` |
+| 21 | **W22 X-View 도구 1건 상한** — (main 병합 2026-10-23: `plans/190` D-344 ② X-View 사전 확인(`APM_XVIEW_CONFIRM_OVER` 기본 10)이 기간 모드 `apm_app_health`를 시 단위 대체로 돌려 이 항목의 app_health 몫은 덜어진다 — 남는 것은 `apm_slow_transactions`·`apm_change_impact`) `apm_app_health`(과거 시각)·`apm_slow_transactions`는 제니퍼 API 41회 · `apm_change_impact`(n 미지정)는 1 + 변경 × 122회를 순차로 불러 MCP 1건 60s에 끊길 수 있다. 안: ① X-View 도구에만 도구별 상한(약 85s) ② sre_agent가 `apm_change_impact`에 n 명시 ③ 게이트웨이 X-View 조각 병렬화 또는 `wait_seconds` 작업 핸들 폴링 | W22 · §5.6.6 ⓑ | 사용자 결정 · P0 실측(실제 건당 소요) | 결정 → sre_agent·apm_gateway |
+| 22 | **W22 조사 흐름 이벤트 넘침 표기** — 600s parallel 조사 추정 230~420건으로 링 버퍼 300건을 넘을 수 있다. 실행 기록은 「오래된 기록 일부는 버퍼 상한으로 빠졌습니다.」를 띄우나 조사 흐름 탭은 표기가 없다 | W22 · §5.6.6 ⓓ | 내부망 실 이벤트 수 실측 뒤 상한·표기 결정 | 내부망 → 결정 |
 
 **처리함(2026-10-22)**
 
@@ -1043,6 +1294,8 @@ G-1~G-33 전건 확정 · D-341 등재·부기 3건 완료(2026-10-17) → W0 �
 | 8 | 실프로세스 종단 1회 | Playwright(headless Chromium) — 본체 8765(인증 on · 가짜 사용자 저장소) + sre_agent 9098(`parallel`·실행 기록 on) + 가짜 LLM 19180 + 폴스타 MCP 9099(DB 없음): 이벤트 찾아 조사 → 실 접수 → 실행 기록 16행·「목적:」·「● 실시간」 → 종결 브리핑(완료) · HolmesGPT done(판단 2·도구 1) · 10분 합류 확인 |
 | 10 | 실인증 사용자 경로 | 공동존 사용자: 은행존 알람 [조사 시작] → 행에 「해당 존의 알람에 대한 권한이 없습니다」(403) · 은행존 사용자가 공동존 조사를 열면 「열 수 없는 조사」 · 조건 로그는 관리자 응답에만(API 대조) · 사용자 진행 중 목록에 직접 연 조사 없음(G-41대로) |
 | 11 | W16 포털 창 재사용 | 포털 머리글 「노이즈 관제」(rel=opener)로 연 관제에서 「조사 대화로 열기」 → 창 수 2→2(새 탭 0) · 포털이 「조사 대화」 탭으로 전환 |
+| 9 | 매뉴얼 캡처(2026-10-22 · W19 후속) | Docker 기동 뒤 캡처 프로필 `capture-diag`(`scripts/manual/snapshot.py` — `capture` + 실시간 화면 on · 조사 서비스 주소는 닫힌 포트) 신설 · 예시 조사의 실행 기록 요약을 `fixtures/alarms/briefing.json` `activity`로 넣고 `alarms.seed_briefing`이 보관 파일에 씀 · 장면 `diagnosis-tab`(U-70)·`investigation-conversation`(U-63) 촬영 · 매뉴얼 그림·번호 설명 연결 · `pytest tests/test_manual` 675 통과 |
+| 16 | W19 본체 실화면 확인(2026-10-22) | 캡처 서버 18981(인증 on · 예시 판정·조사 시드) + Playwright headless Chromium. 장애 진단 켜짐: 머리글 링크로 연 관제 · 주소로 연 관제 · 관리자 노이즈 화면(「결정 이력」 탭) 세 경우 모두 「장애 진단에서 보기」 → 기존 포털이 장애 진단 탭·그 조사 하위 탭으로 전환, 창 수 2→2 · 안내문 표시 · 포털 없음 → 새 탭 1개가 장애 진단 탭으로 열림. 꺼짐(`capture` 프로필): 머리글 링크·주소 두 경우 「조사 대화로 열기」 → 기존 포털 「조사 대화」 탭·고정 카드, 창 수 2→2. 브라우저 포커스 이동은 headless에서 판정 불가 — 안내문으로 대신한다 |
 | 14 | W12 2단 배선(신규 · D-341 구현 부기 ④) | 사용자 결정 「2단에도 연결」 — `src/graph.py` `_wire_tier2`·`route_after_field_mapper_tier2` · `src/nodes/fault_diagnosis.py` `chat_symptom_entry` · `src/domain/symptom_router.py` `DIAGNOSIS_CUES`·`has_diagnosis_cue` · 테스트 `tests/test_plan187_w12_ladder2.py`(19) · 매뉴얼 U-69 주의 1줄. **이탈**: 진단 표지(원인·진단·왜·rca) 조건 추가 — 조회 질의가 조사로 빠지지 않게 3단 프롬프트 규칙을 결정적으로 옮김 |
 
 **별 계획으로 넘긴 것**(이 계획서 잔여 아님): G-19 2단계(결정적 문맥 시드) · G-20(브리핑 질문) · `plans/155` 나머지(결과 셀 판정 등).

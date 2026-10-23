@@ -65,7 +65,9 @@ class JenniferApiConfig:
     url: str = ""
     token: str = ""
     domain_ids: tuple[int, ...] = ()
-    timeout_seconds: float = 10.0
+    # 제니퍼 API 1건 상한(plans/187 W22 · D-341 부기 13)
+    # — sre_agent MCP 도구 1건 상한(60s)보다 작게.
+    timeout_seconds: float = 30.0
     rate_limit_per_sec: float = 5.0
     # 메모리 임계(D-296 ④) — 넘는 응답 본문은 스풀 임시 파일로 받아 점진 파싱한다(오류 아님).
     max_response_bytes: int = 4 * 1024 * 1024
@@ -359,7 +361,7 @@ def load_config(
         url=(get("JENNIFER_API_URL") or "").strip(),
         token=(get("JENNIFER_API_TOKEN") or "").strip(),
         domain_ids=_int_list(get("JENNIFER_DOMAIN_IDS")),
-        timeout_seconds=float(get("JENNIFER_API_TIMEOUT_SECONDS") or 10),
+        timeout_seconds=float(get("JENNIFER_API_TIMEOUT_SECONDS") or 30),
         rate_limit_per_sec=float(get("JENNIFER_RATE_LIMIT_PER_SEC") or 5),
         max_response_bytes=int(get("JENNIFER_MAX_RESPONSE_BYTES") or 4 * 1024 * 1024),
     )

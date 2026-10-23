@@ -29,7 +29,7 @@ def _settings(**kw) -> AgentSettings:
 def _capture(monkeypatch) -> dict:
     captured: dict = {}
 
-    def fake_run(url, headers, calls, *, timeout_seconds):
+    def fake_run(url, headers, calls, *, timeout_seconds, concurrency=1):
         captured.update(url=url, timeout=timeout_seconds)
         return []
 

@@ -1090,7 +1090,7 @@ async def alarm_capabilities(
         and bool(getattr(ng, "investigation_trigger_enabled", False))
         and bool(ng.investigation_service_url),
         investigation_followup_timeout_seconds=float(
-            getattr(ng, "investigation_followup_timeout_seconds", 300.0)
+            getattr(ng, "investigation_followup_timeout_seconds", 600.0)
         ),
     )
 

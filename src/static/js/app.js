@@ -4890,9 +4890,30 @@
         showInvestigationTab(false);
     }
 
-    // 노이즈 관제(다른 브라우저 탭)가 이 창을 이름으로 찾아 부른다(noise.js openPortalConversation)
-    window.name = "kbaiops-portal";
-    window.KBPortal = { openInvestigationConversation: openInvestigationConversation };
+    // 노이즈 관제(다른 브라우저 탭)가 이 창의 「장애 진단」 탭(꺼져 있으면 「조사 대화」 탭)에 조사를 연다
+    // (noise.js openInPortal — plans/187 W19 · G-46). 관제를 이 창이 열었으면 window.opener로 직접 부르고,
+    // 아니면 BroadcastChannel로 묻는다 — 포털 탭이 여럿이면 관제가 마지막으로 본 탭(seen) 하나만 고른다.
+    function openInvestigationFromPortal(investigationId) {
+        if (!investigationId || !INVESTIGATION_ID_RE.test(String(investigationId))) return false;
+        return openInvestigationEntry(String(investigationId));
+    }
+    window.KBPortal = { openInvestigation: openInvestigationFromPortal };
+
+    var PORTAL_TAB_ID = String(Date.now()) + "-" + Math.random().toString(36).slice(2);
+    var portalSeenAt = Date.now();
+    document.addEventListener("visibilitychange", function () { portalSeenAt = Date.now(); });
+    if (typeof BroadcastChannel === "function") {
+        var portalChannel = new BroadcastChannel("kbaiops-portal");
+        portalChannel.onmessage = function (ev) {
+            var m = ev.data || {};
+            if (m.type === "probe") {
+                portalChannel.postMessage({ type: "here", req: m.req, portal: PORTAL_TAB_ID,
+                    seen: document.hidden ? portalSeenAt : Date.now() });
+            } else if (m.type === "open" && m.portal === PORTAL_TAB_ID) {
+                portalChannel.postMessage({ type: "result", req: m.req, ok: openInvestigationFromPortal(m.id) });
+            }
+        };
+    }
 
     function renderInvestigationPin(investigationId, opts) {
         if (!window.BriefingView || !chatMessages) return;
@@ -5037,7 +5058,7 @@
     // `/?investigation=<id>`(관제 드로어 새 탭 · workb 링크) — 열고 나면 쿼리를 지워 새로고침 = 새 대화(D-248 ⑧)
     // (plans/187 W15 · G-34) `/?diagnosis=<id>`(관제 드로어 새 탭)도 받는다. 장애 진단이 켜져 있으면 둘 다
     // 그 조사의 진단 하위 탭으로 열고, 꺼져 있으면 종전 조사 대화로 연다.
-    // (W16) `/?conversation=<id>`(노이즈 관제가 열린 포털 창을 못 찾았을 때)는 진단 여부와 무관하게 조사 대화 탭으로 연다.
+    // (W16) `/?conversation=<id>`(구 노이즈 관제 폴백 — W19부터 관제는 `/?diagnosis=`만 쓴다)는 진단 여부와 무관하게 조사 대화 탭으로 연다.
     function openInvestigationFromQuery() {
         var params = new URLSearchParams(window.location.search);
         var id = params.get("investigation");
@@ -5090,8 +5111,8 @@
     }
 
     function openInvestigationEntry(investigationId, alarmId) {
-        if (window.DiagnosisView && window.DiagnosisView.openIfEnabled(investigationId, alarmId ? { alarmId: alarmId } : null)) return;
-        openInvestigationConversation(investigationId);
+        if (window.DiagnosisView && window.DiagnosisView.openIfEnabled(investigationId, alarmId ? { alarmId: alarmId } : null)) return true;
+        return openInvestigationConversation(investigationId);
     }
 
     // 공용 요약형의 「조사 대화로 열기」는 진단이 켜지면 감춘다 — 카드가 [진행 보기]를 따로 단다(G-34).
