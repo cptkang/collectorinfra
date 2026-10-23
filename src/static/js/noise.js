@@ -1901,9 +1901,10 @@
         });
     }
 
-    // (plans/187 W19 · G-46) ⓒ 머리의 진입 버튼 1개 — 조사 id가 있으면 브리핑 종류·진행 상태와 무관하게 단다.
-    // 누르면 **열려 있는 포털 창**의 「장애 진단」 탭(그 조사 하위 탭)에 연다. 장애 진단이 꺼져 있으면 같은 버튼이
-    // 「조사 대화로 열기」가 되어 그 창의 「조사 대화」 탭에 연다(포털 openInvestigationEntry가 고른다).
+    // (plans/187 W19 · G-46 · W23 개정) ⓒ 머리의 진입 버튼 1개 — 조사 id가 있으면 브리핑 종류·진행 상태와 무관하게 단다.
+    // 누르면 **새 브라우저 탭**에 포털을 연다 — 장애 진단이 켜져 있으면 `/?diagnosis=`(그 조사 하위 탭), 꺼져 있으면
+    // `/?conversation=`(「조사 대화」 탭). 브라우저가 다른 탭을 앞으로 가져오지 못해 열린 포털 창 재사용은 「아무 일도
+    // 안 일어난 것」처럼 보였다(사용자 지적 — 2026-10-23).
     // break-glass 운영자 토큰은 질의응답 API를 못 쓰므로 장애 진단이 꺼져 있으면 달지 않는다(§5.6.1 주의 1).
     function portalEntryButton(view) {
         var excluded = view && (view.status === "none" || (liveViewOn && view.status === "rejected"));
@@ -1914,10 +1915,7 @@
             btn = el("button", "cause-live-open", "");
             btn.type = "button";
             btn.addEventListener("click", function () {
-                var head = investigationHead;
-                openInPortal(btn.getAttribute("data-investigation-id"), function (result) {
-                    portalEntryNote(head, result);
-                });
+                openInPortal(btn.getAttribute("data-investigation-id"));
             });
             investigationHead.appendChild(btn);
         }
@@ -1925,72 +1923,9 @@
         btn.setAttribute("data-investigation-id", id);
     }
 
-    var PORTAL_ENTRY_TEXT = {
-        opened: "열려 있는 포털 창에 열었습니다 — 그 창으로 옮겨 확인하세요.",
-        refused: "포털 창이 열지 못했습니다 — 사유는 그 창에 보입니다.",
-    };
-
-    function portalEntryNote(head, result) {
-        if (!head) return;
-        var note = head.querySelector(".cause-entry-note");
-        var text = PORTAL_ENTRY_TEXT[result] || "";
-        if (!text) { if (note) note.remove(); return; }
-        if (!note) { note = el("span", "cause-entry-note cell-muted", ""); head.appendChild(note); }
-        note.textContent = text;
-    }
-
-    // 포털 창 찾기(plans/187 W19 · G-46): ① 이 관제를 연 포털 창(window.opener — 포털 머리글 링크가 rel="opener")
-    // ② 그 밖의 열린 포털 탭(BroadcastChannel — 즐겨찾기·관리자 화면에서 연 관제) ③ 열린 포털이 없을 때만 새 탭
-    // `/?diagnosis=<id>`. 이름 창(window.open("", 이름))은 못 찾으면 빈 탭을 새로 열어 쓰지 않는다.
-    // done(result): "opened"(포털이 열었다) · "refused"(포털이 거부 — 답변 중 등) · "new_tab".
-    var PORTAL_CHANNEL = "kbaiops-portal";
-    var PORTAL_WAIT_MS = 400;
-
-    function openInPortal(investigationId, done) {
-        var w = null;
-        try {
-            w = window.opener;
-            if (w && !w.closed && w.KBPortal && typeof w.KBPortal.openInvestigation === "function") {
-                var ok = w.KBPortal.openInvestigation(investigationId);
-                try { w.focus(); } catch (_e) { /* 브라우저가 다른 탭 포커스를 막을 수 있다 — 안내문으로 대신 */ }
-                done(ok ? "opened" : "refused");
-                return;
-            }
-        } catch (_err) { /* 다른 출처로 옮긴 창 — 아래 채널로 */ }
-        askPortalTabs(investigationId, function (result) {
-            if (result) { done(result); return; }
-            window.open("/?diagnosis=" + encodeURIComponent(investigationId), "_blank", "noopener");
-            done("new_tab");
-        });
-    }
-
-    // 포털 탭이 여럿이면 마지막으로 본 탭(seen이 가장 큰 탭) 하나에만 열게 한다 — 묻기(probe) → 답(here) →
-    // 지정(open) → 결과(result). 기다림은 단계마다 PORTAL_WAIT_MS(클릭 직후라 새 탭 폴백도 팝업 차단에 안 걸린다).
-    function askPortalTabs(investigationId, cb) {
-        if (typeof BroadcastChannel !== "function") { cb(null); return; }
-        var ch = new BroadcastChannel(PORTAL_CHANNEL);
-        var req = String(Date.now()) + "-" + Math.random().toString(36).slice(2);
-        var best = null;
-        var finished = false;
-        function finish(result) {
-            if (finished) return;
-            finished = true;
-            ch.close();
-            cb(result);
-        }
-        ch.onmessage = function (ev) {
-            var m = ev.data || {};
-            if (m.req !== req) return;
-            if (m.type === "here" && (!best || m.seen > best.seen)) best = m;
-            else if (m.type === "result") finish(m.ok ? "opened" : "refused");
-        };
-        ch.postMessage({ type: "probe", req: req });
-        setTimeout(function () {
-            if (finished) return;
-            if (!best) { finish(null); return; }
-            ch.postMessage({ type: "open", req: req, portal: best.portal, id: investigationId });
-            setTimeout(function () { finish(null); }, PORTAL_WAIT_MS);   // 그 사이 닫힌 탭 — 새 탭으로
-        }, PORTAL_WAIT_MS);
+    function openInPortal(investigationId) {
+        var key = liveViewOn ? "diagnosis" : "conversation";
+        window.open("/?" + key + "=" + encodeURIComponent(investigationId), "_blank", "noopener");
     }
 
     function onInvestigationView(view) {

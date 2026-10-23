@@ -1235,6 +1235,7 @@ async def _investigation_response(
     current_user: dict[str, Any],
     rec: dict[str, Any] | None,
     activity_since: int | None = None,
+    with_alarm: bool = False,
 ) -> dict[str, Any]:
     """조사 레코드 → 응답(지연 poll · 사용자 마스킹/운영자 원문). 존 검사는 호출부가 먼저 한다.
 
@@ -1278,10 +1279,12 @@ async def _investigation_response(
             entry, max(activity_since, -1), operator=operator,
             mask_fn=None if operator else _investigation_mask_fn(config),
         ))
-    if hub is not None and activity_since is not None:
+    if (hub is not None and activity_since is not None) or with_alarm:
         # (plans/187 W17) 장애 진단 화면 — 어떤 알람을 조사하는지(판정 기록의 알람 요약)
+        # (W23) 조사 대화 카드는 첫 조회에만 `with_alarm`으로 같은 요약을 받는다
         alarm = _investigation_alarm_brief(
-            config, rec, None if operator else _investigation_mask_fn(config), operator
+            config, rec, None if operator else _investigation_mask_fn(config), operator,
+            related=with_alarm,
         )
         if alarm:
             view["alarm"] = alarm
@@ -1616,6 +1619,9 @@ async def get_investigation(
     activity_since: int | None = Query(
         None, description="(실시간 화면 켜짐일 때만) 실행 기록 커서 — 이 seq 뒤의 이벤트를 더한다"
     ),
+    with_alarm: bool = Query(
+        False, description="조사 대상 알람 요약(`alarm`)을 싣는다 — 조사 대화 카드의 첫 조회"
+    ),
 ) -> dict[str, Any]:
     """조사 id → 최신 조사(plans/153 §4.2).
 
@@ -1627,7 +1633,7 @@ async def get_investigation(
     store = _investigation_store(config)
     rec = store.get_by_investigation(investigation_id) if store is not None else None
     _assert_investigation_access(request, current_user, rec)
-    view = await _investigation_response(request, current_user, rec, activity_since)
+    view = await _investigation_response(request, current_user, rec, activity_since, with_alarm)
     if rec is not None and _followup_enabled(config) and _is_diagnosis(rec):
         return _with_notice(view)
     return view
@@ -1725,8 +1731,40 @@ def _followup_error(status_code: int, code: str, reason: str) -> HTTPException:
 #: 장애 진단 화면 머리의 알람 요약 키(판정 기록 뷰에서 고른다 — 조건 로그는 운영자 뷰에만 남는다).
 _ALARM_BRIEF_KEYS: tuple[str, ...] = (
     "alarm_id", "alarm_name", "server_name", "hostname", "resource_name", "resource_type",
-    "alarm_time", "ts", "tier", "reason", "condition_log",
+    "alarm_time", "ts", "tier", "stage_label", "reason", "condition_log",
 )
+#: (W23) 사건 묶음 조사의 「함께 조사하는 알람」 키와 상한 — 조사 대화 카드 첫 조회에만 붙인다.
+_RELATED_BRIEF_KEYS: tuple[str, ...] = (
+    "alarm_id", "alarm_name", "server_name", "hostname", "alarm_time", "ts",
+)
+_RELATED_BRIEF_MAX = 5
+
+
+def _alarm_source_text(db_id: str) -> str:
+    """(W24) 알람 dbId → 사람이 읽는 발생 소스(존·위치·수집 시스템 — 레지스트리에서 푼다).
+
+    DB 소스는 「{존 약칭} {사이트} {제품명}」(예: 공동존 김포 폴스타), 존이 없으면 DB 표시 이름이다.
+    APM 소스(`{family}_{소스 id}`)는 레지스트리 소스 이름에 존 약칭을 붙이고
+    (이미 들어 있으면 그대로), 소스 표에 없는 단일 설정(`db_id == family`)은
+    「{시스템}(존 미지정)」이다. 못 풀면 dbId 그대로.
+    """
+    from noise_gate.application.server_identity import source_labels_for, zone_labels_for
+    from src.routing.registry import get_registry
+
+    _, zone_label, site = zone_labels_for(db_id)
+    zone = zone_label.split("(")[0].split("—")[0].strip()
+    registry = get_registry()
+    entry = registry.get(db_id)
+    if entry is not None:
+        product = source_labels_for(db_id, zone_label, site)[0]
+        where = site if site and zone and zone in site else " ".join(p for p in (zone, site) if p)
+        return f"{where} {product}" if where and product else (entry.display_name or db_id)
+    found = registry.alarm_source(db_id)
+    if found is not None:
+        label = found[1].label
+        return label if not zone or zone in label else f"{label}({zone})"
+    solution = next((s for s in registry.solutions() if s.family and s.family == db_id), None)
+    return f"{solution.label.split('(')[0].strip()}(존 미지정)" if solution else db_id
 
 
 def _investigation_alarm_brief(
@@ -1734,29 +1772,51 @@ def _investigation_alarm_brief(
     rec: dict[str, Any],
     mask_fn: Callable[[str], str] | None,
     operator: bool,
+    related: bool = False,
 ) -> dict[str, Any] | None:
     """조사에 걸린 첫 알람(없으면 `parent_alarm_id`)의 판정 기록 요약(plans/187 W17).
 
     판정 기록 뷰(`get_decision`)가 사용자 경로의 운영자 전용 키 제거·마스킹을 이미 한다.
     존 검사는 호출부(`_assert_investigation_access`)가 먼저 했다. 기록이 없으면 None.
+    (W23) `related`면 나머지 알람(상한 `_RELATED_BRIEF_MAX`)의 이름·서버·시각을 `related`로 싣는다 —
+    알람마다 판정 기록을 다시 읽으므로 재조회마다 부르는 장애 진단 경로에서는 끈다.
     """
     from noise_gate.infrastructure.decision_store import DecisionStore
 
-    alarm_id = next(iter(rec.get("alarm_ids") or []), None) or rec.get("parent_alarm_id")
+    alarm_ids = list(rec.get("alarm_ids") or [])
+    alarm_id = next(iter(alarm_ids), None) or rec.get("parent_alarm_id")
     if not alarm_id:
         return None
     ng = config.noise_gate
-    decision = DecisionStore(
+    store = DecisionStore(
         ng.decision_store_path,
         bool(getattr(ng, "decision_store_enabled", True)),
         int(getattr(ng, "decision_store_max_lines", 20000)),
-    ).get_decision(str(alarm_id), mask_fn=mask_fn, operator_view=operator)
+    )
+    decision = store.get_decision(str(alarm_id), mask_fn=mask_fn, operator_view=operator)
     if not decision:
         return None
     brief = {k: decision[k] for k in _ALARM_BRIEF_KEYS if decision.get(k) not in (None, "")}
     signals = decision.get("signals")
     if isinstance(signals, dict) and isinstance(signals.get("severity"), (int, float)):
         brief["severity"] = signals["severity"]
+    if decision.get("db_id"):
+        # (W24) 알람이 어디서 났는지 — 은행존 제니퍼인지 공동존 김포 폴스타인지
+        brief["db_id"] = decision["db_id"]
+        brief["source"] = _alarm_source_text(str(decision["db_id"]))
+    if len(alarm_ids) > 1:
+        # (W23) 사건 묶음 조사 — 요약은 첫 알람이고 같은 조사에 걸린 알람 수를 함께 보인다
+        brief["alarm_count"] = len(alarm_ids)
+    if related and len(alarm_ids) > 1:
+        rows = []
+        for other in alarm_ids[1:1 + _RELATED_BRIEF_MAX]:
+            d = store.get_decision(str(other), mask_fn=mask_fn, operator_view=operator)
+            d = d or {"alarm_id": other}
+            row = {k: d[k] for k in _RELATED_BRIEF_KEYS if d.get(k) not in (None, "")}
+            if d.get("db_id"):
+                row["source"] = _alarm_source_text(str(d["db_id"]))
+            rows.append(row)
+        brief["related"] = rows
     return brief
 
 

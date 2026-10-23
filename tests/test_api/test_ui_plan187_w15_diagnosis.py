@@ -720,8 +720,8 @@ def test_tab_markup_hidden_by_default_and_script_order() -> None:
     assert 'style="display: none;"' in tab and 'aria-controls="diagnosisView"' in tab
     assert 'id="diagnosisView"' in html and 'class="diagnosis-view view-hidden"' in html
     bv = html.index("briefing-view.js?v=6")
-    dv = html.index("diagnosis-view.js?v=6")
-    app = html.index("app.js?v=34")
+    dv = html.index("diagnosis-view.js?v=8")
+    app = html.index("app.js?v=36")
     assert bv < dv < app
     css = (_STATIC / "css" / "style.css").read_text(encoding="utf-8")
     gate = css[css.index("body.auth-pending > header"):]
@@ -757,8 +757,9 @@ def test_entry_wiring_g34() -> None:
         "openInvestigationConversation(investigationId)"
     )
     noise = _NOISE_JS.read_text(encoding="utf-8")
-    # (W19 · G-46) 새 탭 `/?diagnosis=`는 열린 포털 창이 없을 때만의 폴백
-    assert '"/?diagnosis=" + encodeURIComponent(' in _js_function_body(noise, "openInPortal")
+    # (W23) 항상 새 탭 — 켜짐이면 `/?diagnosis=` · 꺼짐이면 `/?conversation=`
+    entry = _js_function_body(noise, "openInPortal")
+    assert '"diagnosis" : "conversation"' in entry and '"_blank", "noopener"' in entry
     assert "portalEntryButton(view)" in _js_function_body(noise, "onInvestigationView")
     assert noise.count("onView: onInvestigationView") == 2
 

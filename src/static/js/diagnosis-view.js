@@ -114,6 +114,15 @@
         whyHead: "조사 이유",
         conditionHead: "조건",
         alarmUnknown: "알람 정보를 찾지 못했습니다(판정 기록 보존 범위 밖이거나 알람 없는 요청 조사).",
+        // (W23) 조사 대화 카드 머리 — 무엇을 어떤 방식으로 조사하는지
+        kindHead: "조사",
+        decisionHead: "판정 사유",
+        relatedHead: "함께 조사하는 알람",
+        playbookHead: "플레이북",
+        // (W24) 알람 발생 소스 · 조사 항목(플레이북 단계)
+        sourceHead: "발생 소스",
+        stepsHead: "조사 항목",
+        stepsRunning: "진행 중 {step} · {done}/{total}단계 끝남",
         purposePrefix: "목적: ",
         pollError: "갱신 실패 — {reason}",
         denied: {
@@ -348,7 +357,12 @@
             var tier = alarm.tier ? (TIER_LABELS[alarm.tier] || String(alarm.tier)) : "";
             lines.push({ head: TEXT.alarmHead, text: [sev ? "[" + sev + "]" : "", alarm.alarm_name || alarm.alarm_id]
                 .filter(Boolean).join(" ") + (where ? " — " + where : "") + (when ? " · 발생 " + when : "") +
-                (tier ? " · 판정 " + tier : "") });
+                (tier ? " · 판정 " + tier : "") +
+                (alarm.alarm_count > 1 ? " · 같은 사건 알람 " + alarm.alarm_count + "건 중 첫 알람" : "") });
+            if (alarm.source || alarm.db_id) {
+                lines.push({ head: TEXT.sourceHead, text: (alarm.source || alarm.db_id) +
+                    (alarm.db_id && alarm.source && alarm.source !== alarm.db_id ? " (" + alarm.db_id + ")" : "") });
+            }
             if (alarm.condition_log) lines.push({ head: TEXT.conditionHead, text: firstLine(alarm.condition_log, 200) });
         }
         if (isObj(subject)) {
@@ -361,6 +375,98 @@
                 lines.push({ head: TEXT.whyHead, text: [subject.route_label, subject.route_reason].filter(Boolean).join(" — ") });
             }
         }
+        return lines;
+    }
+
+    // (W23) 조사 종류 문구 — 조사 기록 `kind`·`origin`·`focus`
+    function kindText(view) {
+        if (view.parent_investigation_id) return "추가 조사" + (view.focus ? " — 초점 " + view.focus : "");
+        if (view.kind === "episode") {
+            var n = asList(view.alarm_ids).length || (isObj(view.alarm) && view.alarm.alarm_count) || 0;
+            return "사건 종합 조사" + (n > 1 ? " — 같은 사건 알람 " + n + "건을 함께 조사" : "");
+        }
+        if (view.kind === "manual") return "다시 분석(사용자 요청)";
+        if (view.origin === "chat") return "채팅 증상 조사";
+        if (view.kind === "diagnosis") return "요청 조사";
+        return "알람 자동 조사";
+    }
+
+    // (W24) 조사 항목의 단계 상태 — 플레이북 섹션 `status`
+    var STEP_STATUS_LABELS = { ok: "완료", skipped: "생략", missing: "자료 없음", error: "실패",
+        failed: "실패", timeout: "시간 초과", incomplete: "일부만" };
+
+    // (W24) 조사 항목 — 종결 브리핑의 단계(없으면 진행 중 부분 브리핑의 끝난 단계 + 진척)
+    function stepsLine(view) {
+        var pb = playbookOf(view);
+        var sections = pb ? asList(pb.sections).filter(isObj) : [];
+        var items = sections.map(function (sec, i) {
+            var label = STEP_STATUS_LABELS[sec.status] || sec.status || "";
+            return circled(i + 1) + " " + (sec.title || sec.step || "-") + (label ? " — " + label : "");
+        });
+        var prog = isObj(view.progress) ? view.progress : null;
+        var finished = isObj(view.briefing) && isObj(view.briefing.playbook);
+        if (!finished && prog && Number(prog.total)) {
+            items.push(fill(TEXT.stepsRunning, { step: prog.current_step || "-",
+                done: Number(prog.done) || 0, total: Number(prog.total) }));
+        }
+        return items.length ? { head: TEXT.stepsHead, text: items.join(" / "), items: items } : null;
+    }
+
+    // 종결 브리핑의 플레이북 — 없으면 진행 중 부분 브리핑의 플레이북
+    function playbookOf(view) {
+        if (isObj(view.briefing) && isObj(view.briefing.playbook)) return view.briefing.playbook;
+        var part = view.partial_briefing;
+        return isObj(part) && isObj(part.playbook) ? part.playbook : null;
+    }
+
+    // 플레이북 선택 근거(`matched_by`) — sre_agent `playbook_purpose`와 같은 말(MATCH_CONDITION_LABELS)
+    var MATCH_CONDITION_LABELS = { resource_type: "자원 유형", alarm_kind: "알람 종류", any_kind: "알람 키워드" };
+    function matchedByText(m) {
+        m = String(m || "");
+        if (m.indexOf("match:") === 0) {
+            var names = m.slice(6).split("+").filter(Boolean).map(function (c) { return MATCH_CONDITION_LABELS[c] || c; });
+            if (names.length) return "알람의 " + names.join("·") + "가 이 플레이북 조건과 일치";
+        }
+        if (m === "fallback") return "맞는 유형 플레이북이 없어 공통 점검";
+        return m;
+    }
+
+    /**
+     * 조사 대화 카드 머리 줄 모델(순수 · W23) — 조사 종류 · 알람 · 판정 사유 · 조건 · 함께 조사하는 알람 ·
+     * 대상/조사 이유 · 플레이북. view = 조사 조회 응답(`with_alarm=true`면 `alarm`·`alarm.related`가 있다).
+     */
+    function conversationHeadLines(view) {
+        if (!isObj(view)) return [];
+        var lines = [{ head: TEXT.kindHead, text: kindText(view) }];
+        var alarm = isObj(view.alarm) ? view.alarm : null;
+        var target = targetLines(alarm, view.subject);
+        if (!alarm && (asList(view.alarm_ids).length || view.parent_alarm_id || view.kind === "alarm")) {
+            target.unshift({ head: TEXT.alarmHead, text: TEXT.alarmUnknown });
+        }
+        target.forEach(function (line, i) {
+            lines.push(line);
+            if (i === 0 && alarm && (alarm.reason || alarm.stage_label)) {
+                lines.push({ head: TEXT.decisionHead,
+                    text: [alarm.stage_label, firstLine(alarm.reason || "", 200)].filter(Boolean).join(" — ") });
+            }
+        });
+        var related = alarm ? asList(alarm.related) : [];
+        if (related.length) {
+            var more = (alarm.alarm_count || 0) - 1 - related.length;
+            lines.push({ head: TEXT.relatedHead, text: related.map(function (r) {
+                var when = fmtStamp(r.alarm_time || r.ts);
+                return (r.alarm_name || r.alarm_id || "-") + " — " + (r.server_name || r.hostname || "-") +
+                    (r.source ? " · " + r.source : "") + (when ? " · " + when : "");
+            }).join(" / ") + (more > 0 ? " 외 " + more + "건" : "") });
+        }
+        var pb = playbookOf(view);
+        if (pb && pb.id) {
+            var scope = isObj(pb.scope) ? (pb.scope.host || pb.scope.polestar_server || "") : "";
+            lines.push({ head: TEXT.playbookHead, text: pb.id + (pb.version ? " v" + pb.version : "") +
+                (pb.matched_by ? " — " + matchedByText(pb.matched_by) : "") + (scope ? " · 범위 " + scope : "") });
+        }
+        var steps = stepsLine(view);
+        if (steps) lines.push(steps);
         return lines;
     }
 
@@ -1977,6 +2083,7 @@
         searchQuery: searchQuery,
         stepPurposes: stepPurposes,
         targetLines: targetLines,
+        conversationHeadLines: conversationHeadLines,
         flowModel: flowModel,
         opinionOf: opinionOf,
         conflictsWithSynthesis: conflictsWithSynthesis,
