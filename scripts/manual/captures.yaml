@@ -403,6 +403,29 @@ captures:
     steps:
       - goto: /noise
       - wait: 2500
+  # 장애 진단 탭·조사 대화(plans/187 U-70·U-63) — 실시간 화면을 켠 capture-diag 서버에서만 탭이 보인다.
+  # 예시 조사·실행 기록 요약은 손으로 만든 것(fixtures/alarms/briefing.json · 모두 종결 — 조사 서비스 호출 0)
+  # 장애 진단 탭은 조사 흐름 예시(inv-manual-flow · plans/187 W20)를 연다
+  - id: diagnosis-tab
+    server: capture-diag
+    login: admin
+    height: 2300
+    steps:
+      - goto: /?diagnosis=inv-manual-flow
+      - wait: "#diagnosisView .dv-subtab"
+      - wait: "#diagnosisView .dv-flow .dv-card"
+      - wait: "#diagnosisView .dv-final-body .bv--playbook"
+      - wait: 800
+    callouts: [[1, ".view-tab[data-view='diagnosis']"], [2, "#diagnosisView .dv-tab--list"], [3, "#diagnosisView .dv-subtab"], [4, "#diagnosisView .dv-target"], [5, "#diagnosisView .dv-modes"], [6, "#diagnosisView .dv-flow"], [7, "#diagnosisView .dv-open-conv"]]
+  - id: investigation-conversation
+    server: capture-diag
+    login: admin
+    height: 1100
+    steps:
+      - goto: /?conversation=inv-manual-ep
+      - wait: ".investigation-pin .investigation-pin-body .bv-item--limit"
+      - wait: 800
+    callouts: [[1, "#investigationTab"], [2, "#investigationTabClose"], [3, ".investigation-pin-head"], [4, "#prompt"]]
   - id: noise-drawer
     login: user
     steps:

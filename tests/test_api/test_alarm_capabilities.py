@@ -78,10 +78,10 @@ def test_capabilities_expose_no_paths_or_secrets():
 
 
 def test_investigation_followup_timeout_follows_config():
-    """웹 재조회 상한은 후속 poll 전체 타임아웃 설정값을 그대로 쓴다(미설정이면 300초)."""
+    """웹 재조회 상한은 후속 poll 전체 타임아웃 설정값을 그대로 쓴다(미설정이면 600초 · W22)."""
     assert _client().get("/api/v1/alarm/capabilities").json()[
         "investigation_followup_timeout_seconds"
-    ] == 300.0
+    ] == 600.0
     body = _client(investigation_followup_timeout_seconds=45).get(
         "/api/v1/alarm/capabilities"
     ).json()

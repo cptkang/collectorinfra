@@ -88,6 +88,12 @@ def test_single_setting_is_source_default_and_unset_is_zero_sources():
     assert load_config({"JENNIFER_API_TOKEN": "t"}).sources == ()
 
 
+def test_api_timeout_default_is_30s_and_inherited_by_sources():
+    """제니퍼 API 1건 기본 상한 30초(plans/187 W22) — 소스별 키가 없으면 전역 값을 승계한다."""
+    assert load_config({}).jennifer.timeout_seconds == 30.0
+    assert [s.timeout_seconds for s in load_config(_multi()).sources] == [30.0, 30.0]
+
+
 def test_multi_sources_in_declared_order_with_global_fallback():
     cfg = load_config(
         _multi(

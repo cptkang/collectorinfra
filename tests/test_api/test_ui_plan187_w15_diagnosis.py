@@ -348,16 +348,16 @@ es.emit("activity", {{ investigation_id: "inv-1", status: "running", next_seq: 5
 es.emit("activity", {{ investigation_id: "inv-1", status: "running", next_seq: 5,
     events: {json.dumps(_EVENTS[2:3], ensure_ascii=False)} }});
 var tab = v.ctl.tab("inv-1");
-var rows = findAll(tab.dom.panel, "dv-row");
+var rows = findAll(tab.dom.grid, "dv-row");
 var rowHtml = rows.some(function (r) {{ return htmlWrites.indexOf(r) >= 0 || findAll(r,
     "dv-text").some(function (t) {{ return htmlWrites.indexOf(t) >= 0; }}); }});
-var expand = findAll(tab.dom.panel, "dv-expand")[0];
-var pre = findAll(tab.dom.panel, "dv-excerpt")[0];
+var expand = findAll(tab.dom.grid, "dv-expand")[0];
+var pre = findAll(tab.dom.grid, "dv-excerpt")[0];
 var before = pre.hidden;
 expand.click();
-out = {{ rows: rows.map(function (r) {{ return r.textContent; }}), ai: findAll(tab.dom.panel,
+out = {{ rows: rows.map(function (r) {{ return r.textContent; }}), ai: findAll(tab.dom.grid,
     "dv-row--ai").length,
-        badges: texts(tab.dom.panel, "dv-ai-badge"), seq: tab.seq, rowHtml: rowHtml,
+        badges: texts(tab.dom.grid, "dv-ai-badge"), seq: tab.seq, rowHtml: rowHtml,
         excerpt: pre.textContent, before: before, after: pre.hidden,
         filters: texts(tab.dom.panel, "dv-filters")[0], conn: texts(v.root, "dv-conn")[0],
         watch: v.ctl.state().watch, partial: tab.dom.partBody.textContent }};
@@ -720,8 +720,8 @@ def test_tab_markup_hidden_by_default_and_script_order() -> None:
     assert 'style="display: none;"' in tab and 'aria-controls="diagnosisView"' in tab
     assert 'id="diagnosisView"' in html and 'class="diagnosis-view view-hidden"' in html
     bv = html.index("briefing-view.js?v=5")
-    dv = html.index("diagnosis-view.js?v=4")
-    app = html.index("app.js?v=33")
+    dv = html.index("diagnosis-view.js?v=6")
+    app = html.index("app.js?v=34")
     assert bv < dv < app
     css = (_STATIC / "css" / "style.css").read_text(encoding="utf-8")
     gate = css[css.index("body.auth-pending > header"):]
@@ -757,9 +757,9 @@ def test_entry_wiring_g34() -> None:
         "openInvestigationConversation(investigationId)"
     )
     noise = _NOISE_JS.read_text(encoding="utf-8")
-    assert '"/?diagnosis=" + encodeURIComponent(' in _js_function_body(noise, "liveEntryButton")
-    # (W16) 「조사 대화로 열기」는 장애 진단 켜짐과 무관하게 늘 단다(liveEntryRender 폐기)
-    assert "liveEntryButton(view)" in _js_function_body(noise, "onInvestigationView")
+    # (W19 · G-46) 새 탭 `/?diagnosis=`는 열린 포털 창이 없을 때만의 폴백
+    assert '"/?diagnosis=" + encodeURIComponent(' in _js_function_body(noise, "openInPortal")
+    assert "portalEntryButton(view)" in _js_function_body(noise, "onInvestigationView")
     assert noise.count("onView: onInvestigationView") == 2
 
 

@@ -3,7 +3,8 @@
 브라우저 e2e는 이 환경에서 돌지 않으므로 두 갈래로 고정한다:
     1. app.js의 탭 전환 함수(capture/restore/swap/close)와 noise.js의 포털 진입 함수를
        node로 실제 실행한다 — 가짜 DOM·창을 주입해 질의응답 대화 보존 · 스트리밍 중 전환
-       거부 · 닫기 시 재조회 정지 · 포털 창 재사용 · 못 찾으면 `/?conversation=` 을 단언한다.
+       거부 · 닫기 시 재조회 정지 · 포털 창 재사용(opener·채널) · 못 찾으면
+       `/?diagnosis=` 을 단언한다.
     2. 정적 — 탭 마크업 · 버튼 상시 조건(브리핑 종류·장애 진단 켜짐 무관) · 쿼리 진입.
 """
 
@@ -213,48 +214,124 @@ def test_close_tab_returns_to_chat_and_stops_investigation_polling() -> None:
 
 _NOISE_HARNESS = r"""
 var opened = [];
-var current = null;
-var window = { open: function (url, name) {
-    opened.push([url, name]);
-    return name === "_blank" ? null : current;
-} };
-var PORTAL_WINDOW = "kbaiops-portal";
+var timers = [];
+function setTimeout(fn) { timers.push(fn); }
+function flush() { while (timers.length) timers.shift()(); }
+var window = { opener: null,
+    open: function (url, name, feat) { opened.push([url, name, feat]); return null; } };
+var PORTAL_CHANNEL = "kbaiops-portal";
+var PORTAL_WAIT_MS = 400;
+var BroadcastChannel = undefined;
+var results = [];
+function done(r) { results.push(r); }
+// 같은 출처의 포털 탭 가짜 — 채널로 받은 메시지에 app.js 수신부와 같은 규칙으로 답한다
+var portals = [], noiseCh = null, posted = [];
+function FakeChannel(name) { this.name = name; this.closed = false; noiseCh = this; }
+FakeChannel.prototype.close = function () { this.closed = true; };
+FakeChannel.prototype.postMessage = function (m) {
+    posted.push(m.type);
+    var ch = this;
+    portals.forEach(function (p) {
+        if (m.type === "probe") {
+            ch.onmessage({ data: { type: "here", req: m.req, portal: p.id, seen: p.seen } });
+        }
+        else if (m.type === "open" && m.portal === p.id) {
+            p.calls.push(m.id);
+            ch.onmessage({ data: { type: "result", req: m.req, ok: p.ok } });
+        }
+    });
+};
 """
 
 
 def _portal(body: str) -> Any:
     src = _NOISE_JS.read_text(encoding="utf-8")
-    return _run(src, ("openPortalConversation",), _NOISE_HARNESS, body)
+    return _run(src, ("openInPortal", "askPortalTabs"), _NOISE_HARNESS, body)
 
 
-def test_portal_window_reused_when_found() -> None:
+def test_opener_portal_opens_in_existing_window_without_new_tab() -> None:
     out = _portal(
         r"""
         var calls = [], focused = 0;
-        current = {
-            KBPortal: { openInvestigationConversation: function (id) { calls.push(id); } },
+        window.opener = {
+            closed: false,
+            KBPortal: { openInvestigation: function (id) { calls.push(id); return true; } },
             focus: function () { focused += 1; },
-            location: { href: "http://x/" },
         };
-        openPortalConversation("inv-9");
-        out = { opened: opened, calls: calls, focused: focused };
+        openInPortal("inv-9", done); flush();
+        out = { opened: opened, calls: calls, focused: focused, results: results };
         """
     )
-    # 빈 URL로 이름 창을 찾는다(이동 0 — 포털 대화 보존) → 그 창의 「조사 대화」 탭 · 새 탭 0
-    assert out == {"opened": [["", "kbaiops-portal"]], "calls": ["inv-9"], "focused": 1}
+    # (W19 · G-46) 관제를 연 포털 창의 장애 진단 탭으로 — 새 탭·빈 이름 창 0
+    assert out == {"opened": [], "calls": ["inv-9"], "focused": 1, "results": ["opened"]}
 
 
-def test_portal_missing_navigates_blank_tab_to_conversation_query() -> None:
+def test_opener_refusal_is_reported_not_new_tab() -> None:
     out = _portal(
         r"""
-        var replaced = [];
-        current = { location: { href: "about:blank",
-            replace: function (u) { replaced.push(u); } } };
-        openPortalConversation("inv 9");
-        out = { opened: opened, replaced: replaced };
+        window.opener = { closed: false, focus: function () {},
+            KBPortal: { openInvestigation: function () { return false; } } };
+        openInPortal("inv-9", done); flush();
+        out = { opened: opened, results: results };
         """
     )
-    assert out == {"opened": [["", "kbaiops-portal"]], "replaced": ["/?conversation=inv%209"]}
+    assert out == {"opened": [], "results": ["refused"]}
+
+
+def test_other_portal_tab_found_by_channel_picks_last_seen_only() -> None:
+    out = _portal(
+        r"""
+        BroadcastChannel = FakeChannel;
+        portals = [{ id: "a", seen: 10, ok: true, calls: [] },
+            { id: "b", seen: 20, ok: true, calls: [] }];
+        window.opener = { closed: true };
+        openInPortal("inv-9", done); flush();
+        out = { opened: opened, a: portals[0].calls, b: portals[1].calls, results: results,
+            posted: posted, closed: noiseCh.closed };
+        """
+    )
+    # 포털 탭이 둘이면 마지막으로 본 탭(b) 하나만 연다 · 새 탭 0
+    assert out == {
+        "opened": [], "a": [], "b": ["inv-9"], "results": ["opened"],
+        "posted": ["probe", "open"], "closed": True,
+    }
+
+
+def test_no_portal_falls_back_to_diagnosis_query_new_tab() -> None:
+    out = _portal(
+        r"""
+        BroadcastChannel = FakeChannel;
+        openInPortal("inv 9", done); flush();
+        out = { opened: opened, results: results };
+        """
+    )
+    assert out == {
+        "opened": [["/?diagnosis=inv%209", "_blank", "noopener"]], "results": ["new_tab"],
+    }
+
+
+def test_portal_entry_prefers_diagnosis_and_reports_result() -> None:
+    src = _APP_JS.read_text(encoding="utf-8")
+    out = _run(
+        src, ("openInvestigationEntry", "openInvestigationFromPortal"),
+        r"""
+        var INVESTIGATION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
+        var diag = [], conv = [], on = true;
+        var window = { DiagnosisView: {
+            openIfEnabled: function (id) { if (on) diag.push(id); return on; } } };
+        function openInvestigationConversation(id) { conv.push(id); return false; }
+        """,
+        r"""
+        var r1 = openInvestigationFromPortal("inv-1");
+        on = false;
+        var r2 = openInvestigationFromPortal("inv-2");
+        var r3 = openInvestigationFromPortal("bad id");
+        out = { r: [r1, r2, r3], diag: diag, conv: conv };
+        """,
+    )
+    # 켜져 있으면 장애 진단 탭 · 꺼져 있으면 조사 대화 탭(거부면 false — 관제가 안내)
+    # · 형식 오류는 열지 않음
+    assert out == {"r": [True, False, False], "diag": ["inv-1"], "conv": ["inv-2"]}
 
 
 def test_markup_and_static_wiring() -> None:
@@ -264,19 +341,20 @@ def test_markup_and_static_wiring() -> None:
     assert 'id="investigationTab"' in tab and tab.count('style="display: none;"') == 2
     assert html.index('data-view="alarm"') < html.index('data-view="investigation"')
     app = _APP_JS.read_text(encoding="utf-8")
-    assert 'window.name = "kbaiops-portal"' in app
-    assert (
-        "window.KBPortal = { openInvestigationConversation: openInvestigationConversation }"
-        in app
-    )
+    # (W19 · G-46) 이름 창 탐색 폐기 → opener 직접 호출 + BroadcastChannel 수신부(지정 탭만 연다)
+    assert "window.name" not in app
+    assert "window.KBPortal = { openInvestigation: openInvestigationFromPortal }" in app
+    assert 'new BroadcastChannel("kbaiops-portal")' in app
+    assert "m.portal === PORTAL_TAB_ID" in app
     query = _js_function_body(app, "openInvestigationFromQuery")
     # `?conversation=`은 장애 진단 켜짐과 무관하게 조사 대화로 — 종전 두 쿼리는 진단 우선 그대로
     assert 'params.get("conversation")' in query
     assert "conv === null && window.DiagnosisView" in query
     assert 'setActiveView("chat")' in _js_function_body(app, "openThread")
     noise = _NOISE_JS.read_text(encoding="utf-8")
-    btn = _js_function_body(noise, "conversationButton")
-    # 상시 조건: 조사 id만 본다 — liveViewOn·플레이북 여부와 무관 · break-glass만 제외
-    assert "liveViewOn" not in btn and "IS_BREAK_GLASS" in btn
-    assert 'view.status !== "none"' in btn and "openPortalConversation(" in btn
+    btn = _js_function_body(noise, "portalEntryButton")
+    # 상시 조건: 조사 id가 있으면 단다 — 플레이북 여부 무관 · 버튼 1개(켜짐에 따라 이름만 바뀐다)
+    assert 'view.status === "none"' in btn and "openInPortal(" in btn
+    assert '"장애 진단에서 보기"' in btn and '"조사 대화로 열기"' in btn
+    assert "openPortalConversation" not in noise and "PORTAL_WINDOW" not in noise
     assert "openConversation: true" not in noise

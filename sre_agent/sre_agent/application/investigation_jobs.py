@@ -1,6 +1,6 @@
 """조사 잡 저장소 — submit/poll 상태 관리 (Plan 05 §3·§8, D-017 예약).
 
-collectorinfra의 MCP 호출 타임아웃(기본 60s)보다 조사(최대 300s)가 길어
+collectorinfra의 MCP 호출 타임아웃(기본 60s)보다 조사(최대 600s · plans/187 W22)가 길어
 동기 호출로는 계약이 성립하지 않으므로 **submit/poll 비동기 잡 패턴**을 구현한다.
 
 설계 원칙(CLAUDE.md Known Mistakes 계승):
@@ -11,7 +11,7 @@ collectorinfra의 MCP 호출 타임아웃(기본 60s)보다 조사(최대 300s)�
   명확한 `stub` 상태로 확정하고 사유를 briefing/verdict에 노출한다.
 
 범위 경계(Wave 2-C):
-- 실 dispatcher(dedup TTL·동시 상한·전체 타임아웃 300s·시간당 예산)·severity_judge·
+- 실 dispatcher(dedup TTL·동시 상한·전체 타임아웃 600s·시간당 예산)·severity_judge·
   브리핑 6요소 조립은 **2-D 소관**. 여기서는 그 **호출 지점(executor 인터페이스)**만 두고
   최소 스텁 executor를 기본 주입한다. 기본 dedup(동일 fingerprint 재submit → duplicate)만 제공한다.
 """

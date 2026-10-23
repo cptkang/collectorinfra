@@ -1,9 +1,10 @@
 """조사 실행 기록 요약 보관소 (plans/187 W14 · §5.6.3 ⓒ 「보관」 · G-37).
 
 조사가 종결되면 본체 실시간 허브가 실행 기록 **요약**을 JSONL 1줄로 남긴다 — sre_agent 잡이 TTL로
-사라진 뒤에도 「무엇을 조회했나」를 다시 볼 수 있게 한다. 요약은 한 줄(`label`)·상태·소요·행 수만
-담는다: 발췌(`excerpt`)·AI 메모(`ai_note` 이벤트 · `note`)는 싣지 않는다(발췌는 잡 TTL까지만 —
-G-36·G-38).
+사라진 뒤에도 「무엇을 조회했나」를 다시 볼 수 있게 한다. 요약은 한 줄(`label`)·상태·소요·행 수와
+조사 흐름 문장(`finding`·`because`·`phrase` — 결정적·가림 처리분 · plans/187 W20)만 담는다:
+발췌(`excerpt`)·AI 메모(`ai_note` 이벤트 · `note`)는 싣지 않는다(발췌는 잡 TTL까지만 —
+G-36·G-37 · 단계 해석은 종결 브리핑에서 읽는다). 건너뜀(`step_skip`) 이벤트는 남긴다.
 
 `IncidentKbStore`(FeedbackStore 방식)를 미러링한 경량 저장소다 — 조회는 파일 끝 `max_lines` 창만
 읽고, 상한을 넘으면 오래된 절반으로 `<path>.1`을 **덮어쓴다**(회전 1세대). 기록 실패는 warning 후
@@ -28,10 +29,10 @@ logger = logging.getLogger(__name__)
 DEFAULT_FILENAME = "investigation_activity.jsonl"
 #: 회전 상한 = 조회 창. 한 줄은 이벤트 300건 요약이라 수십 KB까지 커질 수 있어 작게 잡는다.
 _DEFAULT_MAX_LINES = 1000
-#: 요약에 남기는 이벤트 키(발췌·AI 메모 제외).
+#: 요약에 남기는 이벤트 키(발췌·AI 메모 제외 · 조사 흐름 문장 3종 포함 — plans/187 W20).
 SUMMARY_EVENT_KEYS: tuple[str, ...] = (
     "seq", "at", "engine", "kind", "step", "tool", "label", "status", "elapsed_ms", "rows",
-    "purpose",
+    "purpose", "finding", "because", "phrase",
 )
 #: 요약에서 통째로 빼는 이벤트 종류(G-38 — AI 메모는 보관하지 않는다).
 EXCLUDED_KINDS: frozenset[str] = frozenset({"ai_note"})

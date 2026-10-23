@@ -35,6 +35,7 @@ ENGINES: tuple[str, ...] = ("playbook", "holmes", "system")
 KINDS: tuple[str, ...] = (
     "queued", "started", "step_start", "step_end", "tool_start", "tool_end",
     "llm_start", "llm_end", "ai_note", "deep_start", "deep_end", "finalize",
+    "step_skip",
 )  # fmt: skip
 #: 진행 단계 어휘(D-123 상태 어휘는 그대로 두고 `running` 안을 이것으로 나눈다).
 PHASES: tuple[str, ...] = ("queued", "collecting", "narrating", "deep_dive", "finalizing")
@@ -133,11 +134,17 @@ class ActivityLog:
         excerpt: str | None = None,
         note: str | None = None,
         purpose: str | None = None,
+        finding: str | None = None,
+        because: str | None = None,
+        phrase: str | None = None,
     ) -> int:
         """이벤트 1건을 덧붙이고 seq를 돌려준다. 값이 None인 선택 키는 싣지 않는다.
 
         `purpose`(plans/187 W17)는 「무엇 때문에 무엇을 보는지」 한 줄 — 플레이북 선택 근거 · 스텝
         초점(`narrate.focus`) · HolmesGPT 조사 이유. `label`과 같은 상한·가림을 거친다.
+
+        `finding`(결과 한 줄)·`because`(왜 이 단계를 보나·건너뛴 사유)·`phrase`(조회 문장)는
+        plans/187 W20 §5.6.4 결정적 문장이다 — 모두 `label`과 같은 상한·가림을 거친다.
         """
         lim = self.limits
         event: dict = {"seq": 0, "at": 0.0, "engine": engine, "kind": kind}
@@ -158,6 +165,12 @@ class ActivityLog:
             event["note"] = self._text(note, lim.max_note_bytes)
         if purpose is not None:
             event["purpose"] = self._text(purpose, lim.max_label_bytes)
+        if finding is not None:
+            event["finding"] = self._text(finding, lim.max_label_bytes)
+        if because is not None:
+            event["because"] = self._text(because, lim.max_label_bytes)
+        if phrase is not None:
+            event["phrase"] = self._text(phrase, lim.max_label_bytes)
         with self._lock:
             self._seq += 1
             event["seq"] = self._seq

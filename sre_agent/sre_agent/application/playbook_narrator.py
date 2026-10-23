@@ -5,8 +5,8 @@ sre_agent의 기존 LLM(holmes `DefaultLLM.completion(messages, …)` → litell
 `lambda m: llm.completion(m, temperature=0).choices[0].message.content or ""`로 꽂는다(배선은 W4).
 
 - 단계 소견: `narrate` 지시가 있고 상태가 ok인 스텝만 · 단계 간 병렬
-  · 호출 상한 `max_step_calls`(기본 7) · 초과분은 결정적 우선순위(반박 아닌 가설의 근거
-  스텝·degraded 판정 먼저 → YAML 순서)로 잘라 사유.
+  · 호출 상한 `max_step_calls`(기본 None = 상한 없음 — plans/187 v2.8) · 상한을 주면 초과분은
+  결정적 우선순위(반박 아닌 가설의 근거 스텝·degraded 판정 먼저 → YAML 순서)로 잘라 사유.
 - 종합: LLM 1회. 가설 순위·상태·대응 순서는 코드값으로 고정되고 LLM 문장은 `narrative` 칸에만
   들어간다.
 - 결정적 가드(후처리) — 순서대로:
@@ -31,13 +31,14 @@ sre_agent의 기존 LLM(holmes `DefaultLLM.completion(messages, …)` → litell
 
 from __future__ import annotations
 
+import functools
 import json
 import logging
 import re
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
-from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import Future, ThreadPoolExecutor
 from concurrent.futures import wait as wait_futures
 from dataclasses import dataclass, field
 from typing import Any
@@ -137,9 +138,12 @@ class Opinion:
 
 @dataclass(frozen=True)
 class NarratorLimits:
-    """소견기 상한 — [제안] 값(§4.0 단계당 ≤ 4문장 · 약 140단어 · §5.4 호출 ≤ 7 + 1)."""
+    """소견기 상한 — [제안] 값(§4.0 단계당 ≤ 4문장 · 약 140단어).
 
-    max_step_calls: int = 7
+    `max_step_calls` None = 단계 소견 호출 상한 없음(소견 대상 단계 전부 + 종합 1 · plans/187 v2.8).
+    """
+
+    max_step_calls: int | None = None
     max_workers: int = 4
     step_timeout_s: float = 20.0
     synthesis_timeout_s: float = 30.0
@@ -160,6 +164,8 @@ class StepNarration:
     max_sentences: int
     readings: Mapping[str, Mapping[str, Any]]
     realtime_badges: tuple[str, ...] = ()
+    #: 단계 끝 해석(plans/187 W20 · G-47)의 앞 단계 결과 한 줄들 — None이면 종전 프롬프트.
+    prior_findings: tuple[str, ...] | None = None
 
 
 # ── 결정적 가드 ─────────────────────────────────────────────────────────────
@@ -412,7 +418,7 @@ def guard_text(
 
 
 class PlaybookNarrator:
-    """단계 소견기 · 종합기. `calls`는 실제 LLM 호출 수(단계 ≤ max_step_calls + 종합 1).
+    """단계 소견기 · 종합기. `calls`는 실제 LLM 호출 수(소견 대상 단계 + 종합 1).
 
     `activity`(plans/187 W13)가 있으면 호출마다 `llm_start`·`llm_end`를, 단계 소견은 가드 전 초안을
     `ai_note`(AI 메모 — 검증 전)로 남긴다. 없으면 기록 0(종전 동작).
@@ -453,34 +459,54 @@ class PlaybookNarrator:
             safe_append(log, "ai_note", engine="playbook", step=step, label=note_label, note=text)
         return text
 
+    def render_step(self, r: StepNarration) -> list[dict[str, str]]:
+        """단계 소견 요청 1건의 메시지."""
+        return render_step_messages(
+            section=r.section,
+            focus=r.focus,
+            max_sentences=r.max_sentences,
+            readings=r.readings,
+            realtime_badges=r.realtime_badges,
+            max_input_chars=self.limits.max_input_chars,
+            prior_findings=r.prior_findings,
+        )
+
+    def guard_step(
+        self, r: StepNarration, rendered: list[dict[str, str]], text: str
+    ) -> Opinion:
+        """단계 소견 초안 → 결정적 가드(①~⑥) 통과분."""
+        op = guard_text(
+            text,
+            verdict=r.section.get("verdict"),
+            allowed=source_numbers(rendered[-1]["content"]),
+            max_sentences=r.max_sentences,
+            max_chars=self.limits.max_chars,
+            rank_guard=True,
+        )
+        # 실시간 단면 스텝은 「현재값」을 결정적으로 보장한다(§4.0 — LLM이 빠뜨려도).
+        if r.realtime_badges and op.text and REALTIME_MARK not in op.text:
+            op.text = f"({REALTIME_MARK} 기준) {op.text}"
+            op.guard.append("실시간 단면 — 「현재값」 표기 보강")
+        return op
+
+    def call_step(self, r: StepNarration, rendered: list[dict[str, str]]) -> str:
+        """단계 소견 LLM 호출 1회(실행 기록 포함)."""
+        return self._logged_call(
+            rendered, step=r.step, label=f"{r.step} 소견 작성", note_label=f"{r.step} 소견 초안"
+        )
+
     def narrate_steps(self, requests: Sequence[StepNarration]) -> dict[str, Opinion]:
-        """단계 소견을 병렬로 만든다(요청 수는 호출자가 `max_step_calls` 안으로 자른다)."""
+        """단계 소견을 병렬로 만든다(상한 `max_step_calls`는 호출자가 적용)."""
         if not requests:
             return {}
-        rendered = {
-            r.step: render_step_messages(
-                section=r.section,
-                focus=r.focus,
-                max_sentences=r.max_sentences,
-                readings=r.readings,
-                realtime_badges=r.realtime_badges,
-                max_input_chars=self.limits.max_input_chars,
-            )
-            for r in requests
-        }
+        rendered = {r.step: self.render_step(r) for r in requests}
         out: dict[str, Opinion] = {}
         pool = ThreadPoolExecutor(
             max_workers=max(1, min(self.limits.max_workers, len(requests))),
             thread_name_prefix="playbook-narrate",
         )
         try:
-            futures = {
-                r.step: pool.submit(
-                    self._logged_call, rendered[r.step], step=r.step,
-                    label=f"{r.step} 소견 작성", note_label=f"{r.step} 소견 초안",
-                )
-                for r in requests
-            }
+            futures = {r.step: pool.submit(self.call_step, r, rendered[r.step]) for r in requests}
             wait_futures(list(futures.values()), timeout=self.limits.step_timeout_s)
             for r in requests:
                 fut = futures[r.step]
@@ -499,19 +525,7 @@ class PlaybookNarrator:
                         dropped_reason=f"소견기 실패 — {type(e).__name__}: {e}", called=True
                     )
                     continue
-                op = guard_text(
-                    text,
-                    verdict=r.section.get("verdict"),
-                    allowed=source_numbers(rendered[r.step][-1]["content"]),
-                    max_sentences=r.max_sentences,
-                    max_chars=self.limits.max_chars,
-                    rank_guard=True,
-                )
-                # 실시간 단면 스텝은 「현재값」을 결정적으로 보장한다(§4.0 — LLM이 빠뜨려도).
-                if r.realtime_badges and op.text and REALTIME_MARK not in op.text:
-                    op.text = f"({REALTIME_MARK} 기준) {op.text}"
-                    op.guard.append("실시간 단면 — 「현재값」 표기 보강")
-                out[r.step] = op
+                out[r.step] = self.guard_step(r, rendered[r.step], text)
         finally:
             pool.shutdown(wait=False, cancel_futures=True)
         return out
@@ -552,6 +566,166 @@ class PlaybookNarrator:
         )
 
 
+#: 단계 끝 해석의 호출 상한(명시했을 때만) 초과 사유.
+STEP_STREAM_OVER_LIMIT = "소견 호출 상한 {limit}회 초과 — 단계 끝 해석 없음"
+#: 단계 끝 해석을 기다리는 여유(단계 타임아웃 뒤 · 초) — 타이머가 늦게 돌아도 종합이 묶이지 않는다.
+_DRAIN_SLACK_S = 5.0
+
+
+@dataclass
+class _Pending:
+    request: StepNarration
+    rendered: list[dict[str, str]] = field(default_factory=list)
+    on_done: Callable[[Opinion], None] | None = None
+    future: Future[str] | None = None
+    timer: threading.Timer | None = None
+
+
+class StepOpinionStream:
+    """단계 끝 해석(plans/187 W20 · G-47 · §5.6.4 ⓖ) — 단계가 끝날 때마다 그 단계 소견을 제출한다.
+
+    - **별 실행기**(동시 `max_workers` · 단계 타임아웃 `step_timeout_s` 재사용)에서 돌아 다음 단계
+      수집을 막지 않는다. 타임아웃은 제출 시각부터 잰다(타이머) — 넘으면 소견 없음 + 사유.
+    - 가드(`guard_step`)는 종결 일괄 경로와 같다. 통과분만 텍스트가 남고 탈락·타임아웃·실패는
+      `dropped_reason`.
+    - 결과가 정해질 때마다 `on_done(Opinion)`을 부른다(스트림 락 안 — `drain`이 진행 중 통지를
+      끝까지 기다린다). `drain`·`close` 뒤에는 통지 0(종결 뒤 재작성 0).
+    - 같은 단계는 한 번만 받는다. 호출 상한(`max_step_calls`)을 명시했으면 넘는 단계는 부르지 않고
+      사유만 남긴다(끝난 순서 — v2.8 기본은 상한 없음).
+    """
+
+    def __init__(self, narrator: PlaybookNarrator) -> None:
+        self.narrator = narrator
+        lim = narrator.limits
+        self._timeout = float(lim.step_timeout_s)
+        self._cap = lim.max_step_calls
+        self._pool = ThreadPoolExecutor(
+            max_workers=max(1, lim.max_workers), thread_name_prefix="playbook-narrate-step"
+        )
+        self._lock = threading.Condition()
+        self._pending: dict[str, _Pending] = {}
+        self._results: dict[str, Opinion] = {}
+        self._submitted = 0
+        self._closed = False
+
+    def submit(
+        self, request: StepNarration, on_done: Callable[[Opinion], None] | None = None
+    ) -> bool:
+        """단계 1건을 제출한다. 이미 받은 단계·닫힌 스트림이면 False(호출 0)."""
+        step = request.step
+        with self._lock:
+            if self._closed or step in self._pending or step in self._results:
+                return False
+            if self._cap is not None and self._submitted >= self._cap:
+                op = Opinion(dropped_reason=STEP_STREAM_OVER_LIMIT.format(limit=self._cap))
+                self._results[step] = op
+                self._notify(on_done, op)
+                return False
+            self._submitted += 1
+            entry = _Pending(request, on_done=on_done)
+            self._pending[step] = entry
+        try:
+            entry.rendered = self.narrator.render_step(request)
+            fut = self._pool.submit(self.narrator.call_step, request, entry.rendered)
+        except Exception as e:  # noqa: BLE001 — 제출 실패는 그 단계 소견만 비운다(사유 노출)
+            self._resolve(step, Opinion(dropped_reason=f"소견기 실패 — {type(e).__name__}: {e}"))
+            return True
+        timer = threading.Timer(self._timeout, self._expire, args=(step,))
+        timer.daemon = True
+        with self._lock:
+            entry.future, entry.timer = fut, timer
+        timer.start()
+        fut.add_done_callback(functools.partial(self._complete, step))
+        return True
+
+    def _notify(self, on_done: Callable[[Opinion], None] | None, op: Opinion) -> None:
+        if on_done is None:
+            return
+        try:
+            on_done(op)
+        except Exception as e:  # noqa: BLE001 — 통지(부분 브리핑) 실패가 소견을 막지 않는다
+            logger.warning("단계 끝 해석 통지 실패(무시): %s: %s", type(e).__name__, e)
+
+    def _resolve(self, step: str, op: Opinion) -> None:
+        with self._lock:
+            entry = self._pending.pop(step, None)
+            if entry is None:
+                return
+            self._results[step] = op
+            if not self._closed:
+                self._notify(entry.on_done, op)
+            self._lock.notify_all()
+        if entry.timer is not None:
+            entry.timer.cancel()
+
+    def _expire(self, step: str) -> None:
+        with self._lock:
+            entry = self._pending.get(step)
+        if entry is None:
+            return
+        if entry.future is not None:
+            entry.future.cancel()
+        self._resolve(
+            step, Opinion(dropped_reason=f"소견기 타임아웃 {self._timeout:g}s", called=True)
+        )
+
+    def _complete(self, step: str, fut: Future[str]) -> None:
+        if fut.cancelled():
+            return
+        with self._lock:
+            entry = self._pending.get(step)
+        if entry is None:
+            return
+        try:
+            text = fut.result()
+        except Exception as e:  # noqa: BLE001 — 단계 단위 격리(사유 노출)
+            logger.warning("단계 끝 해석 실패 %s: %s", step, e)
+            self._resolve(
+                step, Opinion(dropped_reason=f"소견기 실패 — {type(e).__name__}: {e}", called=True)
+            )
+            return
+        try:
+            op = self.narrator.guard_step(entry.request, entry.rendered, text)
+        except Exception as e:  # noqa: BLE001 — 가드 실패는 소견을 버린다(사유 노출)
+            op = Opinion(dropped_reason=f"소견 가드 실패 — {type(e).__name__}: {e}", called=True)
+        op.called = True
+        self._resolve(step, op)
+
+    def drain(self, timeout: float | None = None) -> dict[str, Opinion]:
+        """남은 해석이 모두 정해질 때까지 기다린 뒤 닫고 결과(단계 ID → `Opinion`)를 돌려준다.
+
+        기본 대기 상한 = 단계 타임아웃 + 여유. 그래도 남은 단계는 타임아웃 사유로 정한다(통지 0).
+        """
+        bound = self._timeout + _DRAIN_SLACK_S if timeout is None else timeout
+        with self._lock:
+            self._lock.wait_for(lambda: not self._pending, timeout=max(0.0, bound))
+            for step, entry in list(self._pending.items()):
+                if entry.future is not None:
+                    entry.future.cancel()
+                if entry.timer is not None:
+                    entry.timer.cancel()
+                self._results[step] = Opinion(
+                    dropped_reason=f"소견기 타임아웃 {self._timeout:g}s", called=True
+                )
+            self._pending.clear()
+            self._closed = True
+            out = dict(self._results)
+        self._pool.shutdown(wait=False, cancel_futures=True)
+        return out
+
+    def close(self) -> None:
+        """기다리지 않고 닫는다(잡 종료) — 이후 통지 0."""
+        with self._lock:
+            self._closed = True
+            pending = list(self._pending.values())
+        for entry in pending:
+            if entry.timer is not None:
+                entry.timer.cancel()
+            if entry.future is not None:
+                entry.future.cancel()
+        self._pool.shutdown(wait=False, cancel_futures=True)
+
+
 def _top_status(hypotheses: Any) -> str | None:
     """코드 1순위 가설(순위 그대로 실린 첫 항목)의 상태."""
     if isinstance(hypotheses, Sequence) and hypotheses and isinstance(hypotheses[0], Mapping):
@@ -574,7 +748,9 @@ __all__ = [
     "REALTIME_MARK",
     "SYNTH_POLARITY_DROPPED",
     "SourceNumber",
+    "STEP_STREAM_OVER_LIMIT",
     "StepNarration",
+    "StepOpinionStream",
     "guard_text",
     "number_allowed",
     "polarity_conflict",

@@ -10,8 +10,12 @@
  *   - 연결 상태를 머리에 보인다(● 실시간 / ◌ 재연결 중 / ⚠ 끊김 — 사유). 자동 재연결이 3회 연속
  *     실패하면 15초 커서 조회로 내려가고 그 사실을 보인다(침묵 강등 금지). 60초 무수신이면 「마지막 수신
  *     n초 전」을 덧붙인다. 401·403·404면 다시 연결하지 않는다(재연결 루프 금지 — docs/18 2026-07-14).
- *   - 실행 기록은 최신이 위, 탭당 300행 상한. AI 메모(`kind=ai_note`)는 서버가 관리자에게만 보내며
- *     화면도 운영자가 아니면 버린다(G-38 · D-035 — 결론처럼 보이지 않게 다른 배경 + 「검증 전」 배지).
+ *   - 실행 기록은 최신이 위, 탭당 300행 상한. AI 메모(`kind=ai_note`) 행은 종전대로 운영자 화면에만
+ *     그린다(G-38 · D-035 — 결론처럼 보이지 않게 다른 배경 + 「검증 전」 배지).
+ *   - (plans/187 W20 · §5.6.4 · G-47~G-50) 조사 하위 탭 안에 「조사 흐름」(처음)·「실행 기록」 전환 탭.
+ *     실행 기록 = 위 종전 화면 그대로(숨김만 바꾼다) · 조사 흐름 = 단계 카드(왜 → 조회 → 결과 → 해석)와
+ *     「지금까지」 줄 · HolmesGPT 회차 카드(AI 메모를 「AI 판단 — 검증 전」으로 — G-48 사용자·관리자 모두,
+ *     서버가 두 겹 가림 후 보낸다). 같은 이벤트를 두 보기로 그린다 — 스트림 연결·커서는 하나다.
  *   - 중간 결과는 `briefing-view.js` 상세형 렌더를 그대로 쓴다(새 렌더 0). 종결되면 조사를 다시 읽어
  *     상세형 전체 + [조사 대화로 열기] + 기존 [다시 분석](공용 렌더의 analyze 옵션)을 그린다.
  *
@@ -123,6 +127,51 @@
         running: "⟳ 진행",
         submitted: "⏸ 접수",
         progress: "진행 S{done}/{total}",
+        // (plans/187 W20 · §5.6.4 · G-50) 「조사 흐름」 — 단계 카드(왜 → 조회 → 결과 → 해석)
+        modeFlow: "조사 흐름",
+        modeLog: "실행 기록",
+        flowEmpty: "아직 조사 단계가 없습니다. 단계가 시작되면 카드가 쌓입니다.",
+        sofarHead: "지금까지",
+        sofarChecking: "{title} 확인 중 ⟳",
+        sofarFinal: "종합 — {title}({status})",
+        sofarNone: "아직 이상으로 본 단계가 없습니다.",
+        cardWhy: "왜",
+        cardQuery: "조회",
+        cardResult: "결과",
+        cardOpinion: "해석",
+        cardRunning: "⟳ 진행 중",
+        skipTitle: "건너뜀 {title}",
+        skipNoReason: "생략",
+        // 섹션 사유 원문(`when_false — <조건식>`·`budget — …`)은 카드 문장에 쓰지 않는다(원문은 실행 기록 탭)
+        skipWhenFalse: "조건에 맞지 않아 생략",
+        skipBudget: "시간 예산 소진으로 생략",
+        tableOpen: "표 보기 ▸",
+        tableClose: "표 접기 ▾",
+        verdicts: { degraded: "이상", normal: "정상", no_was: "WAS 아님" },
+        liveBadge: "현재값 · 조사 시각 {hm}",
+        opinionMark: "AI · 이 단계까지의 근거",
+        opinionPending: "AI 해석 작성 중 ⟳",
+        opinionNone: "AI 해석 없음 — {reason}",
+        opinionNoneReason: "사유 미상",
+        conflictChip: "종합과 다름 — 종합 기준",
+        cautionBtn: "ⓘ주의",
+        holmesRound: "HolmesGPT {n}회차",
+        holmesJudge: "AI 판단 — 검증 전",
+        holmesNoQuery: "이 회차에는 조회가 없습니다.",
+        engineGroups: { playbook: "플레이북", holmes: "HolmesGPT" },
+        // ⓖ C1~C8 — 해당하는 문구만 카드 ⓘ에 펼친다
+        caution: {
+            c1: "뒤 단계 결과에 따라 달라질 수 있습니다. 최종 판단은 종합을 따르세요.",
+            c2: "원인 확정이 아닌 단계 해석입니다.",
+            c3: "종합(가설 순위)과 판정 방향이 다릅니다 — 종합을 기준으로 보세요.",
+            c4: "현재값입니다 — 알람 시각이 아니라 조사 시각 기준입니다.",
+            c4drift: "알람 시점과 다를 수 있음",
+            c5: "가드 탈락·시간 초과 등으로 AI 해석이 없습니다 — 결과 한 줄(사실)은 그대로입니다.",
+            c6: "수치는 표에 있는 값만 씁니다 — 「표 보기 ▸」로 원 표를 확인하세요.",
+            c7: "사용자 화면에도 보이는 문장입니다 — 민감값은 두 번 가리지만 놓친 값이 있을 수 있습니다.",
+            c8: "단계가 끝난 뒤 AI 응답 시간만큼 늦게 붙습니다.",
+            holmes: "자동 검사를 거치지 않은 AI 중간 판단입니다.",
+        },
     };
 
     var ENGINE_LABELS = { playbook: "플레이북", holmes: "HolmesGPT", system: "시스템" };
@@ -397,6 +446,292 @@
         if (engines.playbook) names.push(ENGINE_LABELS.playbook);
         if (engines.holmes) names.push(ENGINE_LABELS.holmes);
         return names.length ? names.join(" + ") : "—";
+    }
+
+    // ─── (plans/187 W20) 조사 흐름 — 순수 함수 ─────────────────────────────
+
+    // 시각 — 실행 기록 `at`은 epoch 초(실시간), 보관 요약은 ISO 문자열일 수 있다
+    function atMs(at) {
+        if (typeof at === "number" || (typeof at === "string" && /^\d+(\.\d+)?$/.test(at))) {
+            var n = Number(at);
+            return isFinite(n) && n > 0 ? n * 1000 : null;
+        }
+        if (!at) return null;
+        var d = new Date(String(at));
+        return isNaN(d.getTime()) ? null : d.getTime();
+    }
+
+    function clockOf(at, short) {
+        var ms = atMs(at);
+        if (ms === null) return "";
+        var d = new Date(ms);
+        return pad(d.getHours()) + ":" + pad(d.getMinutes()) + (short ? "" : ":" + pad(d.getSeconds()));
+    }
+
+    function circled(n) {
+        return n >= 1 && n <= 20 ? String.fromCharCode(0x2460 + n - 1) : "(" + n + ")";
+    }
+
+    // 「S3a 실행 중 요청」 → 「실행 중 요청」(단계 id 머리 제거)
+    function stripStep(label, step) {
+        var text = String(label || "");
+        if (step && text.indexOf(step + " ") === 0) return text.slice(step.length + 1);
+        return text;
+    }
+
+    /** 단계 해석 정규화 — 진행 중 `{status,text,reason}`(W20 계약) · 종결 문자열 + `opinion_dropped_reason`. */
+    function opinionOf(sec) {
+        if (!isObj(sec)) return null;
+        var op = sec.opinion;
+        if (isObj(op)) {
+            var st = String(op.status || "");
+            if (st === "ok" && op.text) return { status: "ok", text: String(op.text) };
+            if (st === "pending") return { status: "pending" };
+            if (st === "none" || st === "ok") return { status: "none", reason: String(op.reason || "") };
+            return null;
+        }
+        if (typeof op === "string" && op) return { status: "ok", text: op };
+        if (sec.opinion_dropped_reason) return { status: "none", reason: String(sec.opinion_dropped_reason) };
+        return null;
+    }
+
+    // 「지금까지」 고리 한 구 — 결과 한 줄의 첫 마디(「 · 」·「 — 」 앞)
+    function corePhrase(finding) {
+        var text = String(finding || "").split("\n")[0];
+        text = text.split(" · ")[0].split(" — ")[0];
+        return firstLine(text, 60);
+    }
+
+    function firstSentence(text) {
+        var line = String(text || "").split("\n")[0];
+        var m = /^(.+?[.!?。])(\s|$)/.exec(line);
+        return firstLine(m ? m[1] : line, 120);
+    }
+
+    function topHypothesis(synthesis) {
+        var hyps = asList(isObj(synthesis) ? synthesis.hypotheses : null).filter(isObj).slice();
+        hyps.sort(function (a, b) { return (Number(a.rank) || 99) - (Number(b.rank) || 99); });
+        return hyps[0] || null;
+    }
+
+    /**
+     * C3 「종합과 다름」(결정적 · LLM 0). 규칙:
+     *   - 종결 뒤에만 · 해석(`opinion` ok)이 있는 단계만 · 종합 1위 가설(rank 최소)의 `evidence_steps`에 든 단계만.
+     *   - 가설 극성: `supported`(지지) = 이상 · `refuted`(반박) = 정상 · `inconclusive`(판단 보류) = 극성 없음(칩 0).
+     *   - 단계 극성: `verdict` `degraded` = 이상 · `normal` = 정상 · 그 밖(판정 없음·no_was) = 극성 없음(칩 0).
+     *   - 두 극성이 모두 있고 서로 다르면 칩을 단다.
+     */
+    function conflictsWithSynthesis(sec, top) {
+        if (!isObj(sec) || !isObj(top)) return false;
+        if (asList(top.evidence_steps).map(String).indexOf(String(sec.step || "")) < 0) return false;
+        var hyp = { supported: "bad", refuted: "good" }[top.status];
+        var step = { degraded: "bad", normal: "good" }[sec.verdict];
+        return !!(hyp && step && hyp !== step);
+    }
+
+    // 현재값 배지가 알람 시각과 10분 넘게 떨어졌는가 — 배지 「알람 후 N분」을 먼저, 없으면 시각 차이
+    var DRIFT_MIN = 10;
+    function liveDrift(badge, stepAt, alarmTime) {
+        var m = /알람 후 (\d+)분/.exec(badge) || /알람 (\d+)분 전/.exec(badge);
+        if (m) return Number(m[1]) > DRIFT_MIN;
+        var a = atMs(stepAt);
+        var b = atMs(alarmTime);
+        return a !== null && b !== null && Math.abs(a - b) > DRIFT_MIN * 60000;
+    }
+
+    function queryOf(e) {
+        return {
+            text: String(e.phrase || e.label || e.tool || ""),
+            tool: String(e.tool || ""),
+            icon: rowIcon(e),
+            warn: !!WARN_STATUS[String(e.status || "")],
+            rows: e.rows !== undefined && e.rows !== null ? String(e.rows) + "행" : "",
+            elapsed: e.elapsed_ms !== undefined && e.elapsed_ms !== null ? fmtMs(e.elapsed_ms) : "",
+            excerpt: String(e.excerpt || ""),
+            seq: Number(e.seq) || 0,
+            open: e.kind === "tool_start",
+            phrase: !!e.phrase,
+        };
+    }
+
+    // 도구 시작·끝을 한 줄로 합친다 — 끝 행이 오면 같은 도구의 열린 줄을 채운다
+    function addQuery(list, e) {
+        if (e.kind === "tool_end") {
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].open && list[i].tool === String(e.tool || "")) {
+                    var q = queryOf(e);
+                    if (!q.phrase && list[i].phrase) { q.text = list[i].text; q.phrase = true; }
+                    list[i] = q;
+                    return;
+                }
+            }
+        }
+        list.push(queryOf(e));
+    }
+
+    /**
+     * 실행 기록 이벤트 + 단계 섹션(진행 중 `partial_briefing` 또는 종결 브리핑) → 조사 흐름 모델(순수).
+     * o = {done, synthesis, alarmTime}. 새 키(`because`·`finding`·`phrase`·`step_skip`)가 없는 구버전
+     * 이벤트도 한 줄(`label`)로 카드를 만든다(빈칸 0).
+     */
+    function flowModel(events, sections, o) {
+        o = o || {};
+        var evs = asList(events).filter(isObj).slice().sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
+        var secs = asList(sections).filter(function (s) {
+            return isObj(s) && s.step && s.action !== "synthesize" && s.status !== "pending_synthesis";
+        });
+        var secBy = {};
+        secs.forEach(function (s) { secBy[String(s.step)] = s; });
+        var cards = [];
+        var by = {};
+        function card(step) {
+            if (!by[step]) {
+                by[step] = { step: step, title: "", at: null, started: false, ended: false, skipped: false,
+                    status: "", elapsed: "", because: "", purpose: "", finding: "", queries: [] };
+                cards.push(by[step]);
+            }
+            return by[step];
+        }
+        var rounds = [];
+        var round = null;
+        evs.forEach(function (e) {
+            var kind = String(e.kind || "");
+            if (e.engine === "holmes") {
+                if (kind === "ai_note") {
+                    round = { at: e.at, note: String(e.note || ""), label: String(e.label || ""), queries: [] };
+                    rounds.push(round);
+                } else if (kind === "tool_start" || kind === "tool_end") {
+                    if (!round) { round = { at: e.at, note: "", label: "", queries: [] }; rounds.push(round); }
+                    addQuery(round.queries, e);
+                }
+                return;
+            }
+            // 단계 카드는 단계·도구 이벤트로만 만든다(소견 LLM·초안 메모는 카드의 「해석」이 섹션에서 읽는다)
+            if (e.engine !== "playbook" || !e.step || !/^(step_start|step_end|step_skip|tool_start|tool_end)$/.test(kind)) return;
+            var c = card(String(e.step));
+            if (kind === "step_start") {
+                c.started = true;
+                c.at = e.at;
+                c.title = c.title || stripStep(e.label, c.step);
+                if (e.because) c.because = String(e.because);
+                if (e.purpose) c.purpose = String(e.purpose);
+            } else if (kind === "step_end") {
+                c.ended = true;
+                c.endAt = e.at;
+                if (c.at === null) c.at = e.at;
+                c.title = c.title || stripStep(e.label, c.step);
+                c.status = String(e.status || "");
+                c.elapsed = e.elapsed_ms !== undefined && e.elapsed_ms !== null ? fmtMs(e.elapsed_ms) : "";
+                if (e.finding) c.finding = String(e.finding);
+                if (!c.purpose && e.purpose) c.purpose = String(e.purpose);
+            } else if (kind === "step_skip") {
+                c.skipped = true;
+                c.at = c.at === null ? e.at : c.at;
+                c.title = c.title || stripStep(e.label, c.step);
+                if (e.because) c.because = String(e.because);
+            } else if (kind === "tool_start" || kind === "tool_end") {
+                if (c.at === null) c.at = e.at;
+                addQuery(c.queries, e);
+            }
+        });
+        // 카드 순서(결정적) — 섹션(플레이북 순서)에 있는 단계가 섹션 순서로 먼저, 섹션에 없는 단계(진행 중 ·
+        // 구버전 이벤트만)는 그 뒤에 첫 이벤트 seq 순. 병렬 단계의 시작 순서가 바뀌어도 순서가 같다.
+        var ordered = [];
+        secs.forEach(function (s) {
+            var c = card(String(s.step));
+            if (ordered.indexOf(c) < 0) ordered.push(c);
+        });
+        cards.forEach(function (c) { if (!secBy[c.step]) ordered.push(c); });
+        cards = ordered;
+        var top = o.done ? topHypothesis(o.synthesis) : null;
+        var models = cards.map(function (c, i) {
+            var sec = secBy[c.step] || null;
+            var skipped = c.skipped || (sec && sec.status === "skipped");
+            var title = (sec && sec.title) || c.title || c.step;
+            var m = { step: c.step, no: circled(i + 1), title: title, time: clockOf(c.at), skipped: !!skipped };
+            if (skipped) {
+                m.because = c.because || (sec && (sec.because || skipReason(sec.reason))) || "";
+                return m;
+            }
+            var status = c.status || (sec ? String(sec.status || "") : "");
+            m.running = !o.done && c.started && !c.ended && !sec;
+            m.warn = !!WARN_STATUS[status];
+            m.icon = m.running ? "" : (c.ended || sec ? (m.warn ? "⚠" : "✓") : "");
+            m.elapsed = c.elapsed;
+            m.verdict = sec && TEXT.verdicts[sec.verdict] ? String(sec.verdict) : "";
+            m.verdictLabel = m.verdict ? TEXT.verdicts[m.verdict] : "";
+            m.because = c.because || c.purpose;
+            m.queries = c.queries;
+            m.finding = c.finding || (sec && sec.finding ? String(sec.finding) : "");
+            m.reason = !m.finding && sec && sec.reason ? String(sec.reason) : "";
+            m.table = sec && isObj(sec.table) && Array.isArray(sec.table.columns) && asList(sec.table.rows).length
+                ? sec.table : null;
+            m.rows = rowCount(m.table, c.queries);
+            m.opinion = opinionOf(sec);
+            m.badges = [];
+            m.live = "";
+            m.drift = false;
+            asList(sec && sec.badges).forEach(function (b) {
+                b = String(b);
+                if (/^현재값/.test(b)) {
+                    var hm = clockOf(c.endAt || c.at, true);
+                    m.live = hm ? fill(TEXT.liveBadge, { hm: hm }) : b;
+                    m.drift = liveDrift(b, c.endAt || c.at, o.alarmTime);
+                } else {
+                    m.badges.push(b);
+                }
+            });
+            m.conflict = !!(m.opinion && m.opinion.status === "ok" && conflictsWithSynthesis(sec, top));
+            var notes = [];
+            var C = TEXT.caution;
+            if (m.opinion && m.opinion.status === "ok") notes.push(C.c1, C.c2);
+            if (m.conflict) notes.push(C.c3);
+            if (m.live) notes.push(C.c4 + (m.drift ? " " + C.c4drift : ""));
+            if (m.opinion && m.opinion.status === "none") notes.push(C.c5);
+            if (m.opinion && m.opinion.status === "ok") notes.push(C.c6, C.c7);
+            if (m.opinion && m.opinion.status === "pending") notes.push(C.c8);
+            m.notes = notes;
+            return m;
+        });
+        var holmes = rounds.map(function (r, i) {
+            return { no: i + 1, title: fill(TEXT.holmesRound, { n: i + 1 }), time: clockOf(r.at), note: r.note,
+                queries: r.queries,
+                notes: r.note ? [TEXT.caution.c1, TEXT.caution.c2, TEXT.caution.c7, TEXT.caution.holmes] : [] };
+        });
+        return { cards: models, holmes: holmes, sofar: sofarLine(models, o.done, top, o.synthesis) };
+    }
+
+    // 건너뜀 섹션 사유 원문 → 카드 문장(조건식·예산 원문은 감춘다)
+    function skipReason(reason) {
+        var text = String(reason || "");
+        if (/^when_false\b/.test(text)) return TEXT.skipWhenFalse;
+        if (/^budget\b/.test(text)) return TEXT.skipBudget;
+        return text;
+    }
+
+    // 단계 결과 행 수 — 섹션 표 행 수, 없으면 도구 끝 행의 `rows` 합(모르면 0)
+    function rowCount(table, queries) {
+        if (table) return asList(table.rows).length;
+        return asList(queries).reduce(function (n, q) { return n + (parseInt(q.rows, 10) || 0); }, 0);
+    }
+
+    /** 「지금까지」 줄(결정적) — 종결이면 종합 1위 가설 + 서술 첫 문장, 진행 중이면 결과 고리 최대 4 + 확인 중. */
+    function sofarLine(cards, done, top, synthesis) {
+        if (done && top) {
+            var head = fill(TEXT.sofarFinal, { title: top.title || "", status: top.status_label || top.status || "" });
+            var lead = isObj(synthesis) && synthesis.narrative ? firstSentence(synthesis.narrative) : "";
+            return lead ? head + " · " + lead : head;
+        }
+        // 고리 규칙: ① 이상 판정(`degraded`) 단계 ② 판정이 없는 성공 단계 중 결과 행이 1개 이상인 것만.
+        // 정상 판정·건너뜀·결손(경고 상태)·0행(「판정 없음 · 결과 0건」)은 뺀다. 걸러진 뒤 최근 4고리.
+        var links = cards.filter(function (c) {
+            if (c.skipped || c.running || c.warn || !c.finding) return false;
+            if (c.verdict === "degraded") return true;
+            return !c.verdict && c.rows > 0;
+        }).map(function (c) { return corePhrase(c.finding); }).slice(-4);
+        var run = cards.filter(function (c) { return c.running; })[0];
+        if (run && !done) links.push(fill(TEXT.sofarChecking, { title: run.title }));
+        return links.length ? links.join(" → ") : "";
     }
 
     // ─── 컨트롤러 ───────────────────────────────────────────────────────
@@ -728,6 +1063,8 @@
                 log: { rows: [], seen: {}, clipped: false, tools: 0 },
                 filter: { playbook: true, holmes: true, system: true, ai: true },
                 autoScroll: true, expanded: {}, finalPanel: null, dom: null,
+                // (W20) 조사 흐름 — 같은 이벤트를 두 보기로 그린다(연결·커서는 하나)
+                mode: "flow", flow: { events: [], seen: {} }, flowOpen: {},
             };
         }
 
@@ -782,6 +1119,29 @@
             head.appendChild(warn);
             panel.appendChild(head);
 
+            // (W20 · G-50) 「조사 흐름」·「실행 기록」 전환 — 실행 기록(dv-grid)은 종전 화면 그대로 숨김만 바꾼다
+            var modes = el("div", "dv-modes");
+            modes.setAttribute("role", "tablist");
+            var modeBtns = {};
+            [["flow", TEXT.modeFlow], ["log", TEXT.modeLog]].forEach(function (m) {
+                var b = el("button", "dv-mode", m[1]);
+                b.type = "button";
+                b.setAttribute("role", "tab");
+                b.addEventListener("click", function () { setMode(tab, m[0]); });
+                modes.appendChild(b);
+                modeBtns[m[0]] = b;
+            });
+            panel.appendChild(modes);
+            var flowBox = el("section", "dv-flow");
+            var sofar = el("div", "dv-sofar");
+            sofar.appendChild(el("span", "dv-label", TEXT.sofarHead));
+            var sofarText = el("span", "dv-sofar-text");
+            sofar.appendChild(sofarText);
+            flowBox.appendChild(sofar);
+            var flowBody = el("div", "dv-flow-body");
+            flowBox.appendChild(flowBody);
+            panel.appendChild(flowBox);
+
             var grid = el("div", "dv-grid");
             var logBox = el("section", "dv-log");
             var logBar = el("div", "dv-log-bar");
@@ -825,8 +1185,216 @@
 
             tab.dom = { wrap: wrap, btn: btn, label: label, state: state, panel: panel, title: title, target: target, meta: meta,
                 warn: warn, filters: filters, logNote: logNote, rows: rows, partBox: partBox, partBody: partBody,
-                finalBox: finalBox, finalBody: finalBody };
+                finalBox: finalBox, finalBody: finalBody, grid: grid, modeBtns: modeBtns, flowBox: flowBox,
+                sofar: sofar, sofarText: sofarText, flowBody: flowBody };
+            setMode(tab, tab.mode);
             renderTabButton(tab);
+        }
+
+        // ── (W20) 조사 흐름 ──
+        function setMode(tab, mode) {
+            tab.mode = mode === "log" ? "log" : "flow";
+            if (!tab.dom) return;
+            tab.dom.grid.hidden = tab.mode !== "log";
+            tab.dom.flowBox.hidden = tab.mode !== "flow";
+            Object.keys(tab.dom.modeBtns).forEach(function (k) {
+                var on = k === tab.mode;
+                tab.dom.modeBtns[k].className = "dv-mode" + (on ? " active" : "");
+                tab.dom.modeBtns[k].setAttribute("aria-selected", on ? "true" : "false");
+            });
+        }
+
+        function keepFlowEvents(tab, events) {
+            var f = tab.flow;
+            asList(events).forEach(function (e) {
+                if (!isObj(e)) return;
+                var seq = Number(e.seq) || 0;
+                if (seq && f.seen[seq]) return;
+                if (seq) f.seen[seq] = true;
+                f.events.push(e);
+            });
+            if (f.events.length > ROW_CAP) {
+                f.events.sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
+                f.events.splice(0, f.events.length - ROW_CAP);
+            }
+        }
+
+        // 단계 섹션 — 종결 브리핑이 있으면 그것(해석·판정 최종), 없으면 진행 중 partial_briefing
+        function flowSource(tab) {
+            var v = tab.view || {};
+            var fin = isObj(v.briefing) && isObj(v.briefing.playbook) ? v.briefing.playbook : null;
+            if (tab.done && fin) return { sections: fin.sections, synthesis: fin.synthesis };
+            var part = isObj(tab.partial) && isObj(tab.partial.playbook) ? tab.partial.playbook : null;
+            return { sections: part ? part.sections : [], synthesis: null };
+        }
+
+        function toggler(tab, key, closedText, openText, target) {
+            var btn = el("button", "dv-flow-toggle", tab.flowOpen[key] ? openText : closedText);
+            btn.type = "button";
+            btn.setAttribute("aria-expanded", tab.flowOpen[key] ? "true" : "false");
+            target.hidden = !tab.flowOpen[key];
+            btn.addEventListener("click", function () {
+                var on = !tab.flowOpen[key];
+                tab.flowOpen[key] = on;
+                target.hidden = !on;
+                btn.textContent = on ? openText : closedText;
+                btn.setAttribute("aria-expanded", on ? "true" : "false");
+            });
+            return btn;
+        }
+
+        function tableNode(table) {
+            var t = el("table", "dv-card-table");
+            var cols = table.columns.map(String);
+            var hr = el("tr");
+            cols.forEach(function (c) { hr.appendChild(el("th", null, c)); });
+            var thead = el("thead");
+            thead.appendChild(hr);
+            t.appendChild(thead);
+            var body = el("tbody");
+            asList(table.rows).forEach(function (row) {
+                if (isObj(row)) row = cols.map(function (c) { return row[c]; });
+                if (!Array.isArray(row)) return;
+                var tr = el("tr");
+                row.forEach(function (v) {
+                    var text = v === null || v === undefined ? "—" : typeof v === "object" ? JSON.stringify(v) : String(v);
+                    tr.appendChild(el("td", null, text));
+                });
+                body.appendChild(tr);
+            });
+            t.appendChild(body);
+            return t;
+        }
+
+        function cautionNode(tab, key, notes, parent) {
+            if (!notes.length) return;
+            var ul = el("ul", "dv-caution");
+            notes.forEach(function (n) { ul.appendChild(el("li", null, n)); });
+            parent.appendChild(toggler(tab, key, TEXT.cautionBtn, TEXT.cautionBtn, ul));
+            parent.appendChild(ul);
+        }
+
+        function line(dl, head, node) {
+            dl.appendChild(el("dt", null, head));
+            var dd = el("dd");
+            dd.appendChild(node);
+            dl.appendChild(dd);
+            return dd;
+        }
+
+        function queryNode(tab, q, key) {
+            var div = el("div", "dv-q" + (q.warn ? " dv-q--warn" : ""));
+            div.appendChild(el("span", "dv-q-text", q.text));
+            var meta = [q.open ? "⟳" : q.icon, q.elapsed, q.rows].filter(Boolean).join(" ");
+            if (meta) div.appendChild(el("span", "dv-meta", meta));
+            if (q.excerpt) {
+                var pre = el("pre", "dv-excerpt", q.excerpt);
+                div.appendChild(toggler(tab, key, "▸", "▾", pre));
+                div.appendChild(pre);
+            }
+            return div;
+        }
+
+        function cardNode(tab, m) {
+            var li = el("li", "dv-card" + (m.skipped ? " dv-card--skip" : "") + (m.running ? " dv-card--running" : "") +
+                (m.warn ? " dv-card--warn" : ""));
+            li.setAttribute("data-step", m.step);
+            var head = el("div", "dv-card-head");
+            head.appendChild(el("span", "dv-card-no", m.no));
+            if (m.time) head.appendChild(el("span", "dv-time", m.time));
+            if (m.skipped) {
+                head.appendChild(el("span", "dv-card-title", fill(TEXT.skipTitle, { title: m.title }) + " — " +
+                    (m.because || TEXT.skipNoReason)));
+                li.appendChild(head);
+                return li;
+            }
+            head.appendChild(el("span", "dv-card-title", m.title));
+            var state = m.running ? TEXT.cardRunning : [m.icon, m.elapsed].filter(Boolean).join(" ");
+            if (state) head.appendChild(el("span", "dv-card-state", state));
+            if (m.verdictLabel) head.appendChild(el("span", "dv-verdict dv-verdict--" + m.verdict, m.verdictLabel));
+            if (m.live) head.appendChild(el("span", "dv-live", m.live));
+            m.badges.forEach(function (b) { head.appendChild(el("span", "dv-badge", b)); });
+            if (m.conflict) head.appendChild(el("span", "dv-conflict", TEXT.conflictChip));
+            li.appendChild(head);
+            var dl = el("dl", "dv-card-body");
+            if (m.because) line(dl, TEXT.cardWhy, el("span", "dv-why", m.because));
+            if (m.queries.length) {
+                var qs = el("div", "dv-queries");
+                m.queries.forEach(function (q, i) { qs.appendChild(queryNode(tab, q, "ex:" + m.step + ":" + i)); });
+                line(dl, TEXT.cardQuery, qs);
+            }
+            if (m.finding || m.reason || m.table) {
+                var res = el("div", "dv-result");
+                if (m.finding) res.appendChild(el("span", "dv-finding", m.finding));
+                else if (m.reason) res.appendChild(el("span", "dv-finding dv-finding--reason", m.reason));
+                if (m.table) {
+                    var wrap = el("div", "dv-card-table-wrap");
+                    wrap.appendChild(tableNode(m.table));
+                    res.appendChild(toggler(tab, "table:" + m.step, TEXT.tableOpen, TEXT.tableClose, wrap));
+                    res.appendChild(wrap);
+                }
+                line(dl, TEXT.cardResult, res);
+            }
+            if (m.opinion) {
+                var op = el("div", "dv-opinion dv-opinion--" + m.opinion.status);
+                if (m.opinion.status === "ok") {
+                    op.appendChild(el("span", "dv-ai-mark", TEXT.opinionMark));
+                    op.appendChild(el("span", "dv-opinion-text", m.opinion.text));
+                } else if (m.opinion.status === "pending") {
+                    op.textContent = TEXT.opinionPending;
+                } else {
+                    op.textContent = fill(TEXT.opinionNone, { reason: m.opinion.reason || TEXT.opinionNoneReason });
+                }
+                line(dl, TEXT.cardOpinion, op);
+            }
+            if (dl.children.length) li.appendChild(dl);
+            cautionNode(tab, "note:" + m.step, m.notes, li);
+            return li;
+        }
+
+        function roundNode(tab, r) {
+            var li = el("li", "dv-card dv-card--holmes");
+            var head = el("div", "dv-card-head");
+            head.appendChild(el("span", "dv-card-no", circled(r.no)));
+            if (r.time) head.appendChild(el("span", "dv-time", r.time));
+            head.appendChild(el("span", "dv-card-title", r.title));
+            li.appendChild(head);
+            var dl = el("dl", "dv-card-body");
+            var qs = el("div", "dv-queries");
+            r.queries.forEach(function (q, i) { qs.appendChild(queryNode(tab, q, "hx:" + r.no + ":" + i)); });
+            if (!r.queries.length) qs.appendChild(el("span", "dv-note", TEXT.holmesNoQuery));
+            line(dl, TEXT.cardQuery, qs);
+            if (r.note) {
+                var op = el("div", "dv-opinion dv-opinion--holmes");
+                op.appendChild(el("span", "dv-ai-badge", TEXT.holmesJudge));
+                op.appendChild(el("span", "dv-opinion-text", r.note));
+                line(dl, TEXT.holmesJudge, op);
+            }
+            li.appendChild(dl);
+            cautionNode(tab, "hnote:" + r.no, r.notes, li);
+            return li;
+        }
+
+        function renderFlow(tab) {
+            if (!tab.dom) return;
+            var src = flowSource(tab);
+            var model = flowModel(tab.flow.events, src.sections, {
+                done: tab.done, synthesis: src.synthesis, alarmTime: isObj(tab.alarm) ? tab.alarm.alarm_time : null,
+            });
+            tab.dom.sofarText.textContent = model.sofar || TEXT.sofarNone;
+            var body = tab.dom.flowBody;
+            body.textContent = "";
+            var groups = [];
+            if (model.cards.length) groups.push(["playbook", model.cards.map(function (m) { return cardNode(tab, m); })]);
+            if (model.holmes.length) groups.push(["holmes", model.holmes.map(function (r) { return roundNode(tab, r); })]);
+            groups.forEach(function (g) {
+                // 두 엔진이 함께 돌면 엔진별 줄을 나눈다(parallel)
+                if (groups.length > 1) body.appendChild(el("div", "dv-label dv-flow-engine", TEXT.engineGroups[g[0]]));
+                var ol = el("ol", "dv-cards");
+                g[1].forEach(function (n) { ol.appendChild(n); });
+                body.appendChild(ol);
+            });
+            if (!groups.length) body.appendChild(el("div", "dv-note", TEXT.flowEmpty));
         }
 
         function renderTabButton(tab) {
@@ -1060,6 +1628,7 @@
             tab.why.forEach(function (w) { seen[w.seq] = true; });
             whyLines(act.events).forEach(function (w) { if (!seen[w.seq]) tab.why.push(w); });
             stepPurposes(act.events, tab.stepPurpose);
+            keepFlowEvents(tab, act.events);
             mergeEvents(tab.log, act.events, operator, ROW_CAP);
             var next = Number(act.next_seq);
             if (isFinite(next) && next > tab.seq) tab.seq = next;
@@ -1088,6 +1657,7 @@
             } else {
                 renderPartial(tab);
             }
+            renderFlow(tab);
             renderTabButton(tab);
             renderTabHead(tab);
         }
@@ -1138,6 +1708,7 @@
             order.push(id);
             buildTab(tab);
             renderRows(tab);
+            renderFlow(tab);
             if (!o.background) select(id);
             else persist();
             renderMenu();
@@ -1276,9 +1847,11 @@
                 setState(tab, data);
                 renderRows(tab);
                 renderPartial(tab);
+                renderFlow(tab);
             } else if (type === "partial") {
                 if (isObj(data.partial_briefing)) tab.partial = data.partial_briefing;
                 renderPartial(tab);
+                renderFlow(tab);
             } else if (type === "poll_error") {
                 tab.pollError = data.reason || "";
             } else if (type === "done") {
@@ -1404,6 +1977,9 @@
         searchQuery: searchQuery,
         stepPurposes: stepPurposes,
         targetLines: targetLines,
+        flowModel: flowModel,
+        opinionOf: opinionOf,
+        conflictsWithSynthesis: conflictsWithSynthesis,
         watchParam: watchParam,
         connText: connText,
         statusText: statusText,

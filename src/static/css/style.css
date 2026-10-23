@@ -936,6 +936,96 @@ body:has(.chat-layout.history-collapsed) {
     margin-top: 8px;
 }
 
+/* (plans/187 W20 · G-50) 「조사 흐름」·「실행 기록」 전환 · 단계 카드 */
+.dv-modes { display: flex; gap: 2px; margin: 6px 0 8px; border-bottom: 1px solid var(--border); }
+.dv-mode {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 5px 12px;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.dv-mode.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 700; }
+.dv-grid[hidden],
+.dv-flow[hidden],
+.dv-caution[hidden],
+.dv-card-table-wrap[hidden] { display: none; }
+.dv-flow {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    padding: 8px 10px;
+}
+.dv-sofar {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    padding: 4px 0 8px;
+    border-bottom: 1px solid var(--table-cell-border);
+    font-size: 0.8125rem;
+    overflow-wrap: anywhere;
+}
+.dv-cards { list-style: none; margin: 0; padding: 0; }
+.dv-card { padding: 8px 2px; border-bottom: 1px solid var(--table-cell-border); font-size: 0.8125rem; }
+.dv-card--skip { color: var(--text-muted); }
+.dv-card--warn .dv-card-state { color: var(--warning); }
+.dv-card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.dv-card-title { font-weight: 700; flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+.dv-card--skip .dv-card-title { font-weight: 400; }
+.dv-card-state { font-size: 0.75rem; color: var(--text-muted); }
+.dv-verdict,
+.dv-live,
+.dv-badge,
+.dv-conflict {
+    font-size: 0.6875rem;
+    padding: 0 5px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+.dv-verdict--degraded { color: var(--error); border-color: var(--error); background: var(--error-bg); }
+.dv-verdict--normal { color: var(--success); border-color: var(--success); }
+.dv-live { color: var(--tone-amber); border-color: var(--tone-amber); }
+.dv-conflict { color: var(--warning); border-color: var(--warning); background: var(--warning-bg); }
+.dv-card-body {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 3px 10px;
+    margin: 6px 0 0 22px;
+}
+.dv-card-body dt { color: var(--text-secondary); }
+.dv-card-body dd { margin: 0; overflow-wrap: anywhere; }
+.dv-q { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.dv-q--warn .dv-meta { color: var(--warning); }
+.dv-flow-toggle {
+    background: transparent;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    padding: 0 4px;
+    font-size: 0.75rem;
+}
+.dv-card-table-wrap { flex-basis: 100%; overflow-x: auto; margin-top: 4px; }
+.dv-card-table { border-collapse: collapse; font-size: 0.75rem; }
+.dv-card-table th,
+.dv-card-table td { border: 1px solid var(--table-cell-border); padding: 2px 6px; text-align: left; }
+.dv-opinion--ok,
+.dv-opinion--holmes { background: var(--info-bg); padding: 2px 6px; border-radius: 4px; }
+.dv-opinion--pending,
+.dv-opinion--none { color: var(--text-muted); }
+.dv-ai-mark {
+    font-size: 0.6875rem;
+    font-weight: 700;
+    color: var(--tone-violet);
+    margin-right: 6px;
+}
+.dv-opinion .dv-ai-badge { margin-right: 6px; }
+.dv-card > .dv-flow-toggle { margin-left: 18px; }
+.dv-caution { margin: 2px 0 0 22px; padding-left: 16px; font-size: 0.75rem; color: var(--text-secondary); }
+.dv-flow-engine { margin-top: 8px; }
+
 /* 알람 카드 [진행 보기] · 관제 드로어 「장애 진단에서 보기」(공용 렌더 밖 진입 버튼) */
 .diagnosis-open,
 .cause-live-open {

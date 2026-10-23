@@ -16,8 +16,11 @@
 - 종결 시 실행 기록 요약(발췌·AI 메모 제외)을 조사 저장소와 같은 폴더의
   `investigation_activity.jsonl`에 1행 남긴다(G-37). sre_agent 잡이 사라진 뒤의 조회는 그
   요약으로 답한다.
-- 사용자 경로: AI 메모(`ai_note`) 이벤트와 `note` 키를 빼고(G-38), 한 줄·발췌 등 문자열을 D-325 ③
-  마스킹으로 한 번 더 가린다. 관리자 경로는 sre_agent `mask_secrets` 뒤 원문.
+- 사용자 경로: 한 줄·발췌·AI 메모(`ai_note` 이벤트의 `note`)·조사 흐름 문장(`finding`·`because`·
+  `phrase` — plans/187 W20) 등 문자열을 D-325 ③ 마스킹으로 한 번 더 가린다(두 겹 가림). HolmesGPT
+  AI 메모는 G-48(v2.7)부터 사용자에게도 「AI 판단 — 검증 전」으로 보인다(G-38 개정 — 브리핑·통보에는
+  쓰지 않음). 플레이북 소견기의 가드 전 초안(`engine=playbook`의 `ai_note`)은 가드를 거치지 않은
+  문장이라 계속 관리자에게만 보낸다. 관리자 경로는 sre_agent `mask_secrets` 뒤 원문.
 - sre_agent 응답에 `activity`·`phase` 등 키가 없어도(구버전) 깨지지 않는다 — 이벤트 0건 ·
   `source="none"`.
 
@@ -69,18 +72,23 @@ POLL_ERROR_PREFIX = "갱신 실패 — "
 INVESTIGATION_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,128}$")
 #: 응답 최상위에 싣는 진행 상태 키(sre_agent 계약 그대로).
 STATE_KEYS: tuple[str, ...] = ("phase", "queue_position", "elapsed_s")
-#: 사용자 경로 이벤트 키(화이트리스트 — `note`는 싣지 않는다 · G-38 fail-closed).
+#: 사용자 경로 이벤트 키(화이트리스트 · fail-closed) — `note`(AI 메모)는 G-48로 싣는다(가림 후) ·
+#: `finding`·`because`·`phrase`는 조사 흐름 문장(plans/187 W20 — 마스킹 대상).
 USER_EVENT_KEYS: tuple[str, ...] = (
     "seq", "at", "engine", "kind", "step", "tool", "label", "status", "elapsed_ms", "rows",
-    "excerpt", "purpose",
+    "excerpt", "purpose", "note", "finding", "because", "phrase",
 )
 #: 마스킹하지 않는 이벤트 키(수치·enum·도구 이름).
 _UNMASKED_EVENT_KEYS: frozenset[str] = frozenset({
     "seq", "at", "engine", "kind", "step", "tool", "status", "elapsed_ms", "rows",
 })
-#: 관리자에게만 보내는 이벤트 종류(G-38).
-ADMIN_ONLY_KINDS: frozenset[str] = frozenset({"ai_note"})
-_CLIP_KEYS: tuple[str, ...] = ("label", "excerpt", "note", "purpose")
+#: 관리자에게만 보내는 이벤트 종류 — G-48(v2.7)로 HolmesGPT `ai_note`도 사용자에게 보내 비었다.
+ADMIN_ONLY_KINDS: frozenset[str] = frozenset()
+#: 관리자에게만 보내는 (엔진, 종류) — 플레이북 소견 초안(가드 전 · G-48은 HolmesGPT 메모만).
+ADMIN_ONLY_ENGINE_KINDS: frozenset[tuple[str, str]] = frozenset({("playbook", "ai_note")})
+_CLIP_KEYS: tuple[str, ...] = (
+    "label", "excerpt", "note", "purpose", "finding", "because", "phrase",
+)
 _STATUS_RUNNING = "running"
 #: 목록 「엔진」 칸에 싣는 엔진 이름(W14 교정 — 그 밖의 값은 버린다).
 LIST_ENGINES: frozenset[str] = frozenset({"playbook", "holmes"})
@@ -124,10 +132,12 @@ def _mask_value(value: Any, mask_fn: Callable[[str], str] | None) -> Any:
 def user_events(
     events: Iterable[Mapping[str, Any]], mask_fn: Callable[[str], str] | None
 ) -> list[dict[str, Any]]:
-    """사용자 경로 이벤트 — AI 메모 제외 · 키 화이트리스트 · 문자열 D-325 ③ 마스킹(순수 함수)."""
+    """사용자 경로 이벤트 — 키 화이트리스트 · D-325 ③ 마스킹(순수 · HolmesGPT 메모만 G-48)."""
     out: list[dict[str, Any]] = []
     for ev in events:
-        if ev.get("kind") in ADMIN_ONLY_KINDS:
+        if ev.get("kind") in ADMIN_ONLY_KINDS or (ev.get("engine"), ev.get("kind")) in (
+            ADMIN_ONLY_ENGINE_KINDS
+        ):
             continue
         item: dict[str, Any] = {}
         for key in USER_EVENT_KEYS:
@@ -801,6 +811,7 @@ async def stream_events(
 
 __all__ = [
     "ACTIVITY_MAX_EVENTS",
+    "ADMIN_ONLY_ENGINE_KINDS",
     "ADMIN_ONLY_KINDS",
     "BUFFER_TTL_SECONDS",
     "IDLE_STOP_SECONDS",

@@ -25,8 +25,10 @@ logger = logging.getLogger(__name__)
 
 BatchCaller = Callable[[Sequence[tuple[str, dict]]], list[str]]
 
-#: 진행 중 호출을 기다리는 기본 상한(초) — dispatcher 전체 예산(300s)과 같다.
-DEFAULT_WAIT_TIMEOUT_S = 300.0
+#: 진행 중 호출을 기다리는 기본 상한(초) — 조사 전체 기본값(600s)과 같다(plans/187 W22 · D-341
+#: 부기 12). dispatcher는 잡 캐시를 만들 때 실제 조사 전체 상한(`investigation_timeout_seconds`)을
+#: 넘겨 이 값 대신 쓴다.
+DEFAULT_WAIT_TIMEOUT_S = 600.0
 
 
 def _strip_none(value: Any) -> Any:

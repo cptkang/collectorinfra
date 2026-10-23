@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 import logging
+import re
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import asdict, dataclass, field
@@ -38,8 +40,9 @@ from sre_agent.application.evidence_prefetch import (
     _series,
     build_calls,
 )
-from sre_agent.domain.activity_log import ActivityLog, safe_append
+from sre_agent.domain.activity_log import ActivityLog, clip_bytes, safe_append
 from sre_agent.domain.correlation import EpisodePoint, MetricSeries, correlate
+from sre_agent.domain.playbook_readings import was_cpu_top_instance
 from sre_agent.domain.source_adapter import (
     DEFAULT_REGISTRY,
     DPM,
@@ -48,6 +51,8 @@ from sre_agent.domain.source_adapter import (
     AdapterRegistry,
     fetch_or_not_connected,
 )
+from sre_agent.domain.step_findings import tool_phrase
+from sre_agent.infrastructure.log_masking import mask_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +70,7 @@ APM_SLOW_TX = "apm_slow_transactions"
 APM_TX_PROFILE = "apm_transaction_profile"
 APM_EVENTS = "apm_events"
 APM_ACTIVE_SERVICES = "apm_active_services"
+APM_ACTIVE_DETAIL = "apm_active_detail"
 APM_SOURCE_CHANGES = "apm_source_changes"
 APM_CHANGE_IMPACT = "apm_change_impact"
 POLESTAR_PROCESS = "polestar_process_snapshot"
@@ -106,6 +112,7 @@ ACTION_TITLES: dict[str, str] = {
     "synthesize": "종합",
     "apm.events_errors": "오류 유형 상위",
     "apm.active_services": "액티브 서비스",
+    "apm.active_sql": "실행 중 SQL",
     "host.resource_status": "자원 가용 상태",
     "host.topology": "토폴로지",
     "host.alarm_history": "같은 알람 재발 이력",
@@ -151,6 +158,13 @@ class RunScope:
     polestar_reason: str | None = None  # 폴스타 소스 미확정 사유(확정이면 None)
     alarm_name: str | None = None
     targets: list[dict[str, Any]] = field(default_factory=list)
+    #: 이 호스트의 WAS 인스턴스 중 판정이 난 것 전부(역방향 S0′ 순서 · `for_each: host_was` 입력 ·
+    #: plans/187 W20b). 대상(`targets`)과 따로 둔다 — 대상 소비 스텝(S5·S7) 동작 비트 동일.
+    #: 브리핑 범위(`to_dict`)에는 싣지 않는다.
+    host_was: list[str] = field(default_factory=list)
+    #: 폴스타 소스를 설정 매핑으로 대체했을 때의 근거 문장(plans/187 W21 P6). None이면 브리핑
+    #: 범위(`to_dict`)에 키 자체를 싣지 않는다(종전 모양 그대로).
+    polestar_basis: str | None = None
 
     def target_names(self) -> list[str]:
         names = [str(t["instance"]) for t in self.targets if t.get("instance")]
@@ -159,7 +173,11 @@ class RunScope:
         return names
 
     def to_dict(self) -> dict[str, Any]:
-        return asdict(self)
+        out = asdict(self)
+        out.pop("host_was", None)
+        if out.get("polestar_basis") is None:
+            out.pop("polestar_basis", None)
+        return out
 
 
 @dataclass
@@ -239,8 +257,17 @@ def parse_response(tool: str, args: dict, raw: str) -> ToolResponse:
     return ToolResponse(tool, args, obj, None)
 
 
+#: 스텝 타임아웃으로 중단된 뒤 스텝이 내려던 호출의 오류(호출하지 않음 · plans/187 W21 P4).
+STEP_ABORTED = "스텝 타임아웃으로 중단"
+
+
 class StepContext:
-    """스텝 1회 실행 문맥. 스텝마다 새로 만든다(호출 기록이 스텝별)."""
+    """스텝 1회 실행 문맥. 스텝마다 새로 만든다(호출 기록이 스텝별).
+
+    중단(plans/187 W21 P4): 실행기가 스텝 타임아웃에 `abort(사유)`를 부르면 `cancel`이 서고, 이후
+    `call()`은 도구를 부르지 않고 `STEP_ABORTED` 오류 응답을 돌려준다(타임아웃 스텝이 다음 단계와
+    게이트웨이를 경합하지 않게). 진행 계수(요청·완료 건수 · 대기 중 도구)는 사유 문장 재료다.
+    """
 
     def __init__(
         self,
@@ -273,6 +300,42 @@ class StepContext:
         #: 실행 기록(plans/187 W13) — dispatcher가 스텝 실행 직전에 단다. None이면 기록 0.
         self.activity: ActivityLog | None = None
         self.step_id: str | None = None
+        #: 중단 신호 · 사유 · 중단 통지(dispatcher가 단다 — 실행 기록 `step_end`용 · None이면
+        #: 무동작).
+        self.cancel = threading.Event()
+        self.abort_reason: str | None = None
+        #: 실행 시작 신호·시각(실행기가 스텝 대기 상한을 시작 시각부터 잰다 — W21).
+        self.started = threading.Event()
+        self.started_at: float | None = None
+        self.on_abort: Callable[[str], None] | None = None
+        #: 결손 스텝 재시도(plans/187 W22)의 첫 시도 사유 — 재시도 문맥이면 실행기가
+        #: `step_id`와 함께 미리 단다(dispatcher가 sid를 다시 배정하지 않고 재시도 표시로
+        #: 단계 시작·끝을 낸다).
+        self.retry_of: str | None = None
+        self._progress_lock = threading.Lock()
+        self.requested = 0
+        self.completed = 0
+        self.inflight: list[str] = []
+
+    def progress_text(self) -> str:
+        """진행 계수 문장 — 「요청 N건 중 M건 완료 · 대기 도구…」(대기 없으면 뒤를 뺀다)."""
+        with self._progress_lock:
+            text = f"요청 {self.requested}건 중 {self.completed}건 완료"
+            waiting = list(dict.fromkeys(self.inflight))
+        return f"{text} · 대기 {', '.join(waiting)}" if waiting else text
+
+    def abort(self, reason: str) -> None:
+        """스텝을 중단한다 — 사유를 남기고 신호를 세운 뒤 중단 통지를 부른다(통지 실패는 무시)."""
+        self.abort_reason = reason
+        self.cancel.set()
+        if self.on_abort is None:
+            return
+        try:
+            self.on_abort(reason)
+        except Exception as e:  # noqa: BLE001 — 통지(실행 기록) 실패가 실행기를 막지 않는다
+            logger.warning(
+                "스텝 중단 통지 실패(무시) %s: %s: %s", self.step_id, type(e).__name__, e
+            )
 
     @property
     def event(self) -> Mapping[str, Any]:
@@ -284,9 +347,12 @@ class StepContext:
 
         실행 기록이 달려 있으면(plans/187 W13) 호출 전 `tool_start`, 후 `tool_end`(상태 ·
         배치 소요 · 행 수 · 발췌)를 남긴다. 잡 캐시 적중은 `status=cached`다.
+        중단(`cancel`)됐으면 부르지도 기록하지도 않고 `STEP_ABORTED` 오류 응답만 돌려준다(W21 P4).
         """
         if not calls:
             return []
+        if self.cancel.is_set():
+            return [ToolResponse(t, dict(a), None, STEP_ABORTED) for t, a in calls]
         caller = self.apm if axis == "apm" else self.polestar
         if caller is None:
             msg = "APM 게이트웨이 미구성" if axis == "apm" else "폴스타 MCP 미구성"
@@ -295,8 +361,22 @@ class StepContext:
                 self._record_end(r, None, "error", None, msg)
             return out_missing
         cached = self._record_start(caller, calls)
+        names = [t for t, _ in calls]
+        with self._progress_lock:
+            self.requested += len(calls)
+            self.inflight.extend(names)
         t0 = time.monotonic()
-        raws = list(caller(list(calls)))
+        try:
+            raws = list(caller(list(calls)))
+        finally:
+            with self._progress_lock:
+                for name in names:
+                    self.inflight.remove(name)
+        with self._progress_lock:
+            self.completed += len(calls)
+        if self.cancel.is_set():
+            # 중단 뒤 돌아온 배치 — 계수만 갱신하고 기록·적재는 하지 않는다(W21 교정)
+            return [ToolResponse(t, dict(a), None, STEP_ABORTED) for t, a in calls]
         elapsed_ms = int((time.monotonic() - t0) * 1000)
         if len(raws) < len(calls):
             raws += [json.dumps({"error": "응답 누락"})] * (len(calls) - len(raws))
@@ -329,7 +409,7 @@ class StepContext:
                 hits.append(False)
                 continue
             safe_append(self.activity, "tool_start", engine="playbook", step=self.step_id,
-                        tool=tool, label=label)
+                        tool=tool, label=label, phrase=tool_phrase(tool, args))
         return hits
 
     def _record_end(self, resp: ToolResponse, elapsed_ms: int | None, status: str,
@@ -342,9 +422,12 @@ class StepContext:
             logger.warning("실행 기록 실패(무시) tool=%s: %s: %s",
                            resp.tool, type(exc).__name__, exc)
             return
+        if resp.tool == APM_ACTIVE_DETAIL:
+            excerpt = _mask_detail_excerpt(resp, excerpt)
         safe_append(
             self.activity, "tool_end", engine="playbook", step=self.step_id, tool=resp.tool,
             label=label, status=status, elapsed_ms=elapsed_ms, rows=rows, excerpt=excerpt,
+            phrase=tool_phrase(resp.tool, resp.args),
         )
 
     def call_one(self, axis: Axis, tool: str, args: dict) -> ToolResponse:
@@ -352,6 +435,27 @@ class StepContext:
 
 
 StepFn = Callable[[StepContext], StepResult]
+
+
+def _mask_sql_values(value: Any, key: str = "") -> Any:
+    """응답의 SQL 값(키 이름에 `sql`)만 `mask_active_sql`로 가린다(나머지 값·키는 그대로)."""
+    if isinstance(value, Mapping):
+        return {k: _mask_sql_values(v, str(k)) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_mask_sql_values(v, key) for v in value]
+    if isinstance(value, str) and "sql" in key.lower():
+        return mask_active_sql(value)
+    return value
+
+
+def _mask_detail_excerpt(resp: ToolResponse, raw: str) -> str:
+    """S3b 실행 중 SQL 발췌 — 게이트웨이 가림과 별개로 SQL 리터럴을 다시 가린다(계약 §3).
+
+    응답을 해석하지 못했으면 발췌 전체를 가린다(노출보다 과가림).
+    """
+    if isinstance(resp.data, Mapping):
+        return json.dumps(_mask_sql_values(resp.data), ensure_ascii=False, default=str)
+    return mask_active_sql(raw)
 
 
 def tool_label(tool: str, args: Mapping[str, Any]) -> str:
@@ -711,11 +815,14 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
         polestar_reason=ctx.scope.polestar_reason,
         alarm_name=ctx.scope.alarm_name,
         targets=targets,
+        polestar_basis=ctx.scope.polestar_basis,
     )
     if not scope.polestar_source:
         reasons.append(
             f"{POLESTAR_UNRESOLVED} — {scope.polestar_reason or '폴스타 소스 결정 불가'}"
         )
+    elif scope.polestar_basis:
+        reasons.append(scope.polestar_basis)
     table = {
         "columns": [
             "instance",
@@ -822,6 +929,8 @@ def host_to_was(ctx: StepContext) -> StepResult:
         polestar_reason=ctx.scope.polestar_reason,
         alarm_name=ctx.scope.alarm_name,
         targets=targets,
+        host_was=[str(i["instance"]) for i in instances if i["verdict"] is not None],
+        polestar_basis=ctx.scope.polestar_basis,
     )
     v, s = _worst([(i["verdict"], i["verdict_source"]) for i in instances])
     missing = [APM_APP_HEALTH] if any(not r.ok for r in resps) else []
@@ -1182,8 +1291,10 @@ def usage_trend(ctx: StepContext) -> StepResult:
             notes.append(f"{kind} 축 결손: {resp.error}")
             continue
         series.append(_series(kind, thresholds[kind], resp.data, scope, notes))
+    # 설정 매핑으로 정한 소스면 근거를 사유 끝에 남긴다(W21 P6 · 없으면 종전 사유 그대로).
+    basis = [ctx.scope.polestar_basis] if ctx.scope.polestar_basis else []
     if not series:
-        return StepResult(status="missing", missing=missing, reason=" · ".join(notes))
+        return StepResult(status="missing", missing=missing, reason=" · ".join(notes + basis))
     result = correlate(ctx.windows.alarm_time, [], series, notes, alarm_axis=False)
     findings = result.metric_findings
     anomalous = [k for k, f in findings.items() if f.get("is_anomalous")]
@@ -1222,7 +1333,7 @@ def usage_trend(ctx: StepContext) -> StepResult:
             "server_name": scope.server_name,
         },
         missing=missing,
-        reason=" · ".join(n for n in notes if "결손" in n) or None,
+        reason=" · ".join([n for n in notes if "결손" in n] + basis) or None,
         artifacts={"series": series},
     )
 
@@ -1549,8 +1660,25 @@ def events_errors(ctx: StepContext) -> StepResult:
     )
 
 
+def _was_cpu_top(ctx: StepContext) -> str | None:
+    """앞 단계 `apm.runtime_and_pool` 결과에서 R-E가 보는 인스턴스(프로세스 CPU 최대 — 판독과
+    같은 함수)."""
+    s2 = next(
+        (r for r in ctx.prior.values() if r.action == "apm.runtime_and_pool" and r.status == "ok"),
+        None,
+    )
+    return was_cpu_top_instance(s2.data) if s2 is not None else None
+
+
 def active_services(ctx: StepContext) -> StepResult:
-    """was.active — 액티브 서비스(실시간 단면 · 배지)."""
+    """was.active — 액티브 서비스(실시간 단면 · 배지).
+
+    인자 `target: was_cpu_top`(plans/187 W20b)이면 대상 = 앞 S2의 프로세스 CPU 최대 인스턴스(R-E
+    `cpu_owner`가 본 인스턴스) — 없으면 범위 첫 대상.
+    """
+    picked = _was_cpu_top(ctx) if ctx.args.get("target") == "was_cpu_top" else None
+    if picked is not None:
+        ctx.targets = [picked]
     blocked = _need_apm(ctx, [APM_ACTIVE_SERVICES])
     if blocked:
         return blocked
@@ -1570,6 +1698,107 @@ def active_services(ctx: StepContext) -> StepResult:
         ),
         data={"rows": rows, "summary": data.get("summary")},
         badges=[realtime_badge(data.get("queried_at"), ctx.windows.alarm_time, ctx.now)],
+    )
+
+
+#: S3b — 앞 단계 실행 중 요청 중 CPU 시간 상위 몇 건의 SQL 문을 보나 · SQL 문 바이트 상한(§5.6.4 ⓓ).
+ACTIVE_SQL_TOP = 3
+ACTIVE_SQL_MAX_BYTES = 1024
+#: SQL 리터럴 — 인용 리터럴(PG 달러 인용 `$$…$$`·`$tag$…$tag$` · 작은따옴표(`''`·`\'` 이스케이프) ·
+#: 큰따옴표(MariaDB 문자열 — 따옴표 식별자도 가려지나 노출보다 과가림 쪽)) → 16진(`0x…`) →
+#: 식별자에 붙지 않은 수치(음수·`.5`·지수 `1e10`). `col1`·`t2.x`·자리표시 `$1`은 건드리지 않는다.
+_SQL_QUOTED_LITERAL = re.compile(
+    r"\$(?P<tag>(?:[A-Za-z_]\w*)?)\$.*?\$(?P=tag)\$"
+    r"|'(?:[^'\\]|\\.|'')*'"
+    r'|"(?:[^"\\]|\\.|"")*"',
+    re.S,
+)
+_SQL_HEX_LITERAL = re.compile(r"(?<![\w.$])0[xX][0-9A-Fa-f]+(?![\w.])")
+_SQL_NUM_LITERAL = re.compile(
+    r"(?<![\w.$])-?(?:\d+(?:\.\d*)?|\.\d+)(?:[eE][+-]?\d+)?(?![\w.])"
+)
+
+
+def mask_active_sql(text: str) -> str:
+    """실행 중 SQL 문 표시값 — 리터럴(문자열·숫자) → `?` · 비밀값 꼴 가림 · 1024바이트 상한(「…」).
+
+    게이트웨이가 이미 리터럴을 가렸어도 다시 가린다(패키지 경계 — 게이트웨이 함수는 import하지
+    않는다 · D-274).
+    """
+    out = _SQL_QUOTED_LITERAL.sub("?", text)
+    out = _SQL_NUM_LITERAL.sub("?", _SQL_HEX_LITERAL.sub("?", out))
+    return clip_bytes(mask_secrets(out), ACTIVE_SQL_MAX_BYTES)
+
+
+def _cpu_ms(row: Mapping[str, Any]) -> float:
+    value = row.get("cpu_ms")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return -1.0
+    return float(value)
+
+
+def active_sql(ctx: StepContext) -> StepResult:
+    """S3b — 앞 단계 실행 중 요청(`apm.active_services`) 중 CPU 시간 상위 3건의 실행 중 SQL 문.
+
+    각 행의 `active_ref`를 그대로 `apm_active_detail`에 넘긴다(현재값 — 배지). SQL 문은
+    `mask_active_sql`을 거친다(리터럴 원문 노출 금지).
+    """
+    if ctx.apm is None:
+        return _missing([APM_ACTIVE_DETAIL], "APM 게이트웨이 미구성")
+    prior = next(
+        (r for r in ctx.prior.values() if r.action == "apm.active_services" and r.status == "ok"),
+        None,
+    )
+    if prior is None:
+        return _missing([], "앞 단계 실행 중 요청(apm.active_services) 결과 없음")
+    rows = [r for r in prior.data.get("rows") or [] if isinstance(r, dict)]
+    cols = ("instance", "application", "cpu_ms", "elapsed_ms", "sql")
+    if not rows:
+        return StepResult(
+            status="ok",
+            table=_simple_table([], cols),
+            data={"rows": [], "queried_at": None},
+            reason="실행 중 요청 없음 — 상세 조회 대상 없음",
+        )
+    picked = sorted(
+        (r for r in rows if isinstance(r.get("active_ref"), dict)), key=_cpu_ms, reverse=True
+    )[:ACTIVE_SQL_TOP]
+    if not picked:
+        return _missing([], "실행 중 요청에 상세 참조(active_ref) 없음 — 상세 조회 불가")
+    calls = [
+        (APM_ACTIVE_DETAIL, {k: v for k, v in r["active_ref"].items() if v is not None})
+        for r in picked
+    ]
+    resps = ctx.call("apm", calls)
+    out: list[dict[str, Any]] = []
+    queried_at: str | None = None
+    for row, resp in zip(picked, resps):
+        if not resp.ok:
+            continue
+        detail = _first_row(resp.data) or {}
+        if queried_at is None and isinstance((resp.data or {}).get("queried_at"), str):
+            queried_at = str((resp.data or {})["queried_at"])
+        sql = detail.get("sql")
+        out.append(
+            {
+                "instance": row.get("instance_name"),
+                "application": row.get("application"),
+                "txid": row["active_ref"].get("txid"),
+                "cpu_ms": row.get("cpu_ms"),
+                "elapsed_ms": row.get("elapsed_ms"),
+                "sql": mask_active_sql(str(sql)) if sql is not None else None,
+            }
+        )
+    missing = [APM_ACTIVE_DETAIL] if any(not r.ok for r in resps) else []
+    if not out:
+        return StepResult(status="missing", missing=missing, reason=_reasons(resps))
+    return StepResult(
+        status="ok",
+        table=_simple_table(out, cols),
+        data={"rows": out, "queried_at": queried_at},
+        badges=[realtime_badge(queried_at, ctx.windows.alarm_time, ctx.now)],
+        missing=missing,
+        reason=_reasons(resps) or None,
     )
 
 
@@ -1630,6 +1859,7 @@ STEP_LIBRARY: dict[str, StepFn] = {
     "dpm.db_health": dpm_db_health,
     "apm.events_errors": events_errors,
     "apm.active_services": active_services,
+    "apm.active_sql": active_sql,
     "host.resource_status": resource_status,
     "host.topology": topology,
     "host.alarm_history": alarm_history,
@@ -1651,6 +1881,7 @@ __all__ = [
     "RunScope",
     "RunWindows",
     "SCOPE_ACTIONS",
+    "STEP_ABORTED",
     "STEP_LIBRARY",
     "StepContext",
     "StepFn",

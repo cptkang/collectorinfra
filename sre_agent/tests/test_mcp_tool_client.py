@@ -144,7 +144,7 @@ def test_make_batch_caller_requires_url():
 def test_make_batch_caller_headers(monkeypatch, token, expect):
     captured = {}
 
-    def fake_run(url, headers, calls, *, timeout_seconds):
+    def fake_run(url, headers, calls, *, timeout_seconds, concurrency=1):
         captured.update(url=url, headers=headers, timeout=timeout_seconds)
         return []
 

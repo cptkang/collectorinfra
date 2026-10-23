@@ -13,6 +13,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -33,6 +34,8 @@ from sre_agent.application.investigation_jobs import (
     JobStore,
     default_audit_path,
 )
+from sre_agent.application.playbook_narrator import NarratorLimits
+from sre_agent.application.playbook_runner import DEFAULT_STEP_TIMEOUT_S
 from sre_agent.diagnosis import (
     DiagnosisAgent,
     DiagnosisResult,
@@ -47,10 +50,11 @@ from sre_agent.domain.cross_source_episode import (
     active_episode,
     prompt_text,
 )
+from sre_agent.domain.playbook import Playbook
 from sre_agent.infrastructure.known_error_loader import DEFAULT_KNOWN_ERROR_DIR, load_known_errors
 from sre_agent.infrastructure.mcp_tool_client import make_apm_batch_caller, make_batch_caller
 from sre_agent.infrastructure.playbook_loader import DEFAULT_PLAYBOOK_DIR, load_playbooks
-from sre_agent.settings import AgentSettings
+from sre_agent.settings import AgentSettings, timechain_warnings
 from sre_agent.toolset_profiles import remote_vm_profile
 
 logger = logging.getLogger(__name__)
@@ -327,6 +331,31 @@ def _default_prefetch_fn(settings: AgentSettings):
     return _prefetch
 
 
+def _log_timechain(settings: AgentSettings, playbooks: Sequence[Playbook]) -> None:
+    """조사 시간 사슬 정합(plans/187 W22 · D-341 부기 12)을 기동 시 1회 로그로 남긴다.
+
+    어긋나면 경고 1줄(어긋난 관계 문장 전부), 정합이면 정보 1줄(값 나열). 기동은 막지 않는다.
+    """
+    step_limits = [s.timeout_s for pb in playbooks for s in pb.steps if s.timeout_s is not None]
+    max_step = max(step_limits) if step_limits else None
+    values = (
+        f"도구 1건 {settings.evidence_prefetch_timeout_seconds:g}s · "
+        f"스텝 기본 {DEFAULT_STEP_TIMEOUT_S:g}s · 스텝 최대 "
+        f"{'없음' if max_step is None else f'{max_step:g}s'} · "
+        f"수집 예산 {settings.sre_playbook_budget_s:g}s · "
+        f"소견 {settings.sre_narrator_step_timeout_s:g}s · "
+        f"종합 {settings.sre_narrator_synthesis_timeout_s:g}s · "
+        f"조사 전체 {settings.investigation_timeout_seconds:g}s"
+    )
+    problems = timechain_warnings(
+        settings, step_default_s=DEFAULT_STEP_TIMEOUT_S, max_step_timeout_s=max_step
+    )
+    if problems:
+        logger.warning("조사 시간 사슬 불일치 — %s (%s)", "; ".join(problems), values)
+    else:
+        logger.info("조사 시간 사슬 정합 (%s)", values)
+
+
 def _default_playbook_wiring(
     settings: AgentSettings, agent_getter  # noqa: ANN001 — `_agent_getter` 반환 콜러블
 ) -> PlaybookWiring | None:
@@ -356,6 +385,7 @@ def _default_playbook_wiring(
     for name, reason in known.rejected:
         logger.warning("알려진 오류 거부(기동 적재): %s — %s", name, reason)
     logger.info("알려진 오류 %d건 적재(%s)", len(known.known_errors), DEFAULT_KNOWN_ERROR_DIR)
+    _log_timechain(settings, loaded.playbooks)
 
     def _llm(messages: list[dict[str, str]]) -> str:
         response = agent_getter().llm.llm.completion(messages, temperature=0)
@@ -366,6 +396,11 @@ def _default_playbook_wiring(
         polestar=make_batch_caller(settings),
         apm=make_apm_batch_caller(settings),
         llm=_llm,
+        # 소견 LLM 1건 타임아웃(W21 P5) — 남은 시간이 적으면 dispatcher `_narrator`가 줄인다.
+        narrator_limits=NarratorLimits(
+            step_timeout_s=settings.sre_narrator_step_timeout_s,
+            synthesis_timeout_s=settings.sre_narrator_synthesis_timeout_s,  # W22 — 종전 30s 고정
+        ),
         known_errors=known.known_errors,
         # 거부 파일명(플레이북 → KE 순) — 브리핑 notes 1줄로 드러낸다(비면 문구 없음 · 지적 9).
         rejected_files=tuple(name for name, _ in (*loaded.rejected, *known.rejected)),

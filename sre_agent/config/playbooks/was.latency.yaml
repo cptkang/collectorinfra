@@ -1,7 +1,7 @@
 # WAS 응답 지연 플레이북 (plans/187 §4.1 was.latency · §5.2 · §5.7.2 · D-341)
 # 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
 id: was.latency
-version: 1
+version: 3
 match:                                   # 결정적 매칭 — 우선순위 → 목록 순서의 첫 일치
   resource_type: apm.Instance
   any_kind: [latency, response_time, was_external_call_delay, was_slow_sql]   # was_signals kind 또는 이벤트 유형 정규화 값
@@ -12,6 +12,7 @@ steps:
   - id: S0
     action: scope.resolve_was_targets    # 대상 확정 · 범위 비교(R-A)
     args: {pick: degraded, max_instances: 3}
+    timeout_s: 120                       # 대상 확정은 호출이 많다(최대 13건) — 실행기 기본 90s 대신(W21 P3 · W22 60→120 · 도구 1건 60s의 2배 · 수집 예산 240s 안 · 남은 예산보다 길지 않다)
     narrate: {focus: "알람 인스턴스와 같은 호스트·같은 업무 인스턴스의 판정 분포", max_sentences: 3}
   - id: S1
     action: apm.golden_signals           # 골든 시그널(R-B 부하형/처리 지연형 · R-B′)

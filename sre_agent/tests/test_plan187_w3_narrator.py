@@ -201,13 +201,17 @@ def test_synthesis_exception_keeps_code_ranking():
 
 
 @pytest.mark.parametrize("name", SCENARIOS)
-def test_llm_calls_at_most_7_plus_1(name):
+def test_llm_calls_every_narratable_step_plus_1(name):
+    # 기본은 호출 상한 없음(plans/187 v2.8) — narrate 지시가 있고 ok인 단계 전부 + 종합 1.
     llm = RecordingLlm()
     n = PlaybookNarrator(llm)
     _, pb, run = run_fixture(name, narrator=n, now=lambda: FIXED_NOW)
     steps = [m for m in llm.messages if not _is_synth(m)]
     synth = [m for m in llm.messages if _is_synth(m)]
-    assert len(synth) == 1 and len(steps) <= 7 and n.calls == len(llm.messages) <= 8
+    assert len(synth) == 1 and n.calls == len(llm.messages) == len(steps) + 1
+    assert not any(
+        (op.dropped_reason or "").startswith("소견 호출 상한") for op in run.opinions.values()
+    )
     assert run.timings["llm_calls"] == n.calls
     called = {_step_of(m) for m in steps}
     for step in pb.steps:
@@ -221,8 +225,11 @@ def test_llm_calls_at_most_7_plus_1(name):
 
 
 def test_over_limit_cut_by_deterministic_priority():
+    # 상한을 명시로 줄 때만 자른다(기본은 상한 없음).
     llm = RecordingLlm()
-    _, _, run = run_fixture("latency_sql", narrator=PlaybookNarrator(llm))
+    _, _, run = run_fixture(
+        "latency_sql", narrator=PlaybookNarrator(llm, NarratorLimits(max_step_calls=7))
+    )
     called = [_step_of(m) for m in llm.messages if not _is_synth(m)]
     cut = [
         sid
@@ -231,7 +238,7 @@ def test_over_limit_cut_by_deterministic_priority():
     ]
     assert len(called) == 7 and cut == ["S7"]  # 가설 근거·degraded 스텝 먼저 → YAML 순서
     llm2 = RecordingLlm()
-    run_fixture("latency_sql", narrator=PlaybookNarrator(llm2))
+    run_fixture("latency_sql", narrator=PlaybookNarrator(llm2, NarratorLimits(max_step_calls=7)))
     assert sorted(_step_of(m) for m in llm2.messages if not _is_synth(m)) == sorted(called)
 
 
