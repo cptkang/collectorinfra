@@ -72,23 +72,34 @@ def _dump(value: Any) -> str:
 
 
 def _fit_table(section: Mapping[str, Any], budget: int) -> str:
-    """단계 표를 JSON으로 싣되 길이 상한을 넘으면 뒤 행부터 줄인다(줄인 수를 적는다)."""
+    """단계 표를 JSON으로 싣되 길이 상한을 넘으면 뒤 행부터 줄인다(줄인 수를 적는다).
+
+    남길 행 수는 이분 탐색으로 찾는다 — 한 행씩 줄이며 다시 직렬화하면 행 수의 제곱에 비례해
+    큰 표(수천 행)에서 코어 하나를 수 초~수 분 붙잡는다. 줄이는 구간(`keep < 행 수`)에서 길이는
+    `keep`에 대해 줄지 않으므로(행 하나 ≥ 1자 · 생략 수 자릿수는 1자 이하로 준다) 결과는 종전
+    선형 탐색과 같다(남길 수 있는 최대 행 수).
+    """
     table = section.get("table") or {}
     rows = list(table.get("rows") or [])
+    columns = list(table.get("columns") or [])
     extra = {k: section.get(k) for k in ("missing", "reason") if section.get(k)}
-    keep = len(rows)
-    while True:
-        payload: dict[str, Any] = {
-            "columns": list(table.get("columns") or []),
-            "rows": rows[:keep],
-            **extra,
-        }
+
+    def render(keep: int) -> str:
+        payload: dict[str, Any] = {"columns": columns, "rows": rows[:keep], **extra}
         if keep < len(rows):
             payload["rows_omitted"] = len(rows) - keep
-        text = _dump(payload)
-        if len(text) <= budget or keep == 0:
-            break
-        keep -= 1
+        return _dump(payload)
+
+    text = render(len(rows))
+    if len(text) > budget and rows:
+        best, lo, hi = 0, 1, len(rows) - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if len(render(mid)) <= budget:
+                best, lo = mid, mid + 1
+            else:
+                hi = mid - 1
+        text = render(best)
     if len(text) > budget:
         text = text[: max(0, budget - len(_TRUNC))] + _TRUNC
     return text

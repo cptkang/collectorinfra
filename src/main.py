@@ -104,7 +104,7 @@ def run_server() -> None:
         "src.api.server:app",
         host=config.server.host,
         port=config.server.port,
-        reload=True,  # 개발 시에만
+        reload=config.server.reload,  # D-346 — 개발 시에만(API_RELOAD=true)
     )
 
 
