@@ -222,6 +222,36 @@ class TestPlaybookRoute:
         assert "disclosures" not in out
         assert not (tmp_path / "inv.jsonl").exists()
 
+    async def test_rejected_with_id_shows_reason_text(self, tmp_path, client, audit):
+        # plans/194 W1: 즉시 거부(조사 id 있음)도 사유 코드가 아니라 문구로 보인다.
+        from src.domain.investigation_reject_reasons import REJECT_REASON_TEXTS
+
+        async def _submit(payload: dict) -> dict:
+            client.submits.append(payload)
+            return {"status": "rejected", "investigation_id": "inv-rj", "reason": "queue_full"}
+
+        client.submit = _submit
+        gate = _gate(tmp_path, sre_chat_investigation_enabled=True)
+        out = await fault_diagnosis(_state(), app_config=_app(gate))
+        assert REJECT_REASON_TEXTS["queue_full"] in out["final_response"]
+        assert "사유: queue_full" not in out["final_response"]
+
+    async def test_rejected_real_shape_verdict_shows_table_text(self, tmp_path, client, audit):
+        # plans/194 W1 교정: 실 sre는 「조사 거부 — <코드>」 verdict를 함께 싣는다 — 표 문구 우선.
+        from src.domain.investigation_reject_reasons import REJECT_REASON_TEXTS
+
+        async def _submit(payload: dict) -> dict:
+            client.submits.append(payload)
+            return {"status": "rejected", "investigation_id": "inv-rj",
+                    "reason": "host_investigation_in_flight",
+                    "verdict": "조사 거부 — host_investigation_in_flight"}
+
+        client.submit = _submit
+        gate = _gate(tmp_path, sre_chat_investigation_enabled=True)
+        out = await fault_diagnosis(_state(), app_config=_app(gate))
+        assert REJECT_REASON_TEXTS["host_investigation_in_flight"] in out["final_response"]
+        assert "조사 거부 — host_investigation_in_flight" not in out["final_response"]
+
 
 class TestHolmesRoute:
     async def test_type_unresolved_goes_to_diagnose(

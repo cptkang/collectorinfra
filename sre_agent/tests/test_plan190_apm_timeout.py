@@ -29,7 +29,8 @@ def _settings(**kw) -> AgentSettings:
 def _capture(monkeypatch) -> dict:
     captured: dict = {}
 
-    def fake_run(url, headers, calls, *, timeout_seconds, concurrency=1):
+    def fake_run(url, headers, calls, *, timeout_seconds, concurrency=1, **_kw):
+        # `**_kw` — plans/194 W3 전역 상한 `global_limit`(이 테스트의 관심 밖)
         captured.update(url=url, timeout=timeout_seconds)
         return []
 

@@ -100,6 +100,9 @@ def _gate_config() -> SimpleNamespace:
         _env_file=None,
         enable_noise_gate=True,
         importance_value_map_csv="1=낮음,2=보통,3=높음",
+        # plans/194 W1 · D-347: 「이 알람 분석」은 코드 기본 on(명시 예외)이다 — 켜지면 원 알람
+        # 시각·hostname·resource_type이 레코드에 붙으므로, 플래그 off 기준선은 명시 off로 고정한다.
+        investigation_manual_enabled=False,
     ))
 
 

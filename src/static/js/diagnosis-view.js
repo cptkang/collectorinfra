@@ -54,7 +54,9 @@
         title: "장애 진단",
         readOnly: "읽기 전용 — 조사를 멈추거나 명령을 실행하는 버튼은 없습니다.",
         listTab: "진행 중 목록",
-        listEmpty: "진행 중인 조사가 없습니다.",
+        // (plans/192 W3) 목록 범위 안내 — 「이벤트 찾아 조사」 칸이 숨겨지면(showSearch와 같은 조건) 그 구절을 뺀 문구
+        listEmpty: "진행 중인 조사만 보입니다 — 관리자는 전체, 일반 사용자는 직접 요청한 조사만. 끝난 조사는 이벤트 알람 탭의 지난 알람 검색에서 엽니다. 다시 조사하려면 위 「이벤트 찾아 조사」를 씁니다.",
+        listEmptyNoSearch: "진행 중인 조사만 보입니다 — 관리자는 전체, 일반 사용자는 직접 요청한 조사만. 끝난 조사는 이벤트 알람 탭의 지난 알람 검색에서 엽니다.",
         // (plans/187 W18) 이벤트 찾아 조사
         searchTitle: "이벤트 찾아 조사",
         searchSince: "시작",
@@ -63,7 +65,8 @@
         searchServer: "서버",
         searchBtn: "찾기",
         searchHint: "판정 시각 기준 · 시간을 비우면 최근 24시간(보존 30일) · 최근 30건까지",
-        searchHead: ["판정 시각", "서버", "알람명", "판정", ""],
+        // (plans/194 W5 · U4) 「조사 상태」 열은 판정 기록에 `investigation` 키가 있을 때만 보인다(구서버 = 종전 4열)
+        searchHead: ["판정 시각", "서버", "알람명", "판정", "조사 상태", ""],
         searching: "찾는 중…",
         searchEmpty: "조건에 맞는 알람이 없습니다.",
         searchCount: "판정 기록 {total}건 중 최근 {n}건",
@@ -71,9 +74,23 @@
         searchBadRange: "시작이 끝보다 늦습니다.",
         startBtn: "조사 시작",
         starting: "접수 중…",
-        startJoined: "같은 알람의 진행 중인 조사에 합류했습니다.",
+        startJoined: "다른 사용자가 먼저 요청한 조사에 합류했습니다.",
         startRejected: "조사 서비스가 거부했습니다 — {reason}",
         startFailed: "조사를 시작하지 못했습니다 — {reason}",
+        // (plans/194 W5 · U2) 접수 거부·합류의 다음 행동 — 카드(app.js)와 이 화면이 함께 쓴다
+        // (plans/192 W2) 진행 중 조사로 가는 버튼도 목적지 규칙 문구 하나로 쓴다
+        viewInDiagnosis: "장애 진단에서 보기",
+        // (U3) 대기 표시 — 동시 조사 수는 서비스 부하(`service_load.running`)가 있을 때만
+        queuedPos: "대기 중 · 순번 {n}",
+        queuedLoad: " / 동시 조사 {m}건 진행 중",
+        // (U4) 이벤트 찾아 조사 — 조사 상태 · 등급 필터 · 「조사 안 됨만」
+        invStates: { none: "조사 안 됨", running: "진행 중", done: "완료", fail: "실패" },
+        tierFilter: "등급",
+        tierAll: "즉시 통보(PAGE) 먼저 · 전체",
+        tierOnly: "{code} — {label}",   // 노이즈 콘솔 KPI 제목과 같은 꼴(「화면 표시만」에 「만」을 겹치지 않는다)
+        uninvestigatedOnly: "조사 안 됨만",
+        searchOrder: "즉시 통보(PAGE) 알람을 위에, 그 안에서는 아직 조사하지 않은 알람을 먼저 보여 줍니다.",
+        filterEmpty: "필터에 맞는 알람이 없습니다.",
         noAlarmId: "알람 id가 없는 판정 기록이라 조사할 수 없습니다.",
         listFailed: "진행 중 목록을 불러오지 못했습니다 — 사유: {reason}",
         listHead: ["대상", "유형", "엔진", "상태", "경과", "기원"],
@@ -186,7 +203,8 @@
     var ENGINE_LABELS = { playbook: "플레이북", holmes: "HolmesGPT", system: "시스템" };
     // 폴스타 심각도 숫자 → 이름(판정 기록 `signals.severity` · 0 = 해소)
     var SEVERITY_LABELS = { 0: "해소", 1: "정보", 2: "경고", 3: "위험", 4: "치명" };
-    var TIER_LABELS = { page: "즉시 통보", digest: "묶음 통보", suppress: "억제", drop: "버림" };
+    // 판정 4티어(noise_gate `notification_policy` TIER_*) — 문구는 노이즈 콘솔과 같다
+    var TIER_LABELS = { page: "즉시 통보", ticket: "대기열·기록", dashboard: "화면 표시만", suppress: "억제" };
     var ORIGIN_LABELS = { chat: "채팅", manual: "요청" };
     // sre_agent `activity_log.PHASES` 어휘와 같은 키 — 모르는 phase는 영문 대신 「진행 중」
     var PHASE_LABELS = {
@@ -528,6 +546,66 @@
         if (item.status === "submitted") return TEXT.submitted;
         var phase = item.phase ? (PHASE_LABELS[item.phase] || PHASE_UNKNOWN) : "";
         return TEXT.running + (phase ? " · " + phase : "");
+    }
+
+    // ─── (plans/194 W5 · D-347) 대기 · 접수 결과 · 조사 상태 — 순수 함수(카드와 공용) ───
+
+    /** 목록 「대상」 — 문자열·`name` 계열이 없으면 레코드 `subject`의 「서버 · 알람명」(요청 조사). */
+    function subjectText(subject) {
+        var text = textOf(subject);
+        if (text || !isObj(subject)) return text;
+        return [subject.server_name || subject.hostname, subject.alarm_name]
+            .filter(Boolean).map(String).join(" · ");
+    }
+
+    /**
+     * (U3) 대기 중이면 `{position, running}` — 아니면 null. 순번(`queue_position` 정수 ≥1)이 있고
+     * phase가 `queued`이거나, phase 없이 미종결일 때다(sre는 대기 중에만 순번을 싣는다). phase가 다른
+     * 값이면 그쪽이 앞선다. running = `service_load.running`(없으면 null).
+     */
+    function queueInfo(item, load) {
+        if (!isObj(item)) return null;
+        var pos = item.queue_position;
+        if (typeof pos !== "number" || !isFinite(pos) || pos < 1 || Math.floor(pos) !== pos) return null;
+        if (item.phase ? item.phase !== "queued" : isTerminal(String(item.status || ""))) return null;
+        var running = isObj(load) && typeof load.running === "number" && isFinite(load.running) ? load.running : null;
+        return { position: pos, running: running };
+    }
+
+    /** 「대기 중 · 순번 N」 + (부하가 있으면) 「 / 동시 조사 M건 진행 중」 — `[칩 문구, 덧붙임]`. */
+    function queueParts(q) {
+        if (!q) return ["", ""];
+        return [fill(TEXT.queuedPos, { n: q.position }), q.running === null ? "" : fill(TEXT.queuedLoad, { m: q.running })];
+    }
+
+    /**
+     * (U4) 판정 기록 행의 `investigation` → `{kind, text, startable}`. 키가 없으면(구서버) undefined를,
+     * null이면 「조사 안 됨」을 준다. 실패·거부·시간 초과는 다시 시작할 수 있게 둔다.
+     */
+    function investigationState(item) {
+        if (!isObj(item) || !("investigation" in item)) return undefined;
+        var inv = item.investigation;
+        if (!isObj(inv)) return { kind: "none", text: TEXT.invStates.none, startable: true, none: true };
+        var status = String(inv.status || "");
+        var id = String(inv.investigation_id || "");
+        // 판정 기록 쪽에는 phase가 없다 — 미종결이고 순번이 있으면 대기로 본다
+        var q = isTerminal(status) ? null : queueInfo({ queue_position: inv.queue_position, phase: "queued" }, null);
+        if (q) return { kind: "hold", text: queueParts(q)[0], id: id };
+        if (status === "done" || status === "episode_existing") return { kind: "done", text: TEXT.invStates.done, id: id };
+        if (status === "failed" || status === "timeout" || status === "rejected") {
+            return { kind: "fail", text: TEXT.invStates.fail, startable: true, id: id };
+        }
+        return { kind: "running", text: TEXT.invStates.running, id: id };
+    }
+
+    /**
+     * (U2) 접수 응답 → 화면 결과 — 공용 렌더(`BriefingView.startOutcome`)에 이 화면 문구를 넘긴다.
+     * 카드(app.js)도 같은 함수를 쓴다(거부 사유 · 다음 행동 · 시간당 상한 잠금 · 합류 판정이 한 곳).
+     */
+    function startOutcome(res, nowMs) {
+        return root.BriefingView.startOutcome(res, nowMs, {
+            failed: TEXT.startFailed, rejected: TEXT.startRejected, joined: TEXT.startJoined,
+        });
     }
 
     function progressText(progress) {
@@ -882,6 +960,8 @@
         var firstItems = null;      // 사전 게이트(/active) 응답 — 화면을 만든 뒤 그린다
         var firstError = "";
         var searchOn = false;       // (W18) /active `event_search` — 알람 다시 분석 접수가 켜졌는지
+        var serviceLoad = null;     // (plans/194 W5 · U3) /active·summary 최상위 `service_load`(없으면 null)
+        var firstLoad = null;
 
         function safeSession() {
             try { return root.sessionStorage || null; } catch (_) { return null; }
@@ -996,13 +1076,44 @@
             btn.addEventListener("click", function () { runSearch(); });
             form.appendChild(btn);
             box.appendChild(form);
+            // (plans/194 W5 · U4) 등급 필터 · 「조사 안 됨만」 — 받은 결과를 화면에서만 거른다(다시 묻지 않는다)
+            var filter = el("div", "dv-search-filter");
+            var tierWrap = el("label", "dv-search-field");
+            tierWrap.appendChild(el("span", null, TEXT.tierFilter));
+            var tier = el("select", "dv-search-tier");
+            [["", TEXT.tierAll]].concat(Object.keys(TIER_LABELS).map(function (k) {
+                return [k, fill(TEXT.tierOnly, { code: k.toUpperCase(), label: TIER_LABELS[k] })];
+            })).forEach(function (o) {
+                var opt = el("option", null, o[1]);
+                opt.value = o[0];
+                tier.appendChild(opt);
+            });
+            tier.value = "";
+            tier.addEventListener("change", function () { renderSearchRows(); });
+            tierWrap.appendChild(tier);
+            filter.appendChild(tierWrap);
+            var noneWrap = el("label", "dv-search-check");
+            var onlyNone = el("input", "dv-search-none");
+            onlyNone.type = "checkbox";
+            onlyNone.addEventListener("change", function () { renderSearchRows(); });
+            noneWrap.appendChild(onlyNone);
+            noneWrap.appendChild(el("span", null, TEXT.uninvestigatedOnly));
+            filter.appendChild(noneWrap);
+            filter.appendChild(el("span", "bv-meta", TEXT.searchOrder));
+            box.appendChild(filter);
             box.appendChild(el("div", "dv-note", TEXT.searchHint));
             var status = el("div", "dv-search-status");
             status.setAttribute("role", "status");
             box.appendChild(status);
             var table = el("table", "dv-search-list");
+            table.hidden = true;   // (plans/194 W5) 결과 행이 생길 때까지 빈 머리줄을 보이지 않는다
             var hr = el("tr");
-            TEXT.searchHead.forEach(function (h) { hr.appendChild(el("th", null, h)); });
+            var stateTh = null;
+            TEXT.searchHead.forEach(function (h, i) {
+                var th = el("th", null, h);
+                if (i === 4) { th.className = "dv-search-statecol"; stateTh = th; }
+                hr.appendChild(th);
+            });
             var thead = el("thead");
             thead.appendChild(hr);
             table.appendChild(thead);
@@ -1010,7 +1121,8 @@
             table.appendChild(body);
             box.appendChild(table);
             return { box: box, since: since, until: until, alarm: alarm, server: server, btn: btn,
-                status: status, body: body, seq: 0 };
+                status: status, table: table, body: body, seq: 0, tier: tier, onlyNone: onlyNone, noneWrap: noneWrap,
+                stateTh: stateTh, found: [], hasInv: false };
         }
 
         function showSearch(on) {
@@ -1023,6 +1135,8 @@
             var qs = searchQuery({ since: s.since.value, until: s.until.value, alarm: s.alarm.value,
                 server: s.server.value });
             s.body.textContent = "";
+            s.table.hidden = true;
+            s.found = [];
             if (qs === null) { s.status.textContent = TEXT.searchBadRange; return Promise.resolve(); }
             var mine = ++s.seq;   // 늦게 온 이전 응답이 새 결과를 덮지 않게
             s.status.textContent = TEXT.searching;
@@ -1030,26 +1144,59 @@
                 if (mine !== s.seq) return;
                 if (!res.ok) { s.status.textContent = fill(TEXT.searchFailed, { reason: reasonOf(res) }); return; }
                 var found = asList(res.body.items).filter(isObj);
-                s.status.textContent = found.length
+                s.found = found;
+                // (U4) 판정 기록에 `investigation` 키가 하나도 없으면 구서버 — 조사 상태 열·체크를 감춘다
+                s.hasInv = found.some(function (it) { return "investigation" in it; });
+                s.countText = found.length
                     ? fill(TEXT.searchCount, { total: res.body.total || found.length, n: found.length })
                     : TEXT.searchEmpty;
-                found.forEach(function (item) { s.body.appendChild(searchRow(item)); });
+                renderSearchRows();
             }, function (err) {
                 if (mine === s.seq) s.status.textContent = fill(TEXT.searchFailed, { reason: (err && err.message) || String(err) });
             });
         }
 
-        function searchRow(item) {
-            var tr = el("tr", "dv-search-row");
+        // (plans/194 W5 · U4) 즉시 통보(PAGE) 먼저, 그 안에서 조사 안 됨 먼저(같은 순위는 받은 순서 = 최신순)
+        function renderSearchRows() {
+            var s = dom && dom.search;
+            if (!s) return;
+            s.body.textContent = "";
+            if (s.stateTh) s.stateTh.hidden = !s.hasInv;
+            s.noneWrap.hidden = !s.hasInv;
+            var tier = String(s.tier.value || "");
+            var onlyNone = s.hasInv && !!s.onlyNone.checked;
+            var rows = s.found.map(function (item, i) {
+                return { item: item, i: i, st: investigationState(item) };
+            }).filter(function (r) {
+                if (tier && r.item.tier !== tier) return false;
+                return !onlyNone || !!(r.st && r.st.none);
+            });
+            function rank(r) { return (r.item.tier === "page" ? 0 : 2) + (r.st && !r.st.none ? 1 : 0); }
+            rows.sort(function (a, b) { return rank(a) - rank(b) || a.i - b.i; });
+            s.status.textContent = s.countText + (s.found.length && !rows.length ? " · " + TEXT.filterEmpty : "");
+            s.table.hidden = !rows.length;
+            rows.forEach(function (r) { s.body.appendChild(searchRow(r.item, r.st)); });
+        }
+
+        function searchRow(item, st) {
+            var tr = el("tr", "dv-search-row" + (item.tier === "page" ? "" : " dv-search-row--muted"));
             var tier = item.tier ? (TIER_LABELS[item.tier] || String(item.tier)) : "";
             [fmtStamp(item.ts), item.server_name || item.hostname || "-", item.alarm_name || "-",
                 [tier, item.stage_label].filter(Boolean).join(" · ")].forEach(function (c) {
                 tr.appendChild(el("td", null, c));
             });
+            if (st) {
+                var stCell = el("td", "dv-search-state");
+                stCell.appendChild(el("span", "bv-chip bv-chip--" + st.kind, st.text));
+                tr.appendChild(stCell);
+            }
             var cell = el("td", "dv-search-act");
             var note = el("div", "dv-search-note");
             var alarmId = String(item.alarm_id || "");
-            if (!alarmId) {
+            if (st && !st.startable && ID_RE.test(st.id || "")) {
+                // 진행·대기·완료 — 새로 띄우지 않고 이미 있는 조사로 간다
+                cell.appendChild(goButton(TEXT.viewInDiagnosis, function () { open(st.id, { alarmId: alarmId }); }));
+            } else if (!alarmId) {
                 note.textContent = TEXT.noAlarmId;
             } else {
                 var btn = el("button", "dv-start-btn", TEXT.startBtn);
@@ -1062,6 +1209,29 @@
             return tr;
         }
 
+        function goButton(label, onClick) {
+            var b = el("button", "bv-choice dv-search-go", label);
+            b.type = "button";
+            b.addEventListener("click", onClick);
+            return b;
+        }
+
+        // (plans/194 W5 · U2) 접수 결과 — 사유 한 줄 + 다음 행동(진행 중·합류한 조사로 가는 버튼 · 잠금)
+        function showOutcome(r, note, btn, alarmId) {
+            note.textContent = "";
+            if (!r.text) return;
+            note.appendChild(el("span", null, r.text));
+            if (r.kind === "joined") {
+                note.appendChild(goButton(TEXT.viewInDiagnosis, function () { open(r.investigationId, { alarmId: alarmId }); }));
+            } else if (r.kind === "in_flight" && ID_RE.test(r.existingId || "")) {
+                // 열 수 있는 기존 조사가 있을 때만 — 없으면 사유만(진행 중 목록에는 남의·자동 조사가 없다)
+                note.appendChild(goButton(TEXT.viewInDiagnosis, function () { open(r.existingId); }));
+            } else if (r.kind === "retry_later") {
+                btn.disabled = true;   // 다시 요청할 수 있는 시각까지 잠근다
+                setT(function () { btn.disabled = false; }, Math.max(0, r.retryAt - now()));
+            }
+        }
+
         function startFor(alarmId, btn, note) {
             btn.disabled = true;
             btn.textContent = TEXT.starting;
@@ -1069,17 +1239,11 @@
             return Promise.resolve()
                 .then(function () { return opts.startInvestigation(alarmId); })
                 .then(function (res) {
-                    var body = (res && res.body) || {};
                     btn.disabled = false;
                     btn.textContent = TEXT.startBtn;
-                    if (!res || !res.ok) { note.textContent = fill(TEXT.startFailed, { reason: reasonOf(res) }); return; }
-                    if (body.status === "rejected") {
-                        note.textContent = fill(TEXT.startRejected, { reason: body.reason || "-" });
-                        return;
-                    }
-                    if (!body.investigation_id) { note.textContent = fill(TEXT.startFailed, { reason: "조사 id 없음" }); return; }
-                    if (body.joined) note.textContent = TEXT.startJoined;
-                    open(String(body.investigation_id), { alarmId: alarmId });
+                    var r = startOutcome(res, now());
+                    showOutcome(r, note, btn, alarmId);
+                    if (r.kind === "accepted" || r.kind === "joined") open(r.investigationId, { alarmId: alarmId });
                 }, function (err) {
                     btn.disabled = false;
                     btn.textContent = TEXT.startBtn;
@@ -1092,8 +1256,9 @@
         }
 
         // ── 진행 중 목록 ──
-        function setItems(list) {
+        function setItems(list, load) {
             items = asList(list).filter(isObj);
+            serviceLoad = isObj(load) ? load : null;
             itemsAt = now();
             listError = "";
             items.forEach(function (it) {
@@ -1128,7 +1293,7 @@
             if (!dom) return;
             dom.tbody.textContent = "";
             dom.listNote.textContent = listError ? fill(TEXT.listFailed, { reason: listError })
-                : (items.length ? "" : TEXT.listEmpty);
+                : (items.length ? "" : (searchOn && opts.startInvestigation ? TEXT.listEmpty : TEXT.listEmptyNoSearch));
             items.forEach(function (it) {
                 var tr = el("tr", "dv-list-row");
                 tr.setAttribute("tabindex", "0");
@@ -1142,16 +1307,26 @@
                     var tab = tabs[it.investigation_id];
                     if (tab) Object.keys(tab.engines).forEach(function (k) { engines[k] = true; });
                 }
+                var pollErr = it.poll_error ? " · " + fill(TEXT.pollError, { reason: it.poll_error }) : "";
                 var cells = [
-                    textOf(it.subject) || String(it.investigation_id || ""),
+                    // (plans/194 W5) 요청 조사는 레코드 `subject`의 「서버 · 알람명」 — 조사 id는 마지막 폴백
+                    subjectText(it.subject) || String(it.investigation_id || ""),
                     kindLabel(it.kind),
                     enginesText(engines),
-                    statusText(it) + (it.poll_error ? " · " + fill(TEXT.pollError, { reason: it.poll_error }) : ""),
+                    statusText(it) + pollErr,
                     liveElapsed(it.elapsed_s, itemsAt),
                     originLabel(it),
                 ];
                 if (operator) cells.push(String(it.owner_sub || ""));
-                cells.forEach(function (c) { tr.appendChild(el("td", null, c)); });
+                // (U3) 대기 중이면 「대기 중 · 순번 N」 칩 + 「 / 동시 조사 M건 진행 중」
+                var q = queueParts(queueInfo(it, serviceLoad));
+                cells.forEach(function (c, i) {
+                    if (i !== 3 || !q[0]) { tr.appendChild(el("td", null, c)); return; }
+                    var td = el("td", "dv-list-state");
+                    td.appendChild(el("span", "bv-chip bv-chip--hold", q[0]));
+                    if (q[1] || pollErr) td.appendChild(el("span", "bv-meta", q[1] + pollErr));
+                    tr.appendChild(td);
+                });
                 var id = String(it.investigation_id || "");
                 tr.addEventListener("click", function () { open(id); });
                 tr.addEventListener("keydown", function (e) { if (e && e.key === "Enter") open(id); });
@@ -1803,7 +1978,7 @@
             var tab = newTab(id);
             var item = items.filter(function (it) { return it.investigation_id === id; })[0];
             if (item) {
-                tab.subject = textOf(item.subject);
+                tab.subject = subjectText(item.subject);
                 tab.kind = item.kind;
                 if (asList(item.alarm_ids).length) tab.alarmId = String(item.alarm_ids[0]);
                 tab.status = item.status || "";
@@ -1938,14 +2113,14 @@
         // `/active` 상태 코드 — 끊김 사유 판정(성공이면 목록도 갱신한다)
         function gate() {
             return getJSON(API + "/active").then(function (res) {
-                if (res.ok) setItems(res.body.items);
+                if (res.ok) setItems(res.body.items, res.body.service_load);
                 return res.status;
             }, function () { return 0; });
         }
 
         function handle(type, data) {
             var tab = data && data.investigation_id ? tabs[String(data.investigation_id)] : null;
-            if (type === "summary") { setItems(data.items); return; }
+            if (type === "summary") { setItems(data.items, data.service_load); return; }
             if (type === "ping" || !tab) { renderConn(); return; }
             if (type === "activity") {
                 tab.status = data.status || tab.status;
@@ -1986,7 +2161,7 @@
             if (stopped || !polling) return;
             getJSON(API + "/active").then(function (res) {
                 if (TEXT.stopReasons[res.status]) { stop(TEXT.stopReasons[res.status]); return; }
-                if (res.ok) setItems(res.body.items);
+                if (res.ok) setItems(res.body.items, res.body.service_load);
                 else { listError = reasonOf(res); renderList(); }
                 return Promise.all(liveTabs().filter(function (t) { return !t.done && !t.denied; }).map(loadTab));
             }, function (err) {
@@ -2023,7 +2198,11 @@
         function probe() {
             return getJSON(API + "/active").then(function (res) {
                 if (res.status === 404 || res.status === 401 || res.status === 403) return false;
-                if (res.ok) { firstItems = res.body.items; searchOn = res.body.event_search === true; }
+                if (res.ok) {
+                    firstItems = res.body.items;
+                    firstLoad = res.body.service_load;
+                    searchOn = res.body.event_search === true;
+                }
                 else firstError = reasonOf(res);
                 return true;
             }, function (err) {
@@ -2040,7 +2219,7 @@
             enabled = true;
             build();
             setVisible(true);
-            setItems(firstItems || []);
+            setItems(firstItems || [], firstLoad);
             showSearch(searchOn);
             if (firstError) { listError = firstError; renderList(); }
             var saved = restore();
@@ -2091,6 +2270,12 @@
         connText: connText,
         statusText: statusText,
         fmtElapsed: fmtElapsed,
+        // (plans/194 W5) 카드(app.js)와 공용 — 대기 표시 · 접수 결과 · 조사 상태
+        subjectText: subjectText,
+        queueInfo: queueInfo,
+        queueParts: queueParts,
+        investigationState: investigationState,
+        startOutcome: startOutcome,
         create: create,
         init: function (opts) {
             instance = create(opts);

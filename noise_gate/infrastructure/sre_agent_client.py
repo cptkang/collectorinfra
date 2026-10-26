@@ -275,6 +275,19 @@ class SreAgentClient:
             arguments["prior_findings"] = prior_findings
         return await self._call_tool_json("sre_diagnose", arguments)
 
+    async def health(self) -> dict[str, Any]:
+        """조사 서비스 상태·부하 게이지를 조회한다(`sre_health` · plans/194 W5).
+
+        Returns:
+            `{status, version, …[, running, queued, abandoned_slots, abandoned_threads,
+            max_concurrent, max_queued, abandon_grace_seconds, tool_global_concurrency,
+            hourly_budget]}` (파싱된 dict — 부하 키는 서비스가 실 dispatcher일 때만 있다).
+
+        Raises:
+            SreAgentClientError: 연결·호출·파싱 실패 시.
+        """
+        return await self._call_tool_json("sre_health", {})
+
     # --- 내부 메서드 (DBHubClient 미러링) ---
 
     async def _call_tool_json(self, tool_name: str, arguments: dict) -> dict:
@@ -324,6 +337,72 @@ class SreAgentClient:
             raise SreAgentClientError(f"조사 서비스 응답 파싱 실패: {e}") from e
 
 
+#: 화면용 부하 게이지 키(plans/194 W5 · C1) — `sre_health` 가산 키 중 화면 배지가 쓰는 것.
+SERVICE_LOAD_KEYS: tuple[str, ...] = (
+    "running", "queued", "max_concurrent", "max_queued", "abandoned_slots",
+)
+#: 헬스 조회 1회 상한(초) — 연결·초기화·호출 합계. 조회 화면 응답을 오래 붙들지 않는다.
+HEALTH_TIMEOUT_SECONDS: float = 3.0
+
+
+def _int_or_none(value: Any) -> int | None:
+    """정수(불리언 제외)면 그대로, 아니면 None."""
+    return value if isinstance(value, int) and not isinstance(value, bool) else None
+
+
+def service_load_view(health: dict[str, Any] | None) -> dict[str, int | None] | None:
+    """`sre_health` 응답 → 화면용 부하 게이지(`SERVICE_LOAD_KEYS`) 또는 None.
+
+    `running`·`queued`가 정수가 아니면(구버전 서비스 · 부하 게이지 없는 실행기) None이다.
+    상한 값은 서비스가 None(상한 없음)을 줄 수 있어 그대로 None으로 둔다.
+    """
+    if not isinstance(health, dict):
+        return None
+    if _int_or_none(health.get("running")) is None or _int_or_none(health.get("queued")) is None:
+        return None
+    return {key: _int_or_none(health.get(key)) for key in SERVICE_LOAD_KEYS}
+
+
+async def fetch_health(
+    gate_cfg: Any,  # NoiseGateConfig(덕 타이핑)
+    timeout: float = HEALTH_TIMEOUT_SECONDS,
+) -> tuple[dict[str, Any] | None, str | None]:
+    """조사 서비스 `sre_health`를 1회 조회한다(plans/194 W5 · 실패는 예외 없이 사유로).
+
+    접수·조회 경로가 쓰는 공유 팩토리(`build_sre_agent_client`)와 따로 **자기 클라이언트**를
+    만든다 — 헬스 조회가 접수 경로의 연결·세션과 섞이지 않게 한다. 포트 사전 확인(D-243) 뒤
+    연결·호출·종료 전체를 `timeout`으로 묶는다.
+
+    Args:
+        gate_cfg: NoiseGateConfig(덕 타이핑) — url/token을 읽는다.
+        timeout: 조회 1회 상한(초).
+
+    Returns:
+        `(헬스 dict, None)` 또는 `(None, 실패 사유)`.
+    """
+    client = _new_client(gate_cfg)
+    if client is None:
+        return None, "조사 서비스 URL이 설정되지 않았습니다"
+    unreachable = await client.unreachable_reason()
+    if unreachable:
+        return None, f"조사 서비스에 연결할 수 없습니다: {unreachable}"
+
+    async def _call() -> dict[str, Any]:
+        try:
+            # 연결 도중 시간 초과로 취소돼도 반쯤 연 SSE·세션을 닫도록 connect도 try 안에 둔다
+            await client.connect()
+            return await client.health()
+        finally:
+            await client.disconnect()
+
+    try:
+        return await asyncio.wait_for(_call(), timeout=timeout), None
+    except TimeoutError:
+        return None, f"조사 서비스 상태 조회 타임아웃({timeout:g}초 초과)"
+    except Exception as exc:  # noqa: BLE001 — 실패는 사유로 돌려준다(호출부가 로그·null)
+        return None, f"조사 서비스 상태 조회 실패: {type(exc).__name__}"
+
+
 def build_sre_agent_client(gate_cfg) -> Optional["SreAgentClient"]:  # noqa: ANN001
     """noise_gate 설정으로 클라이언트를 생성한다 (Plan 66 3-E · 실패 시 None).
 
@@ -337,6 +416,11 @@ def build_sre_agent_client(gate_cfg) -> Optional["SreAgentClient"]:  # noqa: ANN
     Returns:
         SreAgentClient 또는 None(url 미설정·생성 실패 — 호출부가 graceful 처리).
     """
+    return _new_client(gate_cfg)
+
+
+def _new_client(gate_cfg: Any) -> SreAgentClient | None:
+    """`build_sre_agent_client`의 본체(헬스 조회 `fetch_health`도 쓴다 · 실패 시 None)."""
     try:
         # 알림 노드는 설정에 noise_gate가 없으면 None을 넘긴다 — 현행대로 클라이언트 없음.
         if gate_cfg is None:
@@ -383,8 +467,12 @@ async def get_sre_agent_client(
 
 
 __all__ = [
+    "HEALTH_TIMEOUT_SECONDS",
+    "SERVICE_LOAD_KEYS",
     "SreAgentClient",
     "SreAgentClientError",
     "build_sre_agent_client",
+    "fetch_health",
     "get_sre_agent_client",
+    "service_load_view",
 ]

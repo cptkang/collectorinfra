@@ -48,6 +48,12 @@
     display: block; font-family: var(--font-mono); font-size: 10.5px;
     color: var(--text-muted); letter-spacing: .16em; margin-top: 2px;
 }
+/* plans/194 W5 U5: 수동 조사 모드 표지(제목 옆 · 서랍 조사 칸 머리 — 기능 조회가 수동 전용일 때만 noise.js가 단다) */
+.noise-mode-chip {
+    display: inline-block; font-size: 0.68rem; font-weight: 700; letter-spacing: 0; padding: 1px 7px;
+    border-radius: 999px; border: 1px solid var(--success); color: var(--success); background: var(--success-bg);
+}
+.noise-mode-chip--top { margin-left: 10px; vertical-align: middle }
 .noise-spacer { flex: 1 }
 .pill {
     display: inline-flex; align-items: center; gap: 7px; font-family: var(--font-mono);

@@ -30,6 +30,7 @@ _FUNCS = (
     "appendChatInvestigationCards",
     "investigationRefOf",
     "diagnosisOn",
+    "entryLabel",
     "openInvestigationEntry",
 )
 

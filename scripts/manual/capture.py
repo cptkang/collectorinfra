@@ -240,6 +240,40 @@ def _alarm_replay(opt: dict) -> None:
                     time.sleep(0.3)
 
 
+def _route(ctx, rt: dict) -> None:
+    """응답 가로채기(captures.yaml ``routes``) — Redis·조사 서비스 없이 화면 상태를 만든다.
+
+    앱 코드는 그대로 그린다(DOM 을 꾸미지 않는다). ``sse``: fixtures 상대 경로의
+    ``cards`` 를 알람 스트림 이벤트로 — 1회차는 빈 스트림으로 끝내 앱이 기능 조회
+    (capabilities)를 마친 뒤(5초 뒤 재연결) 카드를 받게 한다. 그 밖에는 ``json`` 을
+    ``status``(기본 200)로 — ``method`` 가 있으면 그 메서드만.
+    """
+    if "sse" in rt:
+        cards = json.loads((HERE / "fixtures" / rt["sse"]).read_text(encoding="utf-8"))["cards"]
+        events = "".join(f"data: {json.dumps(c, ensure_ascii=False)}\n\n" for c in cards)
+        seen = {"n": 0}
+
+        def sse(route) -> None:
+            seen["n"] += 1
+            route.fulfill(
+                status=200,
+                headers={"Content-Type": "text/event-stream", "Cache-Control": "no-cache"},
+                body=events if seen["n"] == 2 else ": idle\n\n",
+            )
+
+        ctx.route(rt["url"], sse)
+        return
+    data = json.dumps(rt.get("json"), ensure_ascii=False)
+
+    def reply(route) -> None:
+        if rt.get("method") and route.request.method != rt["method"]:
+            route.continue_()
+            return
+        route.fulfill(status=rt.get("status", 200), content_type="application/json", body=data)
+
+    ctx.route(rt["url"], reply)
+
+
 def _step(page: Page, base: str, step: dict) -> None:
     ((kind, arg),) = step.items()
     if kind == "goto":
@@ -305,6 +339,8 @@ def shoot(browser, base: str, cap: dict, deny: list[str]) -> Path:
         timezone_id="Asia/Seoul",
         color_scheme="light",
     )
+    for rt in cap.get("routes") or []:
+        _route(ctx, rt)
     page = ctx.new_page()
     try:
         if cap.get("theme") == "dark":

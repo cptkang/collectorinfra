@@ -387,8 +387,9 @@ def test_drawer_appends_briefing_after_cause_and_stops_on_close():
     assert "stopInvestigation()" in inv and "BV.attach(" in inv and "initial: block" in inv
     assert "decisionInvestigation(alarmId)" in inv  # 행 레코드엔 블록이 없다 — 열 때 1회 읽기
     assert '"/decisions/"' in _js_function_body(src, "decisionInvestigation")
-    # 관제 화면은 alarm capabilities를 읽지 않는다 — 상한은 공용 기본 1200초(limitSeconds 미지정)
-    assert "limitSeconds" not in inv and "capabilities" not in src
+    # 관제 화면은 재조회 상한을 capabilities에서 읽지 않는다 — 공용 기본 1200초(limitSeconds 없음).
+    # (plans/194 W5 U5) capabilities는 수동 조사 모드 표지 판정에만 읽는다.
+    assert "limitSeconds" not in inv and "investigation_followup_timeout_seconds" not in src
     reload = _js_function_body(src, "reloadInvestigation")
     assert "/api/v1/alarm/investigations/" in reload
     assert "apiRequest" not in reload  # break-glass 운영자 토큰 401로 로그아웃시키지 않는다

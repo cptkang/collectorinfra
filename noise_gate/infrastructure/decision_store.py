@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import deque
 from collections.abc import Callable, Iterable
 from datetime import UTC, datetime, timezone
 from pathlib import Path
@@ -37,6 +36,7 @@ from noise_gate.domain.notification_policy import (
     TIER_TICKET,
     stage_from_reason,
 )
+from noise_gate.infrastructure import jsonl_tail
 from noise_gate.infrastructure.metrics import record_decision
 
 logger = logging.getLogger(__name__)
@@ -728,22 +728,17 @@ class DecisionStore:
             cutoff_ts = datetime.now(timezone.utc).timestamp() - window_seconds
 
         try:
-            with self.path.open("r", encoding="utf-8") as fh:
-                lines = deque(fh, maxlen=self.max_lines)
+            # (plans/194 W2) 경로 단위 증분 캐시 — 새로 붙은 바이트만 파싱한다. 레코드 dict는
+            # 캐시와 공유하므로 조회 계열은 레코드를 고치지 않는다
+            # (`_view`·`_with_bundled`가 사본을 만든다).
+            tail = jsonl_tail.tail_records(self.path, self.max_lines)
         except OSError as exc:
             logger.warning("결정 감사 조회 읽기 실패(무시): %s", exc)
             return []
 
         records: list[dict] = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if not isinstance(rec, dict) or rec.get("type"):
+        for rec in tail:
+            if rec.get("type"):
                 continue  # 비-decision 레코드는 관제 조회 대상이 아니다
             if cutoff_ts is not None and not self._within_window(rec, cutoff_ts):
                 continue

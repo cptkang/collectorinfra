@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-23 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-26 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -234,6 +234,9 @@
 | 189 | [`189-WIP-prometheus-operational-label-anchor.md`](./189-WIP-prometheus-operational-label-anchor.md) | 189. 운영 Prometheus 라벨 앵커 — 폴스타 hostname·IP ↔ `hostname`·`node_ip` 결정적 조립 | **WIP** · W1~W7 구현 완료 · 커밋 전(2026-10-20 · D-119 부기) · 기본 `nodename` 바이트 동일 · 회귀 신규 실패 0(모듈 단위) · 검증 Critical 0·교정 8 · 잔여: 폐쇄망 표본 왕복 · Docker IT · ruff/mypy · `_deep_section` 필터 · L-4 *(상세: 계획서 머리)* | 2026-10-20 |
 | 190 | [`190-apm-investigation-latency.md`](./190-apm-investigation-latency.md) | 190. SRE 조사 APM 호출 지연 교정 — 해소 소스 한정 · X-View 사전 확인 · APM 전용 타임아웃 | 완료 · 커밋 전(2026-10-20 · W0~W5 · D-344) · 플레이북 APM `source_ids` 한정 · app_health `xview_confirm_over`=10 + 시 단위 대체·판정 불가 · `APM_TOOL_TIMEOUT_SECONDS` · 폐쇄망 재측정 대기 |
 | 191 | [`191-WIP-component-settings-webui.md`](./191-WIP-component-settings-webui.md) | 191. 분리 컴포넌트 설정 웹UI — sre_agent·apm_gateway·mcp_server·alarm_server·fabrix_proxy 설정을 관리자 화면에서 조회·저장 | **WIP** · W0~W7 완료(2026-10-21 · `82b2a7ae`) · 관리 주소 기존 서비스 URL 파생(10-22) · 5종 `/admin/config` + 본체 프록시·UI · D-345 · 회귀 rc=0(모듈 단위) · 검증·감사 지적 교정 완료 · 잔여: 매뉴얼 캡처 · CLAUDE.md 경계 표 1줄 *(상세: 계획서 머리)* | 2026-10-21 |
+| 192 | [`192-sre-investigation-navigation.md`](./192-sre-investigation-navigation.md) | 192. SRE 조사 화면 진입 동선 정리 — 조사 대화·장애 진단 진입점 일관성 · 진행 중 목록이 비는 문제 | **완료(2026-10-26 · 커밋 전)** · W1 로그인 next 복귀·safeNext 보안 보강·break-glass 관제 버튼 숨김 · W2 포털 진입 문구 규칙 · W3 진행 중 목록 범위 · W4 조사 대화 새로고침 복원 · D-341 부기 17·18 · D-248 ⑧ 부기 · 잔여·관제 진입은 193 | 2026-10-26 |
+| 193 | [`193-TODO-noise-console-portal-tab.md`](./193-TODO-noise-console-portal-tab.md) | 193. 노이즈 관제를 포털 안 뷰 탭으로 이식 — 관제 → 조사 진입을 같은 창 탭 전환으로 | **TODO** · v1.1(2026-10-26 · 코드 0) · K-1 B(독립 관제 페이지 둘 다 유지 + 포털 탭)·K-2 A(관리자도 읽기 모드) 확정 · 착수 가능 W0·W1(noise.js mount 동작 불변)·W2 · W3은 192 W2 뒤 | 2026-10-26 |
+| 194 | [`194-WIP-investigation-manual-only-load-limits.md`](./194-WIP-investigation-manual-only-load-limits.md) | 194. 알람 조사 수동 전용(선별 실행) 전환 · 조사로 인한 행 대책 | **WIP** · W0~W6 완료(커밋 전 · D-347) · 수동 전용 기본 · 저장소 증분 tail · sre 대기열·좀비·전역 상한 · mcp·apm 동시 상한 · U1~U6 UI·매뉴얼 · 검증 Critical 0 · 회귀 귀속 0 · 잔여 내부망 확인(S7·DB2·RSS) | 2026-10-26 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |

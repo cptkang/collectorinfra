@@ -134,8 +134,22 @@ class AgentSettings(BaseSettings):
     investigation_dedup_ttl_seconds: float | None = None
     # 동시 조사 상한(세마포어). 보수적 기본 2.
     investigation_max_concurrent: int = 2
-    # 시간당 조사 횟수 상한. None이면 예산 가드 off. 초과 시 신규 조사 거부.
-    investigation_hourly_budget: int | None = None
+    # 동시 상한 슬롯 대기 잡 상한(plans/194 W3 · D-347). 대기 수가 이 값 이상이면 대기 스레드를
+    # 만들지 않고 `rejected(queue_full)`로 즉시 확정한다(슬롯을 타임아웃 뒤 버려진 조사 스레드가
+    # 붙들고 있으면 `service_overloaded`). None = 무제한(종전 동작).
+    # **기본 4는 D-162(기본 off) 예외** — 근거: 대기 스레드가 무제한 누적돼 조사 서비스가 행에
+    # 빠졌다(동시 상한 2 · 슬롯 대기 무기한 acquire).
+    investigation_max_queued: int | None = 4
+    # 타임아웃으로 버린 조사 스레드가 슬롯·L-4 호스트 키를 붙드는 최대 시간(초 · plans/194 W3 ·
+    # D-347). 버린 스레드는 협조적 중단 신호를 받고 끝날 때까지 슬롯·키를 붙든다(실부하 계상) —
+    # 이 시간을 넘기면 강제 반환하고 감사 `zombie_released`를 남긴다
+    # (스레드는 데몬이라 계속 돌 수 있다).
+    investigation_abandon_grace_seconds: float = Field(default=120.0, ge=0)
+    # 시간당 조사 횟수 상한(전역). 초과 시 신규 조사 거부(`hourly_budget_exceeded`) ·
+    # 심층 parallel은 conditional로 강등. None이면 예산 가드 off(.env로는 못 준다 — 큰 값으로
+    # 늘린다). **기본 20은 D-162(기본 off) 예외 — 사용자 확정 2026-10-26 · D-347 ②**(종전 None)
+    # — 근거: 수동 조사(사용자별 시간당 3건)가 늘어도 조사 서비스 LLM 비용·부하에 전역 상한을 둔다.
+    investigation_hourly_budget: int | None = 20
     # 조사 감사 JSONL 경로(plans/154 W1 · §4.7 — 벤치 감사를 운영 감사와 분리).
     # None이면 기본 `sre_agent/.data/investigation_audit.jsonl`(비트 동일).
     # 값이 있으면 JobStore·dispatcher가 그 파일에만 쓴다.
@@ -293,6 +307,13 @@ class AgentSettings(BaseSettings):
     # 게이트웨이 부하는 4로 묶는다. 사전수집(evidence_prefetch)도 같은 배치 콜러블을 써
     # 함께 적용된다. 실효 동시 호출 = 스텝 워커 4 × 이 값 × 동시 조사 수 — 그래서 상한은 8이다.
     sre_tool_batch_concurrency: int = Field(default=4, ge=1, le=8)
+    # 프로세스 전역 도구 동시 호출 상한(축별 — 폴스타 MCP · APM 각각 · plans/194 W3 · D-347).
+    # 배치 안 상한(`sre_tool_batch_concurrency`)은 그대로 두고, 그 위에 모든 배치·조사가 나눠 쓰는
+    # 전역 세마포어를 건다. 자리를 도구 1건 상한 안에 못 얻으면 그 호출만 결손
+    # (`tool_concurrency_wait_timeout`). None = 전역 상한 없음(종전 동작).
+    # **기본 8은 D-162(기본 off) 예외** — 근거: 실효 동시 호출이 스텝 워커 4 × 배치 4 × 동시
+    # 조사 수로 곱해져 조회 대상(게이트웨이·mcp_server)에 상한이 없었다.
+    sre_tool_global_concurrency: int | None = Field(default=8, ge=1)
     # 단계 소견 LLM 1건 타임아웃(초 · plans/187 W21 P5 · D-341 부기 12). 종전 20s 코드 고정에서
     # 내부망 「소견기 타임아웃 20s」가 반복됐다. 45 → 60(plans/187 W22 · D-341 부기 13):
     # 조사 전체 600s − 수집 예산 240s = 최소 360s가 남고, 소견 동시 4 × 약 3회차 × 60s = 180s

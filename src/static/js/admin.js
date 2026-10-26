@@ -268,6 +268,170 @@
         if (settingsLoaded) return;
         settingsLoaded = true;
         loadSettings();
+        loadInvestigationSummary();
+    }
+
+    // --- 알람 조사 — 운영 요약 (plans/194 W5 U6 · D-347) ---
+    //
+    // 읽기 전용이다. 자동 갱신(polling)은 두지 않는다(부하 원칙) — [새로 고침]으로만 다시 읽는다.
+    // 값이 null이면 「확인 불가」, 응답 실패(404 포함)면 칸 전체를 한 줄로 바꾼다(설정 목록은 그대로 동작).
+
+    var INV_LIMIT_ROWS = [
+        ["max_concurrent", "동시 조사", "대기열로"],
+        ["max_queued", "대기열", "「대기열이 가득 찼습니다」로 즉시 거절"],
+        ["per_user_active", "사용자별 진행 중", "끝난 뒤 다시 요청"],
+        ["per_user_hourly", "사용자별 시간당 요청", "다시 가능한 시각 안내"],
+        ["tool_global_concurrency", "조회 대상(DB·APM) 전역 동시 호출", "조사 안에서 차례 대기"],
+        ["hourly_budget", "시간당 전체 예산", "새 조사 거절 — 1시간 안 조사 수가 줄면 다시"],
+    ];
+
+    function invEl(tag, className, text) {
+        var node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined && text !== null) node.textContent = String(text);
+        return node;
+    }
+
+    function invNumber(value) {
+        return typeof value === "number" && isFinite(value) ? value : null;
+    }
+
+    function invClock(iso) {
+        var d = iso ? new Date(iso) : null;
+        if (!d || isNaN(d.getTime())) return "";
+        return d.toLocaleTimeString("ko-KR", { hour12: false });
+    }
+
+    function invSummaryHead(box) {
+        var head = invEl("div", "inv-summary__head");
+        head.appendChild(invEl("span", "inv-summary__title", "알람 조사 — 운영 요약"));
+        head.appendChild(invEl("span", "inv-summary__meta",
+            "읽기 전용 · 값 변경은 아래 설정 항목과 조사 서비스(sre_agent) 설정에서"));
+        var btn = invEl("button", "btn btn-secondary inv-summary__refresh", "새로 고침");
+        btn.type = "button";
+        btn.id = "refreshInvestigationSummaryBtn";
+        btn.addEventListener("click", loadInvestigationSummary);
+        head.appendChild(btn);
+        box.appendChild(head);
+        return btn;
+    }
+
+    function invModeLine(mode) {
+        var line = invEl("div", "inv-summary__mode");
+        line.appendChild(document.createTextNode("알람 조사 모드: "));
+        var auto = mode ? mode.auto_enabled : null;
+        var manual = mode ? mode.manual_enabled : null;
+        var pill, note;
+        if (auto === false && manual === true) {
+            pill = invEl("span", "inv-summary__pill inv-summary__pill--manual", "수동 전용");
+            note = "자동 조사 꺼짐 — 사용자가 고른 알람만 조사합니다(그 알람의 존 권한이 있는 사용자만 시작)";
+        } else if (auto === true) {
+            pill = invEl("span", "inv-summary__pill inv-summary__pill--auto", "자동");
+            note = "자동 조사 켜짐 — 조건에 맞는 알람을 자동으로 조사합니다";
+        } else if (auto === false && manual === false) {
+            pill = invEl("span", "inv-summary__pill", "꺼짐");
+            note = "자동 조사·사용자 조사 시작 모두 꺼짐";
+        } else {
+            pill = invEl("span", "inv-summary__pill", "확인 불가");
+            note = "";
+        }
+        line.appendChild(pill);
+        if (note) {
+            line.appendChild(document.createTextNode(" "));
+            line.appendChild(invEl("span", "inv-summary__meta", note));
+        }
+        return line;
+    }
+
+    function invLimitTable(limits) {
+        var table = invEl("table", "inv-summary__table");
+        var headRow = invEl("tr");
+        headRow.appendChild(invEl("th", "", "상한"));
+        headRow.appendChild(invEl("th", "inv-summary__num", "값"));
+        headRow.appendChild(invEl("th", "", "넘치면"));
+        table.appendChild(invEl("thead")).appendChild(headRow);
+        var tbody = table.appendChild(invEl("tbody"));
+        INV_LIMIT_ROWS.forEach(function (row) {
+            var value = invNumber((limits || {})[row[0]]);
+            var tr = invEl("tr");
+            tr.appendChild(invEl("td", "", row[1]));
+            var cell = invEl("td", "inv-summary__num");
+            if (value === null) {
+                cell.textContent = "확인 불가";
+            } else {
+                cell.appendChild(invEl("b", "", value));
+                cell.appendChild(document.createTextNode("건"));
+            }
+            tr.appendChild(cell);
+            tr.appendChild(invEl("td", "", row[2]));
+            tbody.appendChild(tr);
+        });
+        return table;
+    }
+
+    function invGauge(label, value, max) {
+        var box = invEl("div", "inv-summary__gauge");
+        box.appendChild(invEl("div", "inv-summary__meta", label));
+        var v = invNumber(value);
+        var line = invEl("div", "inv-summary__gauge-value", v === null ? "확인 불가" : v);
+        var m = invNumber(max);
+        if (v !== null && m !== null) line.appendChild(invEl("span", "inv-summary__gauge-max", " / " + m));
+        box.appendChild(line);
+        return box;
+    }
+
+    function invStatus(data) {
+        var wrap = invEl("div", "inv-summary__status");
+        var title = invEl("div", "inv-summary__status-title", "조사 서비스 상태");
+        var at = invClock(data.checked_at);
+        if (at) {
+            title.appendChild(document.createTextNode(" "));
+            title.appendChild(invEl("span", "inv-summary__meta", "(" + at + " 기준)"));
+        }
+        wrap.appendChild(title);
+        if (data.service_error) {
+            wrap.appendChild(invEl("div", "inv-summary__note", data.service_error));
+            return wrap;
+        }
+        var load = data.load || {};
+        var limits = data.limits || {};
+        var gauges = invEl("div", "inv-summary__gauges");
+        gauges.appendChild(invGauge("진행 중", load.running, limits.max_concurrent));
+        gauges.appendChild(invGauge("대기", load.queued, limits.max_queued));
+        gauges.appendChild(invGauge("정리 중", load.abandoned_slots, null));
+        wrap.appendChild(gauges);
+        wrap.appendChild(invEl("div", "inv-summary__note",
+            "정리 중 = 중단·시간 초과로 끝났지만 자리를 아직 반납하지 않은 조사(최대 2분 뒤 강제 반납)"));
+        return wrap;
+    }
+
+    function renderInvestigationSummary(data) {
+        var box = document.getElementById("investigationSummary");
+        if (!box) return;
+        box.textContent = "";
+        if (!data) {
+            box.appendChild(invEl("span", "inv-summary__meta", "요약을 불러오지 못했습니다"));
+            return;
+        }
+        invSummaryHead(box);
+        box.appendChild(invModeLine(data.mode));
+        var cols = invEl("div", "inv-summary__cols");
+        cols.appendChild(invLimitTable(data.limits));
+        cols.appendChild(invStatus(data));
+        box.appendChild(cols);
+    }
+
+    async function loadInvestigationSummary() {
+        var btn = document.getElementById("refreshInvestigationSummaryBtn");
+        if (btn) btn.disabled = true;
+        var data = null;
+        try {
+            var response = await apiRequest("GET", "/api/v1/admin/investigation/summary");
+            if (response.ok) data = await response.json().catch(function () { return null; });
+        } catch (err) {
+            data = null;
+        }
+        renderInvestigationSummary(data && typeof data === "object" ? data : null);
     }
 
     function componentConfigUrl(name) {

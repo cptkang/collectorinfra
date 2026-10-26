@@ -45,11 +45,25 @@ POLL_LOCKS: dict[tuple[str, str], asyncio.Lock] = {}
 POLL_LIVE: dict[tuple[str, str], dict[str, Any]] = {}
 #: poll 응답에서 응답에만 싣는 진척 키(저장 안 함).
 LIVE_KEYS: tuple[str, ...] = ("progress", "partial_briefing")
+#: (plans/194 W5) poll 응답에서 응답에만 싣는 대기 순번 — 정수일 때만(조사 서비스는 동시 상한 대기
+#: 중일 때만 싣는다 · plans/194 W3). 종결 뒤에는 남기지 않는다(종결 경로는 `progress`만 남긴다).
+QUEUE_KEY = "queue_position"
+#: (plans/194 W5) 같은 자리의 실행 단계(`queued`·`collecting` … — 문자열일 때만). 카드의 「대기 중 ·
+#: 순번 N」은 `phase=queued`로 판정한다(지연 poll이 상태를 running으로 바꾸므로 단계가 있어야 한다).
+PHASE_KEY = "phase"
 
 
 def live_fields(res: dict[str, Any]) -> dict[str, Any]:
-    """poll 응답의 진척 키 중 dict 값만 고른다(없으면 빈 dict)."""
-    return {k: res[k] for k in LIVE_KEYS if isinstance(res.get(k), dict)}
+    """poll 응답의 진척 키 중 dict 값과 대기 순번(정수)·실행 단계(문자열)만 고른다(없으면 빈
+    dict)."""
+    out = {k: res[k] for k in LIVE_KEYS if isinstance(res.get(k), dict)}
+    queue = res.get(QUEUE_KEY)
+    if isinstance(queue, int) and not isinstance(queue, bool):
+        out[QUEUE_KEY] = queue
+    phase = res.get(PHASE_KEY)
+    if isinstance(phase, str) and phase:
+        out[PHASE_KEY] = phase
+    return out
 
 
 def sweep_polls(now: float) -> None:
@@ -211,6 +225,8 @@ def _active_statuses() -> frozenset[str]:
 
 __all__ = [
     "LIVE_KEYS",
+    "PHASE_KEY",
+    "QUEUE_KEY",
     "POLL_AT",
     "POLL_LIVE",
     "POLL_LOCKS",

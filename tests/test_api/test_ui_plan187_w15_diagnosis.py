@@ -217,7 +217,9 @@ out = { on: on, display: v.tabBtn.style.display, badge: v.badge.textContent,
     assert out["on"] is True and out["display"] == ""
     assert out["badge"] == "2" and out["badgeOn"] is True
     assert out["es"] == ["/api/v1/alarm/investigations/stream"]
-    assert "⏸ 대기 순번 2" in out["rows"][0] and "자동" in out["rows"][0]
+    # (plans/194 W5 · U3) 대기 중 칩 — service_load가 없으면 「 / 동시 조사」 부분은 뺀다
+    assert "대기 중 · 순번 2" in out["rows"][0] and "동시 조사" not in out["rows"][0]
+    assert "자동" in out["rows"][0]
     assert "채팅" in out["rows"][1] and "2분 10초" in out["rows"][1]
     assert out["conn"] == "◌ 연결 중"
 
@@ -719,9 +721,9 @@ def test_tab_markup_hidden_by_default_and_script_order() -> None:
     tab = html[html.index('data-view="diagnosis"') - 60: html.index('id="diagnosisTabBadge"')]
     assert 'style="display: none;"' in tab and 'aria-controls="diagnosisView"' in tab
     assert 'id="diagnosisView"' in html and 'class="diagnosis-view view-hidden"' in html
-    bv = html.index("briefing-view.js?v=6")
-    dv = html.index("diagnosis-view.js?v=8")
-    app = html.index("app.js?v=36")
+    bv = html.index("briefing-view.js?v=8")
+    dv = html.index("diagnosis-view.js?v=11")
+    app = html.index("app.js?v=39")
     assert bv < dv < app
     css = (_STATIC / "css" / "style.css").read_text(encoding="utf-8")
     gate = css[css.index("body.auth-pending > header"):]

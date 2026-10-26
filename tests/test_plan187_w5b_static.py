@@ -382,7 +382,10 @@ def test_conversation_entry_from_query_string() -> None:
     entry = _js_function_body(src, "openInvestigationFromQuery")
     assert 'params.get("investigation")' in entry and "history.replaceState(" in entry
     assert entry.index("history.replaceState(") < entry.index("openInvestigationConversation(id)")
-    assert "openInvestigationFromQuery();" in _js_function_body(src, "checkAuthOnLoad")
+    # (plans/192 W4) 쿼리 진입이 없을 때만 새로고침 복원
+    assert "if (!openInvestigationFromQuery()) restoreInvestigationConversation();" in (
+        _js_function_body(src, "checkAuthOnLoad")
+    )
     opener = _js_function_body(src, "openInvestigationConversation")
     # (W16) 질의응답 탭이 아니라 「조사 대화」 탭으로 연다
     assert "isProcessing" in opener and 'setActiveView("investigation")' in opener
@@ -392,7 +395,8 @@ def test_conversation_entry_from_query_string() -> None:
     for body in (opener, pin):
         assert "stageAlarmPrompt" not in body and "alarm-prompt-chip" not in body
     assert 'mode: "detail"' in pin and "/engine-choice" in pin
-    assert "질의 없이 닫으면 이 대화는 남지 않습니다." in pin
+    # (plans/192 W4) 새로고침 복원 뒤의 꼬리 문구
+    assert "새로고침해도 이 탭에 다시 열립니다. 질의 없이 닫으면 질의 이력에 남지 않습니다." in pin
     assert "지시어는 풀리지 않" in pin
 
 
@@ -409,7 +413,9 @@ def test_first_turn_header_restore_and_scope_chip() -> None:
     assert "범위 밖" in scope  # 범위 밖이면 맞추지 않고 사유
     bind = _js_function_body(src, "bindAlarmBriefing")
     assert "openConversation: true" in bind
-    assert "onOpenConversation: openInvestigationConversation" in bind
+    # (plans/192 P4) 요약형 버튼도 클릭 시점의 진단 판정을 따른다
+    entry = "onOpenConversation: function (id) { openInvestigationEntry(id, data.alarm_id); }"
+    assert entry in bind
     assert "busy: function () { return isProcessing; }" in bind
     assert "BriefingView.setBusy(document" in _js_function_body(src, "setSendButtonMode")
 
@@ -428,13 +434,13 @@ def test_drawer_new_tab_and_break_glass_detail() -> None:
 @pytest.mark.parametrize(
     "page, asset",
     [
-        ("index.html", "briefing-view.js?v=6"),
-        ("index.html", "app.js?v=36"),
-        ("index.html", "style.css?v=38"),
-        ("noise.html", "briefing-view.js?v=6"),
-        ("noise.html", "noise.js?v=19"),
-        ("admin/noise.html", "briefing-view.js?v=6"),
-        ("admin/noise.html", "noise.js?v=19"),
+        ("index.html", "briefing-view.js?v=8"),
+        ("index.html", "app.js?v=39"),
+        ("index.html", "style.css?v=39"),
+        ("noise.html", "briefing-view.js?v=8"),
+        ("noise.html", "noise.js?v=21"),
+        ("admin/noise.html", "briefing-view.js?v=8"),
+        ("admin/noise.html", "noise.js?v=21"),
     ],
 )
 def test_cache_versions_bumped(page: str, asset: str) -> None:

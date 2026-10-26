@@ -365,6 +365,7 @@ class NoiseGateConfig(BaseSettings):
     # 기본 off면 트리거 노드 미배선 → 게이트·통보 경로 비트동일(회귀 0)·브리핑 미생성. 서비스 다운/
     # 타임아웃/거부는 graceful 실패(통보·판정 정상 완료·사유 구조화 감사, 침묵 금지). 조사는 읽기전용·
     # 조치 없음(D-003) — 브리핑 수신·첨부만.
+    # D-347: 운영 기본 = 수동 전용(false). 켜면 PAGE마다 자동 조사 — 부하 주의.
     investigation_trigger_enabled: bool = False   # (CW-A) 자동 조사 트리거 옵트인
     investigation_trigger_min_tier: str = "PAGE"  # (CW-A) 이 티어 이상 결정 시에만 트리거(enrichment_min_tier와 동일 규칙)
     investigation_service_url: str = "http://localhost:9098/sse"  # (CW-A) sre_agent 조사 서비스 MCP SSE 엔드포인트
@@ -432,8 +433,12 @@ class NoiseGateConfig(BaseSettings):
     # kind=manual · 원 조사 불변 · 통보·승격 없음). 권한은 알람 존 범위 사용자(fail-closed). 상한은 위
     # 추가 조사와 같은 사용자별 카운터(진행 1 · 시간당 investigation_additional_user_hourly_limit)를
     # 공유한다. 같은 알람에 진행 중이거나 join_minutes 안의 사용자 요청 조사가 있으면 그 id로 합류한다.
-    # 기본 off면 접수 라우트가 404이고 by-alarm 응답이 종전과 비트 동일하다.
-    investigation_manual_enabled: bool = False              # (G-28) 사용자 요청 알람 분석 옵트인
+    # off면 접수 라우트가 404이고 by-alarm 응답이 종전과 비트 동일하다.
+    # D-347 (사용자 확정 2026-10-26): 알람 조사는 「수동 전용」 — 자동 조사(trigger)는 끄고 사람이
+    # 고른 알람만 조사한다. 기본 on은 D-162 「신규 플래그 기본 off」의 명시 예외다 — 자동 조사 off에서
+    # 조사를 시작하는 동선이 이것뿐이고, `.env`는 미추적이라 코드 기본으로 둔다. 켜져 있으면 판정
+    # 기록에 원 알람 시각·hostname·resource_type이 함께 남는다(다시 분석의 재료).
+    investigation_manual_enabled: bool = True               # (G-28 · D-347) 사용자 요청 알람 분석
     investigation_manual_join_minutes: int = 10             # (G-31) 같은 알람 합류 창(분) [제안 값]
     # ── plans/187 W9 · D-341 ⑩⑮⑳ (G-14~G-16 · G-27): 장애 대응 지식(KB) 쓰기·참조 측 ──
     # 조사 완료 건의 KB 초안(state=wip 고정 · 결정적 채움 · LLM 0) · YAML 조각 내보내기 · 포스트모템

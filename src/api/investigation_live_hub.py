@@ -149,6 +149,21 @@ def user_events(
     return out
 
 
+def _change_key(entry: LiveEntry) -> tuple[Any, ...]:
+    """스트림을 깨울 변화의 비교 키(plans/194 W2) — 상태·단계·대기 순번·새 이벤트(커서·잘림)·
+    부분 브리핑·진척·오류. 경과(`elapsed_s`)는 넣지 않는다(poll마다 바뀐다)."""
+    return (
+        entry.status,
+        entry.state.get("phase"),
+        entry.state.get("queue_position"),
+        entry.cursor,
+        entry.truncated,
+        entry.partial_version,
+        entry.live.get("progress"),
+        entry.error_version,
+    )
+
+
 def _valid_event(ev: Any) -> bool:
     return isinstance(ev, dict) and isinstance(ev.get("seq"), int) and not isinstance(
         ev.get("seq"), bool
@@ -508,6 +523,7 @@ class InvestigationLiveHub:
             now = self.clock()
             if entry.polled_at is not None and now - entry.polled_at < self.poll_seconds * 0.5:
                 return  # 조회 경로의 즉시 읽기 직후 — 같은 주기에 두 번 묻지 않는다
+            first = entry.polled_at is None
             entry.polled_at = now
             was_active = entry.rec.get("status") in _active_statuses()
             res, reason = await investigation_poll.fetch_poll(
@@ -519,6 +535,7 @@ class InvestigationLiveHub:
                 else:
                     self._finish_from_archive(entry)
                 return
+            before = _change_key(entry)
             self._clear_error(entry)
             status = str(res.get("status") or "")
             if status not in investigation_poll.TERMINAL_POLL_STATUSES:
@@ -526,7 +543,13 @@ class InvestigationLiveHub:
                 if status and entry.status != _STATUS_RUNNING and was_active:
                     entry.status = _STATUS_RUNNING
                     entry.state_version += 1
-                self._notify()
+                # (plans/194 W2) 바뀐 것이 있을 때만 스트림을 깨운다 — 무변화 poll마다
+                # 깨우면 스트림 수 × 미종결 조사 수만큼 목록을 다시 만든다. 경과
+                # (`elapsed_s`)만 바뀐 poll은 깨우지 않는다: 스트림은 `wait_changed`
+                # 시한(poll 간격)마다 스스로 다시 읽어 새 값을 보내고, 화면도 받은 경과에
+                # 로컬 시계를 더해 5초마다 다시 그린다(하트비트 불필요).
+                if first or _change_key(entry) != before:
+                    self._notify()
                 return
             if not was_active:
                 if status == "not_found":
@@ -635,9 +658,10 @@ class InvestigationLiveHub:
     def _set_error(self, entry: LiveEntry, reason: str) -> None:
         message = f"{POLL_ERROR_PREFIX}{reason}"
         if entry.poll_error != message:
+            # (plans/194 W2) 같은 사유가 되풀이되면 깨우지 않는다(설정·사유 변경만 변화).
             entry.poll_error = message
             entry.error_version += 1
-        self._notify()
+            self._notify()
 
     def _clear_error(self, entry: LiveEntry) -> None:
         if entry.poll_error is not None:
@@ -658,6 +682,9 @@ class StreamContext:
     watch: dict[str, dict[str, Any]]
     cursors: dict[str, int]
     denied: list[dict[str, Any]] = field(default_factory=list)
+    #: (plans/194 W5 · C1) 조사 서비스 부하 게이지 조회(앱 캐시 · 10초). 주면 `summary` 프레임에
+    #: `service_load`를 싣고 게이지가 바뀔 때도 다시 보낸다. None이면 프레임은 종전과 같다.
+    service_load: Callable[[], Awaitable[dict[str, Any] | None]] | None = None
 
 
 def parse_watch(raw: str | None) -> dict[str, int]:
@@ -760,11 +787,16 @@ async def stream_events(
     `poll_error`/`done` · 권한 없는 watch의 `denied` · 25초 `ping`.
 
     연결 해제·최대 수명이면 끝난다(브라우저는 `Last-Event-ID`로 이어 붙는다).
+
+    (plans/194 W5 · C1) `ctx.service_load`가 있으면 `summary` 데이터는 `{items, service_load}`이고,
+    목록이나 게이지 값이 바뀔 때만 다시 보낸다. 게이지는 앱 캐시(10초)를 읽으므로 스트림이 깨는
+    주기(poll 간격)마다 조사 서비스를 부르지 않고, 허브 `_notify`도 하지 않는다 — 값 변화는 다음
+    깨어남(최대 poll 간격)에 실린다.
     """
     token = object()
     started = hub.clock()
     last_sent = started
-    last_summary: list[dict[str, Any]] | None = None
+    last_summary: dict[str, Any] | None = None
     sent: dict[str, dict[str, int]] = {"state": {}, "partial": {}, "error": {}}
     done: set[str] = set()
     try:
@@ -786,9 +818,15 @@ async def stream_events(
             interest.update({k: v for k, v in ctx.watch.items() if k not in done})
             hub.set_interest(token, interest)
             frames: list[str] = []
-            summary = hub.list_items(scoped.values(), operator=ctx.operator, mask_fn=ctx.mask_fn)
+            summary: dict[str, Any] = {
+                "items": hub.list_items(
+                    scoped.values(), operator=ctx.operator, mask_fn=ctx.mask_fn
+                ),
+            }
+            if ctx.service_load is not None:
+                summary["service_load"] = await ctx.service_load()
             if summary != last_summary:
-                frames.append(sse("summary", {"items": summary}))
+                frames.append(sse("summary", summary))
                 last_summary = summary
             for investigation_id in ctx.watch:
                 if investigation_id in done:

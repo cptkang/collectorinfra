@@ -30,6 +30,7 @@
         title: "조사 브리핑",
         crossSourceLineLabel: "크로스소스",   // noise_gate render_briefing_lines 라벨과 같은 글자
         sourceBadge: "자동 조사 · 도구 출력 인용",
+        manualSourceBadge: "요청 분석 · 도구 출력 인용",   // (plans/194 W5) 사용자 요청 조사(kind·origin manual)
         loading: "조사 기록을 불러오는 중…",
         noneText: "이 알람에는 자동 조사 기록이 없습니다.",
         runningText: "조사가 진행 중입니다 — 15초마다 다시 확인합니다.",
@@ -293,6 +294,15 @@
         analyzeFailed: "분석을 요청하지 못했습니다 — {reason}",
         analyzeOff: "알람 다시 분석 기능이 꺼져 있습니다(관리자 설정).",
         analyzeOpenNew: "새 조사로 조사 대화 열기",
+        // (plans/194 W5 · D-347) 수동 조사 모드(attach `manualMode`) · 접수 거부의 다음 행동
+        manualNoneChip: "조사 안 됨",
+        manualNoneText: "아직 조사하지 않은 알람입니다. 자동 조사는 꺼져 있습니다 — 필요한 알람만 조사를 시작하세요.",
+        manualStart: "조사 시작",
+        manualAutoOff: "자동 조사는 꺼져 있습니다 — 필요한 알람만 조사를 시작하세요.",
+        manualJoined: "다른 사용자가 먼저 요청한 조사에 합류했습니다.",
+        manualOpen: "장애 진단에서 보기",
+        retryAt: "{hm} 이후 다시 요청할 수 있습니다.",
+        retryLater: "잠시 뒤 다시 눌러 주세요.",
         kindLabels: { alarm: "자동 조사", manual: "요청 분석", episode: "사건 종합 조사", diagnosis: "추가 조사" },
         followupHead: "추가 조사 요청",
         followupFocus: "조사 초점",
@@ -946,14 +956,21 @@
         var a = uiOf(extra).analyze;
         if (!isObj(a) || (!a.enabled && !a.off)) return "";
         var hasInv = a.again || (view && view.status && view.status !== "none");
-        var label = hasInv ? PB_TEXT.analyzeAgain : PB_TEXT.analyzeNew;
-        var parts = ['<div class="bv-engine-choice"><button type="button" class="bv-open-conv" data-bv-action="analyze"' +
-            (a.pending || a.off ? " disabled" : "") + '>' + escapeHtml(label) + '</button>' +
+        var label = hasInv ? PB_TEXT.analyzeAgain : (extra.manualMode ? PB_TEXT.manualStart : PB_TEXT.analyzeNew);
+        var locked = !!a.lockUntil && a.lockUntil > Date.now();   // (plans/194) 시간당 상한 — 다시 가능한 시각까지
+        // (plans/194 W5) 대기·진행 중인 조사에는 [다시 분석]을 그리지 않는다 — 끝난 뒤에 다시 요청한다
+        var parts = ['<div class="bv-engine-choice">' + (isActive(view) ? "" :
+            '<button type="button" class="bv-open-conv" data-bv-action="analyze"' +
+            (a.pending || a.off || locked ? " disabled" : "") + '>' + escapeHtml(label) + '</button>') +
             (a.openId ? '<button type="button" class="bv-choice" data-bv-action="open-conversation" data-investigation-id="' +
                 escapeHtml(a.openId) + '">' + escapeHtml(PB_TEXT.analyzeOpenNew) + '</button>' : "") +
             '<div class="bv-meta">' + escapeHtml(PB_TEXT.analyzeNote) + '</div></div>'];
         if (a.off) parts.push('<div class="bv-note bv-note--warn">' + escapeHtml(a.off) + '</div>');
-        if (a.msg) parts.push('<div class="bv-note' + (a.warn ? " bv-note--warn" : "") + '">' + escapeHtml(a.msg) + '</div>');
+        if (a.msg) {
+            parts.push('<div class="bv-note' + (a.warn ? " bv-note--warn" : "") + '">' + escapeHtml(a.msg) +
+                (isObj(a.go) ? ' <button type="button" class="bv-choice" data-bv-action="open-investigation" data-investigation-id="' +
+                    escapeHtml(a.go.id) + '">' + escapeHtml(a.go.label) + '</button>' : "") + '</div>');
+        }
         if (a.refNote) parts.push('<div class="bv-note bv-note--warn">' + escapeHtml(a.refNote) + '</div>');
         var prev = asList(a.previous).filter(isObj);
         if (prev.length) {
@@ -965,12 +982,22 @@
                         '<span class="bv-meta">' + escapeHtml(PB_TEXT.kindLabels[p.kind] || p.kind || "") + '</span> ' +
                         chipHtml(chip.kind, chip.text) +
                         (p.submitted_at ? ' <span class="bv-meta">' + escapeHtml(fmtTime(p.submitted_at)) + '</span>' : "") +
-                        (extra.openConversation && p.investigation_id
-                            ? ' <button type="button" class="bv-choice" data-bv-action="open-conversation" data-investigation-id="' +
-                                escapeHtml(p.investigation_id) + '">' + escapeHtml(PB_TEXT.openConversation) + '</button>' : "") + '</li>';
+                        (p.investigation_id ? previousButton(p.investigation_id, extra) : "") + '</li>';
                 }).join("") + '</ul></details>');
         }
         return '<div class="bv-pb-block bv-analyze">' + parts.join("") + '</div>';
+    }
+
+    // 「이전 분석」 행 버튼 — attach가 `onOpenPrevious`를 받았으면(extra.previousLabel) 모드와 무관하게
+    // 그 버튼(plans/192 P8), 아니면 종전대로 요약형 「조사 대화로 열기」만.
+    function previousButton(id, extra) {
+        if (extra.previousLabel) {
+            return ' <button type="button" class="bv-choice" data-bv-action="open-previous" data-investigation-id="' +
+                escapeHtml(id) + '">' + escapeHtml(extra.previousLabel) + '</button>';
+        }
+        return extra.openConversation
+            ? ' <button type="button" class="bv-choice" data-bv-action="open-conversation" data-investigation-id="' +
+                escapeHtml(id) + '">' + escapeHtml(PB_TEXT.openConversation) + '</button>' : "";
     }
 
     // fetch Response → `{ok, status, body}`(본문이 JSON이 아니면 body = {}) — 호출부 공용.
@@ -984,6 +1011,66 @@
     function isFlagOff(res) {
         var detail = res && res.body && res.body.detail;
         return !!res && res.status === 404 && !(isObj(detail) && detail.code);
+    }
+
+    /**
+     * (plans/194 W5 · U1 · D-347) 조사 기록이 없는 알람 카드의 「조사」 칸 본문 — 「조사 안 됨」 칩 + [조사 시작]
+     * (`.inv-start-btn`) · (autoOff면) 자동 조사 꺼짐 안내 · 거부 사유 자리(`.inv-start-msg`, 처음엔 숨김).
+     * 호출 없이 그리는 정적 마크업이다 — 접수는 누를 때 호출부가 한다.
+     */
+    function startBlockHtml(o) {
+        o = o || {};
+        return '<div class="bv-head">' + chipHtml("none", PB_TEXT.manualNoneChip) +
+                '<button type="button" class="bv-open-conv inv-start-btn">' + escapeHtml(PB_TEXT.manualStart) + '</button></div>' +
+            (o.autoOff ? '<div class="bv-meta">' + escapeHtml(PB_TEXT.manualAutoOff) + '</div>' : "") +
+            '<div class="inv-start-msg" hidden></div>';
+    }
+
+    /** 접수 결과 한 줄 + (있으면) 다음 행동 버튼(`.inv-go` · `data-investigation-id`). warn이면 경고색. */
+    function startMsgHtml(text, go, warn) {
+        return '<div class="bv-note' + (warn ? " bv-note--warn" : "") + '"><span>' + escapeHtml(text) + '</span>' +
+            (isObj(go) ? ' <button type="button" class="bv-choice inv-go" data-investigation-id="' + escapeHtml(go.id || "") + '">' +
+                escapeHtml(go.label) + '</button>' : "") + '</div>';
+    }
+
+    /**
+     * (plans/194 W5 · U2 · D-347) 조사 접수 응답(`{ok, status, body}`) → 화면 결과 — 알람 카드·관제 서랍·
+     * 장애 진단 「이벤트 찾아 조사」 공용. `{kind, text, investigationId?, existingId?, retryAt?}`.
+     * kind: accepted · joined · in_flight(같은 서버 조사 중) · busy(대기열·서비스 포화 — 문구에 「잠시 뒤
+     * 다시」) · retry_later(`retry_after_seconds` — 다시 가능한 시각을 문구에) · rejected · failed.
+     * 거부 문구는 서버 `reason_text`가 먼저다. texts = `{failed, rejected, joined}`(호출부 문구 · `{reason}`).
+     * 사유는 반드시 text에 싣는다(침묵 금지).
+     */
+    function startOutcome(res, nowMs, texts) {
+        var body = res && isObj(res.body) ? res.body : {};
+        var detail = isObj(body.detail) ? body.detail : {};
+        var raw = body.retry_after_seconds !== undefined ? body.retry_after_seconds : detail.retry_after_seconds;
+        var retry = raw === null || raw === undefined ? NaN : Number(raw);
+        var rejected = !!res && !!res.ok && body.status === "rejected";
+        var code = String(body.reason || detail.code || "");
+        var reason = String(body.reason_text || detail.reason_text || (rejected ? "" : reasonOf(res)));
+        if ((!res || !res.ok || rejected) && isFinite(retry) && retry > 0) {
+            var at = nowMs + retry * 1000;
+            var d = new Date(at);
+            var hm = (d.getHours() < 10 ? "0" : "") + d.getHours() + ":" + (d.getMinutes() < 10 ? "0" : "") + d.getMinutes();
+            return { kind: "retry_later", retryAt: at,
+                text: (reason || code || "-").split(" — ")[0] + " — " + fill(PB_TEXT.retryAt, { hm: hm }) };
+        }
+        if (!res || !res.ok) return { kind: "failed", text: fill(texts.failed, { reason: reason }) };
+        if (rejected) {
+            var text = reason || fill(texts.rejected, { reason: code || "-" });
+            if (code === "host_investigation_in_flight") {
+                return { kind: "in_flight", text: text, existingId: String(body.existing_investigation_id || "") };
+            }
+            if (code === "queue_full" || code === "service_overloaded") {
+                return { kind: "busy", text: text.indexOf("잠시 뒤") >= 0 ? text : text + " — " + PB_TEXT.retryLater };
+            }
+            return { kind: "rejected", text: text };
+        }
+        if (!body.investigation_id) return { kind: "failed", text: fill(texts.failed, { reason: "조사 id 없음" }) };
+        var id = String(body.investigation_id);
+        if (body.joined) return { kind: "joined", text: texts.joined, investigationId: id };
+        return { kind: "accepted", text: "", investigationId: id };
     }
 
     function reasonOf(res) {
@@ -1149,17 +1236,28 @@
 
     function renderPlaybook(view, ctx, extra) {
         var chip = statusChip(view);
+        var qd = queueOf(view, extra);
+        if (qd) { chip.kind = "hold"; chip.text = qd.chip; }
         var parts = [renderHead(view, chip)];
+        if (qd && qd.note) parts.push('<div class="bv-meta">' + escapeHtml(qd.note) + '</div>');
         if (chip.reason) {
             parts.push('<div class="bv-reason' + (chip.kind === "fail" ? " bv-reason--fail" : "") + '">' +
                 '사유: ' + escapeHtml(chip.reason) + '</div>');
         }
-        if (isActive(view)) parts.push(runningNoteHtml(extra));
+        if (isActive(view)) parts.push(runningNoteHtml(qd && typeof qd.runningText === "string" ? qd : extra));
         parts.push(extra.mode === "detail" ? renderPlaybookDetail(view, ctx, extra) : renderPlaybookSummary(view, ctx, extra));
         parts.push(analyzeBarHtml(view, extra));
         parts.push(followupHtml(view, extra));
         if (extra.note) parts.push('<div class="bv-note bv-note--warn">' + escapeHtml(extra.note) + '</div>');
         return '<div class="bv bv--playbook">' + parts.join("") + '</div>';
+    }
+
+    // (plans/194 W5 · U3) 대기 표시 — `extra.queue(view)`가 `{chip, note?, runningText?}`를 주면 상태 칩을
+    // 「대기 중 · 순번 N」(hold)으로 바꾸고 머리 아래에 안내 1줄을 단다. 키가 없거나 null이면 종전 그대로다.
+    function queueOf(view, extra) {
+        if (!extra || typeof extra.queue !== "function" || !isActive(view)) return null;
+        var qd = extra.queue(view);
+        return isObj(qd) && qd.chip ? qd : null;
     }
 
     // 진행 중 안내 1줄. `extra.runningText`가 문자열이면 그 문구로 바꾸고 빈 문자열이면 줄을 뺀다
@@ -1169,10 +1267,16 @@
         return text ? '<div class="bv-note">' + escapeHtml(text) + '</div>' : "";
     }
 
+    // 출처 배지(D-035) — 사용자가 요청한 조사(kind·origin `manual`)는 「자동 조사」라 쓰지 않는다(plans/194 W5)
+    function sourceBadgeHtml(view) {
+        var manual = !!view && (view.kind === "manual" || view.origin === "manual");
+        return '<span class="bv-src">' + escapeHtml(manual ? TEXT.manualSourceBadge : TEXT.sourceBadge) + '</span>';
+    }
+
     function renderHead(view, chip) {
         var head = '<div class="bv-head">' +
             '<span class="bv-chip bv-chip--' + chip.kind + '">' + escapeHtml(chip.text) + '</span>' +
-            '<span class="bv-src">' + escapeHtml(TEXT.sourceBadge) + '</span>';
+            sourceBadgeHtml(view);
         if (view.verdict_level) head += '<span class="bv-meta">평가 ' + escapeHtml(view.verdict_level) + '</span>';
         if (view.kind === "episode") head += '<span class="bv-meta">사건 종합 조사</span>';
         if (view.updated_at) head += '<span class="bv-meta">' + escapeHtml(fmtTime(view.updated_at)) + '</span>';
@@ -1194,22 +1298,28 @@
         var pbCtx = playbookContext(view);
         if (pbCtx) return renderPlaybook(view, pbCtx, extra || {});
         var chip = statusChip(view);
+        // (plans/194 W5 · D-347) 수동 조사 모드의 조사 없음 — 「조사 안 됨」 · 출처 배지 없음 · 모드 안내
+        var manualNone = !!(extra && extra.manualMode) && (view.status || "none") === "none";
+        if (manualNone) chip.text = PB_TEXT.manualNoneChip;
+        var qd = queueOf(view, extra);
+        if (qd) { chip.kind = "hold"; chip.text = qd.chip; }
         var head = '<div class="bv-head">' +
             '<span class="bv-chip bv-chip--' + chip.kind + '">' + escapeHtml(chip.text) + '</span>' +
-            '<span class="bv-src">' + escapeHtml(TEXT.sourceBadge) + '</span>';
+            (manualNone ? "" : sourceBadgeHtml(view));
         if (view.verdict_level) head += '<span class="bv-meta">평가 ' + escapeHtml(view.verdict_level) + '</span>';
         if (view.kind === "episode") head += '<span class="bv-meta">사건 종합 조사</span>';
         if (view.updated_at) head += '<span class="bv-meta">' + escapeHtml(fmtTime(view.updated_at)) + '</span>';
         head += '</div>';
 
         var parts = [head];
+        if (qd && qd.note) parts.push('<div class="bv-meta">' + escapeHtml(qd.note) + '</div>');
         if (chip.reason) {
             parts.push('<div class="bv-reason' + (chip.kind === "fail" ? " bv-reason--fail" : "") + '">' +
                 '사유: ' + escapeHtml(chip.reason) + '</div>');
         }
         var status = view.status || "none";
-        if (status === "none") parts.push('<div class="bv-note">' + escapeHtml(TEXT.noneText) + '</div>');
-        if (isActive(view)) parts.push(runningNoteHtml(extra || {}));
+        if (status === "none") parts.push('<div class="bv-note">' + escapeHtml(manualNone ? PB_TEXT.manualNoneText : TEXT.noneText) + '</div>');
+        if (isActive(view)) parts.push(runningNoteHtml(qd && typeof qd.runningText === "string" ? qd : (extra || {})));
         if (status === "episode_existing") {
             parts.push('<div class="bv-note">' + escapeHtml(TEXT.episodeText) +
                 (view.episode_id ? ' <span class="bv-mono">' + escapeHtml(view.episode_id) + '</span>' : "") +
@@ -1316,6 +1426,14 @@
      *   followup: `{list(), submit(focus, note), loadById(id)}` — 「추가 조사 요청」(W10 · 상세형)
      *   keFeedback(keId, verdict) — 알려진 문제 3버튼(W8)
      *   kb: `{operator, draft(), postmortem()}` — 꼬리 「KB 초안 만들기」·「포스트모템 내보내기」(W9)
+     *   (plans/194 W5 · D-347 · 선택 키 — 없으면 종전과 같다)
+     *   manualMode: true — 수동 조사 모드(자동 조사 꺼짐). 조사 없음이면 「조사 안 됨」 칩·모드 안내·[조사 시작],
+     *     접수 결과는 `startOutcome`(서버 `reason_text` · 다음 행동 · 시간당 상한 잠금 · 합류 안내)로 보인다.
+     *   onOpenInvestigation(id): 합류한 조사·같은 서버의 진행 중 조사로 가는 버튼(없으면 버튼 없음)
+     *   openInvestigationLabel: 합류·진행 중 조사 버튼 문구(문자열 또는 함수 · 기본 「장애 진단에서 보기」)
+     *   (plans/192 P8 · 선택 키 — 없으면 종전과 같다)
+     *   onOpenPrevious(id): 「이전 분석」 각 행의 버튼 — 렌더 모드와 무관하게 그리고 행의 「조사 대화로 열기」를 대체
+     *   openPreviousLabel: 그 버튼 문구(문자열 또는 함수 · 기본 「조사 대화로 열기」)
      */
     function attach(container, opts) {
         var limitS = Number(opts.limitSeconds) > 0 ? Number(opts.limitSeconds) : DEFAULT_LIMIT_S;
@@ -1326,7 +1444,7 @@
         var fuListed = false;
         var fuTimer = null;
         var fuStartedAt = 0;
-        var fe2 = !!(opts.analyze || opts.followup || opts.keFeedback || opts.kb);
+        var fe2 = !!(opts.analyze || opts.followup || opts.keFeedback || opts.kb || opts.manualMode);
 
         function extraFor(info) {
             var extra = info && info.limited ? { note: fill(TEXT.limitReached, { s: limitS }) } : null;
@@ -1340,6 +1458,11 @@
             if (opts.followup) merged.followup = true;
             if (opts.keFeedback) merged.keFeedback = true;
             if (opts.kb) merged.kb = { operator: !!opts.kb.operator };
+            if (opts.manualMode) merged.manualMode = true;
+            if (opts.onOpenPrevious) {
+                var pl = opts.openPreviousLabel;
+                merged.previousLabel = String((typeof pl === "function" ? pl() : pl) || PB_TEXT.openConversation);
+            }
             return merged;
         }
 
@@ -1406,14 +1529,19 @@
             a.msg = "";
             a.warn = false;
             a.refNote = "";
+            if (opts.manualMode) a.go = null;
             repaint();
             call(opts.analyze.submit).then(function (res) {
                 var body = res.body || {};
                 if (isFlagOff(res)) { a.off = PB_TEXT.analyzeOff; return; }
+                if (opts.manualMode && manualOutcome(a, res)) return;
                 if (!res.ok) { a.msg = fill(PB_TEXT.analyzeFailed, { reason: reasonOf(res) }); a.warn = true; return; }
                 var id = String(body.investigation_id || "");
                 a.again = true;
-                if (body.status === "rejected") {
+                if (a.joinedMsg) {
+                    a.msg = a.joinedMsg;
+                    a.joinedMsg = "";
+                } else if (body.status === "rejected") {
                     a.msg = fill(PB_TEXT.analyzeRejected, { reason: body.reason || DEFAULT_REASONS.rejected });
                     a.warn = true;
                 } else {
@@ -1434,6 +1562,35 @@
                 a.msg = fill(PB_TEXT.analyzeFailed, { reason: failText(err) });
                 a.warn = true;
             }).then(function () { a.pending = false; repaint(); });
+        }
+
+        // (plans/194 W5 · U2) 수동 조사 모드의 접수 결과 — 거부·실패는 사유 한 줄 + 다음 행동을 남기고 끝낸다(true).
+        // 거부는 거부 레코드로 갈아타지 않는다(「조사 안 됨」 + 버튼을 그대로 둔다). 접수·합류는 false(종전 흐름이
+        // 그 조사로 갈아탄다) — 합류면 안내 문구와 그 조사로 가는 버튼을 미리 정해 둔다.
+        function manualOutcome(a, res) {
+            var r = startOutcome(res, Date.now(), {
+                failed: PB_TEXT.analyzeFailed, rejected: PB_TEXT.analyzeRejected, joined: PB_TEXT.manualJoined,
+            });
+            if (r.kind === "accepted") return false;
+            if (r.kind === "joined") {
+                a.joinedMsg = r.text;
+                if (opts.onOpenInvestigation) a.go = { id: r.investigationId, label: openLabel() };
+                return false;
+            }
+            a.msg = r.text;
+            a.warn = true;
+            if (r.kind === "in_flight" && r.existingId && opts.onOpenInvestigation) {
+                a.go = { id: r.existingId, label: openLabel() };   // (plans/192 W2) 합류와 같은 목적지 문구
+            } else if (r.kind === "retry_later") {
+                a.lockUntil = r.retryAt;
+                setTimeout(repaint, Math.max(0, r.retryAt - Date.now()) + 50);
+            }
+            return true;
+        }
+
+        function openLabel() {
+            var l = opts.openInvestigationLabel;
+            return String((typeof l === "function" ? l() : l) || PB_TEXT.manualOpen);
         }
 
         function stopFollowups() {
@@ -1637,6 +1794,10 @@
                             ui.choiceMsg = fill(PB_TEXT.choiceFailed, { reason: (err && err.message) || String(err || "") });
                         })
                         .then(function () { ui.pending = false; repaint(); });
+                } else if (action === "open-investigation" && opts.onOpenInvestigation) {
+                    opts.onOpenInvestigation(el.getAttribute("data-investigation-id"));
+                } else if (action === "open-previous" && opts.onOpenPrevious) {
+                    opts.onOpenPrevious(el.getAttribute("data-investigation-id"));
                 } else if (action === "analyze" && opts.analyze) {
                     if (el.disabled || (ui.analyze && (ui.analyze.pending || ui.analyze.off))) return;
                     submitAnalyze();
@@ -1722,6 +1883,9 @@
         responseOf: responseOf,
         isFlagOff: isFlagOff,
         reasonOf: reasonOf,
+        startOutcome: startOutcome,
+        startBlockHtml: startBlockHtml,
+        startMsgHtml: startMsgHtml,
         createPoller: createPoller,
         attach: attach,
     };

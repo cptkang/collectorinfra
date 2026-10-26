@@ -100,12 +100,17 @@ class InvestigationJob:
     # — 잡 TTL과 함께 사라진다.
     # `summary()`에는 나오지 않는다 — `live_view()`가 `activity_since ≥ 0` 조회에만 더한다.
     activity: ActivityLog | None = None
+    # 동시 상한 대기 순번(plans/194 W3 · D-347) — dispatcher가 대기 중에만 단다(1부터 · 그 외 None).
+    # 실행 기록 유무와 무관하게 `summary()`가 `phase="queued"`·`queue_position`으로 펼친다.
+    queue_position: int | None = None
 
     def summary(self) -> dict:
         """§3 `sre_get_investigation`/`sre_list_investigations` 반환 스키마.
 
         계측 가산 키(`instrumentation`)는 종전 키 뒤에 더한다 — 종전 키는 그대로다(R-8).
         플레이북 진척 키(`progress`·`partial_briefing` — plans/187 W4)는 값이 있을 때만 더한다.
+        동시 상한 대기 중(진행 중 + `queue_position`)이면 `phase="queued"`·`queue_position`을 더한다
+        (plans/194 W3 — 실행 기록이 꺼져 있어도 상시 · 그 밖에는 키 없음).
         """
         summary = {
             "investigation_id": self.investigation_id,
@@ -130,6 +135,9 @@ class InvestigationJob:
             summary["progress"] = self.progress
         if self.partial_briefing is not None:
             summary["partial_briefing"] = self.partial_briefing
+        if self.queue_position is not None and self.status in ACTIVE_STATUSES:
+            summary["phase"] = "queued"
+            summary["queue_position"] = self.queue_position
         return summary
 
     def live_view(self, activity_since: int, now: float) -> dict:
@@ -351,9 +359,11 @@ class JobStore:
     def submit(self, payload: object) -> dict:
         """알람 트리거 페이로드로 조사 잡을 제출한다(§3 `sre_investigate_alarm`).
 
-        반환: {investigation_id, status: accepted|duplicate|rejected, reason?}.
+        반환: {investigation_id, status: accepted|duplicate|rejected, reason?, verdict?}.
         - 계약 위반 → `rejected`(사유 포함, 감사 기록).
         - 동일 fingerprint의 기존 잡 존재 → `duplicate`(기존 id).
+        - dispatcher 동기 가드 거부(대기 상한 `queue_full`·`service_overloaded` 등) → `rejected`
+          (`reason`·`verdict` — plans/194 W3).
         """
         with self._lock:
             self._sweep()
@@ -404,7 +414,7 @@ class JobStore:
                 }
             )
             self._dispatch(job)
-            return {"investigation_id": job.investigation_id, "status": "accepted"}
+            return self._submit_result(job)
 
     def submit_diagnosis(
         self,
@@ -430,7 +440,8 @@ class JobStore:
         payload 키를 만들지 않는다
         (종전과 비트 동일). 지침 조립(`investigation_guidance`)이 이 값을 렌더한다.
 
-        반환: {investigation_id, status: accepted|rejected, reason?}.
+        반환: {investigation_id, status: accepted|rejected, reason?, verdict?}
+        — dispatcher 동기 가드 거부도 `rejected`로 바로 돌려준다(plans/194 W3).
         """
         with self._lock:
             self._sweep()
@@ -467,7 +478,20 @@ class JobStore:
                 {"investigation_id": job.investigation_id, "event": "accepted", "status": "accepted", "kind": "diagnosis"}
             )
             self._dispatch(job)
-            return {"investigation_id": job.investigation_id, "status": "accepted"}
+            return self._submit_result(job)
+
+    @staticmethod
+    def _submit_result(job: InvestigationJob) -> dict[str, object]:
+        """접수 응답 — executor가 동기 가드로 거부를 확정했으면 바로 `rejected`로 돌려준다.
+
+        plans/194 W3 · D-347: 종전에는 거부(대기 상한·같은 호스트·dedup·예산·가용성)도 항상
+        `accepted`를 돌려줘 호출자가 poll해야 알았다. 거부면 `reason`과 사람이 읽는 `verdict`
+        (가용성 거부의 사실 문구 포함 — G-2)를 싣는다. 그 밖(진행 중·스텁 등)은 종전대로 `accepted`.
+        """
+        if job.status == "rejected":
+            return {"investigation_id": job.investigation_id, "status": "rejected",
+                    "reason": job.reason, "verdict": job.verdict}
+        return {"investigation_id": job.investigation_id, "status": "accepted"}
 
     def get(self, investigation_id: str, activity_since: int = -1) -> dict:
         """조사 잡 상태를 조회한다(§3 `sre_get_investigation`).
@@ -501,6 +525,14 @@ class JobStore:
             jobs = sorted(self._jobs.values(), key=lambda j: j.updated_at, reverse=True)
             limited = jobs[: max(0, limit)]
             return {"count": len(limited), "investigations": [j.summary() for j in limited]}
+
+    def load_snapshot(self) -> dict[str, object] | None:
+        """executor 부하 게이지(plans/194 W3 — `sre_health`).
+
+        게이지가 없는 executor(스텁)면 None.
+        """
+        snapshot = getattr(self._executor, "load_snapshot", None)
+        return snapshot() if callable(snapshot) else None
 
     def recover_on_start(self) -> int:
         """재기동 복구: 감사 JSONL에서 마지막 상태가 active(accepted/running)인 잡을

@@ -4,6 +4,11 @@
 진행 중 1건(미종결은 재조회로 먼저 갱신) · 시간당 `investigation_additional_user_hourly_limit`건
 (`submitted_at` 기준).
 
+(plans/194 W5 · Q-4 사용자 결정 2026-10-26 · D-347) 시간당 상한은 **실제 접수만** 센다 —
+조사 서비스가 거부한 기록(`status=rejected` — 대기열 가득·서비스 과부하·같은 서버 진행 중 등)은
+세지 않는다. 진행 중 1건 판정은 원래 미종결 상태(`ACTIVE_STATUSES`)만 보므로 거부 기록이
+끼지 않는다.
+
 라우트(interface)와 채팅 노드(application)가 함께 쓰도록 infrastructure에 둔다. 미종결 레코드의
 재조회 함수는 호출부가 주입한다(콜백 주입 — 라우트는 지연 poll 공용 모듈
 `src.api.investigation_poll.refresh_investigation`을, 노드는 저장하지 않는 poll을 넘긴다).
@@ -17,6 +22,7 @@
 from __future__ import annotations
 
 import asyncio
+import math
 import time
 from collections.abc import AsyncIterator, Awaitable, Callable
 from contextlib import asynccontextmanager
@@ -28,6 +34,9 @@ if TYPE_CHECKING:
 
 #: 시간당 상한의 창(초).
 HOUR_SECONDS = 3600.0
+#: 사용자별 진행 중 상한(건) — `user_request_limit`은 미종결 1건이 있으면 거부한다
+#: (관리자 요약 표시용).
+USER_ACTIVE_LIMIT = 1
 
 #: 요청자 `sub`가 비었을 때의 거부 코드(fail-closed — 사용자별 상한을 셀 수 없다).
 REASON_OWNER_UNKNOWN = "owner_unknown"
@@ -79,18 +88,45 @@ async def user_request_limit(
                     "끝난 뒤 다시 요청해 주세요.",
                 )
     hourly_limit = int(getattr(ng, "investigation_additional_user_hourly_limit", 3))
-    now = time.time()
-    recent = [
-        rec for rec in mine
-        if (at := submitted_epoch(rec)) is not None and now - at < HOUR_SECONDS
-    ]
-    if len(recent) >= hourly_limit:
+    if len(_counted_epochs(mine, time.time())) >= hourly_limit:
         return (
             "hourly_limit",
             f"시간당 사용자 요청 조사 상한({hourly_limit}건)에 도달했습니다 — "
             "잠시 후 다시 요청해 주세요.",
         )
     return None
+
+
+def _counted_epochs(mine: list[dict[str, Any]], now: float) -> list[float]:
+    """시간당 상한에 드는 접수 시각(epoch · 오름차순).
+
+    창 안이고 조사 서비스가 거부하지 않은 것만 든다.
+    """
+    from noise_gate.infrastructure.investigation_store import STATUS_REJECTED
+
+    return sorted(
+        at for rec in mine
+        if rec.get("status") != STATUS_REJECTED
+        and (at := submitted_epoch(rec)) is not None
+        and now - at < HOUR_SECONDS
+    )
+
+
+def hourly_retry_after(store: InvestigationStore, ng: Any, sub: str) -> int | None:
+    """시간당 상한 거부의 다시 요청 가능까지 남은 초(plans/194 W5 · C3).
+
+    상한에 든 접수 중 가장 오래된 것이 창에서 빠질 때까지의 초(올림 · 최소 1)다 — 상한을 넘은
+    만큼 앞쪽 건이 빠져야 하므로 `count - limit`번째(0부터)가 기준이다. 상한 아래면 None.
+    """
+    if not sub:
+        return None
+    hourly_limit = int(getattr(ng, "investigation_additional_user_hourly_limit", 3))
+    now = time.time()
+    counted = _counted_epochs(store.list_requests(owner_sub=sub), now)
+    if hourly_limit <= 0 or len(counted) < hourly_limit:
+        return None  # 상한 0(요청 불가)은 기다려도 풀리지 않는다
+    oldest = counted[len(counted) - hourly_limit]
+    return max(1, math.ceil(oldest + HOUR_SECONDS - now))
 
 
 def _sweep_user_locks(now: float) -> None:
@@ -138,7 +174,9 @@ __all__ = [
     "HOUR_SECONDS",
     "REASON_OWNER_UNKNOWN",
     "RefreshFn",
+    "USER_ACTIVE_LIMIT",
     "USER_LOCK_TTL_SECONDS",
+    "hourly_retry_after",
     "submitted_epoch",
     "user_request_limit",
     "user_request_slot",

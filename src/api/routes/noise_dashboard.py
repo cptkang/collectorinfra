@@ -112,6 +112,8 @@ _POLICY_FIELDS: tuple[str, ...] = _BASE_POLICY_FIELDS + tuple(
 
 # 운영자 경로로 들어온 요청 표시(`request.state`). 표시가 없으면 사용자 뷰다 — fail-closed.
 _OPERATOR_PATH_FLAG = "noise_operator_path"
+#: (plans/194 W5 · C2) 사용자 경로 요청자(`require_user` 결과) — 판정 목록의 조사 상태 열람 인가용.
+_NOISE_USER_ATTR = "noise_user"
 
 
 # ─── 요청/응답 모델 ──────────────────────────────────────────────────────
@@ -449,6 +451,115 @@ def _mark_operator_path(request: Request) -> None:
     setattr(request.state, _OPERATOR_PATH_FLAG, True)
 
 
+def _remember_noise_user(
+    request: Request, user: dict[str, Any] = Depends(require_user)
+) -> None:
+    """사용자 경로(`/noise/*`) 요청자를 요청 상태에 남긴다(라우터 레벨 · plans/194 W5 · C2).
+
+    인가가 아니라 기록이다 — 인가는 같은 경로의 `Depends(require_user)`가 하고, FastAPI 의존성
+    캐시로 같은 요청에서 한 번만 돈다. 판정 목록의 행별 조사 상태를 by-alarm 조회와 같은 규칙으로
+    거를 때 이 사용자를 쓴다.
+    """
+    setattr(request.state, _NOISE_USER_ATTR, user)
+
+
+def _investigation_index(request: Request) -> dict[str, dict[str, Any]]:
+    """알람 id → 그 알람의 가장 최근 **거부 아닌** 조사 레코드(조사 저장소를 한 번만 읽는다).
+
+    조사 id별 병합 레코드(`resolved_records` — 연결 행 `episode_existing`이 더한 알람·db_id까지
+    합친 것 · by-alarm 조회가 보는 레코드와 같다)를 시간 순으로 훑어 뒤에 온 것이 이긴다. 걸린 알람
+    **전부**를 키로 둔다(연결 행으로 붙은 알람도 그 조사를 본다). 알람 다시 분석(`kind=manual`)은
+    그 플래그가 켜져 있을 때만 넣는다(by-alarm 후보 규칙과 같다). 호출부가 저장소 경로 설정을 먼저
+    확인한다.
+    """
+    from noise_gate.infrastructure.investigation_store import (
+        KIND_MANUAL,
+        STATUS_REJECTED,
+        InvestigationStore,
+    )
+
+    ng = _gate_cfg(request)
+    path = ng.investigation_store_path
+    manual_on = bool(getattr(ng, "investigation_manual_enabled", True))
+    index: dict[str, dict[str, Any]] = {}
+    store = InvestigationStore(path, int(getattr(ng, "investigation_store_max_lines", 2000)))
+    for rec in store.resolved_records():
+        if rec.get("status") == STATUS_REJECTED:
+            continue
+        if rec.get("kind") == KIND_MANUAL and not manual_on:
+            continue
+        for alarm_id in rec.get("alarm_ids") or []:
+            index[str(alarm_id)] = rec
+    return index
+
+
+def _investigation_visible(
+    request: Request,
+    user: dict[str, Any] | None,
+    rec: dict[str, Any],
+    alarm_id: str,
+    row_db_id: Any,
+    db_cache: dict[str, str | None],
+) -> bool:
+    """사용자 경로에서 이 알람의 조사 존재·상태를 보여도 되는가 — by-alarm 조회와 같은 함수
+    (`alarm.assert_alarm_investigation_access`)로 판정한다. 요청자를 모르면 보이지 않는다.
+
+    이 알람의 db_id는 판정 행 값을 쓴다(by-alarm이 판정 기록에서 찾는 값과 같다). 다른 멤버의
+    판정 기록 조회는 요청 단위 메모(`db_cache`)로 한 번씩만 한다.
+    """
+    from src.api.routes.alarm import assert_alarm_investigation_access
+
+    if user is None:
+        return False
+    known = {alarm_id: str(row_db_id)} if row_db_id else {}
+    try:
+        assert_alarm_investigation_access(
+            request, user, alarm_id, rec, known_db_ids=known, db_cache=db_cache
+        )
+    except HTTPException:
+        return False
+    return True
+
+
+def _attach_investigations(request: Request, items: list[dict[str, Any]]) -> None:
+    """판정 목록 각 행에 `investigation`을 단다(plans/194 W5 · C2 — 「이벤트 찾아 조사」 상태).
+
+    값은 `None`(조사 안 됨 · 또는 볼 수 없음) 또는 `{investigation_id, status, queue_position}`이다.
+    상태·대기 순번은 실시간 허브가 그 조사를 보고 있으면 허브 값, 아니면 저장 상태와 None이다
+    (조사 서비스를 행마다 부르지 않는다). 운영자 경로는 전부 보인다.
+    조사 저장소 경로가 설정되지 않았으면(조사가 있을 수 없다) 키를 달지 않는다 — 응답은 종전과 비트
+    동일(plans/153 §3 ⑥ 「데이터 없음 = 종전 응답」).
+    """
+    if not items or not _gate_cfg(request).investigation_store_path:
+        return
+    index = _investigation_index(request)
+    operator = _is_operator_path(request)
+    user = getattr(request.state, _NOISE_USER_ATTR, None)
+    hub = getattr(request.app.state, "investigation_live_hub", None)
+    # 이 페이지 행이 이미 아는 db_id는 메모에 먼저 넣는다(멤버로 다시 나와도 판정 기록을 읽지
+    # 않는다)
+    db_cache: dict[str, str | None] = {
+        str(item["alarm_id"]): str(item["db_id"])
+        for item in items if item.get("alarm_id") and item.get("db_id")
+    }
+    for item in items:
+        alarm_id = str(item.get("alarm_id") or "")
+        rec = index.get(alarm_id) if alarm_id else None
+        if rec is None or not (
+            operator
+            or _investigation_visible(request, user, rec, alarm_id, item.get("db_id"), db_cache)
+        ):
+            item["investigation"] = None
+            continue
+        investigation_id = str(rec.get("investigation_id"))
+        entry = hub.entry(investigation_id) if hub is not None else None
+        item["investigation"] = {
+            "investigation_id": investigation_id,
+            "status": (entry.status if entry is not None and entry.status else rec.get("status")),
+            "queue_position": entry.state.get("queue_position") if entry is not None else None,
+        }
+
+
 def _is_operator_path(request: Request) -> bool:
     """요청이 운영자 경로로 들어왔는지(`_mark_operator_path` 표시 여부)."""
     return bool(getattr(request.state, _OPERATOR_PATH_FLAG, False))
@@ -693,7 +804,11 @@ async def noise_health(
         "티어·단계·검색어로 거른 결정 목록을 최신순으로 반환합니다.<br/>"
         "PAGE 티어는 즉시 통보 경로라 실시간 스트림에 실리지 않으므로, 피드의 완전성은 이 조회가 맡습니다."
         "<br/>`tier`는 쉼표 복수값(`page,ticket`)을 받고, `facets`는 분포 칩용 건수입니다. "
-        "`related=true`면 상관·자가복구 행에 대표/원 발생 판단을 붙입니다."
+        "`related=true`면 상관·자가복구 행에 대표/원 발생 판단을 붙입니다.<br/>"
+        "각 행의 `investigation`은 그 알람의 가장 최근 거부 아닌 조사"
+        "(`{investigation_id, status, queue_position}`) 또는 null"
+        "(조사 안 됨 · 볼 권한 없음)입니다 — "
+        "열람 범위는 알람 조사 조회(by-alarm)와 같습니다. 조사 저장소 경로가 없으면 키가 없습니다."
     ),
     tags=["noise-console"],
 )
@@ -734,6 +849,7 @@ async def noise_decisions(
         mask_fn=_mask_fn(request),
         operator_view=_is_operator_path(request),
     )
+    _attach_investigations(request, result["items"])
     return DecisionsResponse(**result)
 
 
@@ -1117,5 +1233,7 @@ router.include_router(
 router.include_router(
     read_router,
     prefix="/noise",
-    dependencies=[Depends(require_user)],
+    # (plans/194 W5 · C2) `_remember_noise_user`는 인가가 아니라 요청자 기록이다(의존성 캐시로
+    # `require_user`는 한 번만 돈다).
+    dependencies=[Depends(require_user), Depends(_remember_noise_user)],
 )
