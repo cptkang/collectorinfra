@@ -273,6 +273,11 @@ class NoiseGateConfig(BaseSettings):
     # — 게이트 앞에서 이미 만든 분석을 옮길 뿐 추가 LLM 0.
     # 판정(티어·사유·우선순위·단계)과 무관하다. 기본 off면 레코드가 현행과 비트 동일하다.
     decision_analysis_text_enabled: bool = False
+    # (plans/193 W2) 포털(`/`) 뷰 탭 줄에 「노이즈 관제」 탭을 둔다 — 머리글의 새 탭 `/noise` 링크를
+    # 같은 창 탭 전환으로 바꾸고, 그 탭 서랍의 조사 진입은 같은 창의 장애 진단·조사 대화 탭으로 간다.
+    # 화면에는 기능 조회(`/alarm/capabilities` noise_console_portal_tab)로 전달한다. 기본 off면 포털이
+    # 관제 자산을 싣지 않고 머리글 링크도 그대로라 현행과 비트 동일. 독립 관제 페이지는 켜짐과 무관(K-1 B).
+    console_portal_tab_enabled: bool = False
     # ── Plan 54 모듈 4: 운영자 침묵(Silence) 규칙 ──
     # 기본 off — 켜기 전에는 워커가 규칙을 조회조차 하지 않아 판정이 현행과 비트 동일하다.
     # 심각도 3은 이 기능이 켜져 있어도 어떤 규칙으로도 침묵되지 않는다(게이트 단락이 앞선다).

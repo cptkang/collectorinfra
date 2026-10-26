@@ -245,7 +245,8 @@ def _route(ctx, rt: dict) -> None:
 
     앱 코드는 그대로 그린다(DOM 을 꾸미지 않는다). ``sse``: fixtures 상대 경로의
     ``cards`` 를 알람 스트림 이벤트로 — 1회차는 빈 스트림으로 끝내 앱이 기능 조회
-    (capabilities)를 마친 뒤(5초 뒤 재연결) 카드를 받게 한다. 그 밖에는 ``json`` 을
+    (capabilities)를 마친 뒤(5초 뒤 재연결) 카드를 받게 한다. ``merge``: 실제 응답(JSON 객체)을
+    받아 적은 키만 덮어쓴다(나머지 필드는 서버 응답 그대로). 그 밖에는 ``json`` 을
     ``status``(기본 200)로 — ``method`` 가 있으면 그 메서드만.
     """
     if "sse" in rt:
@@ -262,6 +263,14 @@ def _route(ctx, rt: dict) -> None:
             )
 
         ctx.route(rt["url"], sse)
+        return
+    if "merge" in rt:
+
+        def merge(route) -> None:
+            res = route.fetch()
+            route.fulfill(response=res, json={**res.json(), **rt["merge"]})
+
+        ctx.route(rt["url"], merge)
         return
     data = json.dumps(rt.get("json"), ensure_ascii=False)
 

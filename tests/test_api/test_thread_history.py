@@ -442,9 +442,9 @@ def test_other_screens_open_in_new_tab(index_html: str, link_id: str) -> None:
     # 같은 탭으로 이동하면 이 페이지가 내려가 질의응답 화면이 사라진다
     tag = re.search(r'<a id="' + link_id + r'"[^>]*>', index_html).group(0)
     assert 'target="_blank"' in tag
-    # plans/187 W16: 노이즈 관제만 rel="opener"(target=_blank의 암묵 noopener 해제) — 관제가 이 창을
-    # 이름으로 찾아 「조사 대화」 탭을 연다
-    assert 'rel="opener"' in tag if link_id == "noiseConsoleLink" else 'rel="noopener"' in tag
+    # plans/193 W4: 노이즈 관제도 noopener — window.opener를 읽는 코드 0
+    # (종전 W16의 rel="opener" 폐기)
+    assert 'rel="noopener"' in tag
 
 
 def test_history_mode_buttons(index_html: str) -> None:

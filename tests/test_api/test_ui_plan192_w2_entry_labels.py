@@ -37,6 +37,8 @@ from tests.test_api.test_ui_plan192_w4_conversation_restore import thread_run
 
 TO_DIAG = "장애 진단에서 보기"
 TO_CONV = "조사 대화로 열기"
+# (plans/193 W4 · K-1 B 규칙 2) 독립 관제 페이지의 진입은 새 탭 — 같은 문구 뒤에 표지
+NEW_TAB = " (새 탭)"
 
 # 클릭 결과 판독 — 목적지 한 곳에 그 조사 id로 갔는지
 _WHERE = r"""
@@ -451,15 +453,15 @@ _TABLE = [
     ("IF-card", True, TO_DIAG, "diagnosis"),
     ("IF-card-drawer", False, TO_CONV, "conversation"),
     ("IF-card-drawer", True, TO_DIAG, "diagnosis"),
-    ("IF-noise", False, TO_CONV, "portal"),
-    ("IF-noise", True, TO_DIAG, "portal"),
+    ("IF-noise", False, TO_CONV + NEW_TAB, "portal"),
+    ("IF-noise", True, TO_DIAG + NEW_TAB, "portal"),
     ("IF-dv", True, TO_DIAG, "diagnosis"),
     ("JN-card", False, TO_CONV, "conversation"),
     ("JN-card", True, TO_DIAG, "diagnosis"),
     ("JN-card-drawer", False, TO_CONV, "conversation"),
     ("JN-card-drawer", True, TO_DIAG, "diagnosis"),
-    ("JN-noise", False, TO_CONV, "portal"),
-    ("JN-noise", True, TO_DIAG, "portal"),
+    ("JN-noise", False, TO_CONV + NEW_TAB, "portal"),
+    ("JN-noise", True, TO_DIAG + NEW_TAB, "portal"),
     ("JN-dv", True, TO_DIAG, "diagnosis"),
 ]
 

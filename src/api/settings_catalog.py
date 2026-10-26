@@ -114,6 +114,8 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_DECISION_STORE_ENABLED": "기본 동작",
     "NOISE_DECISION_STORE_MAX_LINES": "기본 동작",
     "NOISE_DECISION_ANALYSIS_TEXT_ENABLED": "기본 동작",
+    # (plans/193 W2) 포털 「노이즈 관제」 뷰 탭 — 관제 화면 표시 방식이라 조회 상한과 같은 구획.
+    "NOISE_CONSOLE_PORTAL_TAB_ENABLED": "기본 동작",
     # (Plan 54 · D-196) 운영자 침묵 규칙 — 억제를 사람이 직접 거는 유일한 경로.
     "NOISE_SILENCE_ENABLED": "중복·연쇄 억제",
     "NOISE_SILENCE_STORE_PATH": "중복·연쇄 억제",

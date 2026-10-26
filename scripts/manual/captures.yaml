@@ -7,7 +7,8 @@
 #   clip      잘라낼 요소(없으면 뷰포트 전체) · pad 여백(px)
 #   callouts  [번호, 셀렉터] — 매뉴얼 「화면 요소」 표의 번호와 같다. 대상이 없으면 캡처 실패
 #   theme     dark 면 다크 테마
-#   routes    응답 가로채기 [{url, sse|json, status, method}] — Redis·조사 서비스 없이 화면 상태를 만든다(capture._route)
+#   routes    응답 가로채기 [{url, sse|json|merge, status, method}] — Redis·조사 서비스 없이 화면 상태를 만든다(capture._route)
+#             merge: 실제 응답(JSON 객체)을 받아 적은 키만 덮어쓴다
 captures:
   # ── 사용자: 시작하기 ─────────────────────────────────────
   - id: login
@@ -404,6 +405,21 @@ captures:
     steps:
       - goto: /noise
       - wait: 2500
+  # 포털 「노이즈 관제」 탭(plans/193 · U-44) — 캡처 서버 프로필은 플래그(NOISE_CONSOLE_PORTAL_TAB_ENABLED)가 꺼져 있어
+  # 다른 포털 캡처(머리글 등)는 종전 그대로다. 이 장면만 기능 조회 응답에 `noise_console_portal_tab: true`를 얹는다
+  # (예시 — 실제 응답을 받아 그 키만 바꾼다 · 나머지 필드는 실제 응답 그대로)
+  - id: noise-portal-tab
+    login: user
+    routes:
+      - {url: "**/api/v1/alarm/capabilities", merge: {noise_console_portal_tab: true}}
+    steps:
+      - wait: "#noiseTab"
+      # 플래그 on이면 머리글 링크는 숨김이 아니라 DOM에서 빠진다(assert_hidden은 요소가 있어야 판정한다)
+      - eval: "(() => { if (document.getElementById('noiseConsoleLink')) throw new Error('머리글 노이즈 관제 링크가 남아 있다'); })()"
+      - click: "#noiseTab"
+      - wait: "#noiseView #decisionBody tr"
+      - wait: 2500
+    callouts: [[1, "#noiseTab"], [2, "#noiseView .noise-top"]]
   # 장애 진단 탭·조사 대화(plans/187 U-70·U-63) — 실시간 화면을 켠 capture-diag 서버에서만 탭이 보인다.
   # 예시 조사·실행 기록 요약은 손으로 만든 것(fixtures/alarms/briefing.json · 모두 종결 — 조사 서비스 호출 0)
   # 장애 진단 탭은 조사 흐름 예시(inv-manual-flow · plans/187 W20)를 연다
@@ -526,7 +542,7 @@ captures:
       - wait: 800
     clip: "#drawer"
     pad: 0
-    callouts: [[1, "#drawerSummary .tier-shift"], [2, "#drawerSummary .drawer-summary-text"], [3, "#drawerCause .cause-handling"], [4, "#drawerCause .cause-ai"], [5, "#drawerCause .cause-briefing"]]
+    callouts: [[1, "#drawerSummary .tier-shift"], [2, "#drawerSummary .drawer-summary-text"], [3, "#drawerCause .cause-handling"], [4, "#drawerCause .cause-ai"], [5, "#drawerCause .cause-briefing"], [6, "#drawerCause .cause-live-open"]]
   - id: noise-admin
     login: admin
     steps:

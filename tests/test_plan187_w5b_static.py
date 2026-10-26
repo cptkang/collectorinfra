@@ -383,7 +383,8 @@ def test_conversation_entry_from_query_string() -> None:
     assert 'params.get("investigation")' in entry and "history.replaceState(" in entry
     assert entry.index("history.replaceState(") < entry.index("openInvestigationConversation(id)")
     # (plans/192 W4) 쿼리 진입이 없을 때만 새로고침 복원
-    assert "if (!openInvestigationFromQuery()) restoreInvestigationConversation();" in (
+    # (plans/193 W2) 복원 약속을 돌려 관제 탭 복귀(`?view=noise`)가 그 뒤에 판정된다
+    assert "if (!openInvestigationFromQuery()) return restoreInvestigationConversation();" in (
         _js_function_body(src, "checkAuthOnLoad")
     )
     opener = _js_function_body(src, "openInvestigationConversation")
@@ -435,12 +436,12 @@ def test_drawer_new_tab_and_break_glass_detail() -> None:
     "page, asset",
     [
         ("index.html", "briefing-view.js?v=8"),
-        ("index.html", "app.js?v=39"),
-        ("index.html", "style.css?v=39"),
+        ("index.html", "app.js?v=41"),
+        ("index.html", "style.css?v=41"),
         ("noise.html", "briefing-view.js?v=8"),
-        ("noise.html", "noise.js?v=21"),
+        ("noise.html", "noise.js?v=24"),
         ("admin/noise.html", "briefing-view.js?v=8"),
-        ("admin/noise.html", "noise.js?v=21"),
+        ("admin/noise.html", "noise.js?v=24"),
     ],
 )
 def test_cache_versions_bumped(page: str, asset: str) -> None:

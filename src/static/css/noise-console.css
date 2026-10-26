@@ -18,6 +18,15 @@
    버튼을 다시 가린다 — 그때는 표 전체를 헤더 위(예: 200·210·220·230·240)로 옮겨야 한다.
    오버레이는 전부 `position: fixed`로 body 직계에 둔다(헤더의 쌓임 맥락 안에 넣지 않는다).
    어느 경우든 전역 스플래시(z 2000)·앱 툴팁(z 9999)보다는 늘 아래에 둔다.
+   ── 포털 탭(plans/193 W2 · `.noise-view` 조상 범위만 — 독립 두 페이지는 위 표 그대로) ──
+     층                        요소                        z-index
+     포털 머리글(sticky)         body > header               100 (style.css)
+     세부 리스트 스크림·패널     .noise-view .scrim--panel · .detail-panel   130 · 131
+     결정 추적 스크림·드로어     .noise-view .scrim · .drawer                140 · 141
+     설명 팝오버 · 차트 툴팁     .noise-view .info-pop · .chart-tip          150
+   포털에서는 관제가 머리글·뷰 탭 아래 뷰(`.noise-view`) 안에 붙는다. 그 뷰는 쌓임 맥락을 만들지
+   않으므로(style.css) 오버레이가 문서 층에서 포털 머리글(100)과 겨룬다 — 표 전체를 머리글 위로 올려
+   스크림이 머리글까지 덮고 서랍 ✕·패널 닫기가 머리글에 가리지 않게 한다. 순서(패널 < 드로어 < 팝오버)는 같다.
    닫기 규칙(JS): Esc·✕·스크림은 맨 위 층 하나만 닫는다(팝오버 > 드로어 > 패널). */
 .noise-wrap { max-width: 1440px; margin: 0 auto; padding: 20px 24px 60px; }
 
@@ -537,3 +546,11 @@
     .dp-pager { padding: 8px 14px }
     .dp-scope { margin-left: 0 }
 }
+
+/* 포털 탭(plans/193 W2) — 오버레이 층을 포털 머리글(z 100) 위로. 값과 순서는 머리 주석의 포털 표. */
+.noise-view .scrim { z-index: 140 }
+.noise-view .scrim.scrim--panel { z-index: 130 }
+.noise-view .drawer { z-index: 141 }
+.noise-view .detail-panel { z-index: 131 }
+.noise-view .info-pop,
+.noise-view .chart-tip { z-index: 150 }

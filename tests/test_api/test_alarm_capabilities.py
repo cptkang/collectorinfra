@@ -77,6 +77,7 @@ def test_capabilities_expose_no_paths_or_secrets():
         "investigation_followup_timeout_seconds",  # plans/153 W2 교정 — 실수(웹 재조회 상한)
         "investigation_auto_enabled",    # plans/194 W1 — 불리언(자동 조사 가용)
         "investigation_manual_enabled",  # plans/194 W1 — 불리언(이 알람 분석 가용)
+        "noise_console_portal_tab",      # plans/193 W2 — 불리언(포털 노이즈 관제 탭)
     }
     for value in body.values():
         assert isinstance(value, (bool, int, float)), value
@@ -92,3 +93,31 @@ def test_investigation_followup_timeout_follows_config():
     ).json()
     assert body["investigation_followup_timeout_seconds"] == 45.0
     assert isinstance(body["investigation_followup_timeout_seconds"], float)
+
+
+# ─── plans/193 W2: 포털 「노이즈 관제」 뷰 탭 플래그 ─────────────────────────
+
+
+def test_noise_console_portal_tab_defaults_off():
+    """플래그 미설정(기본 off)이면 거짓 — 포털은 관제 자산을 싣지 않고 머리글 링크를 그대로 둔다."""
+    body = _client().get("/api/v1/alarm/capabilities").json()
+    assert body["noise_console_portal_tab"] is False
+
+
+def test_noise_console_portal_tab_reflects_flag():
+    """게이트(enable_noise_gate)와 무관하게 플래그 값 그대로 — 관제 화면 표시 방식일 뿐이다."""
+    for gate in (True, False):
+        body = _client(enable_noise_gate=gate, console_portal_tab_enabled=True).get(
+            "/api/v1/alarm/capabilities"
+        ).json()
+        assert body["noise_console_portal_tab"] is True
+
+
+def test_noise_console_portal_tab_config_default_and_env(monkeypatch):
+    """`NOISE_CONSOLE_PORTAL_TAB_ENABLED` — 코드 기본 False · env로 켠다(기동 시 1회 해석)."""
+    from src.config.alarm import NoiseGateConfig
+
+    monkeypatch.delenv("NOISE_CONSOLE_PORTAL_TAB_ENABLED", raising=False)
+    assert NoiseGateConfig.model_fields["console_portal_tab_enabled"].default is False
+    monkeypatch.setenv("NOISE_CONSOLE_PORTAL_TAB_ENABLED", "true")
+    assert NoiseGateConfig(_env_file=None).console_portal_tab_enabled is True

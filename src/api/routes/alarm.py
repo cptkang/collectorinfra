@@ -1098,6 +1098,8 @@ async def alarm_capabilities(
         investigation_followup_timeout_seconds=float(
             getattr(ng, "investigation_followup_timeout_seconds", 1200.0)
         ),
+        # plans/193 W2: 포털 「노이즈 관제」 뷰 탭 — 거짓이면 포털은 관제 자산을 싣지 않는다.
+        noise_console_portal_tab=bool(getattr(ng, "console_portal_tab_enabled", False)),
     )
 
 
