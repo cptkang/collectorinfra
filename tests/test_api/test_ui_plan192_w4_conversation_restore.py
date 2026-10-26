@@ -456,6 +456,8 @@ function initDiagnosisView() { calls.push("diag"); return Promise.resolve(true);
 function openInvestigationFromQuery() { calls.push("query"); return queryHandled; }
 function restoreInvestigationConversation() { calls.push("restore"); return true; }
 function redirectToLogin() { calls.push("login"); }
+// plans/193 W2 — 진입·복원 뒤 관제 탭 복귀 판정(이 테스트 범위 밖)
+function noiseEntrySettled() {}
 """
 
 

@@ -514,3 +514,10 @@ class AlarmCapabilitiesResponse(BaseModel):
             "(NOISE_INVESTIGATION_FOLLOWUP_TIMEOUT_SECONDS · plans/153 W2)"
         ),
     )
+    noise_console_portal_tab: bool = Field(
+        default=False,
+        description=(
+            "포털 「노이즈 관제」 뷰 탭 표시 — 켜지면 머리글 새 탭 링크 대신 같은 창 탭 "
+            "(NOISE_CONSOLE_PORTAL_TAB_ENABLED · plans/193 W2 · 기본 off)"
+        ),
+    )

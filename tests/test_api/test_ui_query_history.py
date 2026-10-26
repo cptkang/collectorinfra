@@ -56,9 +56,10 @@ def test_exactly_two_view_tabs(index_html: str) -> None:
 
     plans/187 W15 장애 진단은 사전 게이트 뒤에만 보이는 셋째 탭이다.
     plans/187 W16 조사 대화는 「조사 대화로 열기」로만 보이는 넷째 탭이다(대화 화면 공유).
+    plans/193 W2 노이즈 관제는 기능 플래그가 켜졌을 때만 보이는 탭이다(기본 숨김).
     """
     views = re.findall(r'class="view-tab[^"]*"\s+data-view="(\w+)"', index_html)
-    assert sorted(views) == ["alarm", "chat", "diagnosis", "investigation"], views
+    assert sorted(views) == ["alarm", "chat", "diagnosis", "investigation", "noise"], views
 
 
 def test_sidebar_collapse_states_cover_both_panels(style_css: str) -> None:

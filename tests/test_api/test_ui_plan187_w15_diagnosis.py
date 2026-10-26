@@ -723,7 +723,7 @@ def test_tab_markup_hidden_by_default_and_script_order() -> None:
     assert 'id="diagnosisView"' in html and 'class="diagnosis-view view-hidden"' in html
     bv = html.index("briefing-view.js?v=8")
     dv = html.index("diagnosis-view.js?v=11")
-    app = html.index("app.js?v=39")
+    app = html.index("app.js?v=41")
     assert bv < dv < app
     css = (_STATIC / "css" / "style.css").read_text(encoding="utf-8")
     gate = css[css.index("body.auth-pending > header"):]

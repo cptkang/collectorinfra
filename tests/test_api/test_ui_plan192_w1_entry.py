@@ -748,6 +748,8 @@ var document = { createElement: function (t) {
 } };
 var IS_BREAK_GLASS = false;
 var liveViewOn = false;
+function liveViewNow() { return liveViewOn; }  // (plans/193 W1) liveView 인자 없음 = 종전
+var opts = {};  // (plans/193 W4) mount 인자 생략 = 독립 페이지 → 「(새 탭)」 표지
 var investigationHead = { kids: [],
     querySelector: function () { return this.kids[0] || null; },
     appendChild: function (n) { this.kids.push(n); return n; } };
@@ -760,8 +762,8 @@ function openInPortal() {}
     [
         (True, True, None),
         (True, False, None),
-        (False, True, "장애 진단에서 보기"),
-        (False, False, "조사 대화로 열기"),
+        (False, True, "장애 진단에서 보기 (새 탭)"),   # (plans/193 W4) 독립 페이지 = 새 탭 표지
+        (False, False, "조사 대화로 열기 (새 탭)"),
     ],
     ids=["bg-on", "bg-off", "user-on", "user-off"],
 )
@@ -769,7 +771,7 @@ def test_portal_entry_button_hidden_for_break_glass(
     break_glass: bool, live: bool, expected: str | None
 ) -> None:
     src = NOISE_JS.read_text(encoding="utf-8")
-    defs = body_of(src, "el", "noise.js") + "\n" + body_of(src, "portalEntryButton", "noise.js")
+    defs = "\n".join(body_of(src, n, "noise.js") for n in ("el", "newTabMark", "portalEntryButton"))
     out = node_run(
         _NOISE_PRELUDE,
         defs,
@@ -811,6 +813,8 @@ window.BriefingView = Object.assign({}, BVreal, {
 });
 var IS_BREAK_GLASS = false;
 var liveViewOn = false;
+function liveViewNow() { return liveViewOn; }  // (plans/193 W1) liveView 인자 없음 = 종전
+var opts = {};  // (plans/193 W4) mount 인자 생략 = 독립 페이지 → 「(새 탭)」 표지
 var manualOnlyMode = Promise.resolve(false);
 var investigationPanel = null;
 var investigationSeq = 0;
@@ -841,6 +845,7 @@ function alarmCall(path, method) {
 
 _DRAWER_FUNCS = (
     "el",
+    "newTabMark",
     "probeAnalyze",
     "analyzeOptions",
     "renderAnalyzeOnly",

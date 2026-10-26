@@ -217,6 +217,8 @@ def test_close_tab_returns_to_chat_and_stops_investigation_polling() -> None:
 _NOISE_HARNESS = r"""
 var opened = [];
 var liveViewOn = false;
+var opts = {};  // (plans/193 W1) mount 인자 생략 = 종전 새 탭 진입
+function liveViewNow() { return liveViewOn; }
 var window = { open: function (url, name, feat) { opened.push([url, name, feat]); return null; } };
 """
 

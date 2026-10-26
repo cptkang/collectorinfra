@@ -1,9 +1,9 @@
 # 193. 노이즈 관제를 포털 안 뷰 탭으로 이식 — 관제 → 조사 진입을 같은 창 탭 전환으로
 
 > **작성일**: 2026-10-26 · **v1.1**(K-1·K-2 확정 반영 — 코드 0건)
-> **상태**: **TODO — 계획(코드 0건)** · 사용자 결정 **K-1 B**(독립 관제 페이지 둘 다 유지 + 포털 탭 추가)·**K-2 A**(관리자도 포털 탭은 읽기 전용 사용자 모드) 확정(2026-10-26 · §3) · 착수 가능: W0·W1·W2 · W3은 192 W2 뒤
-> **계획 시작 SHA**: (첫 Wave 착수 시 기록 — 초안 기준 HEAD `2f64aa9c`)
-> **회귀 대상 파일**: (Wave마다 누적)
+> **상태**: **완료(2026-10-26 · 미커밋)** — W0~W4 + 독립 검증·교정 1라운드 · 플래그 `NOISE_CONSOLE_PORTAL_TAB_ENABLED` 기본 off(켜는 시점은 사용자 확인) · 계획 끝 모듈 단위 회귀 rc 0(원래 실패 1) · 교정분 회귀 「이번 변경 탓」 1건 교정 · 결과 §6
+> **계획 시작 SHA**: `84b400f5`(W0 착수 2026-10-26 — 192·194 병합 뒤 · 작업 트리 깨끗)
+> **회귀 대상 파일**(41 · 이미지 png 제외): `config/settings_help/noise_gate_core.yaml` · `scripts/manual/capture.py` · `scripts/manual/captures.yaml` · `scripts/manual/content/admin.md` · `scripts/manual/content/user.md` · `scripts/manual/features.yaml` · `src/api/routes/alarm.py` · `src/api/routes/alarm_schemas.py` · `src/api/settings_catalog.py` · `src/config/alarm.py` · `src/static/admin/noise.html` · `src/static/css/noise-console.css` · `src/static/css/style.css` · `src/static/index.html` · `src/static/js/app.js` · `src/static/js/noise.js` · `src/static/manual/admin.html` · `src/static/manual/help_index.json` · `src/static/manual/img/captured.json` · `src/static/manual/user.html` · `src/static/noise.html` · `tests/test_api/test_alarm_capabilities.py` · `tests/test_api/test_noise_dashboard_api.py` · `tests/test_api/test_plan160_static_assets.py` · `tests/test_api/test_plan193_verify.py` · `tests/test_api/test_plan193_w4_break_glass.py` · `tests/test_api/test_settings_catalog.py` · `tests/test_api/test_thread_history.py` · `tests/test_api/test_ui_alarm_view.py` · `tests/test_api/test_ui_plan187_w15_diagnosis.py` · `tests/test_api/test_ui_plan187_w16_conversation_tab.py` · `tests/test_api/test_ui_plan192_w1_entry.py` · `tests/test_api/test_ui_plan192_w2_entry_labels.py` · `tests/test_api/test_ui_plan192_w4_conversation_restore.py` · `tests/test_api/test_ui_plan193_w1_mount.py` · `tests/test_api/test_ui_plan193_w2_portal_tab.py` · `tests/test_api/test_ui_plan193_w4_standalone.py` · `tests/test_api/test_ui_plan194_w5_noise_admin.py` · `tests/test_api/test_ui_query_history.py` · `tests/test_plan187_fe2_static.py` · `tests/test_plan187_w5b_static.py`
 > **출처**: `plans/192` §5 Q-1 사용자 결정(2026-10-26) **C. 노이즈 관제를 포털 안 뷰 탭으로 이식** — 관제에서 조사를 열 때마다 새 브라우저 탭이 쌓이는 문제(192 P6)를 구조로 없앤다. 배경 이력(W16 이름 창 → W19 포털 창 재사용 → W23 항상 새 탭)은 192 §1.
 > **선후 관계**: `plans/192` W1·W3·W4는 이 계획과 **독립**(어느 쪽이 먼저 끝나도 됨). 192 **W2(포털 안 진입 문구 규칙)는 이 계획 W3보다 먼저** 끝낸다 — 관제 탭의 진입 버튼이 그 규칙을 그대로 쓴다. 192 W1의 Q-3 줄(`noise.js` break-glass 조건)과 이 계획 W1(`noise.js` mount 리팩터)은 같은 파일이라 먼저 끝난 쪽 위에 다른 쪽을 얹는다. **`plans/194` W5 U5(관제 서랍 「조사 안 됨 → [조사 시작]」·「수동 조사 모드」 표지)가 먼저 들어간다(2026-10-26 · 미커밋) — 193 W1(`noise.js` mount 리팩터)은 그 위에 얹는다.**
 > **관련 결정**: D-196(관제 대시보드 — 운영자 화면 `/static/admin/noise.html`·침묵 쓰기·정책 GET만) · D-245(사용자 관제 `/noise` — 읽기 5종만 · 침묵·정책·스트림은 운영자 · **마크업·JS 두 벌 복제 기각**) · D-247(관제 드릴다운·설명) · **D-248 ①**(포털의 Admin·노이즈 관제 링크는 새 탭 — 원래 탭의 채팅이 사라지지 않게) + 부기(관제 링크 `rel="opener"`) · **D-341 부기 10 ㊲**(관제 → 기존 포털 장애 진단 탭 · 「관제 페이지 안에 진단 화면을 만들지 않는다」) · **부기 14 ㊾**(관제 진입 = 항상 새 탭) · **D-338**(인증 저장소 장애 시 사용자 요청 503 · **break-glass는 진입로로 유지**) · D-069·D-070(통합 RBAC · 사용자/운영자 시크릿 분리) · D-255(매뉴얼 동반) · D-337(동작 불변 리팩터와 동작 변경 분리)
@@ -32,6 +32,24 @@
 | 포털 뷰 탭 | `setActiveView`(`app.js:4280`)·`viewRegistry` · 「조사 대화」 탭은 대화 화면을 공유(`swapConversation`) · 답변 스트리밍 중 전환 거부 | 관제 탭은 독립 화면(공유 없음)이라 `swapConversation` 대상 아님 · 스트리밍 중에도 관제 탭 전환은 허용(채팅 DOM 유지) |
 | CSS | `noise-console.css` 533줄 + `style.css`(포털은 v38, 사용자 관제는 v18 — 같은 파일 다른 버전 고정) | 포털에 `noise-console.css`를 더하면 선택자 충돌 점검 필요(W0) |
 | 의존 테스트 | `noise.js`·`noise.html`을 읽는 테스트 11파일(`tests/test_api/test_noise_*`·`test_ui_plan187_w15/w16`·`test_plan153_*`·`test_plan187_fe2/w5b_static`·`test_admin_auth_redirect_loop`·`test_manual_coverage`) · 캡처 `noise-user`·`noise-drawer`·`noise-drawer-cause`·`noise-admin`(`captures.yaml:401-452`) · 매뉴얼 U-44(`features.yaml:105`) | 문자열 단언 테스트가 많다 — W1 동작 불변 리팩터에서 고정값 갱신 범위를 먼저 센다 |
+
+### 2.1 W0 실측 (2026-10-26 · HEAD `84b400f5` · 코드 0)
+
+§2 표의 행 번호는 `2f64aa9c` 기준이다. 192·194가 들어간 뒤 `noise.js`는 3,435줄(v21)이고, 아래가 착수 시점 값이다.
+
+| 항목 | 실측 | 정한 방식 |
+|---|---|---|
+| CSS 충돌 | `noise-console.css` 선택자 177 클래스 · 요소·`body`·`:root` 선택자 0 · 포털 DOM(`index.html`·`app.js`·`diagnosis-view.js`·`briefing-view.js`·`result-viz.js`)이 실제로 다는 클래스와 겹치는 것은 `.btn` 1개뿐이고 그것도 `.dp-search .btn`(관제 안 한정) | 포털에 그대로 얹는다. 스타일시트는 **첫 mount 때** `noise.html` 머리의 `<link>`를 그대로 옮겨 붙인다(버전 단일 출처 · 플래그 off면 포털에 안 실림) — 실브라우저 계산 스타일 대조로 W2에서 재확인 |
+| id 충돌 | 사용자 마크업 id 35개 × `index.html` id — 겹침 0 | 그대로 |
+| 포털에 같은 표지 | `index.html:199` 「❓ 사용법」 버튼이 `data-help="1"`을 단다 — 지금의 `attachHelp(document)`를 포털에서 부르면 이 버튼에 관제 (!) 버튼이 붙는다 | `document` 범위 조회(`attachHelp` · `[data-drill]` · `[data-focus-key]` · `.mgmt-tabs`·`.pane` · `#rangeSeg button` · `.noise-wrap` · `.noise-brand h1`)를 mount 루트 범위로 바꾼다(독립 페이지는 루트 = `body`라 같은 결과) |
+| 층 순서 | 관제 오버레이 z 30~50(`noise-console.css` 층 표) · 포털 전역 `header` sticky z 100 · `.diagnosis-view`는 `position:relative; z-index:1`(쌓임 맥락) | 포털 관제 뷰 컨테이너는 **쌓임 맥락을 만들지 않고**, 포털 안에서만 오버레이 층을 헤더 위(130~150)로 올린다(관제 CSS 층 표에 포털 행 추가 · 루트 클래스 범위). `document.body.appendChild` 3곳(툴팁·설명 팝오버·검토 콘솔)은 mount 루트에 붙인다 — 뷰가 숨으면(`view-hidden`) 같이 숨는다 |
+| 문서 전역 리스너 | `keydown`(Esc 닫기 `:1331`) · `click`·`scroll`(팝오버 닫기 `:2223`·`:2233`) · `resize` 2곳 | 그대로 두되 포털에서 뷰가 숨어 있으면(`pause`) Esc는 무시 |
+| 요청 수(사용자 모드) | mount 직후 `summary`·`timeseries`·`top-suppressed`·`decisions`(피드)·`decisions`(이력) 5건 + `/alarm/capabilities` 1 + `/alarm/investigations/active` 1 · 이후 30초마다 피드 1 · 60초마다 집계 1(분당 3건) · `visibilitychange` 처리 없음 | 포털에서는 뷰가 숨으면 두 타이머를 멈추고, 다시 보이면 마지막 갱신이 30초를 넘었을 때만 즉시 갱신 · `/active`는 포털 `diagnosisOn()`으로 대신(0건) |
+| `/noise` 진입로 | 포털 머리글 `index.html:72`(새 탭 · `rel="opener"`) · 주소·즐겨찾기 · 서버 라우트 `server.py:962` · 매뉴얼 본문의 화면 이름(링크 아님) · 관리자 대시보드는 운영자 관제(`dashboard.html:96` 같은 탭) | 플래그 on이면 머리글 링크를 DOM에서 빼고 뷰 탭 버튼을 보인다(포털 안 `/noise` 링크 0) |
+| `window.opener` 사용 | `noise.js`·`app.js` 모두 0(W23 뒤 관제는 `noopener` 새 탭) | 머리글 `rel="opener"`는 쓰임새 없음(P12) |
+| 의존 테스트 | `noise.js`·`noise.html`을 읽는 테스트 14파일(§2 표의 11 + `test_ui_plan192_w1_entry`·`test_ui_plan192_w2_entry_labels`·`test_ui_plan194_w5_noise_admin`) | W1 들여쓰기 불변 방식(IIFE 본문을 mount 함수 본문으로 — 줄 들여쓰기 그대로)으로 문자열 단언 깨짐을 줄인다 |
+| 마크업 한 벌 | 독립 `/noise`가 남으므로 포털은 `/static/noise.html`을 조회해 `<body>`의 스크립트 아닌 자식(관제 영역·스크림·서랍)을 mount 루트에 옮겨 붙인다(조각 조회 · 사본 0). 포털에서 뜻이 없는 「질의응답으로」 링크는 표지(`data-noise-standalone`)를 달아 포털 mount가 뺀다 | §3 운용 규칙 3 |
+| 기능 플래그 전달 | `NoiseGateConfig`(`env_prefix="NOISE_"`)에 `console_portal_tab_enabled` → `NOISE_CONSOLE_PORTAL_TAB_ENABLED` · 화면 전달은 로그인 사용자 전원이 이미 부르는 `/api/v1/alarm/capabilities`(`initAlarmSubscription` → `loadAlarmCapabilities`)에 불리언 1개 | — |
 
 ## 3. 결정 충돌 점검 — K-1·K-2 **확정(2026-10-26)**
 
@@ -90,10 +108,25 @@ D-338은 *인증 저장소(사용자 DB) 장애 때 사용자 요청은 503으�
 
 ## 5. 수용 기준
 
-1. 플래그 off면 머리글 링크·두 독립 관제 페이지·관제 진입이 지금과 비트 동일하다(W1 이후 기존 테스트 전건 통과).
+1. 플래그 off면 머리글 링크·두 독립 관제 페이지·관제 진입이 지금과 비트 동일하다(W1 이후 기존 테스트 전건 통과). **해석(2026-10-26 팀 리드)**: 「비트 동일」은 여는 곳(새 탭) 기준이다 — 독립 페이지 「(새 탭)」 표지(기준 7)와 머리글 `rel="opener"→"noopener"`(192 P12 · `window.opener` 읽는 코드 0)는 의도된 변경이다.
 2. 플래그 on이면 포털 머리글 「노이즈 관제」가 같은 창의 뷰 탭으로 열리고, 그 탭의 서랍에서 조사를 열면 같은 창의 장애 진단(꺼짐이면 조사 대화) 탭으로 전환된다 — 진입 경로마다 창 수 1→1.
 3. 관제 탭이 숨겨져 있는 동안 관제 재동기화·집계 요청이 나가지 않는다.
 4. 관제 코드는 한 벌이다(`noise.js` 하나 · 사용자 모드 마크업도 `noise.html` 한 곳 — 포털 템플릿 사본 0 · K-1 B 운용 규칙 3).
 5. 인증 저장소 장애(503) 중에도 break-glass 운영자 관제에 들어갈 수 있다(K-1 B).
-7. 포털 안에서 독립 `/noise`로 가는 링크가 0개이고, 독립 페이지의 조사 진입 버튼은 「새 탭」 표지를 단다(K-1 B 운용 규칙 1·2).
+7. 포털 안에서 독립 `/noise`로 가는 링크가 0개이고(플래그 on · **기능 조회 응답 뒤** — 응답 전·조회 실패 중에는 플래그 off와 같은 링크가 폴백으로 남는다 · 검증 m-2 · 플래그 off 비트 동일과 맞바꿈), 독립 페이지의 조사 진입 버튼은 「새 탭」 표지를 단다(K-1 B 운용 규칙 1·2).
 6. 매뉴얼·캡처가 새 동선과 맞다(`pytest tests/test_manual`).
+
+## 6. 결과 (2026-10-26 · 미커밋)
+
+| Wave | 변경 | 검증 |
+|---|---|---|
+| W0 | §2.1 실측(코드 0) | — |
+| W1 | `noise.js` → `window.NoiseConsole.mount(root, opts)`(본문 들여쓰기 불변 · 한 인스턴스 · `body[data-noise-mode]`일 때만 자동 mount) · 핸들 `pause/resume/unmount` · document 범위 조회 → mount 루트 · v=22 | 의존 14파일 전후 1,138 passed 동일 · 새 `test_ui_plan193_w1_mount.py` 14 · 실브라우저 두 독립 페이지 전후 JSON 동일 |
+| W2+W3 | 플래그 `NoiseGateConfig.console_portal_tab_enabled` · 기능 조회 `noise_console_portal_tab` · 설정 카탈로그·도움말 · 포털 `#noiseTab`/`#noiseView` · 조각 조회(`/static/noise.html` DOMParser — 사본 0) · 첫 활성 때 mount(사용자 모드) · 숨김 `pause`/보임 `resume` · `?view=noise` · 서랍 진입 → `openInvestigationEntry`(같은 창) · `.noise-view` 층 z 130~150 | 실브라우저 66/66 · 창 수 1→1 · 숨김 중 관제 요청 0 |
+| W4 | 독립 페이지 조사 진입 「(새 탭)」 표지 + 머리 버튼 `title` · 머리글 `rel="opener"→"noopener"` · 매뉴얼 U-10·10장 머리·U-44·U-63·U-70·A-42·A-81·신규 A-84 · 캡처 재촬영 3 + 신규 `noise-portal-tab` · `capture.py` `merge` 라우트 옵션 | `pytest tests/test_manual` 691 · 새 `test_ui_plan193_w4_standalone.py` 10 · `test_plan193_w4_break_glass.py` 5(D-338 실 라우터) · 실브라우저 53/53 |
+| 검증·교정 | Critical 0 · Major 1(M-1 스트리밍 중 거부 사유가 숨은 `#chatError`에만) → 관제 뷰 일시 안내 · m-1 mount 실패 안내 · m-3 pause 때 서랍 브리핑 폴러 정지 · m-4 토큰 게터 · m-5 U-44 문구 · m-6 resume 차트 재렌더 · m-2는 문서화(기준 7) | 새 `test_plan193_verify.py` · 교정 지정 271/확장 1,011 passed |
+
+- **계획 끝 모듈 단위 회귀**(`--base 84b400f5` · 39파일): rc 0 · 본체 통과 2,812 · 실패 1(`test_settings_help.py::test_t2_curated_groups_have_full_coverage` — 원래 실패) · 건너뜀 3 · arch/overfit/config_fallback/ruff/mypy 통과 · R16 미발생. 권고 블록: `[전체 회귀 권고] 사유: 허브 모듈 변경(전이 import 영향 ≥ 85%) — src.config.alarm 88%`. 범위: 모듈 단위 — 전체 미실행.
+- **교정분 회귀**(17파일): 본체 통과 1,874 · 「이번 변경 탓」 1(`test_noise_dashboard_api.py::test_noise_js_stream_sends_token_in_header_not_url` — m-4가 바꾼 식 `"Bearer " + currentToken()`을 옛 정규식이 단언) → 정규식만 새 식에 맞춤(의도 불변) · 그 모듈 재실행 153 passed · `docs/18` 기록. 범위: 모듈 단위 — 전체 미실행.
+- **이탈**: ① §2 행 번호는 194 W5 반영 뒤 기준(noise.js 3,435줄 · v21)으로 다시 셈 ② W2·W3은 같은 파일(`app.js`)이라 한 implementer로 묶음 ③ 「비트 동일」 해석은 여는 곳 기준(기준 1) ④ m-2는 코드 대신 기준 7 문구로 ⑤ 「새 탭」 표지는 버튼 문구 「(새 탭)」 + 머리 버튼 `title` — 수동 모드 버튼은 `briefing-view.js` 범위 밖이라 `title` 없음 ⑥ 관리자 설정 화면 항목 A-84 신설 · `config/settings_help` 항목 추가 ⑦ `capture.py` `merge` 옵션 추가(캡처용) ⑧ 192 P10(「질의응답으로」)은 코드 변경 없이 플래그로 해소(독립 페이지는 `data-noise-standalone` 표지만).
+- **잔여**: m-2 응답 전 폴백 링크 · resume마다 BriefingView 300초 상한 창 재시작 · 다크 테마 미캡처 · 조사 id 형식 오류 거부 무안내 · 403 뒤 주기 갱신 계속 · 플래그 켜는 시점(사용자 확인).

@@ -16,13 +16,34 @@
  * 그래서 운영자 피드는 **SSE(즉시성) + 주기 재동기화(완전성)** 를 병행한다 — 스트림만 믿으면
  * 가장 중요한 알람이 관제 화면에서 빠진다. 사용자 화면은 스트림을 열지 않으므로(D-196 ⑤ 유지)
  * 재동기화만으로 채운다 — 최대 RESYNC_MS 만큼 늦게 보일 뿐 빠지는 결정은 없다.
+ *
+ * (plans/193 W1 · D-337 동작 불변) 불러오면 바로 실행되던 페이지 스크립트를 「지정한 영역에 붙이는
+ * 모듈」로 바꿨다 — `window.NoiseConsole.mount(root, opts)`. 독립 두 페이지는 `<body data-noise-mode>`가
+ * 있어 로드 시 `mount(document.body, {mode})`가 자동으로 불리고 종전과 같게 동작한다. 속성이 없는
+ * 페이지(포털 탭 — W2)는 아무 일도 하지 않고, 필요할 때 직접 mount한다. `opts`(모두 선택 · 생략 = 종전):
+ *     mode                "user"|"admin" — 종전 `data-noise-mode` 판정을 대신한다(미지정 = 운영자).
+ *     token               주면 localStorage 탐색을 건너뛴다(키는 user_token 취급 → break-glass 아님).
+ *                         빈 값/null이면 로그인으로 보내지 않고 Authorization 헤더 없이 부른다(인증 꺼짐).
+ *                         함수를 주면 요청마다 불러 그 값을 쓴다(포털 — 다른 탭 재로그인으로 바뀐 토큰).
+ *     onAuthFail()        401 처리(종전: 보낸 토큰 키 삭제 + /login?next=<페이지>).
+ *     onForbidden()       403 처리(종전: `/`로).
+ *     onOpenInvestigation(id)  서랍 조사 진입(종전: 새 탭 `/?diagnosis=`·`/?conversation=` noopener).
+ *     liveView()          장애 진단 켜짐 판정 — 주면 `/active` 조회를 하지 않고 렌더·클릭 때마다 부른다.
+ * 반환 핸들 `{pause, resume, unmount}` — 숨은 탭에서 주기 갱신·열린 서랍의 조사 브리핑 재조회를 멈추는
+ * 용도(독립 페이지는 쓰지 않는다).
  */
 
-(function () {
-    "use strict";
+window.NoiseConsole = (function () {
+"use strict";
 
+// 한 페이지 한 인스턴스 — 두 번째 mount 호출은 첫 호출의 결과(핸들 · 토큰 없음 리다이렉트면 null)를
+// 그대로 돌려준다. 인자는 무시하고, unmount 뒤에도 다시 붙이지 않는다(마크업에 단 리스너가 겹친다).
+var started = false;
+var instance = null;
+
+function mount(mountRoot, opts) {
     // 모드는 페이지가 선언한다(미선언이면 종전 동작 = 운영자).
-    var IS_ADMIN = (document.body.getAttribute("data-noise-mode") || "admin") === "admin";
+    var IS_ADMIN = (opts.mode || "admin") === "admin";
     var PAGE_PATH = IS_ADMIN ? "/static/admin/noise.html" : "/noise";
 
     // 운영자 화면은 운영자 토큰을, 사용자 화면은 사용자 토큰을 먼저 본다.
@@ -32,13 +53,21 @@
     var TOKEN_KEYS = IS_ADMIN ? ["admin_token", "user_token"] : ["user_token", "admin_token"];
     var tokenKey = null;
     var token = null;
-    for (var i = 0; i < TOKEN_KEYS.length && !token; i++) {
-        token = localStorage.getItem(TOKEN_KEYS[i]);
-        if (token) tokenKey = TOKEN_KEYS[i];
-    }
-    if (!token) {
-        window.location.href = "/login?next=" + encodeURIComponent(PAGE_PATH);
-        return;
+    var tokenOf = null;   // mount `token`이 함수면 요청마다 읽는다
+    if (opts.token !== undefined) {
+        // 부른 쪽이 토큰을 정했다(포털 탭) — 탐색·리다이렉트 없음. 빈 값이면 헤더 없이 부른다.
+        if (typeof opts.token === "function") tokenOf = opts.token;
+        else token = opts.token || null;
+        tokenKey = "user_token";
+    } else {
+        for (var i = 0; i < TOKEN_KEYS.length && !token; i++) {
+            token = localStorage.getItem(TOKEN_KEYS[i]);
+            if (token) tokenKey = TOKEN_KEYS[i];
+        }
+        if (!token) {
+            window.location.href = "/login?next=" + encodeURIComponent(PAGE_PATH);
+            return null;
+        }
     }
 
     var API = IS_ADMIN ? "/api/v1/admin/noise" : "/api/v1/noise";
@@ -57,24 +86,51 @@
         esRetryMs: 1000,
     };
 
+    // (plans/193 W1) mount 핸들(pause·resume·unmount)이 다루는 주기 갱신·재연결 상태.
+    // 독립 페이지는 핸들을 쓰지 않으므로 paused는 늘 거짓이다(종전 동작 그대로).
+    var life = {
+        paused: false,
+        dead: false,             // unmount 뒤 — resume·재연결 없음
+        summaryTimer: null,      // SUMMARY_MS setInterval
+        resyncTimer: null,       // RESYNC_MS setInterval
+        reconnectTimer: null,    // 운영자 스트림 재연결 setTimeout
+        reconnectDue: false,     // pause 동안 끊겨 미뤄 둔 재연결
+        summaryAt: 0,            // 마지막 집계 갱신 시각(ms)
+        feedAt: 0,               // 마지막 피드 갱신 시각(ms)
+        panelDue: false,         // pause가 멈춘 서랍 조사 브리핑 재조회 — resume에서 판정해 다시 건다
+    };
+
     var alertError = document.getElementById("alertError");
     var alertSuccess = document.getElementById("alertSuccess");
 
     // ── 공통 ────────────────────────────────────────────────────────────
 
+    function currentToken() {
+        return tokenOf ? (tokenOf() || null) : token;
+    }
+
+    // 토큰이 비면(mount `token` 빈 값 — 인증 꺼짐) Authorization 헤더를 싣지 않는다.
+    function authHeaders(extra) {
+        var current = currentToken();
+        var headers = current ? { "Authorization": "Bearer " + current } : {};
+        Object.keys(extra || {}).forEach(function (k) { headers[k] = extra[k]; });
+        return headers;
+    }
+
     function apiRequest(method, url, body) {
         var options = {
             method: method,
-            headers: {
-                "Authorization": "Bearer " + token,
-                "Content-Type": "application/json",
-            },
+            headers: authHeaders({ "Content-Type": "application/json" }),
         };
         if (body) options.body = JSON.stringify(body);
         return fetch(url, options).then(function (res) {
             if (res.status === 401) {
-                if (tokenKey) localStorage.removeItem(tokenKey);  // 실제로 보낸 토큰의 키
-                window.location.href = "/login?next=" + encodeURIComponent(PAGE_PATH);
+                if (opts.onAuthFail) {
+                    opts.onAuthFail();
+                } else {
+                    if (tokenKey) localStorage.removeItem(tokenKey);  // 실제로 보낸 토큰의 키
+                    window.location.href = "/login?next=" + encodeURIComponent(PAGE_PATH);
+                }
             }
             return res;
         });
@@ -83,7 +139,8 @@
     async function getJSON(path) {
         var res = await apiRequest("GET", path);
         if (res.status === 403) {
-            window.location.href = "/";
+            if (opts.onForbidden) opts.onForbidden();
+            else window.location.href = "/";
             return null;
         }
         if (!res.ok) {
@@ -404,7 +461,7 @@
         var tip = el("div", "chart-tip");
         tip.id = "chartTip";
         tip.setAttribute("aria-hidden", "true");
-        document.body.appendChild(tip);
+        mountRoot.appendChild(tip);
         return {
             read: read, yname: yname, yaxis: yaxis, grid: grid, xaxis: xaxis, tip: tip,
             legend: document.getElementById("chartLegend"),
@@ -855,7 +912,7 @@
         state.es = ctrl;
 
         fetch(API + "/stream", {
-            headers: { "Authorization": "Bearer " + token, "Accept": "text/event-stream" },
+            headers: { "Authorization": "Bearer " + currentToken(), "Accept": "text/event-stream" },
             cache: "no-store",
             signal: ctrl.signal,
         }).then(function (res) {
@@ -876,9 +933,19 @@
             state.es = null;
             setStreamPill("err", "스트림 끊김 — 재연결 중");
             // 지수 백오프(최대 30초) — 서버 재시작 중에 재연결 폭주를 만들지 않는다.
-            setTimeout(connectStream, state.esRetryMs);
+            scheduleReconnect();
             state.esRetryMs = Math.min(state.esRetryMs * 2, 30000);
         });
+    }
+
+    // (plans/193 W1) 재연결 타이머를 기억한다 — pause 동안에는 걸지 않고 resume이 다시 붙는다.
+    function scheduleReconnect() {
+        if (life.dead) return;
+        if (life.paused) { life.reconnectDue = true; return; }
+        life.reconnectTimer = setTimeout(function () {
+            life.reconnectTimer = null;
+            connectStream();
+        }, state.esRetryMs);
     }
 
     // SSE 본문을 읽어 빈 줄로 끝나는 이벤트마다 `data:` 줄을 이어 붙여 넘긴다(끝나면 resolve).
@@ -955,7 +1022,7 @@
     // alarm_id의 가장 최근 판단만 주므로, 목록의 과거 행(재통보 등)을 서버 조회로 그리면 다른
     // 판단이 뜬다. 서버 조회는 레코드가 없는 SSE 피드 항목의 폴백으로만 쓴다.
 
-    var noiseWrap = document.querySelector(".noise-wrap");
+    var noiseWrap = mountRoot.querySelector(".noise-wrap");
     var drawer = document.getElementById("drawer");
     var scrim = document.getElementById("scrim");
     var drawerClose = document.getElementById("closeDrawer");
@@ -1200,7 +1267,7 @@
     }
 
     function findFocusKey(key) {
-        var nodes = document.querySelectorAll("[data-focus-key]");
+        var nodes = mountRoot.querySelectorAll("[data-focus-key]");
         for (var i = 0; i < nodes.length; i++) {
             if (nodes[i].getAttribute("data-focus-key") === key) return nodes[i];
         }
@@ -1209,14 +1276,14 @@
 
     function restoreFocus(point) {
         if (!point) return;
-        if (point.node && typeof point.node.focus === "function" && document.body.contains(point.node)) {
+        if (point.node && typeof point.node.focus === "function" && mountRoot.contains(point.node)) {
             point.node.focus();
             return;
         }
         var again = point.key ? findFocusKey(point.key) : null;
         if (again) { again.focus(); return; }
         var home = point.home;
-        if (!home || !document.body.contains(home)) return;
+        if (!home || !mountRoot.contains(home)) return;
         var target = home.querySelector("h2, h3") || home;
         if (!target.hasAttribute("tabindex")) target.setAttribute("tabindex", "-1");
         target.focus();
@@ -1329,6 +1396,7 @@
     }
 
     document.addEventListener("keydown", function (e) {
+        if (life.paused) return;   // (plans/193 W1) 숨은 관제 탭은 Esc를 가로채지 않는다
         if (e.key === "Escape" && closeTopLayer()) e.preventDefault();
     });
 
@@ -1851,6 +1919,7 @@
     // 칸 자체를 그리지 않는다. 미종결이면 공용 컨트롤러가 15초 간격(상한 300초)으로 조회 API를 다시
     // 불러 서버 쪽 poll을 태운다. 드로어를 닫거나 다른 판단을 열면 타이머를 멈춘다.
     var investigationPanel = null;
+    var investigationView = null;   // 패널이 마지막으로 그린 조사(resume 때 재조회를 다시 걸지 판정)
     var investigationSeq = 0;
     var IS_BREAK_GLASS = tokenKey === "admin_token";   // 운영자(break-glass) 토큰 세션
 
@@ -1858,6 +1927,7 @@
         investigationSeq += 1;
         if (investigationPanel) investigationPanel.close();
         investigationPanel = null;
+        investigationView = null;
     }
 
     async function decisionInvestigation(alarmId) {
@@ -1872,7 +1942,7 @@
             ? "/api/v1/alarm/investigations/" + encodeURIComponent(block.investigation_id)
             : "/api/v1/alarm/investigations/by-alarm/" + encodeURIComponent(alarmId);
         try {
-            var res = await fetch(path, { headers: { "Authorization": "Bearer " + token } });
+            var res = await fetch(path, { headers: authHeaders() });
             if (res.ok) return res.json();
         } catch (_err) { /* 아래 저장소 값으로 대신한다 */ }
         var stored = await decisionInvestigation(alarmId);
@@ -1887,18 +1957,23 @@
     var analyzeAsked = false;
 
     function alarmCall(path, method) {
-        return fetch(path, { method: method || "GET", headers: { "Authorization": "Bearer " + token } })
+        return fetch(path, { method: method || "GET", headers: authHeaders() })
             .then(window.BriefingView.responseOf);
     }
 
     // (plans/187 W15 · G-34 · W19 G-46) 장애 진단 실시간 화면이 켜져 있으면 드로어 진입은 열린 포털 창의 장애 진단 탭
     // (D-248 ① — 관제 페이지 안에 진단 화면을 만들지 않는다). 켜짐은 페이지를 열 때 `/active` 1회로 본다 —
     // 404(꺼짐)·401·403이면 진입 버튼이 「조사 대화로 열기」가 된다.
+    // (plans/193 W1) mount `liveView`를 주면 `/active`를 부르지 않고 렌더·클릭 때마다 그 값을 쓴다.
     var liveViewOn = false;
-    if (window.BriefingView) {
+    if (window.BriefingView && !opts.liveView) {
         alarmCall("/api/v1/alarm/investigations/active").then(function (res) { liveViewOn = !!res.ok; }, function () {
             liveViewOn = false;
         });
+    }
+
+    function liveViewNow() {
+        return opts.liveView ? !!opts.liveView() : liveViewOn;
     }
 
     // (plans/194 W5 U5 · D-347) 수동 조사 모드 — 기능 조회(capabilities)를 페이지를 열 때 1회 읽는다.
@@ -1913,7 +1988,7 @@
         }, function () { return false; });
 
     manualOnlyMode.then(function (on) {
-        var title = on ? document.querySelector(".noise-brand h1") : null;
+        var title = on ? mountRoot.querySelector(".noise-brand h1") : null;
         if (title) title.appendChild(el("span", "noise-mode-chip noise-mode-chip--top", "수동 조사 모드 · 자동 조사 꺼짐"));
     });
 
@@ -1923,29 +1998,39 @@
     // 안 일어난 것」처럼 보였다(사용자 지적 — 2026-10-23).
     // break-glass 운영자 토큰은 질의응답 API를 못 쓰므로(§5.6.1 주의 1) 장애 진단 여부와 무관하게 달지 않는다 —
     // 서랍 상세형(break-glass 전용)으로 본다(plans/192 Q-3 A · 종전은 진단이 꺼져 있을 때만 숨김).
+    // (plans/193 W4 · K-1 B 규칙 2) 독립 페이지(mount 인자 `onOpenInvestigation` 없음)의 조사 진입은 새 탭이다 —
+    // 192 W2 목적지 문구 뒤에 「(새 탭)」을 보이는 글자로 단다(서랍 머리 버튼·수동 모드 합류 버튼 같은 모양).
+    // 포털 탭(인자 있음)은 같은 창 탭 전환이라 표지가 없다.
+    function newTabMark() {
+        return opts.onOpenInvestigation ? "" : " (새 탭)";
+    }
+
     function portalEntryButton(view) {
-        var excluded = view && (view.status === "none" || (liveViewOn && view.status === "rejected"));
+        var excluded = view && (view.status === "none" || (liveViewNow() && view.status === "rejected"));
         var id = view && view.investigation_id && !excluded ? String(view.investigation_id) : "";
         if (IS_BREAK_GLASS || !id || !investigationHead) return;
         var btn = investigationHead.querySelector(".cause-live-open");
         if (!btn) {
             btn = el("button", "cause-live-open", "");
             btn.type = "button";
+            if (newTabMark()) btn.title = "새 브라우저 탭에서 엽니다";
             btn.addEventListener("click", function () {
                 openInPortal(btn.getAttribute("data-investigation-id"));
             });
             investigationHead.appendChild(btn);
         }
-        btn.textContent = liveViewOn ? "장애 진단에서 보기" : "조사 대화로 열기";
+        btn.textContent = (liveViewNow() ? "장애 진단에서 보기" : "조사 대화로 열기") + newTabMark();
         btn.setAttribute("data-investigation-id", id);
     }
 
     function openInPortal(investigationId) {
-        var key = liveViewOn ? "diagnosis" : "conversation";
+        if (opts.onOpenInvestigation) { opts.onOpenInvestigation(investigationId); return; }   // (plans/193 W1) mount 인자
+        var key = liveViewNow() ? "diagnosis" : "conversation";
         window.open("/?" + key + "=" + encodeURIComponent(investigationId), "_blank", "noopener");
     }
 
     function onInvestigationView(view) {
+        investigationView = view;
         portalEntryButton(view);
     }
 
@@ -1989,7 +2074,9 @@
                     // (plans/194 W5 U5) 수동 조사 모드 — 「조사 안 됨 → [조사 시작]」 · 거부 사유 · 합류 안내
                     manualMode: got[1],
                     onOpenInvestigation: function (id) { openInPortal(id); },
-                    openInvestigationLabel: function () { return liveViewOn ? "장애 진단에서 보기" : "조사 대화로 열기"; },
+                    openInvestigationLabel: function () {
+                        return (liveViewNow() ? "장애 진단에서 보기" : "조사 대화로 열기") + newTabMark();
+                    },
                 });
                 investigationPanel.open();
                 if (asked) scrollToCause();
@@ -2063,7 +2150,7 @@
     var infoPop = el("div", "info-pop");
     infoPop.id = "infoPop";
     infoPop.setAttribute("role", "dialog");
-    document.body.appendChild(infoPop);
+    mountRoot.appendChild(infoPop);
     var infoOwner = null;
 
     var HELP_ROWS = [["def", "무엇을 보나"], ["formula", "산식"], ["read", "어떻게 읽나"], ["caution", "주의"]];
@@ -2737,8 +2824,8 @@
 
         var scrimPanel = el("div", "scrim scrim--panel");
         scrimPanel.id = "panelScrim";
-        document.body.appendChild(scrimPanel);
-        document.body.appendChild(root);
+        mountRoot.appendChild(scrimPanel);
+        mountRoot.appendChild(root);
 
         return {
             root: root, scrim: scrimPanel, close: close, title: titleText, info: info, bar: bar,
@@ -3144,7 +3231,7 @@
         raw: "수신 알람", page: "PAGE", ticket: "TICKET", dashboard: "DASHBOARD",
         suppress: "SUPPRESS", suppress_ratio: "억제율(SUPPRESS)", actionable: "액션가능(PAGE+TICKET)",
     };
-    document.querySelectorAll("[data-drill]").forEach(function (node) {
+    mountRoot.querySelectorAll("[data-drill]").forEach(function (node) {
         var key = node.getAttribute("data-drill");
         var target = node.classList.contains("kpi") ? node.querySelector(".num") : node;
         target.setAttribute("data-focus-key", "drill:" + key);
@@ -3345,10 +3432,10 @@
 
     function switchPane(name) {
         // `[data-pane]` — 탭 사이에 (!) 설명 버튼이 끼어 있다(plans/112 S4).
-        document.querySelectorAll(".mgmt-tabs button[data-pane]").forEach(function (button) {
+        mountRoot.querySelectorAll(".mgmt-tabs button[data-pane]").forEach(function (button) {
             button.classList.toggle("on", button.dataset.pane === name);
         });
-        document.querySelectorAll(".pane").forEach(function (pane) {
+        mountRoot.querySelectorAll(".pane").forEach(function (pane) {
             pane.classList.toggle("on", pane.id === "pane-" + name);
         });
         if (name === "decisions") loadDecisions();
@@ -3357,7 +3444,7 @@
     }
 
     // 관리 탭(침묵·결정 이력·정책)은 운영자 화면에만 있다 — 사용자 화면은 결정 이력을 바로 편다.
-    document.querySelectorAll(".mgmt-tabs button[data-pane]").forEach(function (button) {
+    mountRoot.querySelectorAll(".mgmt-tabs button[data-pane]").forEach(function (button) {
         button.addEventListener("click", function () { switchPane(button.dataset.pane); });
     });
 
@@ -3368,7 +3455,7 @@
         // 이미 고른 범위를 다시 눌러도 종전처럼 새로 조회한다(수동 새로고침 동선).
         if (!range) return;
         state.range = range;
-        document.querySelectorAll("#rangeSeg button, #panelRange button").forEach(function (b) {
+        mountRoot.querySelectorAll("#rangeSeg button, #panelRange button").forEach(function (b) {
             b.classList.toggle("on", b.dataset.range === range);
             b.setAttribute("aria-pressed", b.dataset.range === range ? "true" : "false");
         });
@@ -3410,10 +3497,11 @@
             if (!IS_ADMIN) showError("결정 이력 조회 실패: " + err.message);
         });
         if (!IS_ADMIN) loadDecisions().catch(function () { /* 조회 버튼으로 재시도된다 */ });
+        life.summaryAt = life.feedAt = Date.now();
     }
 
     // (!) 설명 버튼 — HTML `data-help` 표지(두 화면 각자 가진 카드만)와 드로어 추가 칸에 붙인다.
-    attachHelp(document);
+    attachHelp(mountRoot);
 
     refreshAggregates();
     if (IS_ADMIN) {
@@ -3425,11 +3513,89 @@
         setStreamPill("ok", Math.round(RESYNC_MS / 1000) + "초마다 갱신");
     }
 
-    setInterval(function () {
-        if (IS_ADMIN) loadHealth().catch(function () {});
-        loadSummary().catch(function () {});
-    }, SUMMARY_MS);
-    setInterval(function () {
-        resyncFeed().catch(function () {});
-    }, RESYNC_MS);
+    function startTimers() {
+        life.summaryTimer = setInterval(function () {
+            if (IS_ADMIN) loadHealth().catch(function () {});
+            loadSummary().catch(function () {});
+            life.summaryAt = Date.now();
+        }, SUMMARY_MS);
+        life.resyncTimer = setInterval(function () {
+            resyncFeed().catch(function () {});
+            life.feedAt = Date.now();
+        }, RESYNC_MS);
+    }
+
+    startTimers();
+
+    // ── mount 핸들 (plans/193 W1) ───────────────────────────────────────
+    // 포털 탭이 숨으면 pause, 보이면 resume, 떠나면 unmount. 독립 페이지는 부르지 않는다.
+    // pause는 주기 갱신·운영자 스트림 재연결 타이머를 멈추고 열린 설명 팝오버·차트 툴팁을 닫는다
+    // (열린 스트림 자체는 그대로 · 일시정지 중 Esc는 무시). 열린 서랍의 조사 브리핑 재조회도 멈춘다 —
+    // 서랍 DOM·내용은 그대로 둔다(poller만 정지 · plans/193 교정 m-3). resume은 타이머를 다시 걸고,
+    // 마지막 집계·피드 갱신이 RESYNC_MS보다 오래됐으면 곧바로 다시 읽는다. 브리핑은 마지막으로 그린 조사가
+    // 진행 중(또는 첫 응답 전)일 때만 재조회를 다시 걸고, 숨은 동안 폭 0으로 그렸을 수 있는 차트는 가진
+    // 데이터로 한 번 다시 그린다(요청 없음 · m-6).
+    function pause() {
+        if (life.paused || life.dead) return;
+        life.paused = true;
+        if (investigationPanel && investigationPanel.poller) {
+            investigationPanel.poller.stop();
+            life.panelDue = true;
+        }
+        clearInterval(life.summaryTimer);
+        clearInterval(life.resyncTimer);
+        life.summaryTimer = life.resyncTimer = null;
+        if (life.reconnectTimer) {
+            clearTimeout(life.reconnectTimer);
+            life.reconnectTimer = null;
+            life.reconnectDue = true;
+        }
+        closeInfoPop();
+        hideChartTip();
+    }
+
+    function resume() {
+        if (!life.paused || life.dead) return;
+        life.paused = false;
+        startTimers();
+        if (Date.now() - Math.min(life.summaryAt, life.feedAt) > RESYNC_MS) refreshAggregates();
+        renderChart();
+        if (life.panelDue) {
+            life.panelDue = false;
+            var BV = window.BriefingView;
+            if (investigationPanel && investigationPanel.poller &&
+                (!investigationView || (BV && BV.isActive(investigationView)))) investigationPanel.poller.start();
+        }
+        if (life.reconnectDue) {
+            life.reconnectDue = false;
+            connectStream();
+        }
+    }
+
+    function unmount() {
+        if (life.dead) return;
+        pause();
+        life.dead = true;
+        life.reconnectDue = false;
+        var ctrl = state.es;
+        state.es = null;   // 먼저 비운다 — abort가 부르는 catch가 재연결하지 않는다
+        if (ctrl) ctrl.abort();
+    }
+
+    return { pause: pause, resume: resume, unmount: unmount };
+}
+
+function mountOnce(root, opts) {
+    if (!started) {
+        started = true;
+        instance = mount(root, opts || {});
+    }
+    return instance;
+}
+
+// 독립 두 페이지(`noise.html` user · `admin/noise.html` admin)는 body 속성으로 자동 mount — 종전 동작 그대로.
+var autoMode = document.body.getAttribute("data-noise-mode");
+if (autoMode !== null) mountOnce(document.body, { mode: autoMode });
+
+return { mount: mountOnce };
 })();

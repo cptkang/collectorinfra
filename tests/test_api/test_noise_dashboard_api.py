@@ -1085,7 +1085,8 @@ def test_noise_js_stream_sends_token_in_header_not_url():
     # 스트림은 Authorization 헤더로 토큰을 싣고, 토큰을 URL에 붙이지 않는다.
     body = _js_function_body(_NOISE_JS.read_text(encoding="utf-8"), "connectStream")
     assert "new EventSource(" not in body
-    assert re.search(r'"Authorization"\s*:\s*"Bearer "\s*\+\s*token', body)
+    # plans/193 m-4: 포털 mount는 토큰 게터를 넘기므로 요청마다 currentToken()으로 읽는다.
+    assert re.search(r'"Authorization"\s*:\s*"Bearer "\s*\+\s*currentToken\(\)', body)
     assert re.search(r'fetch\(\s*API\s*\+\s*"/stream"\s*,', body)
     assert "token=" not in body
 

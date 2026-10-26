@@ -498,6 +498,44 @@ body:has(.chat-layout.history-collapsed) {
     background: var(--accent);
 }
 
+/* ─── 노이즈 관제 뷰 (plans/193 W2) ───
+   다른 뷰처럼 머리글·뷰 탭 아래 높이를 채우는 스크롤 영역이다. 단 **쌓임 맥락을 만들지 않는다**
+   (position·z-index 없음) — 관제 오버레이(스크림·서랍·세부 패널·팝오버)는 position:fixed라 이 뷰 안에
+   있어도 문서 층에서 겨루고, noise-console.css의 포털 범위 규칙(`.noise-view` 조상)이 그 층을 머리글(z 100)
+   위로 올린다. 장애 진단 뷰처럼 z-index:1을 주면 오버레이가 그 안에 갇혀 머리글 밑에 깔린다.
+   본문 그리기 순서는 독립 관제 페이지(body 직계)와 같다. */
+.noise-view {
+    height: calc(100vh - var(--header-h) - var(--view-tabs-h));
+    overflow-y: auto;
+}
+
+/* 관제를 불러오지 못했거나(조각·자산 실패는 다음 활성 때 재시도 · mount 실패는 새로고침) 권한이 없을 때 뷰 안에 띄우는 안내 */
+.noise-view-notice {
+    max-width: 720px;
+    margin: 24px auto;
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+/* 진입 거부 사유(답변 중 조사 대화 열기 등) — 서랍·스크림(140·141) 위에 떠서 스크롤·서랍과 무관하게 보이고
+   몇 초 뒤 사라진다. 뷰 안 요소라 뷰가 숨으면 함께 숨는다. */
+.noise-view-flash {
+    position: fixed;
+    top: calc(var(--header-h) + var(--view-tabs-h) + 12px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 160;
+    width: max-content;
+    max-width: min(560px, calc(100vw - 32px));
+    margin: 0;
+    color: var(--text);
+    box-shadow: var(--shadow-lg);
+}
+
 /* ─── 장애 진단 뷰 (plans/187 W15 · §5.6.3 ⓓ) ─── */
 
 .diagnosis-view {
@@ -1773,7 +1811,8 @@ body.auth-pending > header,
 body.auth-pending > .view-tabs,
 body.auth-pending > .chat-layout,
 body.auth-pending > .alarm-view,
-body.auth-pending > .diagnosis-view {
+body.auth-pending > .diagnosis-view,
+body.auth-pending > .noise-view {
     visibility: hidden;
 }
 

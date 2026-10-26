@@ -39,6 +39,17 @@
     var chatView = document.getElementById("chatView");
     var alarmView = document.getElementById("alarmView");
     var diagnosisView = document.getElementById("diagnosisView");   // plans/187 W15 장애 진단
+    var noiseView = document.getElementById("noiseView");   // plans/193 W2 노이즈 관제(플래그 아래)
+    var noiseTab = document.getElementById("noiseTab");
+    // 로드 시 `?view=noise`(새로고침·로그인 복귀) — 진입·복원(checkAuthOnLoad)과 기능 조회가 둘 다 끝난 뒤
+    // 마지막에 1회 판정한다(applyNoiseEntry). 먼저 열면 복원이 대화를 받은 뒤 조사 대화 탭으로 넘겨 버린다
+    // (최종 활성 탭 = 관제). 주소는 탭 전환이 고쳐 쓰므로 무엇보다 먼저 읽어 둔다.
+    var noiseEntry = {
+        wanted: new URLSearchParams(window.location.search).get("view") === "noise",
+        settled: false,
+        capsKnown: false,
+        done: false,
+    };
     var investigationTab = document.getElementById("investigationTab");   // plans/187 W16 조사 대화
     var investigationTabClose = document.getElementById("investigationTabClose");
     var alarmList = document.getElementById("alarmList");
@@ -200,8 +211,9 @@
                 // (W15) 장애 진단 사전 게이트(/active)를 먼저 끝내야 진입을 진단 탭으로 보낼지 정할 수 있다.
                 initDiagnosisView().then(function () {
                     // plans/192 W4: 쿼리 진입이 없으면 새로고침 전 조사 대화 탭을 되살린다.
-                    if (!openInvestigationFromQuery()) restoreInvestigationConversation();
-                });
+                    // (plans/193 W2) 복원이 대화를 받는 동안까지 기다린 뒤 관제 탭 복귀(`?view=noise`)를 판정한다.
+                    if (!openInvestigationFromQuery()) return restoreInvestigationConversation();
+                }).then(noiseEntrySettled, noiseEntrySettled);
                 // 로그아웃 버튼
                 var logoutBtn = document.getElementById("userLogoutBtn");
                 if (logoutBtn && data.auth_enabled) {
@@ -4289,7 +4301,7 @@
     // (하드코딩 toggle을 늘리면 뷰 하나가 조용히 안 숨는 회귀가 생긴다).
     // 질의 이력은 여기 없다 — 탭으로 본문을 바꾸는 뷰가 아니라 채팅 옆에 붙는 사이드바다.
     function viewRegistry() {
-        return { chat: chatView, alarm: alarmView, diagnosis: diagnosisView };
+        return { chat: chatView, alarm: alarmView, diagnosis: diagnosisView, noise: noiseView };
     }
 
     function setActiveView(view) {
@@ -4307,6 +4319,8 @@
             btn.classList.toggle("active", on);
             btn.setAttribute("aria-selected", on ? "true" : "false");
         });
+        // plans/193 W2: 노이즈 관제 탭 — 보이면 붙이거나(첫 활성) 재개하고, 떠나면 주기 갱신을 멈춘다
+        noiseViewShown(view === "noise");
         if (view === "alarm") {
             alarmUnreadCount = 0;
             renderAlarmBadge();
@@ -4670,7 +4684,8 @@
             showError("처리 중인 질의가 끝난 뒤 대화를 불러올 수 있습니다.");
             return;
         }
-        fetch("/api/v1/threads/" + encodeURIComponent(threadId), { headers: getAuthHeaders() })
+        // (plans/193 W2) 받기가 끝나는 시점을 돌려준다 — 새로고침 복원 뒤 관제 탭 복귀가 이것을 기다린다
+        return fetch("/api/v1/threads/" + encodeURIComponent(threadId), { headers: getAuthHeaders() })
             .then(function (res) {
                 if (!res.ok && onMissing) return null;
                 if (res.status === 404) throw new Error("대화를 찾을 수 없습니다");
@@ -4821,11 +4836,11 @@
         var conv = storedInvestigationConversation();
         if (!conv) return false;
         if (!conv.thread) return openInvestigationConversation(conv.id);
-        openThread(conv.thread, function () {
+        // (plans/193 W2) 대화를 받는 중이면 그 약속(참)을 돌려준다 — 관제 탭 복귀가 받은 뒤에 열린다
+        return openThread(conv.thread, function () {
             forgetInvestigationConversation();
             openInvestigationConversation(conv.id);
-        });
-        return true;
+        }) || true;
     }
 
     // 첫 질의 턴에만 조사 id를 헤더로 싣는다(서버 thread_history가 그 턴 disclosures에 ref로 남긴다)
@@ -4858,10 +4873,12 @@
 
     // 「조사 대화로 열기」(알람 카드 · 장애 진단 종결 화면 · 노이즈 관제 · `/?conversation=<id>`) —
     // 「조사 대화」 탭을 열고(없으면 보이고) 그 탭의 대화를 새 조사 대화로 바꾼다. 질의응답 탭 대화는 그대로다.
+    // 답변 중 거부 문구는 노이즈 관제 탭도 같은 것을 띄운다(plans/193 교정 M-1).
+    var CONVERSATION_BUSY_TEXT = "답변이 끝난 뒤 조사 대화를 열 수 있습니다.";
     function openInvestigationConversation(investigationId) {
         if (!investigationId || !INVESTIGATION_ID_RE.test(String(investigationId))) return false;
         if (isProcessing) {
-            showError("답변이 끝난 뒤 조사 대화를 열 수 있습니다.");
+            showError(CONVERSATION_BUSY_TEXT);
             return false;
         }
         showInvestigationTab(true);
@@ -5230,6 +5247,187 @@
     function openInvestigationEntry(investigationId, alarmId) {
         if (window.DiagnosisView && window.DiagnosisView.openIfEnabled(investigationId, alarmId ? { alarmId: alarmId } : null)) return true;
         return openInvestigationConversation(investigationId);
+    }
+
+    // ─── 노이즈 관제 탭 (plans/193 W2·W3 · K-1 B · K-2 A) ───
+    // 기능 조회 `noise_console_portal_tab`이 참일 때만 탭을 보이고 머리글의 새 탭 `/noise` 링크를 뺀다(포털 안
+    // `/noise` 링크 0). 거짓·조회 실패면 아무것도 바꾸지 않고 관제 자산도 싣지 않는다(종전과 비트 동일).
+    // 화면은 한 벌이다(D-245) — 첫 활성 때 독립 사용자 관제 페이지(/static/noise.html)를 받아 스크립트가 아닌
+    // 본문(관제 영역·스크림·서랍)을 이 뷰로 옮기고, 그 문서에 적힌 스타일시트·스크립트(버전 포함)를 차례로 실은
+    // 뒤 NoiseConsole.mount로 붙인다. 관리자도 읽기 전용 사용자 모드다(K-2 A — `/api/v1/noise/*`만 · 스트림 없음).
+    // 인증은 포털을 따른다(user_token · 401 → redirectToLogin). 서랍의 조사 진입은 같은 창의 장애 진단 탭
+    // (꺼져 있으면 조사 대화 탭)으로 간다(W3 — openInvestigationEntry · 문구는 diagnosisOn 판정과 같다).
+    // 탭이 숨으면 pause(주기 갱신 정지), 다시 보이면 resume. 대화 화면을 쓰지 않으므로 답변 중에도 오갈 수 있다.
+    var NOISE_PAGE = "/static/noise.html";
+    var noiseTabEnabled = false;
+    var noiseHandle = null;     // NoiseConsole.mount 핸들 {pause, resume, unmount}
+    var noiseLoading = null;    // 첫 활성의 조각 조회·자산 로드(실패하면 비워 다음 활성 때 다시 · mount 실패면 그대로)
+    var NOISE_FLASH_MS = 8000;  // 일시 안내(진입 거부 사유)가 떠 있는 시간 — 채팅 오류 칸과 같다
+    var noiseFlash = null;      // 떠 있는 일시 안내 {node, timer}
+
+    function applyNoiseTabCapability() {
+        noiseTabEnabled = !!(alarmCapabilities && alarmCapabilities.noise_console_portal_tab === true);
+        if (noiseTabEnabled) {
+            if (noiseTab) noiseTab.style.display = "";
+            var link = document.getElementById("noiseConsoleLink");
+            if (link) link.remove();
+        }
+        noiseEntry.capsKnown = true;
+        applyNoiseEntry();
+    }
+
+    function noiseEntrySettled() {
+        noiseEntry.settled = true;
+        applyNoiseEntry();
+    }
+
+    function applyNoiseEntry() {
+        if (noiseEntry.done || !noiseEntry.settled || !noiseEntry.capsKnown) return;
+        noiseEntry.done = true;
+        if (noiseEntry.wanted && noiseTabEnabled) setActiveView("noise");
+        else syncNoiseViewParam(activeView === "noise");   // 꺼져 있으면 파라미터만 지운다
+    }
+
+    // 관제 탭이 활성인 동안 주소에 `view=noise`를 둔다(다른 쿼리 보존) — 새로고침·401 로그인 복귀(next)가 돌아온다
+    function syncNoiseViewParam(on) {
+        var params = new URLSearchParams(window.location.search);
+        if ((params.get("view") === "noise") === on) return;
+        if (on) params.set("view", "noise");
+        else params.delete("view");
+        var rest = params.toString();
+        history.replaceState(null, "", window.location.pathname + (rest ? "?" + rest : "") + window.location.hash);
+    }
+
+    function noiseViewShown(on) {
+        syncNoiseViewParam(on);
+        if (!on) {
+            if (noiseHandle) noiseHandle.pause();
+            return;
+        }
+        if (noiseHandle) noiseHandle.resume();
+        else loadNoiseConsole();
+    }
+
+    function showNoiseNotice(text) {
+        if (!noiseView) return;
+        clearNoiseFlash();   // 오래 남는 안내(로드 실패·권한 없음)가 일시 안내를 대신한다
+        var note = noiseView.querySelector(".noise-view-notice");
+        if (!note) {
+            note = document.createElement("p");
+            note.className = "noise-view-notice";
+            note.setAttribute("role", "alert");
+            noiseView.insertBefore(note, noiseView.firstChild);
+        }
+        note.textContent = text;
+    }
+
+    // (plans/193 교정 M-1) 관제 탭에서 누른 진입이 거부된 사유 — 서랍·스크림 위에 떠서 지금 보는 자리에
+    // 보이고, NOISE_FLASH_MS 뒤 또는 다음 진입 성공 때 사라진다(채팅 오류 칸은 숨은 질의응답 뷰 안이다).
+    function flashNoiseNotice(text) {
+        if (!noiseView) return;
+        clearNoiseFlash();
+        var note = document.createElement("p");
+        note.className = "noise-view-notice noise-view-flash";
+        note.setAttribute("role", "alert");
+        note.textContent = text;
+        noiseView.insertBefore(note, noiseView.firstChild);
+        noiseFlash = { node: note, timer: setTimeout(clearNoiseFlash, NOISE_FLASH_MS) };
+    }
+
+    function clearNoiseFlash() {
+        if (!noiseFlash) return;
+        clearTimeout(noiseFlash.timer);
+        noiseFlash.node.remove();
+        noiseFlash = null;
+    }
+
+    function openNoiseInvestigation(id) {
+        if (openInvestigationEntry(id)) clearNoiseFlash();
+        else if (isProcessing) flashNoiseNotice(CONVERSATION_BUSY_TEXT);
+    }
+
+    // 문서에 적힌 자산 1개를 싣는다 — 포털이 이미 실은 파일(경로 기준 · 예: style.css·briefing-view.js)은 건너뛴다
+    function loadNoiseAsset(tag, url) {
+        var attr = tag === "link" ? "href" : "src";
+        var path = url.split("?")[0];
+        var loaded = Array.prototype.some.call(
+            document.querySelectorAll(tag === "link" ? 'link[rel="stylesheet"]' : "script[src]"),
+            function (node) { return (node.getAttribute(attr) || "").split("?")[0] === path; });
+        if (loaded) return Promise.resolve();
+        return new Promise(function (resolve, reject) {
+            var node = document.createElement(tag);
+            if (tag === "link") node.rel = "stylesheet";
+            else node.async = false;
+            node.onload = function () { resolve(); };
+            node.onerror = function () {
+                node.remove();   // 다음 활성 때 다시 싣도록 실패한 표지를 남기지 않는다
+                reject(new Error(path + " 로드 실패"));
+            };
+            node.setAttribute(attr, url);
+            (tag === "link" ? document.head : document.body).appendChild(node);
+        });
+    }
+
+    function loadNoiseConsole() {
+        if (noiseLoading || !noiseView) return;
+        noiseLoading = fetch(NOISE_PAGE, { cache: "no-cache" })
+            .then(function (res) {
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                return res.text();
+            })
+            .then(function (html) {
+                var doc = new DOMParser().parseFromString(html, "text/html");
+                var assets = [];
+                doc.querySelectorAll('head link[rel="stylesheet"]').forEach(function (n) {
+                    assets.push(["link", n.getAttribute("href")]);
+                });
+                doc.querySelectorAll("body script[src]").forEach(function (n) {
+                    assets.push(["script", n.getAttribute("src")]);
+                });
+                noiseView.textContent = "";
+                Array.prototype.slice.call(doc.body.children).forEach(function (node) {
+                    if (node.tagName !== "SCRIPT") noiseView.appendChild(document.adoptNode(node));
+                });
+                // 독립 페이지 전용 요소(「질의응답으로」 등)는 포털에서 뜻이 없다
+                noiseView.querySelectorAll("[data-noise-standalone]").forEach(function (n) { n.remove(); });
+                return assets.reduce(function (chain, a) {
+                    return chain.then(function () { return loadNoiseAsset(a[0], a[1]); });
+                }, Promise.resolve());
+            })
+            .then(function () {
+                if (!window.NoiseConsole) throw new Error("관제 모듈이 없습니다");
+                var handle = null;
+                var reason = "";
+                try {
+                    handle = window.NoiseConsole.mount(noiseView, {
+                        mode: "user",
+                        // 요청마다 읽는다 — 다른 탭에서 다시 로그인해 바뀐 토큰을 쓴다(m-4)
+                        token: function () { return localStorage.getItem("user_token") || ""; },
+                        onAuthFail: redirectToLogin,
+                        onForbidden: function () { showNoiseNotice("노이즈 관제를 볼 권한이 없습니다."); },
+                        onOpenInvestigation: openNoiseInvestigation,
+                        liveView: diagnosisOn,
+                    });
+                } catch (err) {
+                    reason = (err && err.message) || String(err);
+                }
+                if (!handle) {
+                    // mount는 한 페이지에 한 번만 붙는다(mountOnce) — 탭을 다시 열어도 붙지 않으므로 여기서 멈춘다.
+                    // noiseLoading을 비우지 않아 다음 활성에서 다시 받지 않고, 빈 마크업 대신 안내를 남긴다(m-1).
+                    noiseView.textContent = "";
+                    showNoiseNotice("노이즈 관제를 시작하지 못했습니다" + (reason ? "(" + reason + ")" : "") +
+                        ". 새로고침하면 다시 시도합니다.");
+                    return;
+                }
+                noiseHandle = handle;
+                // 받는 사이 다른 탭으로 옮겼으면 바로 멈춘다
+                if (activeView !== "noise") noiseHandle.pause();
+            })
+            .catch(function (err) {
+                noiseLoading = null;
+                noiseView.textContent = "";
+                showNoiseNotice("노이즈 관제를 불러오지 못했습니다(" + err.message + "). 탭을 다시 열면 다시 시도합니다.");
+            });
     }
 
     // 공용 요약형의 「조사 대화로 열기」는 진단이 켜지면 감춘다 — 카드가 [장애 진단에서 보기]를 따로 단다(G-34).
@@ -6482,6 +6680,7 @@
         // (Plan 83) 게이트 상태를 먼저 받아야 레벨 선택지·피드백 버튼 노출을 정할 수 있다
         loadAlarmCapabilities().then(function () {
             setupAlarmLevelSelect(userInfo, authEnabled);
+            applyNoiseTabCapability();   // plans/193 W2 — 포털 「노이즈 관제」 탭(플래그)
         });
         if (alarmCanReceive && alarmReceiveEnabled) connectAlarmStream();
     }

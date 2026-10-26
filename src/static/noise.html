@@ -6,7 +6,7 @@
     <title>노이즈 관제 - KB AIOps 포탈</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
     <link rel="stylesheet" href="/static/css/style.css?v=18">
-    <link rel="stylesheet" href="/static/css/noise-console.css?v=10">
+    <link rel="stylesheet" href="/static/css/noise-console.css?v=11">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
 </head>
@@ -32,7 +32,8 @@
                 <button data-range="30d">30D</button>
             </div>
             <a href="/manual/user#u-44" target="_blank" rel="noopener" class="btn btn-secondary" style="padding:7px 14px;font-size:12px;">매뉴얼</a>
-            <a href="/" class="btn btn-secondary" style="padding:7px 14px;font-size:12px;">질의응답으로</a>
+            <!-- data-noise-standalone: 독립 페이지 전용 — 포털 탭(plans/193 W2)은 이 요소를 빼고 붙인다 -->
+            <a href="/" class="btn btn-secondary" data-noise-standalone style="padding:7px 14px;font-size:12px;">질의응답으로</a>
         </header>
 
         <div class="alert alert-error" id="alertError" style="display:none;"></div>
@@ -155,6 +156,6 @@
 
     <script src="/static/js/noise-help.js?v=6"></script>
     <script src="/static/js/briefing-view.js?v=8"></script>
-    <script src="/static/js/noise.js?v=21"></script>
+    <script src="/static/js/noise.js?v=24"></script>
 </body>
 </html>
