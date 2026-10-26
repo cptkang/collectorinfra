@@ -144,7 +144,8 @@ def test_make_batch_caller_requires_url():
 def test_make_batch_caller_headers(monkeypatch, token, expect):
     captured = {}
 
-    def fake_run(url, headers, calls, *, timeout_seconds, concurrency=1):
+    def fake_run(url, headers, calls, *, timeout_seconds, concurrency=1, **_kw):
+        # `**_kw` — plans/194 W3 전역 상한 `global_limit`(이 테스트의 관심 밖)
         captured.update(url=url, headers=headers, timeout=timeout_seconds)
         return []
 

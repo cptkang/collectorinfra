@@ -55,6 +55,9 @@ def _config(tmp_path, **ng_over) -> SimpleNamespace:
     ng.investigation_service_url = "http://127.0.0.1:9/sse"
     ng.investigation_service_token = ""
     ng.investigation_mcp_call_timeout_seconds = 2.0
+    # plans/194 W1 · D-347: 「이 알람 분석」은 코드 기본 on — 자동 조사 브리핑 조회만 다루는
+    # 이 파일은 종전 전제(off · by-alarm에 `previous` 없음)로 고정한다.
+    ng.investigation_manual_enabled = False
     for key, value in ng_over.items():
         setattr(ng, key, value)
     return config
@@ -117,7 +120,10 @@ def _inject_client(monkeypatch, client) -> list:  # noqa: ANN001
 def test_none_when_no_record(tmp_path, no_network):
     config = _config(tmp_path)
     client = _alarm_client(config, ADMIN)
-    assert client.get("/api/v1/alarm/investigations/by-alarm/a1").json() == {"status": "none"}
+    # (plans/194 W5 · C1) by-alarm은 부하 게이지 `service_load`를 늘 싣는다(연결 불가 → null)
+    assert client.get("/api/v1/alarm/investigations/by-alarm/a1").json() == {
+        "status": "none", "service_load": None,
+    }
     assert client.get("/api/v1/alarm/investigations/inv-x").json() == {"status": "none"}
     assert not (tmp_path / "inv.jsonl").exists()  # 조회는 파일을 만들지 않는다
 

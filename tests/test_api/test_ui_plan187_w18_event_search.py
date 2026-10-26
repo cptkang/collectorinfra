@@ -111,7 +111,8 @@ out = { seen: seen, tabs: ctl.state().tabs, disabled: btn.disabled, label: btn.t
     assert out["seen"] == [
         "조사를 시작하지 못했습니다 — 해당 존의 알람에 대한 권한이 없습니다.",
         "조사 서비스가 거부했습니다 — 상한 초과",
-        "같은 알람의 진행 중인 조사에 합류했습니다.",
+        # plans/194 W5 — 합류 안내 + [장애 진단에서 보기]
+        "다른 사용자가 먼저 요청한 조사에 합류했습니다.장애 진단에서 보기",
     ]
     assert out["tabs"] == ["inv-9"]  # 거부·실패는 탭을 열지 않는다
     assert out["disabled"] is False and out["label"] == "조사 시작"

@@ -895,6 +895,52 @@ body:has(.chat-layout.history-collapsed) {
     overflow-wrap: anywhere;
 }
 
+/* (plans/194 W5 · U4) 등급 필터 · 「조사 안 됨만」 · 조사 상태 열 · 다음 행동 버튼 */
+.dv-search-filter {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 6px 14px;
+    margin: 8px 0 4px;
+}
+
+/* 둘레 글꼴을 그대로 쓴다 — 전역 select 규칙(폭 100%·큰 여백)과 브라우저 기본 글꼴·자간을 덮는다 */
+.dv-search-filter,
+.dv-search-filter label,
+.dv-search-filter select {
+    font-family: var(--font-display);
+    letter-spacing: normal;
+    text-transform: none;
+}
+
+.dv-search-filter select {
+    width: auto;
+    height: 32px;
+    padding: 4px 28px 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background-color: var(--surface);
+    background-position: right 8px center;
+    color: var(--text);
+    font-size: 0.8125rem;
+}
+
+.dv-search-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 32px;
+    font-size: 0.8125rem;
+    color: var(--text);
+}
+
+.dv-search-check[hidden],
+.dv-search-statecol[hidden],
+.dv-search-list[hidden] { display: none; }
+.dv-search-row--muted { opacity: 0.6; }
+.dv-search-go { margin-left: 6px; }
+.dv-list-state .bv-meta { margin-left: 4px; }
+
 .dv-purpose {
     flex-basis: 100%;
     padding-left: 18px;
@@ -1026,7 +1072,7 @@ body:has(.chat-layout.history-collapsed) {
 .dv-caution { margin: 2px 0 0 22px; padding-left: 16px; font-size: 0.75rem; color: var(--text-secondary); }
 .dv-flow-engine { margin-top: 8px; }
 
-/* 알람 카드 [진행 보기] · 관제 드로어 「장애 진단에서 보기」(공용 렌더 밖 진입 버튼) */
+/* 알람 카드 [장애 진단에서 보기] · 관제 드로어 「장애 진단에서 보기」(공용 렌더 밖 진입 버튼) */
 .diagnosis-open,
 .cause-live-open {
     font-size: 0.72rem;
@@ -3467,6 +3513,13 @@ body.auth-pending .auth-splash {
 .alarm-briefing-toggle:hover { color: var(--text); }
 .alarm-briefing-section--collapsed .alarm-briefing-body { display: none; }
 .alarm-briefing-body { margin-top: 4px; }
+
+/* plans/194 W5 · U1·U2: 카드 「조사」 칸 — 조사 안 됨 + [조사 시작] · 자동 조사 꺼짐 안내 · 거부 사유와 다음 행동
+   (본문 마크업은 briefing-view.js startBlockHtml · startMsgHtml) */
+.alarm-inv-body { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.alarm-inv-body .bv-head { gap: 8px; }
+.inv-start-msg[hidden] { display: none; }
+.alarm-inv-joined { margin-top: 4px; }
 
 /* ─── plans/153 W3: 조사 브리핑 공용 본문(briefing-view.js) — 카드·관제 드로어가 함께 쓴다 ─── */
 

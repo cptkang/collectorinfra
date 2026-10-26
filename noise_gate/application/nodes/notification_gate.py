@@ -272,7 +272,7 @@ def _record_decision(
             # 인자 자체를 넘기지 않는다(레코드 비트 동일).
             **(
                 _manual_source_fields(event)
-                if getattr(gate_cfg, "investigation_manual_enabled", False)
+                if getattr(gate_cfg, "investigation_manual_enabled", True)
                 else {}
             ),
         )

@@ -1,7 +1,8 @@
 """plans/187 W14 — 조사 실시간 SSE·목록·조회 경로 (§5.6.3 ⓒⓔ · G-36·G-38·G-41·G-42 · D-325 ③).
 
 - 플래그 off: stream·active 404(인증보다 먼저) · 조회 경로 `activity_since` 무시(응답 비트 동일)
-- 목록 범위: 사용자 = 자기 채팅 조사만(남의 채팅·자동·알람에서 연 조사 0건) · 관리자 = 전부
+- 목록 범위: 사용자 = 자기가 요청한 조사(채팅·직접 접수 manual — plans/192 W3)만(남의 채팅·자동
+  조사 0건) · 관리자 = 전부
 - watch: 존 밖·없는 id → `denied`(사용자 `unavailable` · 운영자 구분)
   · watch 밖 조사의 `activity` 0건
 - 사용자 경로: 한 줄·발췌·AI 메모 D-325 ③ 마스킹 · `ai_note`는 가린 뒤(G-48) / 관리자: 원문
@@ -189,7 +190,7 @@ async def test_flag_off_activity_since_ignored_bit_identical(tmp_path, monkeypat
 # ── 목록 범위 ────────────────────────────────────────────────────────────────
 
 
-async def test_user_summary_only_own_chat(tmp_path, fake_sre):  # noqa: ANN001
+async def test_user_summary_only_own_requests(tmp_path, fake_sre):  # noqa: ANN001
     _seed_scope(tmp_path)
     for inv in ("chat-u1", "chat-u9", "auto-1", "man-u1"):
         fake_sre.jobs[inv] = FakeJob()
@@ -198,12 +199,12 @@ async def test_user_summary_only_own_chat(tmp_path, fake_sre):  # noqa: ANN001
     summaries = _of(frames, "summary")
     assert summaries
     ids = {item["investigation_id"] for s in summaries for item in s["data"]["items"]}
-    assert ids == {"chat-u1"}
-    item = summaries[-1]["data"]["items"][0]
-    assert SECRET not in json.dumps(item) and "owner_sub" not in item
+    assert ids == {"chat-u1", "man-u1"}  # 본인이 접수한 manual 포함(plans/192 W3)
+    for item in summaries[-1]["data"]["items"]:
+        assert SECRET not in json.dumps(item) and "owner_sub" not in item
     active = await _get(app, "/alarm/investigations/active")
     assert active.status_code == 200
-    assert [i["investigation_id"] for i in active.json()["items"]] == ["chat-u1"]
+    assert {i["investigation_id"] for i in active.json()["items"]} == {"chat-u1", "man-u1"}
     # 사용자 스트림은 남의 조사를 폴링하지 않는다(폴러는 관심 조사만).
     assert not fake_sre.calls_for("chat-u9") and not fake_sre.calls_for("auto-1")
 
@@ -444,7 +445,7 @@ async def test_live_auth_token_type_and_role(tmp_path, kind, expected):  # noqa:
     resp = await _get(app, "/alarm/investigations/active", **kw)
     assert resp.status_code == expected, resp.text
     if kind == "user_ok":
-        assert [i["investigation_id"] for i in resp.json()["items"]] == ["chat-u1"]
+        assert {i["investigation_id"] for i in resp.json()["items"]} == {"chat-u1", "man-u1"}
     if kind == "admin_in_header":  # break-glass 운영자 = 관리자 범위(전부)
         assert len(resp.json()["items"]) == 4
     stream = await _get(app, "/alarm/investigations/stream", **kw)
@@ -452,7 +453,7 @@ async def test_live_auth_token_type_and_role(tmp_path, kind, expected):  # noqa:
 
 
 async def test_bankjon_user_sees_no_gongjon_summary(tmp_path, fake_sre):  # noqa: ANN001
-    # 존 사용자라도 남의 자동 조사는 목록에 없다(존과 무관 — 목록은 채팅 조사만).
+    # 존 사용자라도 남의 자동 조사는 목록에 없다(존과 무관 — 목록은 자기가 요청한 조사만).
     _seed_scope(tmp_path)
     user = {"sub": "u5", "role": "user", "alarm_zones": [ZONE_BANKJON, ZONE_GONGJON]}
     app = _app(_config(tmp_path), user)

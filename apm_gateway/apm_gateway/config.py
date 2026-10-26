@@ -55,6 +55,7 @@ SOURCE_KEY_SUFFIXES = (
     "API_TIMEOUT_SECONDS",
     "RATE_LIMIT_PER_SEC",
     "MAX_RESPONSE_BYTES",
+    "MAX_INFLIGHT_PER_SOURCE",
 )
 # `load_dotenv`가 `os.environ`에 넣은 키(설정 관리 API의 프로세스 환경 원천 판정용 · plans/191)
 DOTENV_INJECTED_KEYS: set[str] = set()
@@ -71,6 +72,10 @@ class JenniferApiConfig:
     rate_limit_per_sec: float = 5.0
     # 메모리 임계(D-296 ④) — 넘는 응답 본문은 스풀 임시 파일로 받아 점진 파싱한다(오류 아님).
     max_response_bytes: int = 4 * 1024 * 1024
+    # 소스별 동시 호출 상한(plans/194 W4b · D-347) — 「기본값 = 현행 동일」의 예외: 종전은 동시
+    # 무제한이라 응답이 느려지면 `rate × 지연`만큼 제니퍼에 요청이 쌓였다(제니퍼 부하). 응답이
+    # 1.6s(= 8 / 5회/s) 안이면 이 상한에 닿지 않아 정상 부하 동작은 같다.
+    max_inflight_per_source: int = 8
     source_id: str = DEFAULT_SOURCE_ID
 
 
@@ -214,6 +219,11 @@ def _load_sources(
                 timeout_seconds=float(pick("API_TIMEOUT_SECONDS") or base.timeout_seconds),
                 rate_limit_per_sec=float(pick("RATE_LIMIT_PER_SEC") or base.rate_limit_per_sec),
                 max_response_bytes=int(pick("MAX_RESPONSE_BYTES") or base.max_response_bytes),
+                max_inflight_per_source=_positive_int(
+                    pick("MAX_INFLIGHT_PER_SOURCE"),
+                    base.max_inflight_per_source,
+                    prefix + "MAX_INFLIGHT_PER_SOURCE",
+                ),
                 source_id=sid,
             )
         )
@@ -273,6 +283,20 @@ def _positive(value: str | None, default: float, key: str) -> float:
     number = float(value) if value is not None and value.strip() else default
     if number <= 0:
         raise ValueError(f"{key}는 0보다 커야 한다")
+    return number
+
+
+def _positive_int(value: str | None, default: int, key: str) -> int:
+    """1 이상 정수 키를 읽는다 — 소수·문자는 `int()` 버림(0.5 → 0) 대신 키 이름을 담아 거부한다."""
+    if value is None or not value.strip():
+        number = default
+    else:
+        try:
+            number = int(value.strip())
+        except ValueError:
+            raise ValueError(f"{key}는 정수여야 한다: {value!r}") from None
+    if number < 1:
+        raise ValueError(f"{key}는 1 이상이어야 한다")
     return number
 
 
@@ -364,6 +388,9 @@ def load_config(
         timeout_seconds=float(get("JENNIFER_API_TIMEOUT_SECONDS") or 30),
         rate_limit_per_sec=float(get("JENNIFER_RATE_LIMIT_PER_SEC") or 5),
         max_response_bytes=int(get("JENNIFER_MAX_RESPONSE_BYTES") or 4 * 1024 * 1024),
+        max_inflight_per_source=_positive_int(
+            get("JENNIFER_MAX_INFLIGHT_PER_SOURCE"), 8, "JENNIFER_MAX_INFLIGHT_PER_SOURCE"
+        ),
     )
     sources = _load_sources(get("JENNIFER_SOURCES"), jennifer, env)
     bearer_token = (get("APM_GATEWAY_BEARER_TOKEN") or "").strip()

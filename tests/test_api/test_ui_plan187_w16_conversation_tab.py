@@ -31,6 +31,7 @@ _SWAP_FUNCS = (
     "swapConversation",
     "showInvestigationTab",
     "closeInvestigationTab",
+    "forgetInvestigationConversation",  # (plans/192 W4) 닫으면 새로고침 복원 저장값을 지운다
 )
 
 # app.js 함수가 기대는 전역 · DOM 최소 가짜
@@ -78,6 +79,7 @@ var pendingDbIds = null, pendingReset = false, currentApmScope = null;
 var apmScopeInherited = false, pendingApmIds = null, pendingApmReset = false;
 var pendingInvestigationRef = null, investigationPinPanel = null;
 var chatInvestigationPanels = [], stickToBottom = false;
+var INVESTIGATION_CONV_KEY = "investigation_conversation";
 var errors = [];
 function showError(t) { errors.push(t); }
 function hideError() {}

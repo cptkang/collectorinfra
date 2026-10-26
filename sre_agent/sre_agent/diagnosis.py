@@ -19,7 +19,7 @@ from typing import Any
 from holmes.config import Config
 from holmes.core.llm_usage import RequestStats
 from holmes.core.prompt import build_initial_ask_messages
-from holmes.core.tool_calling_llm import LLMResult, ToolCallingLLM
+from holmes.core.tool_calling_llm import LLMInterruptedError, LLMResult, ToolCallingLLM
 from holmes.core.tools import (
     PrerequisiteCacheMode,
     StructuredToolResult,
@@ -269,12 +269,20 @@ class _StreamDrain:
     한 줄 · `result.status` · 발췌) · `AI_MESSAGE` 본문 → `ai_note`. 없으면 기록 0(결과 조립 불변).
     `cache_hit`(G-26)이 있으면 잡 캐시에서 나온 도구 결과의 `tool_end`를 `status=cached`로 남긴다
     (플레이북 스텝의 캐시 적중 표시와 같다).
+
+    `cancel_event`(plans/194 W3 · D-347)가 있으면 협조적 중단이다 — holmes `call_stream`에 그대로
+    넘기고(holmes 0.36.0 실측: 턴 시작 전·LLM 응답 직후·도구 결과 사이에 확인해
+    `LLMInterruptedError`), 스트림 이벤트마다 여기서도 확인해 같은 예외로 멈춘다. 진행 중인 LLM 요청
+    1건(`completion` — holmes가 `LLM_REQUEST_TIMEOUT` 고정)과 이미 시작한 도구 호출은 끊지 못한다.
+    없으면 종전 호출 그대로(인자 자체를 넘기지 않는다).
     """
 
     def __init__(self, llm: ToolCallingLLM, activity: ActivityLog | None = None,
-                 cache_hit: Callable[[str], bool] | None = None) -> None:
+                 cache_hit: Callable[[str], bool] | None = None,
+                 cancel_event: threading.Event | None = None) -> None:
         self._llm = llm
         self._cache_hit = cache_hit
+        self._cancel = cancel_event
         self.tool_calls: list[dict] = []
         self.num_llm_calls = 0
         # 끝난 스트림 라운드의 누적(`call()`의 accumulated_stats)
@@ -351,13 +359,16 @@ class _StreamDrain:
         """`call(messages)`와 같은 결과를 돌려준다. 예외는 그대로 전파한다."""
         tool_decisions = None
         tool_number_offset = 0
+        cancel: dict[str, Any] = {"cancel_event": self._cancel} if self._cancel is not None else {}
         while True:
+            self._check_cancelled()
             stream = self._llm.call_stream(
                 msgs=messages,
                 enable_tool_approval=False,
                 tool_decisions=tool_decisions,
                 tool_number_offset=tool_number_offset,
                 iteration_offset=self.num_llm_calls,
+                **cancel,
             )
             tool_decisions = None
             terminal_data = None
@@ -366,6 +377,7 @@ class _StreamDrain:
             saw_tool_results = False
             self._judge_start()
             for event in stream:
+                self._check_cancelled()
                 # 표시 로그는 `call()`과 같다(도구 묶음이 끝나면 빈 줄).
                 if saw_tool_results and event.event != StreamEvents.TOOL_RESULT:
                     display_logger.info("")
@@ -444,6 +456,11 @@ class _StreamDrain:
                 finish_reason=(terminal_data.get("metadata") or {}).get("finish_reason"),
                 **self._stats.model_dump(),
             )
+
+    def _check_cancelled(self) -> None:
+        """협조적 중단 확인 — 신호가 섰으면 holmes와 같은 `LLMInterruptedError`로 멈춘다."""
+        if self._cancel is not None and self._cancel.is_set():
+            raise LLMInterruptedError()
 
     def partial(self, steps: int | None) -> LLMResult:
         """예외 직전까지 회수한 도구 기록·누적 토큰으로 부분 결과를 만든다(답변 없음)."""
@@ -595,7 +612,8 @@ class DiagnosisAgent:
 
     def ask(self, question: str, system_prompt_additions: str | None = None,
             activity: ActivityLog | None = None,
-            tool_cache: ToolResultCache | None = None) -> DiagnosisResult:
+            tool_cache: ToolResultCache | None = None,
+            cancel_event: threading.Event | None = None) -> DiagnosisResult:
         """자연어 질문으로 장애 진단을 수행한다.
 
         holmes는 max_steps 상한 도달 시 전용 클래스 없이 plain `Exception("Too many LLM
@@ -610,6 +628,9 @@ class DiagnosisAgent:
 
         `tool_cache`(G-26 · 선택)는 플레이북 모드 잡의 잡 단위 캐시다 — 주면 이 조사의 MCP 도구
         호출이 플레이북과 같은 캐시를 거친다(`_CachedToolInvoke`). 없으면 종전 호출 그대로.
+
+        `cancel_event`(plans/194 W3 · 선택)는 dispatcher의 협조적 중단 신호다 — 서면 다음 확인
+        지점에서 `LLMInterruptedError`로 멈춘다(`_StreamDrain`). 결과는 버려진 잡이라 쓰이지 않는다.
         """
         messages = build_initial_ask_messages(
             initial_user_prompt=question,
@@ -617,11 +638,13 @@ class DiagnosisAgent:
             tool_executor=self.llm.tool_executor,
             system_prompt_additions=_with_load_guard_note(system_prompt_additions),
         )
+        # 협조적 중단 신호가 없으면 인자를 넘기지 않는다(종전 호출 그대로).
+        cancel: dict[str, Any] = {"cancel_event": cancel_event} if cancel_event is not None else {}
         if tool_cache is None:
-            drain = _StreamDrain(self.llm, activity=activity)
+            drain = _StreamDrain(self.llm, activity=activity, **cancel)
         else:
             llm, invoke = _with_tool_cache(self.llm, tool_cache)
-            drain = _StreamDrain(llm, activity=activity, cache_hit=invoke.is_hit)
+            drain = _StreamDrain(llm, activity=activity, cache_hit=invoke.is_hit, **cancel)
         try:
             result = drain.run(messages)
         except Exception as exc:  # noqa: BLE001 — holmes는 전용 예외 클래스 없이 plain Exception

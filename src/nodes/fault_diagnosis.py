@@ -42,6 +42,7 @@ from src.domain.host_authz import (
 )
 from src.domain.host_availability import describe as describe_availability
 from src.domain.incident_time import parse_incident_time
+from src.domain.investigation_reject_reasons import reject_display_text
 from src.domain.symptom_router import (
     INVESTIGATION_REF_KIND,
     ROUTE_PLAYBOOK,
@@ -309,7 +310,9 @@ async def _diagnose_and_poll(
     `scope_kwargs`(reference_time·lookback_minutes)는 사건 좌표계다 — 있을 때만 전달한다.
 
     Returns:
-        (diagnosis_text, status). rejected/failed 등 종결이나 텍스트가 없으면 ("", status).
+        (diagnosis_text, status). 접수 즉시 거부(rejected)면 (거부 사유 문구, "rejected") —
+        문구는 `reject_display_text`가 사유 코드와 `verdict`로 고른다(plans/194 W1 · 침묵 금지).
+        failed 등 종결이나 텍스트가 없으면 ("", status).
     """
     poll_interval = float(
         getattr(gate_cfg, "investigation_poll_interval_seconds", 1.0)
@@ -322,7 +325,9 @@ async def _diagnose_and_poll(
         )
         sub_status = sub.get("status")
         investigation_id = sub.get("investigation_id")
-        if sub_status == "rejected" or not investigation_id:
+        if sub_status == "rejected":
+            return reject_display_text(sub.get("reason"), sub.get("verdict")), "rejected"
+        if not investigation_id:
             return "", sub_status or "rejected"
         while True:
             res = await client.poll(investigation_id)
@@ -741,6 +746,7 @@ async def _submit_chat_investigation(
         investigation_id = str(res.get("investigation_id") or "")
         rejected = str(res.get("status") or "") == "rejected"
         reason: str | None = str(res.get("reason") or "") or None
+        verdict = str(res.get("verdict") or "") or None
         if not investigation_id:
             return await _deny(
                 "service_rejected" if rejected else "submit_failed",
@@ -785,7 +791,7 @@ async def _submit_chat_investigation(
     if rejected:
         text = (
             f"장애 조사 접수가 거부되었습니다 — {route.label}{where}. "
-            f"사유: {reason or '미상'}"
+            f"{reject_display_text(reason, verdict)}"
         )
     else:
         text = (

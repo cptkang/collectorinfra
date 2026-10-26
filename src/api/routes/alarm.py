@@ -33,6 +33,7 @@ from src.api.dependencies import (
     resolve_stream_user,
 )
 from src.api import investigation_live_hub, investigation_poll
+from src.domain.investigation_reject_reasons import reject_display_text
 from src.infrastructure import investigation_request_limit
 from src.api.error_detail import admin_error_detail
 # plans/166 A8 — 스키마는 alarm_schemas로 이동 · 여기서 재노출(D-337 ①)
@@ -1074,6 +1075,8 @@ async def alarm_capabilities(
     """게이트 조합을 서버가 계산해 내린다(클라이언트가 .env를 추론하지 않게)."""
     ng = request.app.state.config.noise_gate
     gate_on = bool(getattr(ng, "enable_noise_gate", False))
+    trigger_on = bool(getattr(ng, "investigation_trigger_enabled", False))
+    manual_on = bool(getattr(ng, "investigation_manual_enabled", True))
     return AlarmCapabilitiesResponse(
         # 피드백 라우트의 503 조건과 **같은 식**이어야 한다(어긋나면 UI가 거짓말을 한다).
         feedback_enabled=gate_on and bool(getattr(ng, "enable_llm_actionability", False)),
@@ -1086,9 +1089,12 @@ async def alarm_capabilities(
         ),
         suppress_max_severity=int(getattr(ng, "suppress_max_severity", 2)),
         # plans/153 W2: 조사가 실제로 돌 수 있는 조합일 때만 — 카드가 조사 섹션을 지연 로드할지.
-        investigation_enabled=gate_on
-        and bool(getattr(ng, "investigation_trigger_enabled", False))
+        # plans/194 W1 · D-347: 수동 전용(자동 off · 이 알람 분석 on)에서도 조사 섹션이 보여야
+        # 「분석 요청」 동선이 남는다 — 자동·수동 중 하나라도 켜져 있으면 참.
+        investigation_enabled=gate_on and (trigger_on or manual_on)
         and bool(ng.investigation_service_url),
+        investigation_auto_enabled=gate_on and trigger_on,
+        investigation_manual_enabled=gate_on and manual_on,
         investigation_followup_timeout_seconds=float(
             getattr(ng, "investigation_followup_timeout_seconds", 1200.0)
         ),
@@ -1178,6 +1184,7 @@ def _assert_investigation_zone(
     current_user: dict[str, Any],
     alarm_ids: list[str],
     known_db_ids: dict[str, str] | None = None,
+    db_cache: dict[str, str | None] | None = None,
 ) -> None:
     """조사 응답의 존 검사 — 조사에 걸린 알람 **전부**가 사용자 존 안이어야 한다(fail-closed).
 
@@ -1199,11 +1206,58 @@ def _assert_investigation_zone(
     if not alarm_ids:
         raise HTTPException(status_code=403, detail="해당 존의 알람에 대한 권한이 없습니다.")
     for alarm_id in alarm_ids:
-        db_id = known.get(alarm_id) or _decision_db_id(config, alarm_id)
+        db_id = known.get(alarm_id)
+        if not db_id and db_cache is not None:
+            # (plans/194 W5) 요청 단위 메모 — 판정 목록처럼 여러 행을 거를 때 알람마다 판정 기록
+            # tail을 한 번만 훑는다(규칙 불변 — 찾는 값은 `_decision_db_id`와 같다).
+            if alarm_id not in db_cache:
+                db_cache[alarm_id] = _decision_db_id(config, alarm_id)
+            db_id = db_cache[alarm_id]
+        elif not db_id:
+            db_id = _decision_db_id(config, alarm_id)
         if not db_id or not _zone_permits(scope, db_id):
             raise HTTPException(
                 status_code=403, detail="해당 존의 알람에 대한 권한이 없습니다."
             )
+
+
+def assert_alarm_investigation_access(
+    request: Request,
+    current_user: dict[str, Any],
+    alarm_id: str,
+    rec: dict[str, Any] | None,
+    *,
+    known_db_ids: dict[str, str] | None = None,
+    db_cache: dict[str, str | None] | None = None,
+) -> bool:
+    """알람 id 기준 조사 열람 인가 — by-alarm 조회와 판정 목록 행 조사 상태(plans/194 W5 · C2)의
+    단일 규칙.
+
+    순서: 내 사용자 요청 조사(`_request_owner_view` — 존 검사 없이 연다) → 알람 수신 권한(없으면
+    레코드 유무와 무관하게 403) → 알람 없는 사용자 요청 조사는 소유자·운영자만 → 이 알람과 조사에
+    걸린 알람 **전부**의 존 검사(레코드가 없어도 이 알람의 존을 본다 · fail-closed).
+    db_id는 `known_db_ids`(호출부가 아는 값) 위에 레코드 `alarm_db_ids`를 얹어 찾고, 없으면 판정
+    기록(`db_cache`가 있으면 요청 단위 메모)이다.
+
+    Returns:
+        소유자 열람이면 True(존 검사를 건너뛰었다 — 호출부가 다른 조사 목록을 붙이지 않는다).
+
+    Raises:
+        HTTPException: 권한 없음(403).
+    """
+    config = request.app.state.config
+    if _request_owner_view(config, current_user, rec):
+        return True
+    _alarm_zone_scope(request, current_user)
+    _assert_unbound_request_owner(config, current_user, rec)
+    members = [a for a in (rec or {}).get("alarm_ids") or [] if a != alarm_id]
+    known = dict(known_db_ids or {})
+    if isinstance((rec or {}).get("alarm_db_ids"), dict):
+        known.update((rec or {})["alarm_db_ids"])
+    _assert_investigation_zone(
+        request, current_user, [alarm_id, *members], known, db_cache=db_cache
+    )
+    return False
 
 
 def _attach_live_progress(
@@ -1213,12 +1267,21 @@ def _attach_live_progress(
 
     `progress`는 그대로(수치·단계 id), `partial_briefing`은 운영자면 원문, 사용자면
     `playbook_user_view`로 마스킹한 표시 부분만 싣는다. 키가 없으면 응답은 종전과 같다.
+    (plans/194 W5) 미종결이면 대기 순번 `queue_position`(정수)과 실행 단계 `phase`(문자열)도
+    싣는다 — 지연 poll·허브 어느 경로든 조사 서비스 poll 응답 값이다(추가 호출 없음).
     """
-    from noise_gate.infrastructure.investigation_store import playbook_user_view
+    from noise_gate.infrastructure.investigation_store import ACTIVE_STATUSES, playbook_user_view
 
     progress = rec.get("progress")
     if isinstance(progress, dict):
         view["progress"] = progress
+    if rec.get("status") in ACTIVE_STATUSES:
+        queue = rec.get("queue_position")
+        if isinstance(queue, int) and not isinstance(queue, bool):
+            view["queue_position"] = queue
+        phase = rec.get("phase")
+        if isinstance(phase, str) and phase:
+            view["phase"] = phase
     partial = rec.get("partial_briefing")
     if not isinstance(partial, dict):
         return
@@ -1419,13 +1482,14 @@ async def require_live_user(
 def _live_scope(
     request: Request, current_user: dict[str, Any], operator: bool
 ) -> Callable[[dict[str, Any]], bool]:
-    """목록 범위(G-41) — 관리자 = 모든 미종결 조사 · 사용자 = 내가 채팅으로 시작한 조사만.
+    """목록 범위(G-41) — 관리자 = 모든 미종결 조사 · 사용자 = 내가 요청한 조사만.
 
-    사용자 몫은 `owner_sub`가 나이고 채팅 기원(`origin=chat` · 조사 대화 추가 조사
-    `kind=diagnosis`)이며 조회 인가를 통과하는 것이다. 알람 카드에서 연 조사는 목록 밖이지만
+    사용자 몫은 `owner_sub`가 나이고 내가 요청한 조사(채팅 기원 `origin=chat` · 조사 대화
+    추가 조사 `kind=diagnosis` · [조사 시작]/[분석 요청]으로 직접 접수한 분석 `kind=manual`)이며
+    조회 인가를 통과하는 것이다. 알람 기원 자동 조사·남이 접수한 조사는 목록 밖이지만
     `watch`로는 열린다(존 검사).
     """
-    from noise_gate.infrastructure.investigation_store import KIND_DIAGNOSIS
+    from noise_gate.infrastructure.investigation_store import KIND_DIAGNOSIS, KIND_MANUAL
 
     if operator:
         return lambda rec: True
@@ -1434,7 +1498,10 @@ def _live_scope(
     def _in_scope(rec: dict[str, Any]) -> bool:
         if not sub or rec.get("owner_sub") != sub:
             return False
-        if rec.get("origin") != _CHAT_REQUEST_ORIGIN and rec.get("kind") != KIND_DIAGNOSIS:
+        if rec.get("origin") != _CHAT_REQUEST_ORIGIN and rec.get("kind") not in (
+            KIND_DIAGNOSIS,
+            KIND_MANUAL,
+        ):
             return False
         try:
             _assert_investigation_access(request, current_user, rec)
@@ -1451,7 +1518,10 @@ def _live_scope(
     description=(
         "목록 범위의 미종결 조사와 실시간 허브의 진척(phase·대기 순번·경과)을 반환합니다 — "
         "조사 서비스를 추가로 호출하지 않습니다.<br/>"
-        "관리자(운영자 토큰 포함)는 모든 미종결 조사, 사용자는 자기 채팅 조사만 봅니다.<br/>"
+        "관리자(운영자 토큰 포함)는 모든 미종결 조사, 사용자는 자기가 요청한 조사"
+        "(채팅·추가 조사·직접 접수한 분석)만 봅니다.<br/>"
+        "`service_load`는 조사 서비스 부하 게이지(진행·대기·상한 · 10초 캐시 · "
+        "조회 실패면 null)입니다.<br/>"
         "실시간 화면(NOISE_INVESTIGATION_LIVE_VIEW_ENABLED)이 꺼져 있으면 404입니다."
     ),
     tags=["alarm"],
@@ -1474,6 +1544,8 @@ async def list_active_investigations(
         "poll_seconds": hub.poll_seconds,
         # (plans/187 W18) 「이벤트 찾아 조사」 — 다시 분석 접수가 켜져 있을 때만 화면이 칸을 보인다
         "event_search": _manual_enabled(config),
+        # (plans/194 W5 · C1) 조사 서비스 부하 게이지(10초 캐시 · 실패·구버전은 null)
+        "service_load": await _service_load(request),
     }
 
 
@@ -1483,7 +1555,7 @@ async def list_active_investigations(
     description=(
         "브라우저당 연결 1개로 여러 조사를 다중화합니다. `watch=<id>:<seq>,…`"
         "(열린 하위 탭과 마지막 seq)을 주면 그 조사의 실행 기록을 seq 뒤부터 보냅니다.<br/>"
-        "이벤트: `summary`(목록 범위 · 바뀔 때만) · "
+        "이벤트: `summary`(목록 범위 `items` + 조사 서비스 부하 `service_load` · 바뀔 때만) · "
         "`activity`/`partial`/`done`/`poll_error`(watch 조사만) · "
         "`denied`(권한 없는 watch id) · `ping`(25초). `id:`는 watch와 같은 꼴이라 "
         "`Last-Event-ID`로 이어 받습니다.<br/>"
@@ -1540,6 +1612,8 @@ async def investigation_live_stream(
         watch=watch_recs,
         cursors=cursors,
         denied=denied,
+        # (plans/194 W5 · C1) `summary` 프레임 = `{items, service_load}`
+        service_load=lambda: _service_load(request),
     )
     return StreamingResponse(
         investigation_live_hub.stream_events(hub, ctx, request.is_disconnected),
@@ -1559,7 +1633,8 @@ async def investigation_live_stream(
         "미종결이면 조사 서비스에 재조회합니다(조사마다 10초에 1회). 사용자 경로는 마스킹, "
         "관리자는 원문과 원 브리핑을 받습니다.<br/>"
         "존 권한은 이 알람과 조사에 걸린 알람 전부로 검사합니다 — 존 제한 사용자는 db_id를 "
-        "확인할 수 없는 알람도 403입니다."
+        "확인할 수 없는 알람도 403입니다.<br/>"
+        "`service_load`는 조사 서비스 부하 게이지(10초 캐시 · 조회 실패면 null)입니다."
     ),
     tags=["alarm"],
 )
@@ -1582,22 +1657,16 @@ async def get_alarm_investigation(
     rec = store.get_by_alarm(alarm_id, include_manual=manual) if store is not None else None
     # (plans/187 W12) 고른 레코드가 내 사용자 요청 조사면 존 검사 없이 연다(`_request_owner_view`).
     # 그때는 이 알람의 다른 조사 목록(`previous`)을 붙이지 않는다 — 존 검사를 거치지 않았으므로.
-    owner_view = _request_owner_view(config, current_user, rec)
-    if not owner_view:
-        # 알람 수신 권한이 없는 사용자는 403.
-        _alarm_zone_scope(request, current_user)
-        _assert_unbound_request_owner(config, current_user, rec)
-        member_ids = [a for a in (rec or {}).get("alarm_ids") or [] if a != alarm_id]
-        # 레코드가 없어도 이 알람의 존을 먼저 본다 — 권한 없는(또는 존을 모르는) 알람은 존재
-        # 여부와 무관하게 403이다.
-        _assert_investigation_zone(
-            request, current_user, [alarm_id, *member_ids], (rec or {}).get("alarm_db_ids")
-        )
+    # 알람 수신 권한이 없는 사용자는 403. 레코드가 없어도 이 알람의 존을 먼저 본다 — 권한 없는
+    # (또는 존을 모르는) 알람은 존재 여부와 무관하게 403이다(plans/194 W5: 판정 목록과 같은 함수).
+    owner_view = assert_alarm_investigation_access(request, current_user, alarm_id, rec)
     view = await _investigation_response(request, current_user, rec, activity_since)
     if manual and not owner_view:
         view["previous"] = _previous_investigations(
             request, current_user, store, alarm_id, (rec or {}).get("investigation_id")
         )
+    # (plans/194 W5 · C1) 조사 서비스 부하 게이지(10초 캐시 · 실패·구버전은 null)
+    view["service_load"] = await _service_load(request)
     return view
 
 
@@ -1723,9 +1792,16 @@ def _with_notice(view: dict[str, Any]) -> dict[str, Any]:
     return {**view, "hypothesis_notice": HYPOTHESIS_NOTICE}
 
 
-def _followup_error(status_code: int, code: str, reason: str) -> HTTPException:
-    """추가 조사 라우트의 거부 — `detail = {code, reason}`(사유 노출 · 침묵 금지)."""
-    return HTTPException(status_code=status_code, detail={"code": code, "reason": reason})
+def _followup_error(
+    status_code: int, code: str, reason: str, **extra: Any
+) -> HTTPException:
+    """추가 조사 라우트의 거부 — `detail = {code, reason[, …extra]}`(사유 노출 · 침묵 금지).
+
+    `extra`(plans/194 W5)는 거부별 가산 키다(예: 시간당 상한의 `retry_after_seconds`).
+    """
+    return HTTPException(
+        status_code=status_code, detail={"code": code, "reason": reason, **extra}
+    )
 
 
 #: 장애 진단 화면 머리의 알람 요약 키(판정 기록 뷰에서 고른다 — 조건 로그는 운영자 뷰에만 남는다).
@@ -1927,6 +2003,79 @@ def _limit_status(code: str) -> int:
     return 403 if code == investigation_request_limit.REASON_OWNER_UNKNOWN else 429
 
 
+#: 사용자 시간당 상한 거부 코드(`investigation_request_limit.user_request_limit`).
+_HOURLY_LIMIT_CODE = "hourly_limit"
+#: 조사 서비스의 「같은 서버 진행 중」 거부 코드(sre_agent L-4 가드).
+_HOST_IN_FLIGHT_REASON = "host_investigation_in_flight"
+
+
+def _limit_extra(store: InvestigationStore, ng: Any, sub: str, code: str) -> dict[str, Any]:
+    """상한 거부의 가산 키(plans/194 W5 · C3) — 시간당 상한이면 `retry_after_seconds`."""
+    if code != _HOURLY_LIMIT_CODE:
+        return {}
+    retry = investigation_request_limit.hourly_retry_after(store, ng, sub)
+    return {"retry_after_seconds": retry} if retry is not None else {}
+
+
+def _target_names(*names: Any) -> set[str]:
+    """서버 식별 이름 집합(소문자 · 빈 값 제외) — 같은 서버 진행 중 조사 찾기용."""
+    return {str(n).strip().lower() for n in names if str(n or "").strip()}
+
+
+def _record_host_names(config: Any, rec: dict[str, Any]) -> set[str]:
+    """조사 레코드의 대상 서버 이름 — `subject`의 hostname·server_name, 없으면(알람 조사) 첫 알람의
+    판정 기록 hostname·server_name."""
+    raw_subject = rec.get("subject")
+    subject: dict[str, Any] = raw_subject if isinstance(raw_subject, dict) else {}
+    names = _target_names(subject.get("hostname"), subject.get("server_name"))
+    alarm_ids = rec.get("alarm_ids") or []
+    if names or not alarm_ids:
+        return names
+    decision = _manual_decision(config, str(alarm_ids[0])) or {}
+    return _target_names(decision.get("hostname"), decision.get("server_name"))
+
+
+def _existing_host_investigation(
+    request: Request,
+    current_user: dict[str, Any],
+    store: InvestigationStore,
+    names: set[str],
+    exclude_id: str,
+) -> str | None:
+    """같은 서버의 진행 중 조사 id(plans/194 W5 · C3) — 요청자가 열 수 있는 것만(없으면 None).
+
+    조사 서비스가 `host_investigation_in_flight`로 거부했을 때 본체 조사 저장소의 미종결 레코드에서
+    대상 이름(hostname·server_name — 대소문자 무시)이 겹치는 최신 조사를 찾는다. 열람 인가는 조사 id
+    조회와 같은 `_assert_investigation_access`다(화면이 그 id로 조사를 연다) — 통과 못 하면 id를
+    알려 주지 않는다(존재를 드러내지 않는다).
+    """
+    from noise_gate.infrastructure.investigation_store import ACTIVE_STATUSES
+
+    if not names:
+        return None
+    config = request.app.state.config
+    for latest in reversed(store.latest_records()):
+        investigation_id = str(latest.get("investigation_id") or "")
+        if latest.get("status") not in ACTIVE_STATUSES or investigation_id == exclude_id:
+            continue
+        rec = store.get_by_investigation(investigation_id)
+        if rec is None or not (_record_host_names(config, rec) & names):
+            continue
+        try:
+            _assert_investigation_access(request, current_user, rec)
+        except HTTPException:
+            continue
+        return investigation_id
+    return None
+
+
+async def _service_load(request: Request) -> dict[str, Any] | None:
+    """조사 서비스 부하 게이지(plans/194 W5 · C1 — 앱 캐시 10초 · 실패·구버전은 None)."""
+    from src.api.investigation_service_health import health_cache
+
+    return await health_cache(request.app.state).service_load()
+
+
 @router.get(
     "/alarm/investigations/{investigation_id}/followups",
     summary="부모 조사의 추가 조사 목록·초점",
@@ -1987,7 +2136,12 @@ async def request_investigation_followup(
     request: Request,
     current_user: dict[str, Any] = Depends(require_user),
 ) -> dict[str, Any]:
-    """추가 조사 접수 → `{investigation_id, status, reused, reason?, hypothesis_notice}`."""
+    """추가 조사 접수 → `{investigation_id, status, reused, reason?, hypothesis_notice}`.
+
+    조사 서비스가 거부했을 때만 `reason_text`(사유 코드의 한국어 문구)를 더 싣는다(plans/194 W1).
+    (plans/194 W5 · C3) 같은 서버 진행 중 거부면 열 수 있는 진행 중 조사
+    `existing_investigation_id`, 사용자 시간당 상한 429면 `detail.retry_after_seconds`를 더한다.
+    """
     from noise_gate.infrastructure import sre_agent_client as sre_client_mod
     from noise_gate.infrastructure.investigation_store import KIND_DIAGNOSIS
     from src.domain.host_authz import Principal, authorize_host_investigation
@@ -2060,13 +2214,15 @@ async def request_investigation_followup(
         )
         raise _followup_error(400, "invalid_note", note_reason)
 
-    async def _deny(status_code: int, code: str, reason: str, outcome: str) -> HTTPException:
+    async def _deny(
+        status_code: int, code: str, reason: str, outcome: str, **extra: Any
+    ) -> HTTPException:
         await _audit_followup(
             current_user, target, outcome, authz=decision.as_audit(),
             degraded=[{"reason": code, "detail": reason}],
             parent_investigation_id=investigation_id, focus=focus.id,
         )
-        return _followup_error(status_code, code, reason)
+        return _followup_error(status_code, code, reason, **extra)
 
     # 가용성 — 클라이언트 구성 · 포트 도달성(D-243).
     client = sre_client_mod.build_sre_agent_client(ng)
@@ -2101,7 +2257,10 @@ async def request_investigation_followup(
     # (교정 M1) 상한 검사부터 접수 레코드 기록까지 사용자별 잠금 한 구간이다.
     async with _user_request_slot(store, ng, sub) as limited:
         if limited is not None:
-            raise await _deny(_limit_status(limited[0]), *limited, INVESTIGATION_DENIED)
+            raise await _deny(
+                _limit_status(limited[0]), *limited, INVESTIGATION_DENIED,
+                **_limit_extra(store, ng, sub, limited[0]),
+            )
 
         question = render_followup_question(
             focus_id=focus.id,
@@ -2150,6 +2309,7 @@ async def request_investigation_followup(
         service_status = str(res.get("status") or "")
         rejected = service_status == "rejected"
         reason = str(res.get("reason") or "") or None
+        verdict = str(res.get("verdict") or "") or None
         subject = target.as_subject()
         if note:
             subject["note"] = note
@@ -2180,6 +2340,18 @@ async def request_investigation_followup(
     }
     if rejected and reason:
         out["reason"] = reason
+    if rejected:
+        # plans/194 W1 · D-347: 거부 사유를 사람이 읽을 한 문장으로(모르는 코드도 코드를 담아 노출 ·
+        # 가용성 거부는 조사 서비스 verdict의 확인 시각·판정을 그대로).
+        out["reason_text"] = reject_display_text(reason, verdict)
+    if rejected and reason == _HOST_IN_FLIGHT_REASON:
+        # plans/194 W5 · C3: 같은 서버의 진행 중 조사(열 수 있는 것만)를 알려 준다.
+        existing = _existing_host_investigation(
+            request, current_user, store, _target_names(target.hostname, target.server_name),
+            new_id,
+        )
+        if existing:
+            out["existing_investigation_id"] = existing
     return out
 
 
@@ -2203,7 +2375,7 @@ _MANUAL_LOOKBACK_SECONDS = 30 * 86400
 
 def _manual_enabled(config: Any) -> bool:
     """알람 다시 분석 플래그(기동 시 설정값)."""
-    return bool(getattr(config.noise_gate, "investigation_manual_enabled", False))
+    return bool(getattr(config.noise_gate, "investigation_manual_enabled", True))
 
 
 async def _require_manual_enabled(request: Request) -> None:
@@ -2391,6 +2563,28 @@ async def _manual_join_target(
     return None
 
 
+def _manual_subject(
+    event: AlarmEvent, alarm_time: Any, reference_time_source: str
+) -> dict[str, Any]:
+    """다시 분석 레코드의 `subject` — 기준 시각과 출처 + (plans/194 W5 · C4) 표시 대상.
+
+    목록 「대상」 칸(`subject.label`)에 조사 id 대신 「서버 · 알람명」을 보이도록 판정 기록의
+    서버명·hostname·알람명을 함께 싣는다(값 있는 것만 — 빈 값은 `record`가 버리지 않으므로
+    여기서 뺀다).
+    """
+    server = event.server_name or event.hostname
+    label = " · ".join(v for v in (server, event.alarm_name) if v)
+    raw = {
+        "reference_time": alarm_time.isoformat() if alarm_time is not None else None,
+        "reference_time_source": reference_time_source,
+        "server_name": event.server_name,
+        "hostname": event.hostname,
+        "alarm_name": event.alarm_name,
+        "label": label,
+    }
+    return {k: v for k, v in raw.items() if k == "reference_time" or v not in (None, "")}
+
+
 @router.post(
     "/alarm/{alarm_id}/investigations",
     summary="이 알람 분석(사용자 요청 알람 조사 · 비동기)",
@@ -2414,6 +2608,9 @@ async def request_manual_investigation(
     """알람 다시 분석 접수 → `{investigation_id, status, joined, reference_time_source?, reason?}`.
 
     `reference_time_source`는 새로 접수했을 때만 싣는다(`alarm_time` | `decision_ts`).
+    조사 서비스가 거부했을 때만 `reason_text`(사유 코드의 한국어 문구)를 더 싣는다(plans/194 W1).
+    (plans/194 W5 · C3) 같은 서버 진행 중 거부면 열 수 있는 진행 중 조사
+    `existing_investigation_id`, 사용자 시간당 상한 429면 `detail.retry_after_seconds`를 더한다.
     """
     from noise_gate.application.nodes.investigation_trigger import build_manual_payload
     from noise_gate.infrastructure import sre_agent_client as sre_client_mod
@@ -2482,17 +2679,22 @@ async def request_manual_investigation(
             400, "target_unresolved", "알람 기록에 서버명이 없어 조사 대상을 정하지 못했습니다."
         )
 
-    async def _deny(status_code: int, code: str, reason: str, outcome: str) -> HTTPException:
+    async def _deny(
+        status_code: int, code: str, reason: str, outcome: str, **extra: Any
+    ) -> HTTPException:
         await _audit_manual(
             current_user, alarm_id, outcome, event=event,
             degraded=[{"reason": code, "detail": reason}],
         )
-        return _followup_error(status_code, code, reason)
+        return _followup_error(status_code, code, reason, **extra)
 
     # (교정 M1) 상한 검사부터 접수 레코드 기록까지 사용자별 잠금 한 구간이다.
     async with _user_request_slot(store, ng, sub) as limited:
         if limited is not None:
-            raise await _deny(_limit_status(limited[0]), *limited, INVESTIGATION_DENIED)
+            raise await _deny(
+                _limit_status(limited[0]), *limited, INVESTIGATION_DENIED,
+                **_limit_extra(store, ng, sub, limited[0]),
+            )
 
         client = sre_client_mod.build_sre_agent_client(ng)
         if client is None:
@@ -2560,6 +2762,7 @@ async def request_manual_investigation(
             )
         rejected = str(res.get("status") or "") == "rejected"
         reason = str(res.get("reason") or "") or None
+        verdict = str(res.get("verdict") or "") or None
         store.record(
             investigation_id=new_id,
             alarm_ids=[alarm_id],
@@ -2572,10 +2775,7 @@ async def request_manual_investigation(
             parent_investigation_id=parent_investigation_id or None,
             origin=_MANUAL_ORIGIN,
             parent_alarm_id=alarm_id,
-            subject={
-                "reference_time": alarm_time.isoformat() if alarm_time is not None else None,
-                "reference_time_source": reference_time_source,
-            },
+            subject=_manual_subject(event, alarm_time, reference_time_source),
         )
     await _audit_manual(
         current_user, alarm_id, INVESTIGATION_DENIED if rejected else INVESTIGATION_OK,
@@ -2591,6 +2791,17 @@ async def request_manual_investigation(
     }
     if rejected and reason:
         out["reason"] = reason
+    if rejected:
+        # plans/194 W1 · D-347: 거부 사유를 사람이 읽을 한 문장으로(모르는 코드도 코드를 담아 노출 ·
+        # 가용성 거부는 조사 서비스 verdict의 확인 시각·판정을 그대로).
+        out["reason_text"] = reject_display_text(reason, verdict)
+    if rejected and reason == _HOST_IN_FLIGHT_REASON:
+        # plans/194 W5 · C3: 같은 서버의 진행 중 조사(열 수 있는 것만)를 알려 준다.
+        existing_id = _existing_host_investigation(
+            request, current_user, store, _target_names(event.hostname, event.server_name), new_id
+        )
+        if existing_id:
+            out["existing_investigation_id"] = existing_id
     return out
 
 

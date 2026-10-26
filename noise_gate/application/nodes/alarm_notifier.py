@@ -264,6 +264,7 @@ def build_workb_body(
     investigation_briefing: Optional[dict] = None,
     investigation_escalation: Optional[dict] = None,
     episode_lines: list[str] | None = None,
+    manual_only_notice: str | None = None,
 ) -> str:
     """WorkB 쪽지 본문을 HTML 형식으로 생성한다.
 
@@ -285,6 +286,10 @@ def build_workb_body(
 
     episode_lines(plans/144 W5): 크로스소스 사건 묶음 표시 줄(`episode_lines()` 산출 — annotate·
     enforce에서만 생긴다). None·빈 목록(기본·off·shadow·사건 미소속)이면 본문은 비트 동일.
+
+    manual_only_notice(plans/194 W5 · Q-1 · D-347): 수동 전용(자동 조사 꺼짐)일 때 PAGE 통보에
+    붙이는 안내 블록 HTML(`manual_only_notice_html` 산출). None(기본·자동 조사 켜짐·PAGE 아님)이면
+    비트 동일.
     """
     ev = result.alarm_event
     color = _SEVERITY_COLORS.get(ev.severity, "#6c757d")
@@ -339,7 +344,41 @@ def build_workb_body(
     # Plan 64 CW-C: escalate-only 중요도 상향 안내 (investigation_escalation=None이면 미첨부 → 비트 동일)
     if investigation_escalation is not None:
         body += _investigation_escalation_html(investigation_escalation)
+    # plans/194 W5 · Q-1: 수동 전용 안내 한 줄(None이면 미첨부 → 비트 동일)
+    if manual_only_notice:
+        body += manual_only_notice
     return body
+
+
+#: (plans/194 W5 · Q-1 사용자 결정 2026-10-26 · D-347) 수동 전용 PAGE 통보의 안내 문구.
+MANUAL_ONLY_NOTICE_TEXT = "자동 조사 꺼짐 — 웹 알람 카드에서 [조사 시작]"
+
+
+def manual_only_mode(gate_cfg: Any) -> bool:
+    """수동 전용인가 — 게이트 on ∧ 자동 조사(트리거) off ∧ 수동 접수 on ∧ 조사 서비스 URL 있음.
+
+    URL이 없으면 웹 알람 카드에 [조사 시작]이 나오지 않으므로(capabilities `investigation_enabled`)
+    안내하지 않는다.
+    """
+    return (
+        gate_cfg is not None
+        and bool(getattr(gate_cfg, "enable_noise_gate", False))
+        and not bool(getattr(gate_cfg, "investigation_trigger_enabled", False))
+        and bool(getattr(gate_cfg, "investigation_manual_enabled", True))
+        and bool(getattr(gate_cfg, "investigation_service_url", None))
+    )
+
+
+def manual_only_notice_html(web_base_url: str = "") -> str:
+    """수동 전용 안내 블록(HTML) — base가 있으면 「웹 알람 카드」를 포털 링크로(조사 대화 링크와
+    같은 http(s) 검사 `_safe_web_base`), 없으면 문구만."""
+    base = _safe_web_base(web_base_url)
+    if base:
+        link = f'<a href="{html.escape(base + "/", quote=True)}">웹 알람 카드</a>'
+        text = html.escape(MANUAL_ONLY_NOTICE_TEXT).replace("웹 알람 카드", link, 1)
+    else:
+        text = html.escape(MANUAL_ONLY_NOTICE_TEXT)
+    return f"<br><br>{text}"
 
 
 async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
@@ -428,6 +467,14 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
     # fault_escalation off/미escalate면 None → 통보 본문 비트 동일(회귀 0)·게이트 판정 소급 변경 없음.
     investigation_escalation: Optional[dict] = state.get("investigation_escalation")
 
+    # ── plans/194 W5 · Q-1: 수동 전용이면 PAGE 통보에만 안내 한 줄(`MANUAL_ONLY_NOTICE_TEXT`) ──
+    # 게이트 off(decision 없음)·PAGE 아님·자동 조사 켜짐이면 인자 없음 → 통보 본문 비트 동일.
+    notice_kwargs: dict[str, Any] = {}
+    if decision is not None and decision.tier == TIER_PAGE and manual_only_mode(gate_cfg):
+        notice_kwargs["manual_only_notice"] = manual_only_notice_html(
+            str(getattr(gate_cfg, "investigation_web_base_url", "") or "")
+        )
+
     for channel in result.notification_channels:
         try:
             if channel == "workb":
@@ -441,6 +488,7 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
                     investigation_briefing=investigation_briefing,
                     investigation_escalation=investigation_escalation,
                     **({"episode_lines": ep_lines} if ep_lines else {}),
+                    **notice_kwargs,
                 )
             elif channel == "webhook":
                 await _send_webhook(cfg.alarm, result, process_snapshot)
@@ -1147,6 +1195,7 @@ async def _send_workb(
     investigation_briefing: Optional[dict] = None,
     investigation_escalation: Optional[dict] = None,
     episode_lines: list[str] | None = None,
+    manual_only_notice: str | None = None,
 ) -> None:
     """worKB 사내메신저 쪽지 발송.
 
@@ -1163,6 +1212,7 @@ async def _send_workb(
         investigation_briefing: sre_agent 조사 브리핑 (Plan 64 CW-A, None이면 첨부 생략)
         investigation_escalation: escalate-only 상향 안내 (Plan 64 CW-C, None이면 첨부 생략)
         episode_lines: 크로스소스 사건 묶음 표시 줄 (plans/144 W5, None이면 첨부 생략)
+        manual_only_notice: 수동 전용 안내 블록 HTML (plans/194 W5 · Q-1, None이면 첨부 생략)
     """
     if not workb_cfg.base_url:
         raise WorkbNotConfiguredError("WORKB_BASE_URL이 설정되지 않았습니다.")
@@ -1178,6 +1228,7 @@ async def _send_workb(
         investigation_briefing=investigation_briefing,
         investigation_escalation=investigation_escalation,
         episode_lines=episode_lines,
+        manual_only_notice=manual_only_notice,
     )
     payload = {
         "systemDiv": workb_cfg.system_div,

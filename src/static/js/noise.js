@@ -1901,15 +1901,32 @@
         });
     }
 
+    // (plans/194 W5 U5 · D-347) 수동 조사 모드 — 기능 조회(capabilities)를 페이지를 열 때 1회 읽는다.
+    // `investigation_manual_enabled === true && investigation_auto_enabled === false`일 때만 참이고, 키가 없거나
+    // 조회가 실패하면 거짓(종전 표시). 기능 조회는 사용자 토큰 인가라 break-glass 운영자 토큰이면 부르지 않는다
+    // (401 → 로그아웃을 피해 apiRequest를 거치지 않는다).
+    var manualOnlyMode = (IS_BREAK_GLASS || !window.BriefingView)
+        ? Promise.resolve(false)
+        : alarmCall("/api/v1/alarm/capabilities").then(function (res) {
+            var caps = res.ok ? res.body : {};
+            return caps.investigation_manual_enabled === true && caps.investigation_auto_enabled === false;
+        }, function () { return false; });
+
+    manualOnlyMode.then(function (on) {
+        var title = on ? document.querySelector(".noise-brand h1") : null;
+        if (title) title.appendChild(el("span", "noise-mode-chip noise-mode-chip--top", "수동 조사 모드 · 자동 조사 꺼짐"));
+    });
+
     // (plans/187 W19 · G-46 · W23 개정) ⓒ 머리의 진입 버튼 1개 — 조사 id가 있으면 브리핑 종류·진행 상태와 무관하게 단다.
     // 누르면 **새 브라우저 탭**에 포털을 연다 — 장애 진단이 켜져 있으면 `/?diagnosis=`(그 조사 하위 탭), 꺼져 있으면
     // `/?conversation=`(「조사 대화」 탭). 브라우저가 다른 탭을 앞으로 가져오지 못해 열린 포털 창 재사용은 「아무 일도
     // 안 일어난 것」처럼 보였다(사용자 지적 — 2026-10-23).
-    // break-glass 운영자 토큰은 질의응답 API를 못 쓰므로 장애 진단이 꺼져 있으면 달지 않는다(§5.6.1 주의 1).
+    // break-glass 운영자 토큰은 질의응답 API를 못 쓰므로(§5.6.1 주의 1) 장애 진단 여부와 무관하게 달지 않는다 —
+    // 서랍 상세형(break-glass 전용)으로 본다(plans/192 Q-3 A · 종전은 진단이 꺼져 있을 때만 숨김).
     function portalEntryButton(view) {
         var excluded = view && (view.status === "none" || (liveViewOn && view.status === "rejected"));
         var id = view && view.investigation_id && !excluded ? String(view.investigation_id) : "";
-        if ((IS_BREAK_GLASS && !liveViewOn) || !id || !investigationHead) return;
+        if (IS_BREAK_GLASS || !id || !investigationHead) return;
         var btn = investigationHead.querySelector(".cause-live-open");
         if (!btn) {
             btn = el("button", "cause-live-open", "");
@@ -1954,17 +1971,25 @@
     }
 
     // 조사 기록이 없는 판단 — 기능이 켜져 있으면 by-alarm 응답(조사 없음 + previous)으로 칸을 열어 「분석 요청」을 둔다.
+    // (plans/194 W5 U5) 수동 조사 모드면 칸 머리에 「수동 조사 모드」 표지를 단다.
     function renderAnalyzeOnly(BV, seq, alarmId, asked) {
         if (IS_BREAK_GLASS) return;
-        probeAnalyze(alarmId).then(function (res) {
+        Promise.all([probeAnalyze(alarmId), manualOnlyMode]).then(function (got) {
+            var res = got[0];
             if (seq !== investigationSeq) return;
             if (res.ok && Array.isArray(res.body && res.body.previous)) {
-                investigationPanel = BV.attach(investigationBox(BV), {
+                var body = investigationBox(BV);
+                if (got[1]) investigationHead.appendChild(el("span", "noise-mode-chip", "수동 조사 모드"));
+                investigationPanel = BV.attach(body, {
                     initial: res.body,
                     load: function () { return reloadInvestigation({}, alarmId); },
                     render: { mode: "summary" },
                     analyze: analyzeOptions(alarmId),
                     onView: onInvestigationView,
+                    // (plans/194 W5 U5) 수동 조사 모드 — 「조사 안 됨 → [조사 시작]」 · 거부 사유 · 합류 안내
+                    manualMode: got[1],
+                    onOpenInvestigation: function (id) { openInPortal(id); },
+                    openInvestigationLabel: function () { return liveViewOn ? "장애 진단에서 보기" : "조사 대화로 열기"; },
                 });
                 investigationPanel.open();
                 if (asked) scrollToCause();

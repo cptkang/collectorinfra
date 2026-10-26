@@ -492,8 +492,19 @@ class AlarmCapabilitiesResponse(BaseModel):
     investigation_enabled: bool = Field(
         default=False,
         description=(
-            "자동 조사 브리핑 조회 가용 = 게이트 AND 조사 트리거 AND 조사 서비스 URL 설정 "
-            "(plans/153 W2 · 기본 off)"
+            "조사 섹션 가용 = 게이트 AND (자동 조사 트리거 OR 이 알람 분석) AND 조사 서비스 URL "
+            "설정 (plans/153 W2 · plans/194 W1 · D-347)"
+        ),
+    )
+    investigation_auto_enabled: bool = Field(
+        default=False,
+        description="자동 조사 가용 = 게이트 AND 조사 트리거 (plans/194 W1 · D-347 운영 기본 off)",
+    )
+    investigation_manual_enabled: bool = Field(
+        default=False,
+        description=(
+            "「이 알람 분석」(사용자 요청 조사) 가용 = 게이트 AND 수동 조사 플래그 "
+            "(plans/194 W1 · D-347 기본 on)"
         ),
     )
     investigation_followup_timeout_seconds: float = Field(
