@@ -95,3 +95,40 @@ async def test_timeout_tool_error_and_connect_failure_are_structured() -> None:
         async with open_source_session("http://h/sse", "secret-token", call_timeout=1.0,
                                        label="APM", session_factory=refused):
             pass
+
+
+@pytest.mark.asyncio
+async def test_exception_group_unwrapped_to_leaf(caplog):
+    """anyio 가 감싼 ExceptionGroup 은 말단 예외 종류로 사유를 짓고 원문은 로그에만 남긴다."""
+
+    @asynccontextmanager
+    async def grouped(url, headers):
+        raise ExceptionGroup("unhandled errors in a TaskGroup",
+                             [ConnectionRefusedError("refused 10.0.0.1:9096")])
+        yield  # pragma: no cover
+
+    with caplog.at_level("WARNING", logger="src.clients.source_mcp_client"):
+        with pytest.raises(SourceMcpError) as ei:
+            async with open_source_session("http://h/sse", "secret-token", call_timeout=1.0,
+                                           label="APM", session_factory=grouped):
+                pass
+    assert str(ei.value) == "APM 연결·호출 실패: ConnectionRefusedError"
+    assert "refused 10.0.0.1:9096" in caplog.text
+    assert "secret-token" not in caplog.text
+
+
+@pytest.mark.asyncio
+async def test_exception_group_reraises_inner_source_error():
+    """본문에서 난 SourceMcpError(도구 시간 초과 등)가 그룹에 감겨도 그 사유 그대로 올린다."""
+
+    @asynccontextmanager
+    async def grouping(url, headers):
+        try:
+            yield _Session({})
+        except Exception as e:
+            raise ExceptionGroup("unhandled errors in a TaskGroup", [e]) from None
+
+    with pytest.raises(SourceMcpError, match=r"^APM 도구 호출 시간 초과\(apm_pool, 1초\)$"):
+        async with open_source_session("http://h/sse", None, call_timeout=1.0, label="APM",
+                                       session_factory=grouping):
+            raise SourceMcpError("APM 도구 호출 시간 초과(apm_pool, 1초)")
