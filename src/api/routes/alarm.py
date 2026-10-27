@@ -19,7 +19,7 @@ import time
 import uuid
 from collections.abc import Callable
 from types import SimpleNamespace
-from typing import TYPE_CHECKING, Any, Optional
+from typing import TYPE_CHECKING, Any, Literal, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
@@ -2373,6 +2373,8 @@ _MANUAL_ORIGIN = "manual"
 _MANUAL_FINGERPRINT_PREFIX = "manual:"
 #: 다시 분석할 수 있는 알람의 범위(G-29 — 결정 저장소 보존 30일).
 _MANUAL_LOOKBACK_SECONDS = 30 * 86400
+#: (plans/196) 「이 서버로 다시 조회」 레코드의 `origin` — 수동 분석 합류 대상에서 뺀다.
+_HOST_RERUN_ORIGIN = "host_rerun"
 
 
 def _manual_enabled(config: Any) -> bool:
@@ -2548,7 +2550,8 @@ async def _manual_join_target(
     window = 60.0 * max(0, int(getattr(ng, "investigation_manual_join_minutes", 10)))
     now = time.time()
     for rec in store.list_by_alarm(alarm_id):
-        if rec.get("kind") != KIND_MANUAL:
+        if rec.get("kind") != KIND_MANUAL or rec.get("origin") == _HOST_RERUN_ORIGIN:
+            # (plans/196) 「이 서버로 다시 조회」는 폴스타 축만 다시 돈 조사라 합류 대상이 아니다.
             continue
         current = rec
         if rec.get("status") in ACTIVE_STATUSES:
@@ -2804,6 +2807,575 @@ async def request_manual_investigation(
         )
         if existing_id:
             out["existing_investigation_id"] = existing_id
+    return out
+
+
+# ─── 호스트 연결 학습 — 유사 호스트 후보 · 사용자 선택 · 재조회 (plans/196 §1.1 · §5.5) ───
+#
+# 제니퍼 알람 조사의 hostname으로 인가 존의 폴스타 소스에서 유사 서버 후보를 찾고
+# (LLM 0 · 캐시 없음), 사용자가 고른 서버(또는 「해당 서버 없음」)를 연결 저장소
+# (Redis `hostlink:*`)에 남긴다. 운영자 선택은 바로 확정(전역), 일반 사용자 선택은 확정 대기
+# (그 조사의 재조회에만 적용 · Q5). 「이 서버로 다시 조회」는 폴스타 축만 다시 도는 새 조사
+# (kind=manual · origin=host_rerun)를 접수한다 — 같은 알람이어도 합류하지 않는다.
+# 플래그(`NOISE_HOST_LINK_ENABLED`) off면 두 라우트가 404다.
+
+#: 감사 진입점 값.
+_HOST_LINK_ENTRY_POINT = "host_link"
+#: 연결 후보를 찾는 관측 시스템(레지스트리 시스템 키).
+_HOST_LINK_SYSTEM = "polestar"
+
+
+def _host_link_enabled(config: Any) -> bool:
+    """호스트 연결 학습 플래그(기동 시 설정값)."""
+    return bool(getattr(config.noise_gate, "host_link_enabled", False))
+
+
+async def _require_host_link_enabled(request: Request) -> None:
+    """플래그 off면 미등록 라우트와 같은 404 — 인증·저장소 접근보다 먼저 판정한다."""
+    if not _host_link_enabled(request.app.state.config):
+        raise HTTPException(status_code=404, detail="Not Found")
+
+
+def _host_link_store(request: Request) -> Any:
+    """연결 저장소(앱 수명 1개 — 첫 요청에 Redis 연결을 만든다 · 실패면 None)."""
+    from noise_gate.infrastructure.host_link_store import build_host_link_store
+
+    state = request.app.state
+    store = getattr(state, "host_link_store", None)
+    if store is None:
+        store = build_host_link_store(state.config)
+        state.host_link_store = store
+    return store
+
+
+def _host_link_db_ids(request: Request, current_user: dict[str, Any]) -> list[str]:
+    """후보를 찾을 폴스타 소스 — 활성 DB ∩ 사용자 인가 존.
+
+    순서는 `authorized_zones`(은행존 → 공동존)이고 존 미배정 DB는 뒤에 붙는다(전 존 사용자만).
+    """
+    from src.orchestration.entity_locator import probe_scope
+    from src.routing.registry import get_registry
+
+    config = request.app.state.config
+    scope = _alarm_zone_scope(request, current_user)
+    active = list(config.multi_db.get_active_db_ids())
+    allowed = (
+        None if scope is None
+        else [d for d in active if db_id_to_zone(d) and _zone_permits(scope, d)]
+    )
+    return probe_scope(
+        _HOST_LINK_SYSTEM, get_registry(),
+        active_db_ids=active, targeted_db_ids=[], allowed_db_ids=allowed,
+    )
+
+
+def _host_link_subject(
+    request: Request, current_user: dict[str, Any], investigation_id: str
+) -> tuple[InvestigationStore, dict[str, Any], str, dict[str, Any]]:
+    """부모 조사(존 검사 끝) · 알람 id · 판정 기록 — 제니퍼 알람만.
+
+    Raises:
+        HTTPException: `_followup_parent`의 거부 · 판정 기록 없음 404 · 제니퍼 알람 아님 400 ·
+            hostname 없음 400.
+    """
+    from noise_gate.domain.alarm import is_apm_db_id
+
+    store, parent = _followup_parent(request, current_user, investigation_id)
+    alarm_id = next(iter(parent.get("alarm_ids") or []), None) or parent.get("parent_alarm_id")
+    decision = _manual_decision(request.app.state.config, str(alarm_id)) if alarm_id else None
+    if not alarm_id or decision is None:
+        raise _followup_error(404, "alarm_not_found", "이 조사의 알람 판정 기록을 찾지 못했습니다.")
+    if not is_apm_db_id(str(decision.get("db_id") or "")):
+        raise _followup_error(
+            400, "not_apm_alarm", "제니퍼 알람 조사에서만 폴스타 서버를 연결할 수 있습니다."
+        )
+    if not str(decision.get("hostname") or decision.get("server_name") or "").strip():
+        raise _followup_error(400, "target_unresolved", "알람 기록에 hostname이 없습니다.")
+    return store, parent, str(alarm_id), decision
+
+
+def _decision_hostname(decision: dict[str, Any]) -> str:
+    return str(decision.get("hostname") or decision.get("server_name") or "").strip()
+
+
+async def _audit_host_link(
+    current_user: dict[str, Any], alarm_id: str, outcome: str, **extra: Any
+) -> None:
+    """호스트 연결 감사 1건(선택·없음·승인·삭제 · 실패해도 응답을 막지 않는다)."""
+    from src.security import audit_logger
+
+    try:
+        await audit_logger.log_investigation(
+            entry_point=_HOST_LINK_ENTRY_POINT,
+            outcome=outcome,
+            user_id=current_user.get("sub"),
+            backend="noise_gate",
+            alarm_id=alarm_id or None,
+            **extra,
+        )
+    except Exception:  # noqa: BLE001 — 감사 기록 실패가 응답을 막지 않는다(사유는 로그)
+        logger.warning("호스트 연결 감사 기록 실패", exc_info=True)
+
+
+#: 후보·연결 라우트의 사용자별 짧은 창 호출 상한 — 소스마다 SELECT를 도는 프로브 남용 방지.
+_HOST_LINK_RATE_WINDOW_SECONDS = 60.0
+_HOST_LINK_RATE_LIMITS: dict[str, int] = {"candidates": 10, "link": 5}
+
+
+async def _host_link_rate_retry(request: Request, route: str, sub: str) -> int | None:
+    """창 안 호출이 상한이면 다시 시도까지 남은 초, 아니면 None(이번 호출을 센다).
+
+    연결 저장소의 Redis 공유 카운터(고정 창 · `HostLinkStore.rate_hit`)로 세어 uvicorn
+    프로세스끼리 상한을 공유한다. 저장소가 없거나 Redis 오류면 in-process 카운터로 센다
+    (상한을 열어 두지 않는다 · 사유는 warning).
+    """
+    store = _host_link_store(request)
+    if store is not None:
+        try:
+            retry: int | None = await store.rate_hit(
+                route, sub, limit=_HOST_LINK_RATE_LIMITS[route],
+                window_seconds=int(_HOST_LINK_RATE_WINDOW_SECONDS),
+            )
+            return retry
+        except Exception:  # noqa: BLE001 — Redis 오류는 프로세스 내 카운터로 폴백(열지 않는다)
+            logger.warning(
+                "호스트 연결 호출 상한 Redis 카운터 실패 — 프로세스 내로 셈", exc_info=True
+            )
+    return _host_link_rate_retry_local(request, route, sub)
+
+
+def _host_link_rate_retry_local(request: Request, route: str, sub: str) -> int | None:
+    """in-process 폴백(`app.state.host_link_rate` · 미끄럼 창) — 프로세스마다 따로 센다.
+
+    창이 지난 기록은 매 호출 정리해 빈 키를 남기지 않는다.
+    """
+    from collections import deque
+
+    now = time.monotonic()
+    window = _HOST_LINK_RATE_WINDOW_SECONDS
+    buckets: dict[tuple[str, str], Any] | None = getattr(request.app.state, "host_link_rate", None)
+    if buckets is None:
+        buckets = {}
+        request.app.state.host_link_rate = buckets
+    for key in list(buckets):
+        stamps = buckets[key]
+        while stamps and now - stamps[0] >= window:
+            stamps.popleft()
+        if not stamps:
+            del buckets[key]
+    stamps = buckets.setdefault((route, sub), deque())
+    if len(stamps) >= _HOST_LINK_RATE_LIMITS[route]:
+        return max(1, int(window - (now - stamps[0])) + 1)
+    stamps.append(now)
+    return None
+
+
+def _host_link_rate_error(retry_after: int) -> HTTPException:
+    return _followup_error(
+        429, "host_link_rate_limited",
+        f"요청이 너무 잦습니다. {retry_after}초 뒤에 다시 시도하세요.",
+        retry_after_seconds=retry_after,
+    )
+
+
+def _host_link_view(link: dict[str, Any] | None, operator: bool) -> dict[str, Any] | None:
+    """응답의 연결 레코드 — 누가·언제·어느 조사에서 골랐는지는 운영자에게만 싣는다."""
+    from noise_gate.domain.host_link import public_link_view
+
+    return link if operator else public_link_view(link)
+
+
+class HostLinkRequest(BaseModel):
+    """호스트 연결 요청 본문 — `select`(이 서버로 다시 조회) · `none`(해당 서버 없음)."""
+
+    action: Literal["select", "none"]
+    db_id: str | None = Field(
+        None, max_length=64,
+        description="select — 폴스타 소스 db_id(없으면 인가 소스 전부에서 확인)",
+    )
+    server_name: str | None = Field(None, max_length=255, description="select — 등록 서버명")
+    hostname: str | None = Field(None, max_length=255, description="select — 등록 hostname")
+
+
+@router.get(
+    "/alarm/investigations/{investigation_id}/host-candidates",
+    summary="제니퍼 알람 조사의 유사 폴스타 서버 후보",
+    description=(
+        "조사 대상 제니퍼 hostname과 비슷한 폴스타 등록 서버를 인가된 존의 소스에서 "
+        "찾아 상위 5건과 등급(확정·일치·유력·유사)·사유를 돌려줍니다. "
+        "확인하지 못한 소스는 `unchecked`에 따로 싣습니다. "
+        "캐시하지 않습니다. 조사 열람과 같은 존 검사를 합니다. 사용자별 짧은 창 호출 상한이 "
+        "있습니다(429 `host_link_rate_limited`).<br/>"
+        "`NOISE_HOST_LINK_ENABLED`가 꺼져 있으면 404입니다."
+    ),
+    tags=["alarm"],
+    dependencies=[Depends(_require_host_link_enabled)],
+)
+async def get_host_candidates(
+    investigation_id: str,
+    request: Request,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """`{hostname, source_id, link, candidates[≤5], unchecked[], link_error?}`."""
+    from noise_gate.application.host_candidates import find_host_candidates
+    from noise_gate.domain.host_link import apm_source_id
+
+    _, _, _, decision = _host_link_subject(request, current_user, investigation_id)
+    retry_after = await _host_link_rate_retry(
+        request, "candidates", str(current_user.get("sub") or "")
+    )
+    if retry_after is not None:
+        raise _host_link_rate_error(retry_after)
+    hostname = _decision_hostname(decision)
+    source_id = apm_source_id(str(decision.get("db_id") or ""))
+    store = _host_link_store(request)
+    result = await find_host_candidates(
+        request.app.state.config,
+        hostname=hostname,
+        source_id=source_id,
+        db_ids=_host_link_db_ids(request, current_user),
+        store=store,
+        reveal_actor=_is_alarm_operator(request.app.state.config, current_user),
+    )
+    if store is None:
+        result["link_error"] = "연결 저장소(Redis)를 쓸 수 없습니다."
+    return result
+
+
+@router.post(
+    "/alarm/investigations/{investigation_id}/host-link",
+    summary="폴스타 서버 연결 — 이 서버로 다시 조회 / 해당 서버 없음",
+    description=(
+        "`select`는 고른 서버가 그 소스에 있는지 다시 확인한 뒤 연결을 저장하고, "
+        "폴스타 축 단계만 다시 도는 조사를 접수합니다. `db_id` 없이 서버명만 보내면(직접 입력) "
+        "인가된 소스 전부에서 정확히 한 곳에 있을 때만 받습니다(여러 곳이면 409 "
+        "`server_ambiguous`)"
+        "(같은 알람이어도 합류하지 않음 · 사용자별 상한은 수동 조사와 함께 셈). "
+        "`none`은 부정 연결(30일)을 저장합니다. 운영자 선택은 바로 확정, 그 밖은 확정 대기입니다. "
+        "사용자별 짧은 창 호출 상한이 있습니다(429 `host_link_rate_limited`). "
+        "감사 로그 대상입니다.<br/>`NOISE_HOST_LINK_ENABLED`가 꺼져 있으면 404입니다."
+    ),
+    tags=["alarm"],
+    dependencies=[Depends(_require_host_link_enabled)],
+)
+async def post_host_link(
+    investigation_id: str,
+    body: HostLinkRequest,
+    request: Request,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """`{link, stored, investigation_id, status[, reason, reason_text]}`.
+
+    `stored=false`면 확정 대기 선택이 기존 확정 연결을 덮지 않았다는 뜻이다
+    (재조회에는 선택이 쓰인다).
+    `none`이면 `investigation_id`는 null, `status`는 `recorded`다.
+    `link`는 운영자가 아니면 `public_link_view`로 줄인다(누가·언제·어느 조사는 운영자에게만).
+    """
+    from noise_gate.application.host_candidates import (
+        locate_selected_server,
+        verify_selected_server,
+    )
+    from noise_gate.application.nodes.investigation_trigger import build_manual_payload
+    from noise_gate.domain.host_link import (
+        KIND_ABSENT,
+        KIND_LINK,
+        apm_source_id,
+        selection_grade,
+        user_selected_hint,
+        valid_link_key,
+        valid_server_text,
+    )
+    from noise_gate.domain.process_rank import APM_RESOURCE_TYPE
+    from noise_gate.infrastructure import sre_agent_client as sre_client_mod
+    from noise_gate.infrastructure.investigation_store import KIND_MANUAL
+    from src.security.audit_logger import (
+        INVESTIGATION_DENIED,
+        INVESTIGATION_FAILED,
+        INVESTIGATION_OK,
+    )
+
+    config = request.app.state.config
+    ng = config.noise_gate
+    sub = str(current_user.get("sub") or "")
+    audit_base: dict[str, Any] = {"action": body.action, "investigation_id": investigation_id}
+    alarm_id = ""
+
+    async def _deny(status_code: int, code: str, reason: str, outcome: str) -> HTTPException:
+        await _audit_host_link(
+            current_user, alarm_id, outcome, degraded=[{"reason": code, "detail": reason}],
+            **audit_base,
+        )
+        return _followup_error(status_code, code, reason)
+
+    try:
+        inv_store, parent, alarm_id, decision = _host_link_subject(
+            request, current_user, investigation_id
+        )
+    except HTTPException as exc:
+        # 초기 거부(존 403 · 제니퍼 알람 아님 · 대상 없음 · 저장소 503)도 감사한다.
+        detail: dict[str, Any] = exc.detail if isinstance(exc.detail, dict) else {}
+        await _audit_host_link(
+            current_user, alarm_id, INVESTIGATION_DENIED,
+            degraded=[{"reason": detail.get("code") or str(exc.status_code),
+                       "detail": detail.get("reason") or str(exc.detail)}],
+            **audit_base,
+        )
+        raise
+    hostname = _decision_hostname(decision)
+    db_id_alarm = str(decision.get("db_id") or "")
+    source_id = apm_source_id(db_id_alarm)
+    audit_base["targets"] = [{"hostname": hostname, "db_id": db_id_alarm}]
+    retry_after = await _host_link_rate_retry(request, "link", sub)
+    if retry_after is not None:
+        await _audit_host_link(
+            current_user, alarm_id, INVESTIGATION_DENIED,
+            degraded=[{"reason": "host_link_rate_limited", "detail": f"{retry_after}s"}],
+            **audit_base,
+        )
+        raise _host_link_rate_error(retry_after)
+    if not valid_link_key(source_id, hostname):
+        raise await _deny(
+            400, "invalid_link_key", "이 알람의 hostname·소스로는 연결을 저장할 수 없습니다.",
+            INVESTIGATION_DENIED,
+        )
+    operator = _is_alarm_operator(config, current_user)
+    by_role = "operator" if operator else "user"
+    link_store = _host_link_store(request)
+    if link_store is None:
+        raise await _deny(
+            503, "link_store_unavailable", "연결 저장소(Redis)를 쓸 수 없습니다.",
+            INVESTIGATION_FAILED,
+        )
+
+    if body.action == "none":
+        try:
+            rec, stored = await link_store.save(
+                source_id, hostname, kind=KIND_ABSENT, confirmed=operator,
+                by=sub, by_role=by_role, investigation_id=investigation_id,
+            )
+        except Exception:  # noqa: BLE001 — 저장 실패는 사유와 함께 거부한다(침묵 금지)
+            logger.warning("부정 연결 저장 실패: host=%s", hostname, exc_info=True)
+            raise await _deny(
+                503, "link_store_failed", "연결 저장에 실패했습니다.", INVESTIGATION_FAILED
+            )
+        await _audit_host_link(
+            current_user, alarm_id, INVESTIGATION_OK, link_state=rec.get("state"),
+            stored=stored, **audit_base,
+        )
+        return {
+            "link": _host_link_view(rec, operator), "stored": stored,
+            "investigation_id": None, "status": "recorded",
+        }
+
+    # ── select ── db_id 없이 서버명만 오면(후보 0건 직접 입력) 인가 소스 전부에서 확인한다.
+    db_id = (body.db_id or "").strip()
+    server_name = (body.server_name or "").strip()
+    picked_host = (body.hostname or "").strip()
+    if not (server_name or picked_host):
+        raise await _deny(
+            400, "invalid_selection", "서버명 또는 hostname이 필요합니다.", INVESTIGATION_DENIED
+        )
+    if not all(valid_server_text(v) for v in (server_name, picked_host) if v):
+        raise await _deny(
+            400, "invalid_selection",
+            "서버명·hostname에는 영문·숫자와 . _ - 만 쓸 수 있습니다.", INVESTIGATION_DENIED,
+        )
+    allowed_db_ids = _host_link_db_ids(request, current_user)
+    if db_id and db_id not in allowed_db_ids:
+        raise await _deny(
+            403, "zone_denied", "해당 소스에 대한 권한이 없습니다.", INVESTIGATION_DENIED
+        )
+    briefing_pb = (parent.get("briefing") or {}).get("playbook") or {}
+    sections = briefing_pb.get("sections")
+    if not isinstance(sections, list) or not sections:
+        raise await _deny(
+            409, "parent_no_sections", "부모 조사의 단계 결과가 아직 없어 다시 조회할 수 없습니다.",
+            INVESTIGATION_DENIED,
+        )
+    unchecked: list[dict[str, str]] = []
+    try:
+        if db_id:
+            row = await verify_selected_server(
+                config, db_id=db_id, server_name=server_name or None,
+                hostname=picked_host or None,
+            )
+        else:
+            located = await locate_selected_server(
+                config, db_ids=allowed_db_ids, server_name=server_name or None,
+                hostname=picked_host or None,
+            )
+            unchecked = located["unchecked"]
+            row = {"ambiguous": True} if located["ambiguous"] else located["row"]
+            db_id = located["db_id"] or ""
+    except Exception as exc:  # noqa: BLE001 — 확인 실패는 「확인하지 못함」으로 거부
+        logger.warning("선택 서버 확인 실패: db_id=%s", db_id, exc_info=True)
+        raise await _deny(
+            502, "verify_failed", f"서버 존재를 확인하지 못했습니다({type(exc).__name__}).",
+            INVESTIGATION_FAILED,
+        )
+    if row is None and unchecked:
+        raise await _deny(
+            502, "verify_failed",
+            "일부 소스를 확인하지 못해 서버가 없다고 단정할 수 없습니다"
+            f"({', '.join(u['db_id'] for u in unchecked)}).",
+            INVESTIGATION_FAILED,
+        )
+    if row is None:
+        raise await _deny(
+            400, "server_not_found", "인가된 소스에서 해당 서버를 찾지 못했습니다.",
+            INVESTIGATION_DENIED,
+        )
+    if row.get("ambiguous"):
+        raise await _deny(
+            409, "server_ambiguous",
+            "같은 이름의 서버가 여러 대(또는 여러 소스)에 있어 하나로 정하지 못했습니다. "
+            "후보 목록에서 소스를 골라 주세요.",
+            INVESTIGATION_DENIED,
+        )
+    try:
+        patterns = await link_store.patterns()
+    except Exception:  # noqa: BLE001 — 패턴은 등급 사유일 뿐이다
+        patterns = {}
+    grade = selection_grade(hostname, db_id, {**row, "name": row["server_name"]}, patterns=patterns)
+    audit_base.update({"link_db_id": db_id, "link_server_name": row["server_name"]})
+
+    alarm_time, reference_time_source = _manual_reference_time(decision)
+    event = await _manual_event(config, alarm_id, decision, alarm_time)
+    if event is None:
+        raise await _deny(
+            400, "target_unresolved", "알람 기록에 서버명이 없어 조사 대상을 정하지 못했습니다.",
+            INVESTIGATION_DENIED,
+        )
+    if not event.resource_type:
+        # 구 판정 기록(resource_type 없음)도 제니퍼 알람이면 APM 힌트가 실리게 한다.
+        event.resource_type = APM_RESOURCE_TYPE
+
+    async with _user_request_slot(inv_store, ng, sub) as limited:
+        if limited is not None:
+            await _audit_host_link(
+                current_user, alarm_id, INVESTIGATION_DENIED,
+                degraded=[{"reason": limited[0], "detail": limited[1]}], **audit_base,
+            )
+            raise _followup_error(
+                _limit_status(limited[0]), *limited, **_limit_extra(inv_store, ng, sub, limited[0])
+            )
+        client = sre_client_mod.build_sre_agent_client(ng)
+        if client is None:
+            raise await _deny(
+                503, "service_unconfigured", "조사 서비스 URL이 설정되지 않았습니다.",
+                INVESTIGATION_FAILED,
+            )
+        unreachable = await client.unreachable_reason()
+        if unreachable:
+            raise await _deny(
+                503, "service_unreachable", f"조사 서비스에 연결할 수 없습니다: {unreachable}",
+                INVESTIGATION_FAILED,
+            )
+        # 연결 저장은 상한·조사 서비스 검사를 지난 뒤에만 한다(거부된 요청이 연결을 남기지 않게).
+        try:
+            rec, stored = await link_store.save(
+                source_id, hostname, kind=KIND_LINK, confirmed=operator, by=sub,
+                by_role=by_role, investigation_id=investigation_id, db_id=db_id,
+                server_name=row["server_name"], polestar_hostname=row["hostname"], grade=grade,
+            )
+        except Exception:  # noqa: BLE001
+            logger.warning("서버 연결 저장 실패: host=%s", hostname, exc_info=True)
+            raise await _deny(
+                503, "link_store_failed", "연결 저장에 실패했습니다.", INVESTIGATION_FAILED
+            )
+        audit_base.update({"link_state": rec.get("state"), "stored": stored})
+        rerun: dict[str, Any] = {
+            "parent_investigation_id": investigation_id,
+            "axes": ["polestar"],
+            "prior_sections": sections,
+        }
+        prior_readings = briefing_pb.get("readings")
+        if prior_readings is not None:
+            rerun["prior_readings"] = prior_readings
+        payload = await build_manual_payload(
+            config,
+            event,
+            SimpleNamespace(
+                tier=str(decision.get("tier") or ""),
+                reason=str(decision.get("reason") or ""),
+                fingerprint=str(decision.get("fingerprint") or ""),
+                signals=(
+                    decision.get("signals") if isinstance(decision.get("signals"), dict) else {}
+                ),
+            ),
+            fingerprint=f"{_MANUAL_FINGERPRINT_PREFIX}{alarm_id}:{uuid.uuid4().hex[:12]}",
+            investigation_kind=KIND_MANUAL,
+            polestar_link=user_selected_hint(
+                db_id=db_id, server_name=row["server_name"], polestar_hostname=row["hostname"],
+                by=sub, at=str(rec.get("at") or ""),
+            ),
+            rerun=rerun,
+        )
+        timeout = float(getattr(ng, "investigation_mcp_call_timeout_seconds", 10.0))
+
+        async def _submit() -> dict[str, Any]:
+            await client.connect()
+            try:
+                return await client.submit(payload)
+            finally:
+                await client.disconnect()
+
+        try:
+            res = await asyncio.wait_for(_submit(), timeout=timeout)
+        except TimeoutError:
+            raise await _deny(
+                502, "submit_failed", f"조사 서비스 접수 타임아웃({timeout:.0f}s 초과)",
+                INVESTIGATION_FAILED,
+            )
+        except Exception as exc:  # noqa: BLE001 — 접수 실패는 사유와 함께 거부한다(침묵 금지)
+            logger.warning("서버 연결 재조회 접수 실패: alarm=%s", alarm_id, exc_info=True)
+            raise await _deny(
+                502, "submit_failed", f"조사 서비스 접수 실패: {type(exc).__name__}",
+                INVESTIGATION_FAILED,
+            )
+        new_id = str(res.get("investigation_id") or "")
+        if not new_id:
+            raise await _deny(
+                502, "submit_failed", "조사 서비스 응답에 조사 id가 없습니다.", INVESTIGATION_FAILED
+            )
+        existing = inv_store.get_by_investigation(new_id)
+        if existing is not None and existing.get("kind") != KIND_MANUAL:
+            raise await _deny(
+                502, "submit_conflict", "조사 서비스가 기존 조사 id를 돌려주었습니다.",
+                INVESTIGATION_FAILED,
+            )
+        rejected = str(res.get("status") or "") == "rejected"
+        reason = str(res.get("reason") or "") or None
+        verdict = str(res.get("verdict") or "") or None
+        inv_store.record(
+            investigation_id=new_id,
+            alarm_ids=[alarm_id],
+            kind=KIND_MANUAL,
+            status="rejected" if rejected else "submitted",
+            source=_MANUAL_ORIGIN,
+            reason=reason if rejected else None,
+            alarm_db_ids={alarm_id: event.db_id} if event.db_id else None,
+            owner_sub=sub or None,
+            parent_investigation_id=investigation_id,
+            origin=_HOST_RERUN_ORIGIN,
+            parent_alarm_id=alarm_id,
+            subject=_manual_subject(event, alarm_time, reference_time_source),
+        )
+    await _audit_host_link(
+        current_user, alarm_id, INVESTIGATION_DENIED if rejected else INVESTIGATION_OK,
+        degraded=[{"reason": "service_rejected", "detail": reason}] if rejected else None,
+        rerun_investigation_id=new_id, **audit_base,
+    )
+    out: dict[str, Any] = {
+        "link": _host_link_view(rec, operator),
+        "stored": stored,
+        "investigation_id": new_id,
+        "status": "rejected" if rejected else "submitted",
+    }
+    if rejected:
+        if reason:
+            out["reason"] = reason
+        out["reason_text"] = reject_display_text(reason, verdict)
     return out
 
 

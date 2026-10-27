@@ -507,6 +507,27 @@ captures:
       - wait: "#diagnosisView .dv-search-row"
       - wait: 1000
     callouts: [[1, "#diagnosisView .dv-search-tier"], [2, "#diagnosisView .dv-search-check"], [3, "#diagnosisView .dv-search-statecol"], [4, "#diagnosisView .dv-search-row .dv-start-btn"], [5, "#diagnosisView .dv-search-go"]]
+  # 폴스타 서버 선택 대기(plans/196 §1.1 ② · U-70) — 종결된 제니퍼 응답 지연 조사(inv-manual-hostwait · 폴스타 단계 2건
+  # 「폴스타 서버 선택 대기」 건너뜀 · 종합 가설 없음 → 「지금까지」 줄이 축별 판정 근거 부족). 후보 목록은 예시로 가로챈다
+  # (응답 계약 모양 · 가상 서버명) — 화면은 이 GET만 부르고 버튼을 누르지 않으므로 쓰기 호출 0 · 호스트 연결 플래그 불필요
+  - id: diagnosis-host-pick
+    server: capture-diag
+    login: admin
+    height: 1500
+    routes:
+      - url: "**/api/v1/alarm/investigations/inv-manual-hostwait/host-candidates"
+        method: GET
+        json: {hostname: ordwas02, source_id: jennifer-ord, link: null,
+               candidates: [
+                 {db_id: polestar, server_name: svr-ordwas02, hostname: svr-ordwas02, ipaddress: 10.10.20.12, grade: 유력, grade_key: likely, score: 0.8, reasons: ["이전 확정 패턴 「접두 치환 ∅ → svr-」 적용(1건)"]},
+                 {db_id: polestar, server_name: ordwas02-dr, hostname: ordwas02-dr, ipaddress: 10.10.30.12, grade: 유사, grade_key: similar, score: 0.553, reasons: ["이름 토큰 ordwas02 일치"]}],
+               unchecked: [{db_id: polestar_cm_yd, reason: "조회 시간 초과"}]}
+    steps:
+      - goto: /?diagnosis=inv-manual-hostwait
+      - wait: "#diagnosisView .dv-subtab"
+      - wait: "#diagnosisView .dv-host-cands"
+      - wait: 800
+    callouts: [[1, "#diagnosisView .dv-sofar"], [2, "#diagnosisView .dv-card--skip[data-step='S4'] .dv-card-head"], [3, "#diagnosisView .dv-host-cands"], [4, "#diagnosisView .dv-host .dv-note--warn"], [5, "#diagnosisView .dv-host-select"], [6, "#diagnosisView .dv-host-none"]]
   - id: noise-drawer-manual
     server: capture-diag
     login: admin
@@ -619,6 +640,34 @@ captures:
     clip: "#investigationSummary"
     pad: 8
     callouts: [[1, "#investigationSummary .inv-summary__mode"], [2, "#investigationSummary .inv-summary__table"], [3, "#investigationSummary .inv-summary__gauges"], [4, "#refreshInvestigationSummaryBtn"]]
+  # 호스트 연결 탭(plans/196 §5.5 · A-85) — 목록 응답을 예시로 가로챈다(확정 · 승인 대기 · 부정 각 1건 + 패턴 1건 · 가상 서버명).
+  # 탭 버튼·표는 플래그와 무관하게 있고 목록 GET만 가로채므로 Redis·호스트 연결 플래그 없이 찍는다(쓰기 호출 0)
+  - id: admin-host-links
+    login: admin
+    routes:
+      - url: "**/api/v1/admin/host-links"
+        method: GET
+        json:
+          links:
+            - {state: confirmed, kind: link, source_id: jennifer-ord, hostname: ordwas01, db_id: polestar, server_name: svr-ordwas01,
+               polestar_hostname: svr-ordwas01, grade: 유사, by: admin, by_role: operator, at: "2026-10-24T02:10:00+00:00",
+               investigation_id: inv-20261024-0007}
+            - {state: pending, kind: link, source_id: jennifer-ord, hostname: ordwas02, db_id: polestar, server_name: svr-ordwas02,
+               polestar_hostname: svr-ordwas02, grade: 유력, by: demo_user, by_role: user, at: "2026-10-26T01:05:00+00:00",
+               investigation_id: inv-manual-hostwait}
+            - {state: confirmed, kind: absent, source_id: jennifer-ord, hostname: ord-api-7f9c4d-x2k8p, db_id: "", server_name: "",
+               polestar_hostname: "", grade: "", by: admin, by_role: operator, at: "2026-10-25T07:40:00+00:00",
+               investigation_id: inv-20261025-0012, expires_at: "2026-11-24T07:40:00+00:00"}
+          patterns:
+            - {key: "prefix||svr-", kind: prefix, from: "", to: "svr-", label: "접두 치환 ∅ → svr-", count: 1}
+    steps:
+      - goto: /admin
+      - click: "[data-tab='hostlinks']"
+      - wait: "#hostLinksBody tr:nth-child(3)"
+      - wait: 600
+    clip: "#tab-hostlinks"
+    pad: 8
+    callouts: [[1, "#refreshHostLinksBtn"], [2, "#hostLinksBody tr:nth-child(2) td:nth-child(1)"], [3, "#hostLinksBody tr:nth-child(2) td:nth-child(6) button"], [4, "#hostLinksBody tr:nth-child(3) td:nth-child(5)"], [5, "#hostLinksPatternTable"]]
   - id: settings-group
     login: admin
     routes: *INV_SUMMARY

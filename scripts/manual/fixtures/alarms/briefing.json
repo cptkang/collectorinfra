@@ -1,5 +1,5 @@
 {
-  "_note": "손으로 만든 예시 데이터(녹화 아님) — plans/153 「조사 브리핑」·「발생 원인과 처리」 캡처용. 같은 서버의 인프라 원인 알람(CPU)과 제니퍼 증상 알람(WAS 응답 지연)이 한 사건으로 묶이고, 증상은 크로스소스 사건 상관으로 PAGE → DASHBOARD 강등, 원인 알람의 단독 조사와 사건 종합 조사가 모두 완료된 장면. ago_min 은 캡처 시각 기준 몇 분 전인지다(녹화 결정 기록보다 앞이라 결정 이력 첫 행을 바꾸지 않는다). 서버 이름은 샌드박스 명명 규칙(svr-*)을 따른 가상 이름이다. activity 는 장애 진단 장면(plans/187 U-70)의 실행 기록 요약 예시다 — 이벤트 ago_min 도 캡처 시각 기준으로 바꾼다. inv-manual-flow 는 조사 흐름 화면(plans/187 W20)의 채팅 조사 예시 — 사용자 예시 사슬(CPU 추이 → 프로세스 상위 → WAS 프로세스 CPU → 실행 중 요청 → 실행 중 SQL · 건너뜀 1건 · AI 해석 있음·없음 각 1건)이다.",
+  "_note": "손으로 만든 예시 데이터(녹화 아님) — plans/153 「조사 브리핑」·「발생 원인과 처리」 캡처용. 같은 서버의 인프라 원인 알람(CPU)과 제니퍼 증상 알람(WAS 응답 지연)이 한 사건으로 묶이고, 증상은 크로스소스 사건 상관으로 PAGE → DASHBOARD 강등, 원인 알람의 단독 조사와 사건 종합 조사가 모두 완료된 장면. ago_min 은 캡처 시각 기준 몇 분 전인지다(녹화 결정 기록보다 앞이라 결정 이력 첫 행을 바꾸지 않는다). 서버 이름은 샌드박스 명명 규칙(svr-*)을 따른 가상 이름이다. activity 는 장애 진단 장면(plans/187 U-70)의 실행 기록 요약 예시다 — 이벤트 ago_min 도 캡처 시각 기준으로 바꾼다. inv-manual-flow 는 조사 흐름 화면(plans/187 W20)의 채팅 조사 예시 — 사용자 예시 사슬(CPU 추이 → 프로세스 상위 → WAS 프로세스 CPU → 실행 중 요청 → 실행 중 SQL · 건너뜀 1건 · AI 해석 있음·없음 각 1건)이다. inv-manual-hostwait 는 폴스타 서버 선택 장면(plans/196 §1.1 ② · U-70)의 제니퍼 응답 지연 조사 예시 — 대상 ordwas02를 폴스타에서 찾지 못해 폴스타 단계 2건이 「폴스타 서버 선택 대기」로 건너뛰어지고 종합 가설이 없어 「지금까지」 줄이 축별 판정 근거 부족으로 나온다. 후보 목록은 captures.yaml routes 가 가로챈다.",
   "decisions": [
     {
       "ago_min": 40,
@@ -541,6 +541,185 @@
           }
         }
       }
+    },
+    {
+      "ago_min": 16,
+      "investigation_id": "inv-manual-hostwait",
+      "kind": "diagnosis",
+      "status": "submitted",
+      "source": "manual",
+      "subject": {
+        "server_name": "ordwas02",
+        "reference_time": null,
+        "route_label": "플레이북 was.latency",
+        "route_reason": "제니퍼 알람 「응답 지연」 — 대상 ordwas02(제니퍼 jennifer-ord)를 폴스타에서 바로 찾지 못함"
+      }
+    },
+    {
+      "ago_min": 13,
+      "investigation_id": "inv-manual-hostwait",
+      "kind": "diagnosis",
+      "status": "done",
+      "source": "manual",
+      "subject": {
+        "server_name": "ordwas02",
+        "reference_time": null,
+        "route_label": "플레이북 was.latency",
+        "route_reason": "제니퍼 알람 「응답 지연」 — 대상 ordwas02(제니퍼 jennifer-ord)를 폴스타에서 바로 찾지 못함"
+      },
+      "verdict": {
+        "level": "low"
+      },
+      "briefing_lines": [],
+      "briefing": {
+        "summary": "ordwas02 응답 지연 — 판정 근거 부족(폴스타 단계 생략)",
+        "limitations": [
+          "폴스타 서버를 정하지 못해 호스트 자원 · 프로세스 단계를 건너뛰었습니다"
+        ],
+        "playbook": {
+          "id": "was.latency",
+          "version": 3,
+          "matched_by": "symptom",
+          "scope": {
+            "host": "ordwas02",
+            "alarm_name": "응답 지연"
+          },
+          "readings": {},
+          "sections": [
+            {
+              "step": "S0",
+              "action": "scope.resolve_was_targets",
+              "title": "대상 확정 · 범위 비교",
+              "status": "ok",
+              "verdict": "normal",
+              "verdict_source": "apm_gateway",
+              "axis_status": {
+                "apm": "ok"
+              },
+              "table": {
+                "columns": [
+                  "instance",
+                  "host",
+                  "p95_ms",
+                  "verdict"
+                ],
+                "rows": [
+                  [
+                    "ORD02",
+                    "ordwas02",
+                    1840.0,
+                    "degraded"
+                  ],
+                  [
+                    "ORD01",
+                    "ordwas01",
+                    760.0,
+                    "normal"
+                  ]
+                ]
+              },
+              "badges": [],
+              "tools": [
+                "apm_instance_map",
+                "apm_app_health"
+              ],
+              "reason": null,
+              "finding": "알람 인스턴스 ORD02만 응답 지연 · 같은 업무 ORD01은 정상 — 범위 = 인스턴스 1대",
+              "opinion": "",
+              "opinion_dropped_reason": null
+            },
+            {
+              "step": "S1",
+              "action": "apm.golden_signals",
+              "title": "WAS 골든 시그널",
+              "status": "ok",
+              "verdict": "normal",
+              "verdict_source": "playbook_rule",
+              "axis_status": {
+                "apm": "ok"
+              },
+              "table": {
+                "columns": [
+                  "instance",
+                  "p95_ms",
+                  "baseline_p95_ms",
+                  "tps",
+                  "error_rate"
+                ],
+                "rows": [
+                  [
+                    "ORD02",
+                    1840.0,
+                    1100.0,
+                    42.0,
+                    0.002
+                  ]
+                ]
+              },
+              "badges": [],
+              "tools": [
+                "apm_golden_signals"
+              ],
+              "reason": null,
+              "finding": "ORD02 p95 1840ms · 기준선 1100ms의 1.7배(이상 기준 2배 미만) · 오류율 0.2%",
+              "opinion": "",
+              "opinion_dropped_reason": null
+            },
+            {
+              "step": "S2",
+              "action": "apm.runtime_and_pool",
+              "title": "JVM 런타임 · DB 커넥션 풀",
+              "status": "ok",
+              "verdict_source": null,
+              "axis_status": {
+                "apm": "ok"
+              },
+              "table": null,
+              "badges": [],
+              "tools": [
+                "apm_runtime_metrics"
+              ],
+              "reason": null,
+              "finding": "사건창에 수집된 JVM 런타임 · 커넥션 풀 값 0건",
+              "opinion": "",
+              "opinion_dropped_reason": null
+            },
+            {
+              "step": "S4",
+              "action": "host.usage_trend",
+              "title": "호스트 자원 시간대별 추이",
+              "status": "skipped",
+              "axis_status": {
+                "polestar": "skipped"
+              },
+              "table": null,
+              "badges": [],
+              "tools": [],
+              "reason": "폴스타 서버 선택 대기 — 조사 화면에서 후보를 골라 다시 조회"
+            },
+            {
+              "step": "S6",
+              "action": "host.process_top",
+              "title": "프로세스 CPU 상위",
+              "status": "skipped",
+              "axis_status": {
+                "polestar": "skipped"
+              },
+              "table": null,
+              "badges": [],
+              "tools": [],
+              "reason": "폴스타 서버 선택 대기 — 조사 화면에서 후보를 골라 다시 조회"
+            }
+          ],
+          "synthesis": {
+            "hypotheses": [],
+            "actions": [],
+            "followups": [],
+            "narrative": "",
+            "narrative_dropped_reason": null
+          }
+        }
+      }
     }
   ],
   "cards": [
@@ -968,6 +1147,151 @@
           "label": "브리핑 조립",
           "status": "ok",
           "elapsed_ms": 40
+        }
+      ]
+    },
+    {
+      "ago_min": 13,
+      "investigation_id": "inv-manual-hostwait",
+      "status": "done",
+      "truncated": false,
+      "events": [
+        {
+          "seq": 1,
+          "ago_min": 15.9,
+          "engine": "playbook",
+          "kind": "started",
+          "label": "플레이북 was.latency 선택",
+          "status": "ok",
+          "purpose": "제니퍼 알람 「응답 지연」 — 대상 ordwas02"
+        },
+        {
+          "seq": 2,
+          "ago_min": 15.8,
+          "engine": "playbook",
+          "kind": "step_start",
+          "step": "S0",
+          "label": "S0 대상 확정 · 범위 비교",
+          "because": "알람 인스턴스와 같은 업무 인스턴스의 판정 분포부터 본다"
+        },
+        {
+          "seq": 3,
+          "ago_min": 15.75,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "step": "S0",
+          "tool": "apm_instance_map",
+          "label": "apm_instance_map {host: ordwas02}",
+          "phrase": "제니퍼 · ordwas02의 WAS 인스턴스와 같은 업무 인스턴스",
+          "status": "ok",
+          "elapsed_ms": 700,
+          "rows": 2
+        },
+        {
+          "seq": 4,
+          "ago_min": 15.6,
+          "engine": "playbook",
+          "kind": "step_end",
+          "step": "S0",
+          "label": "S0 대상 확정 · 범위 비교",
+          "status": "ok",
+          "elapsed_ms": 1100,
+          "finding": "알람 인스턴스 ORD02만 응답 지연 · 같은 업무 ORD01은 정상 — 범위 = 인스턴스 1대"
+        },
+        {
+          "seq": 5,
+          "ago_min": 15.5,
+          "engine": "playbook",
+          "kind": "step_start",
+          "step": "S1",
+          "label": "S1 WAS 골든 시그널",
+          "because": "범위 = 인스턴스 1대 → 그 인스턴스의 p95·처리량·오류율"
+        },
+        {
+          "seq": 6,
+          "ago_min": 15.45,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "step": "S1",
+          "tool": "apm_golden_signals",
+          "label": "apm_golden_signals {instance: ORD02}",
+          "phrase": "제니퍼 · ORD02 응답 시간 p95 · TPS · 오류율(사건창 · 전일·전주 기준선)",
+          "status": "ok",
+          "elapsed_ms": 900,
+          "rows": 1
+        },
+        {
+          "seq": 7,
+          "ago_min": 15.3,
+          "engine": "playbook",
+          "kind": "step_end",
+          "step": "S1",
+          "label": "S1 WAS 골든 시그널",
+          "status": "ok",
+          "elapsed_ms": 1300,
+          "finding": "ORD02 p95 1840ms · 기준선 1100ms의 1.7배(이상 기준 2배 미만) · 오류율 0.2%"
+        },
+        {
+          "seq": 8,
+          "ago_min": 15.2,
+          "engine": "playbook",
+          "kind": "step_start",
+          "step": "S2",
+          "label": "S2 JVM 런타임 · DB 커넥션 풀",
+          "because": "WAS 인스턴스가 있음 → 힙·GC와 커넥션 풀 대기 확인"
+        },
+        {
+          "seq": 9,
+          "ago_min": 15.15,
+          "engine": "playbook",
+          "kind": "tool_end",
+          "step": "S2",
+          "tool": "apm_runtime_metrics",
+          "label": "apm_runtime_metrics {instance: ORD02}",
+          "phrase": "제니퍼 · ORD02 JVM 런타임 · 커넥션 풀(사건창)",
+          "status": "ok",
+          "elapsed_ms": 800,
+          "rows": 0
+        },
+        {
+          "seq": 10,
+          "ago_min": 15.0,
+          "engine": "playbook",
+          "kind": "step_end",
+          "step": "S2",
+          "label": "S2 JVM 런타임 · DB 커넥션 풀",
+          "status": "ok",
+          "elapsed_ms": 1000,
+          "finding": "사건창에 수집된 JVM 런타임 · 커넥션 풀 값 0건"
+        },
+        {
+          "seq": 11,
+          "ago_min": 14.9,
+          "engine": "playbook",
+          "kind": "step_skip",
+          "step": "S4",
+          "label": "S4 호스트 자원 시간대별 추이",
+          "status": "skipped",
+          "because": "폴스타 서버 선택 대기 — 조사 화면에서 후보를 골라 다시 조회"
+        },
+        {
+          "seq": 12,
+          "ago_min": 14.85,
+          "engine": "playbook",
+          "kind": "step_skip",
+          "step": "S6",
+          "label": "S6 프로세스 CPU 상위",
+          "status": "skipped",
+          "because": "폴스타 서버 선택 대기 — 조사 화면에서 후보를 골라 다시 조회"
+        },
+        {
+          "seq": 13,
+          "ago_min": 14.0,
+          "engine": "system",
+          "kind": "finalize",
+          "label": "브리핑 조립",
+          "status": "ok",
+          "elapsed_ms": 30
         }
       ]
     }

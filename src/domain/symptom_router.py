@@ -68,7 +68,7 @@ KIND_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("log", ("log", "logmonitor", "로그")),
 )
 
-#: 플레이북 YAML `match.surface_terms` 사본(fallback 제외).
+#: 플레이북 YAML `match.surface_terms` 사본(fallback·`was.fallback` 제외 — 증상으로 고르지 않는다).
 PLAYBOOK_SURFACE_TERMS: dict[str, tuple[str, ...]] = {
     "host.cpu": ("CPU", "CPU 사용률", "CPU 과다"),
     "host.disk_io": ("디스크 I/O", "디스크 IO", "디스크 대기"),
@@ -81,6 +81,7 @@ PLAYBOOK_SURFACE_TERMS: dict[str, tuple[str, ...]] = {
     "was.heap": ("힙", "OOM", "가비지 컬렉션", "GC 과다"),
     "was.latency": ("응답 지연", "응답시간", "느려"),
     "was.pool": ("커넥션 풀", "DB 커넥션", "풀 고갈"),
+    "was.sql": ("과다 페치", "SQL 페치", "SQL 패턴"),
 }
 
 #: 플레이북 YAML `match.alarm_kind` 사본(값이 있는 것만).
@@ -106,6 +107,7 @@ VIRTUAL_EVENTS: dict[str, tuple[str, str]] = {
     "was.heap": ("apm.Instance", "JVM_HEAP_MEM_HIGH"),
     "was.latency": ("apm.Instance", "TX_BAD_RESPONSE"),
     "was.pool": ("apm.Instance", "DB_CONNECTION_FAIL"),
+    "was.sql": ("apm.Instance", "SQL_TOOMANY_FETCH"),
 }
 
 #: kind 키워드의 제외어 — 키워드가 다른 낱말의 일부로만 나타난 경우를 지운 뒤 대조한다

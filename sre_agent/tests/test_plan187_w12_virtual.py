@@ -15,7 +15,7 @@ from pathlib import Path
 import pytest
 from sre_agent.application.investigation_jobs import validate_payload
 from sre_agent.application.playbook_runner import alarm_facts_from_payload
-from sre_agent.domain.playbook import select_playbook
+from sre_agent.domain.playbook import APM_FALLBACK_ID, select_playbook
 from sre_agent.infrastructure.playbook_loader import DEFAULT_PLAYBOOK_DIR, load_playbooks
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -66,7 +66,8 @@ PLAYBOOKS = load_playbooks(DEFAULT_PLAYBOOK_DIR).playbooks
 
 
 def test_virtual_events_cover_every_playbook():
-    ids = {pb.id for pb in PLAYBOOKS if not pb.is_fallback}
+    # APM 공통 점검(was.fallback)은 fallback처럼 증상 질의로 고르지 않는다(plans/196 D2 ②)
+    ids = {pb.id for pb in PLAYBOOKS if not pb.is_fallback and pb.id != APM_FALLBACK_ID}
     assert set(_virtual_events()) == ids
 
 

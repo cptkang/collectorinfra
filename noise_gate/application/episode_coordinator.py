@@ -71,6 +71,9 @@ class EpisodeHost(Protocol):
     def sre_agent_client(self) -> Any: ...
 
     @property
+    def redis(self) -> Any: ...  # redis.asyncio 클라이언트 | None (plans/196 — 호스트 연결 조회)
+
+    @property
     def incident_publisher(self) -> Any: ...
 
     @property
@@ -306,7 +309,7 @@ class EpisodeCoordinator:
             client, analysis.alarm_event, decision,
             episode_snapshot(ep, self._host.episodes.rules), alarm_ids,
             cfg=self._host.config, decision_store=self._host.decision_store,
-            inv_store=self._host.investigation_store,
+            inv_store=self._host.investigation_store, redis=self._host.redis,
         )
         ep.episode_investigation_status = str(outcome.get("status") or "attempted")
         if outcome.get("investigation_id") and outcome.get("status") == "submitted":

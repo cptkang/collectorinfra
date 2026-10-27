@@ -1,0 +1,57 @@
+# WAS SQL 패턴 플레이북 (plans/196 D2 · Q2 권고 적용 · D-341)
+# 과다 fetch·SQL 응답 지연·SQL 실행 예외 같은 제니퍼 SQL 계열 이벤트 — 지연이 아니라 SQL 패턴 문제라
+# was.latency와 판독 순서를 나눈다. 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
+id: was.sql
+version: 1
+match:
+  resource_type: apm.Instance
+  any_kind: [was_sql_pattern]            # 이벤트 유형 정규화 값(SQL_EVENT_TYPES — playbook_runner)
+  surface_terms: [과다 페치, SQL 페치, SQL 패턴]   # 채팅 증상 질의 표면어(§5.6.2 ③ · W12)
+  priority: 15
+window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
+steps:
+  - id: S0
+    action: scope.resolve_was_targets    # 대상 확정 · 범위 비교(R-A)
+    args: {pick: degraded, max_instances: 3}
+    timeout_s: 120                       # 대상 확정은 호출이 많다 — was.latency와 같은 상한(W22)
+    narrate: {focus: "SQL 이벤트가 알람 인스턴스 한정인지 같은 업무 전체인지", max_sentences: 3}
+  - id: S3
+    action: apm.slow_tx_breakdown        # 트랜잭션 Top5 시간 분해(R-C · R-D) — SQL·페치 구간 비중
+    args: {n: 5, profile_top: 1}
+    narrate: {focus: "Top5 트랜잭션의 SQL·페치 구간 비중과 1위 건의 SQL 실행 시간", max_sentences: 4}
+  - id: S3a
+    action: apm.active_services          # 실행 중 요청(현재값 — 배지)
+    args: {n: 5}
+    narrate: {focus: "SQL 수·경과가 큰 실행 중 요청", max_sentences: 3}
+  - id: S3b
+    action: apm.active_sql               # 실행 중 SQL 문(리터럴 가림)
+    when: "S3a.status == 'ok'"
+    narrate: {focus: "실행 중 요청이 실행 중인 SQL 문", max_sentences: 3}
+  - id: S5
+    action: xsource.related_alarms       # 연관 알람·이벤트 타임라인(상관≠인과)
+    narrate: {focus: "알람 전후 선행·동시·후행 알람과 제니퍼 이벤트", max_sentences: 3}
+  - id: S7
+    action: change.recent                # 소스 변경 대조(상관 후보로만 표기)
+    args: {lookback_hours: 24}
+    narrate: {focus: "사건창 직전 소스 변경의 시간 근접순", max_sentences: 3}
+  - id: S8
+    action: dpm.db_health                # DPM 연동 전에는 skipped(not_connected)
+  - id: S9
+    action: synthesize
+response_hints:                          # 대응 제안 문구(실행 아님 · 사람 승인)
+  sql_dominant: "DBA·DPM에서 해당 SQL 실행계획·락 확인"
+  recent_change: "배포 직후 발생이면 롤백 검토"
+runbook:                                 # §5.7.2 — 제안이며 실행 명령이 아니다
+  meaning: "WAS 인스턴스에서 SQL 과다 페치·SQL 응답 지연·SQL 실행 예외 같은 SQL 패턴 이벤트가 발생했다."
+  impact: "해당 업무 응답 지연 · 대량 페치가 계속되면 힙 압박과 DB 부하 증가"
+  mitigation:
+    - {action: "과다 페치 SQL과 호출 업무를 확인해 페이징·fetch size 조정을 개발 담당에 요청", risk: low,
+       verification: "같은 SQL 이벤트 재발 없음", rollback: "해당 없음"}
+    - {when: "dominant == 'sql'", action: "DBA에 해당 SQL 실행계획·락 대기 확인 요청", risk: low,
+       verification: "해당 SQL 응답시간 기준선 복귀", rollback: "해당 없음"}
+  escalation: "업무 담당 → WAS 담당 → DBA"
+  owner: "WAS운영팀"
+  last_reviewed: 2026-10-27
+  review_every_days: 180
+deep_dive:
+  focus: "S3 1위 트랜잭션의 SQL·페치 구간과 실행 중 SQL의 반복 여부"

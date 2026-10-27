@@ -40,7 +40,7 @@ from noise_gate.domain.investigation_payload import (
     is_availability_alarm,
 )
 from noise_gate.domain.notification_policy import _TIER_RANK, TIER_PAGE
-from noise_gate.domain.process_rank import is_apm_event
+from noise_gate.domain.process_rank import KIND_APM, is_apm_event
 from src.domain.host_authz import Principal, authorize_host_investigation
 from src.observability.investigation_metrics import record_investigation
 from src.utils.prior_targets import resolve_targets
@@ -119,6 +119,10 @@ async def investigation_trigger_node(
     # 침묵보다 낫다(침묵 폴백 금지).
     target_state = await _resolve_target_state(cfg, event, first)
     payload = _build_payload(state, gate_cfg, event, decision, target_state, episode_id)
+    # (plans/196 §5.2) APM 알람이면 확정 연결을 `meta.hints.polestar_link`로 — 수동 경로와 대칭.
+    await _attach_polestar_link(
+        cfg, event, payload, redis=configurable.get("history_redis")
+    )
 
     # (Plan 66 3-E) 후속 모드 — submit까지만 하고 통보를 즉시 내보낸다(브리핑 미첨부).
     # poll·후속 발송은 notifier가 즉시 통보 **후** 백그라운드로 수행한다(순서 보장).
@@ -467,6 +471,7 @@ async def submit_episode_investigation(
     cfg: Any,  # AppConfig (덕 타이핑)
     decision_store: Any = None,  # DecisionStore | None
     inv_store: Any = None,  # InvestigationStore | None
+    redis: Any = None,  # redis.asyncio 클라이언트 | None — 호스트 연결 조회(plans/196)
 ) -> dict[str, Any]:
     """사건 종합 조사를 submit만 한다 (plans/153 §4.5 · G-6 (a) — 워커가 사건당 1회 부른다).
 
@@ -475,8 +480,12 @@ async def submit_episode_investigation(
     호출부가 notifier의 후속 경로로 띄운다. 조사 서비스의 예산·동시 상한·dedup TTL은 그대로 탄다.
     모든 실패는 graceful — 사유를 감사·조사 저장소에 남긴다(침묵 금지).
 
+    대표 알람이 APM이면 단독·수동 경로와 대칭으로 확정 연결을 `meta.hints.polestar_link`로
+    싣는다(plans/196 §5.2 · 플래그 off면 페이로드 비트 동일).
+
     Args:
         alarm_ids: 사건 멤버 alarm_id 전부(대표 알람이 첫 원소 — 저장소 존 판정 기준).
+        redis: 호스트 연결 저장소를 만들 Redis(없으면 연결 없음 → `unresolved`).
 
     Returns:
         `{"status", "investigation_id", "pending"}` — pending은 submit 성공 시 후속 태스크용
@@ -528,6 +537,7 @@ async def submit_episode_investigation(
 
     target_state = await _resolve_target_state(cfg, event, first)
     payload = build_episode_trigger_payload(event, decision, episode, target_state=target_state)
+    await _attach_polestar_link(cfg, event, payload, redis=redis)
 
     status = "error"
     investigation_id: str | None = None
@@ -573,6 +583,9 @@ async def build_manual_payload(
     *,
     fingerprint: str,
     investigation_kind: str,
+    host_link_store: Any = None,  # HostLinkStore | None (plans/196)
+    polestar_link: dict[str, Any] | None = None,
+    rerun: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """사용자 요청 알람 분석 페이로드(plans/187 W11 · G-28) — 자동 트리거와 같은 조립 함수.
 
@@ -583,6 +596,12 @@ async def build_manual_payload(
     `meta.investigation_kind`는 기존 선택 키다(계약 "1" 불변).
     재발·상관·사건 맥락은 알람 처리 시점 상태라 싣지 않는다.
     자동 트리거 경로는 이 함수를 쓰지 않는다.
+
+    (plans/196 §5.2) 호스트 연결 플래그가 켜져 있고 APM 알람이면 `meta.hints.polestar_link`를
+    싣는다 — `polestar_link`(사용자 선택 재조회)를 주면 그것, 아니면 `host_link_store`의 확정
+    연결(자동 경로와 같은 규칙). `rerun`(「이 서버로 다시 조회」)은 같은 조건에서
+    `meta.hints.rerun`.
+    플래그 off면 두 키 모두 없다(비트 동일).
     """
     target_resolution = resolve_targets(
         alarm_payload={
@@ -602,7 +621,55 @@ async def build_manual_payload(
         investigation_kind=investigation_kind,
     )
     payload["decision"]["fingerprint"] = fingerprint
+    await _attach_polestar_link(
+        cfg, event, payload, store=host_link_store, link=polestar_link, rerun=rerun
+    )
     return payload
+
+
+async def _attach_polestar_link(
+    cfg: Any,  # AppConfig (덕 타이핑)
+    event: Any,  # AlarmEvent
+    payload: dict[str, Any],
+    *,
+    store: Any = None,  # HostLinkStore | None
+    redis: Any = None,  # redis.asyncio 클라이언트 | None — store가 없을 때만 쓴다
+    link: dict[str, Any] | None = None,
+    rerun: dict[str, Any] | None = None,
+) -> None:
+    """APM 알람 페이로드에 `meta.hints.polestar_link`(+`rerun`)를 단다 (plans/196 §5.2).
+
+    D-188 `attach_server_identity`와 같은 대칭 원칙 — 자동 트리거·수동 재분석 양쪽이 이 함수를
+    부른다. 자동 사용은 **확정 연결만**이고(Q5) 확정 대기·연결 없음은 `unresolved`다. 플래그 off
+    이거나 APM 알람이 아니면(`meta.hints` 없음) 아무것도 하지 않는다(비트 동일).
+    """
+    gate_cfg = getattr(cfg, "noise_gate", None)
+    if gate_cfg is None or not getattr(gate_cfg, "host_link_enabled", False):
+        return
+    hints = (payload.get("meta") or {}).get("hints")
+    if not isinstance(hints, dict) or hints.get("solution") != KIND_APM:
+        return
+    if link is None:
+        from noise_gate.application.host_candidates import polestar_link_for
+        from noise_gate.domain.host_link import apm_source_id
+        from noise_gate.infrastructure.host_link_store import HostLinkStore
+
+        if store is None and redis is not None:
+            store = HostLinkStore(redis)
+        link = await polestar_link_for(
+            store,
+            source_id=apm_source_id(
+                str(getattr(event, "db_id", "") or ""), hints.get("source_id")
+            ),
+            hostname=str(getattr(event, "hostname", "") or ""),
+        )
+    hints["polestar_link"] = link
+    if rerun:
+        hints["rerun"] = rerun
+    logger.info(
+        "호스트 연결 힌트: alarm_id=%s status=%s rerun=%s",
+        getattr(event, "alarm_id", ""), link.get("status"), bool(rerun),
+    )
 
 
 class _FingerprintOnly:

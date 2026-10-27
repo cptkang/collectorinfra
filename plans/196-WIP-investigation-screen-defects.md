@@ -1,9 +1,11 @@
 # 196. 장애 진단 조사 화면 결함 정리 — 폴스타 브리지 미구현 외 (내부망 실화면 판독)
 
 > **작성일**: 2026-10-27 · **v0.2**(같은 날 — D1을 유사 호스트 후보·사용자 선택·연결 학습 설계로 교체 · §1.1)
-> **상태**: **TODO** — 코드 0줄 · 사용자 결정 대기(§4)
-> **분석 기준 HEAD**: `1f61461f` (계획 시작 SHA는 착수 때 이 줄 아래에 적는다)
-> **회귀 대상 파일**: (착수 뒤 Wave마다 누적)
+> **상태**: **WIP** — 2026-10-27 W1·W2a·W2b·W2c·W3·W4(D3 공통 원칙·D4·D7) 구현 · 검증·보안 감사 교정 완료 · 같은 날 잔여 라운드(사건 종합 조사 연결 부착 · `was.sql` 증상 진입 · D7 축별 집계 · 저장 원자화·상한 Redis 공유 · 재조회 재호출 유지 확정 · D-348 부기 1) · 커밋 없음 · **잔여 = W0(내부망 실측 · §5.7) + 매뉴얼 캡처 2장(로컬 PG·Redis 컨테이너 정지로 미촬영)** · Q1 운영 `.env` · Q2~Q7은 **권고 적용 · 사용자 확인 전**
+> **분석 기준 HEAD**: `1f61461f`
+> **계획 시작 SHA**: `59e53749`
+> **회귀 대상 파일**: 47개 — 목록은 `git diff 59e53749 --name-only`(plans·docs 제외) · 계획 끝 회귀 `regress.py --base 59e53749 --files <47>` rc=0(본체 통과 3,591 · 원래 실패 3 · sre_agent 통과 2,518) + 교정 라운드 선택분 재실행(본체 1,805 · sre_agent 2,524 · 실패 0) · 범위: 모듈 단위 — 전체 미실행 · **잔여 라운드(2026-10-27)** `regress.py --base 59e53749 --files <19>`(이번 라운드 바꾼 파일) rc=1 → 원인 = 이번 diff 주석 1줄 E501 → 고친 뒤 `--no-tests` rc=0 · 테스트 본체 통과 3,171·실패 0 · sre_agent 통과 2,532·실패 0 · 범위: 모듈 단위 — 전체 미실행
+> **165와의 범위(2026-10-27)**: 이 계획은 조사 쪽(sre_agent·noise_gate·본체 조사 API·장애 진단 화면) 브리지와 **공용 hostname 정규화 함수 정의**(`src/domain/host_names.py`)를 소유한다. `plans/165` F3(text2sql `assembler.py` HAVING · `key_bridge.py` 승계)는 **범위 밖**이며 165에 남는다 — 165 F3가 이 계획의 정규화 함수를 쓴다(의존 방향 196 → 165).
 > **사용자 제기(2026-10-27)**: *"폴스타 서버 브리지 미구현 등 수정해야 되는 것들을 이미지 분석을 통해 정리하고 파일로 작성하라."*
 > **근거 화면**: 내부망 KB AIOps 포털 「장애 진단」 탭 → 「조사 흐름」(모니터 촬영 사진 1장)
 > **관련 계획·결정**: `plans/165` F3(제니퍼 → 폴스타 hostname 정확 일치) · `plans/187` W21 P6(폴스타 소스 대체 매핑)·§8 위험 1·미결 20 · `plans/195`(조사 화면 조사 내용·다시 조회 질의) · D-341(조사 플레이북) · D-325 ③(사용자 뷰) · D-255(매뉴얼 동반)
@@ -181,7 +183,7 @@ D1·D2를 먼저 고치면 D4·D7의 발생 빈도가 크게 준다. D5·D6은 �
 
 ## 4. 사용자 결정 필요
 
-| # | 질문 | 권고 |
+| # | 질문 | 권고 (Q2~Q7 = 권고 적용 · 사용자 확인 전 · 2026-10-27) |
 |---|---|---|
 | Q1 | D1 즉시 대책으로 폐쇄망 `SRE_PLAYBOOK_POLESTAR_SOURCE_MAP`을 채울지(187 미결 20) | 채운다 — 존이 다른 알람이면 다른 서버를 조회할 위험은 화면 근거 문장으로 이미 고지된다 |
 | Q2 | D2 — `SQL_TOOMANY_FETCH`를 `was.latency`에 넣을지, SQL 전용 플레이북을 새로 둘지 | SQL 전용(`was.sql`) — 과다 fetch는 지연이 아니라 SQL 패턴 문제라 판독 규칙이 다르다 |
@@ -190,3 +192,63 @@ D1·D2를 먼저 고치면 D4·D7의 발생 빈도가 크게 준다. D5·D6은 �
 | Q5 | §1.1 확정 권한 — 누가 고른 연결이 이후 조사에 자동으로 쓰이나 | 사용자 선택은 **그 조사에만** 즉시 적용 + 「확정 대기」로 저장, 운영자가 관리자 목록에서 승인하면 전역 확정. 운영자가 고르면 바로 전역 |
 | Q6 | §1.1 [해당 서버 없음](부정 연결)도 전역으로 저장할지 | 저장 — 파드처럼 반복 질문을 막는다. 단 30일 뒤 다시 후보를 묻도록 만료 |
 | Q7 | §1.1 ③ 패턴 「규칙 승격」(운영자 승격 패턴에 맞고 후보가 유력 1건이면 자동 연결)을 둘지 | 이번 계획에서는 두지 않는다 — 패턴은 순위·사유에만. 확정 연결이 충분히 쌓인 뒤 실측으로 다시 판단 |
+
+**결정 상태(2026-10-27)**: 사용자는 Q1~Q7에 답하지 않고 구현을 지시했다. Q2~Q7은 위 권고안으로 구현했다 — **권고 적용 · 사용자 확인 전**. Q1은 폐쇄망 sre_agent `.env` 운영 값이라 코드 작업이 아니므로 손대지 않았다(운영자 결정 대기).
+
+---
+
+## 5. 구현 계약 (v0.3 · 2026-10-27 착수 — 패키지 사이 계약의 단일 출처)
+
+### 5.1 공용 정규화 — `src/domain/host_names.py` (stdlib 순수 · noise_gate 역방향 import 허용 · D-139 부기)
+- `normalize_hostname(value) -> str` — 앞뒤 공백 제거·소문자. IP(v4)는 그대로. FQDN이면 첫 레이블(짧은 이름).
+- `k8s_workload_name(value) -> str | None` — 파드 해시(`-[0-9a-f]{8,10}` ReplicaSet · 뒤이은 `-[a-z0-9]{5}` 파드) 제거 → 그다음 `-deploy`·`-deployment` 꼬리 제거. 바뀐 게 없으면 None.
+- `name_tokens(value, min_len=3) -> list[str]` — 정규화 이름을 `-`·`_`·`.`로 쪼갠 길이 ≥3 토큰(순서 유지·중복 제거 · 해시 모양 토큰 제외).
+- `name_similarity(a, b) -> float` — `difflib.SequenceMatcher` 비율(정규화 후).
+- 165 F3가 같은 함수를 쓴다(이 계획에서 F3 코드는 고치지 않는다).
+
+### 5.2 페이로드 계약 — `meta.hints` 가산 키 (계약 `contract_version "1"` 불변 · 값이 있을 때만 키)
+- `polestar_link` (APM 알람 · 플래그 on일 때만 noise_gate가 싣는다):
+  - `{"status": "linked", "db_id", "server_name", "hostname", "basis": "previous_confirmed" | "user_selected", "by", "at"}` — sre_agent는 `infra_db_ids` 다음·설정 매핑 `configured` 앞 순위로 소스를 받고, `polestar_server`를 `server_name`(폴스타 등록명 · D-046)으로 쓴다. 근거 문장: 「이전 확정 연결 — {by}·{at}」/「사용자 선택으로 연결 — {by}·{at}」.
+  - `{"status": "absent", "by", "at"}` — 폴스타 축 단계는 **skipped**, 사유 「폴스타 미등록(사용자 확인 · {by}·{at})」.
+  - `{"status": "unresolved"}` — 확정·부정 연결이 없다. 폴스타 축 단계는 **skipped**, 사유 「폴스타 서버 선택 대기 — 조사 화면에서 후보를 골라 다시 조회」(수집 결손 missing 아님).
+  - 키 없음 = 현행(플래그 off · 비트 동일 — 단 D6 문구 개선은 결함 수정으로 적용).
+  - **순위(팀 리드 확정 2026-10-27 — 플래그 on이 현행보다 나빠지지 않게)**: `infra_db_ids` → `linked` → `absent`(생략) → 설정 매핑 `configured`(현행 — 서버명은 제니퍼 hostname 원문) → `unresolved`(생략 · 설정 매핑이 없을 때만) → 키 없음(결손 · 현행).
+- `rerun` (본체 「이 서버로 다시 조회」만): `{"parent_investigation_id", "axes": ["polestar"], "prior_sections": [...]}` — `prior_sections`는 부모 브리핑 `briefing.playbook.sections` 원본. `prior_readings` = 부모 `briefing.playbook.readings`(있을 때만 · 재사용 단계 판독 키는 부모 값 — 검증 Major 교정 2026-10-27). sre_agent는 **폴스타 축 단계**(액션 `host.*` + 폴스타 축이 있는 혼합 단계)만 다시 돌리고, 나머지 단계는 같은 `step` id의 prior 섹션을 그대로 재사용(도구 호출 0 · `reused_from` 표지)한 뒤 종합(S9)을 다시 돈다.
+
+### 5.3 섹션 사유 분리 (D6 · D-325 ③)
+- 섹션 `reason`은 **사용자 문장**, 개발자 사유(필드명·계획 번호)는 섹션 `reason_detail`(새 가산 키)로 둔다. 본체 `investigation_view`는 운영자 뷰가 아니면 `reason_detail`을 뺀다. 상태 원시값은 화면이 한국어 라벨(`missing`→수집 결손 · `skipped`→생략 · `ok`→완료 · `failed`→실패 · `timeout`→시간 초과)로 보인다.
+
+### 5.4 연결 저장소 (noise_gate · Redis · TTL 없음 — 부정 연결만 30일 만료 · Q6)
+- 키 `hostlink:{source_id}:{normalize_hostname(hostname)}` → JSON `{state: "confirmed"|"pending", kind: "link"|"absent", db_id, server_name, polestar_hostname, grade, by, by_role, at, investigation_id, approved_by?, approved_at?, expires_at?(absent만)}`.
+- 패턴 해시 `hostlink:patterns` — 필드 = 패턴 키(`kind|from|to`), 값 = 적용 건수. **확정(confirmed) 연결에서만** 뽑는다(LLM 0).
+- Q5: 운영자(`_is_alarm_operator`)가 고르면 바로 confirmed, 일반 사용자는 pending(그 조사의 재조회에만 즉시 적용). 자동 사용(`previous_confirmed`)은 confirmed만. Q7: 패턴으로 자동 연결하지 않는다(순위·사유에만).
+
+### 5.5 본체 API (플래그 off면 404)
+- `GET /alarm/investigations/{investigation_id}/host-candidates` → `{hostname, source_id, link, candidates[≤5]: {db_id, server_name, hostname, ipaddress, grade("확정"|"일치"|"유력"|"유사"), grade_key("confirmed"|"exact"|"likely"|"similar"), score, reasons[]}, unchecked[]: {db_id, reason}}` — 조사 열람 인가와 같은 존 검사. 캐시 없음.
+- `POST /alarm/investigations/{investigation_id}/host-link` body `{action: "select"|"none", db_id?, server_name?, hostname?}` → 선택 서버는 a~c 프로브로 존재를 다시 확인한 뒤 저장 → `select`면 재조회 조사(5.2 `rerun`)를 접수해 `{link, investigation_id, status}`. 부하 상한(D-347)은 수동 조사와 같이 센다. 감사 로그 대상.
+- 관리자: `GET /admin/host-links` → `{links[], patterns[{key,kind,from,to,label,count}]}` · `POST /admin/host-links/approve`(body `{source_id, hostname, db_id, server_name, at}` — 현재 값과 다르면 409 `link_changed`) · `DELETE /admin/host-links`(body `{source_id, hostname}`) — 운영자만 · 감사 로그.
+- 직접 입력(후보 0건): body `{action:"select", server_name}`(db_id 없음) → 본체가 인가 소스 전부에서 a~c 정확 확인 · 1곳만 일치하면 수용 · 여러 곳 409 `server_ambiguous` · 없음 400 `server_not_found`. 일반 사용자 응답의 `link`에는 `by`·`by_role`·`approved_by`·`investigation_id`·`at`을 싣지 않는다(운영자만). 두 라우트는 사용자별 단기 호출 상한(D-347 취지).
+- 플래그: `NOISE_HOST_LINK_ENABLED`(기본 false · `src/config/` noise_gate 그룹).
+
+### 5.6 구현 결과 · 이탈 (2026-10-27)
+- **W1**: D5 종결 탭 경과 고정 · D6 사유 `reason`/`reason_detail` 분리(사용자 뷰에서 섹션·`scope` 상세 제거) · 상태 한국어 라벨 · 조사 이유 줄 「플레이북 공통 점검 선택」「— 병렬」.
+- **W2a~c**: §5 계약대로. 소스 순위는 §5.2 「순위」 줄. 일반 사용자의 [해당 서버 없음]도 pending(Q5를 Q6보다 우선). 사용자별 60초 호출 상한(후보 10 · 연결 5 · 프로세스 단위). 승인은 비교 후 저장(원자 아님 — 주석).
+- **W3**: `was.sql`(priority 15 · SQL 이벤트 5종 `SQL_TOOMANY_FETCH`·`DB_TOOMANY_FETCH`·`DB_BAD_RESPONSE`·`JDBC_BAD_RESPONSE`·`JDBC_STMT_EXCEPTION` — `SQL_TOOMANY_FETCH`는 화면에서만 관측된 이름이라 내부망 errorType 확인 필요) · `was.fallback`(apm.Instance 전용 · priority 900).
+- **W4**: D3는 로컬 재현 안 됨 — 「이벤트 n건 중 타임라인 반영 m건 — 사유」 차이 문장만 구현 · D4 축별 결정적 요약 + 프롬프트 1줄 · D7 「판정 근거 부족 — 수집 결손 n · 생략 m · 0건 k단계」(축 구분은 안 함 — 프론트가 단계 액션을 모름) + HolmesGPT 요약 「AI 판단 — 검증 전」.
+- **이탈**: 재조회는 HolmesGPT 생략 · 쓰기 요청은 `app.js` 주입(조사 화면 GET 전용 가드 유지).
+- **잔여 라운드(2026-10-27 · D-348 부기 1)**:
+  - ① 사건 종합 조사(`submit_episode_investigation`)도 대표 알람 기준 `meta.hints.polestar_link`를 싣는다(`redis` 키워드 · `EpisodeHost.redis` 배선 · 플래그 off 키 없음). 사건에 `infra_db_ids`가 있으면 그 값이 연결보다 앞선다(§5.2 순위 그대로).
+  - ② `src/domain/symptom_router.py`에 `was.sql`(표면어 「과다 페치」·「SQL 페치」·「SQL 패턴」 · 가상 이벤트 `apm.Instance`/`SQL_TOOMANY_FETCH`) 편입 — 채팅 증상 진입. sre_agent w12 `PENDING_IN_ROUTER` 제거 · 본체 사본 동등성 테스트가 `was.fallback`을 증상 대상에서 뺀다(앞 라운드에서 두 단언이 실패 상태였다).
+  - ④ D7: 섹션 가산 키 `axis_status`(`{축: 상태}` — 단일 축은 액션 표 `ACTION_AXIS`, 혼합 S5·S7은 `data.axes` · 미연동 축 제외 · 재사용 섹션은 부모 값) → 화면 「판정 근거 부족 — 폴스타: 생략 2단계 / 제니퍼: 0건 1단계」(순서 폴스타·제니퍼·ITSM·기타 · 축 없는 건너뜀은 세지 않음 · 축 상태 없는 옛 브리핑은 종전 문장).
+  - ⑤ 저장소 `save`·`approve`·`delete` = 연결 키 WATCH/MULTI(Lua·`SET IFEQ` 미사용 — 운영 Redis 버전 무관 · 로직 Python 한 곳) · 호출 상한 = Redis 공유 고정 창 `hostlinkrate:*`(오류 시 프로세스 단위 폴백 · 경계 최대 2배). 검증 교정: 관리자 목록·승인·삭제도 저장소 실패를 503 `link_store_failed`(쓰기는 실패 감사)로 · Redis 소켓 타임아웃 2초. 검증 테스트 `noise_gate/tests/test_plan196_verify_redis_wire.py`(실 redis-py ↔ RESP 최소 서버 WATCH 실측)·`tests/test_api/test_plan196_verify_admin_conflict.py` · 196 테스트 92 통과.
+  - ③ **결정(이탈 → 결정)**: 재조회의 혼합 단계 S5·S7은 제니퍼를 다시 부른다(유지). 부모 섹션은 브리핑용(`include_data=False`)이라 원자료가 없고, 원자료(이벤트 메시지·변경 목록)를 남기면 브리핑이 커지고 사용자 뷰 마스킹 대상(D-325 ③)이 늘어난다. 비용은 S5 이벤트 1회 + S7 변경 축 소수 · 사용자별 상한과 D-347 부하 상한을 탄다 · 같은 사건창 재조회라 늦게 도착한 이벤트도 반영된다.
+  - ⑥ 매뉴얼: 원천 갱신(U-70 축별 「판정 근거 부족」 · U-69 증상 낱말 「SQL 과다 페치」) · build · `tests/test_manual` 695 통과. 캡처 장면 2개(`diagnosis-host-pick` · `admin-host-links` — 응답 가로채기 · 플래그 불필요)와 예시 조사 `inv-manual-hostwait`는 정의만 했고 **촬영 못 함** — 로컬 `polestar_pg`·`collectorinfra-redis` 컨테이너가 정지(캡처 프로필이 인증 PG 5434·Redis 6380을 요구). 컨테이너 기동 뒤 `run_capture --only diagnosis-host-pick admin-host-links` → features.yaml·content 캡처 참조 넣기 → build → test_manual.
+- **잔여(코드)**: 원래 실패 3건(`test_plan147_w4_*`)은 이 계획과 무관 · DPM 미연동 단계 사유가 `not_connected` 원문으로 카드 제목에 보일 수 있음(확인 필요 — 미실측).
+
+### 5.7 W0 내부망 실측 체크리스트 (로컬 불가)
+1. **D3** — 해당 조사 브리핑 JSON(S5 `table`·`data`)으로 「조회 7행 / 결과 0건」 원인 확정(로컬은 차이 문장만 구현).
+2. **D2** — `SQL_TOOMANY_FETCH`의 실제 제니퍼 errorType 값(화면에서만 관측 · `was.sql` 매칭·가상 이벤트가 이 이름을 가정).
+3. **W5** — 제니퍼 hostname이 파드인지 · 파드→노드명 출처 · 인스턴스 IP 유무(§1.1 ① c·d) · 폴스타 서버 이름 표본으로 정규화 규칙 d 검증.
+4. **D8** — 우측 배지 잘림: 1920 폭 · 배율 100%에서 재확인.
+5. **운영 Redis 영속 설정**(AOF/RDB) — 연결 저장소는 TTL 없는 사실 기록이다.
+6. Q1 — 폐쇄망 `SRE_PLAYBOOK_POLESTAR_SOURCE_MAP` 운영 값(운영자 결정).
