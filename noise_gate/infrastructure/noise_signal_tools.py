@@ -35,7 +35,9 @@ from langchain_core.messages import (
 )
 from langchain_core.tools import StructuredTool
 
+from noise_gate.domain.alarm import is_apm_db_id
 from noise_gate.domain.severity_signatures import scan_signature_severity
+from noise_gate.infrastructure.polestar_noise_context import unavailable_noise_ctx
 from src.config import AppConfig
 
 logger = logging.getLogger(__name__)
@@ -91,6 +93,25 @@ def scan_message_signature(condition_log: str) -> dict[str, Any]:
     return {"signal": SIGNAL_MESSAGE_SIGNATURE, "severity": hit[0], "label": hit[1]}
 
 
+def _skip_polestar_for_apm(event: Any, signal: str) -> bool:
+    """제니퍼(APM) 이벤트면 폴스타 고정 SQL 수집을 생략한다(plans/197 F1 · plans/144 §3).
+
+    종전에는 `fetch`의 미등록 db_id 분기가 WARNING과 함께 `unavailable_noise_ctx()`를 돌려줬다.
+    같은 값을 fetch 없이 돌려주므로 collector·기록·승격 후보는 동일하고 WARNING만 사라진다.
+    event가 AlarmEvent가 아닌 테스트 더블일 수 있어 db_id는 getattr로 읽는다.
+    """
+    db_id = getattr(event, "db_id", "") or ""
+    if not is_apm_db_id(db_id):
+        return False
+    logger.debug(
+        "제니퍼 알람 — 폴스타 노이즈 신호 수집 생략: signal=%s alarm_id=%s db_id=%s",
+        signal,
+        getattr(event, "alarm_id", ""),
+        db_id,
+    )
+    return True
+
+
 async def collect_importance_maintenance(noise_repo, event) -> dict[str, Any]:  # noqa: ANN001
     """자산 중요도/유지보수/알림정책을 폴스타 고정 SQL로 수집한다(읽기전용).
 
@@ -99,6 +120,8 @@ async def collect_importance_maintenance(noise_repo, event) -> dict[str, Any]:  
     """
     if noise_repo is None:
         return {"signal": SIGNAL_IMPORTANCE_MAINTENANCE, "context": None}
+    if _skip_polestar_for_apm(event, SIGNAL_IMPORTANCE_MAINTENANCE):
+        return {"signal": SIGNAL_IMPORTANCE_MAINTENANCE, "context": unavailable_noise_ctx()}
     ctx = await noise_repo.fetch(event)
     return {"signal": SIGNAL_IMPORTANCE_MAINTENANCE, "context": ctx}
 
@@ -111,6 +134,8 @@ async def collect_dependency_status(noise_repo, event) -> dict[str, Any]:  # noq
     """
     if noise_repo is None:
         return {"signal": SIGNAL_DEPENDENCY, "context": None}
+    if _skip_polestar_for_apm(event, SIGNAL_DEPENDENCY):
+        return {"signal": SIGNAL_DEPENDENCY, "context": unavailable_noise_ctx()}
     ctx = await noise_repo.fetch(event, collect_dependency=True)
     return {"signal": SIGNAL_DEPENDENCY, "context": ctx}
 

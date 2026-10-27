@@ -2299,3 +2299,8 @@
 - **실수**: `sre_agent/config/playbooks/`에 `was.sql`·`was.fallback`을 더한 뒤 본체 `tests/test_plan187_w12_symptom_router.py`의 사본 동등성 단언 2건이 실패 상태로 남았다. 계획 끝 `regress.py --files`는 YAML·sre_agent 파일만 받아 본체의 그 테스트를 고르지 않아 「실패 0」으로 보고됐다.
 - **원인**: 사본 동등성 테스트는 sre_agent 파일을 import 없이 읽는다 — 회귀 선택기의 import·파일 참조 규칙에 걸리지 않는다. `src/domain/symptom_router.py` 사본(`PLAYBOOK_SURFACE_TERMS`·`VIRTUAL_EVENTS`)도 갱신하지 않았다.
 - **방지책**: 플레이북 YAML을 더하거나 바꾸면 `src/domain/symptom_router.py` 사본을 같이 고치고 `tests/test_plan187_w12_symptom_router.py`·`sre_agent/tests/test_plan187_w12_virtual.py`를 직접 돌린다(회귀 `--files`에 `src/domain/symptom_router.py`를 넣으면 선택된다).
+
+### 2026-10-27 · 로컬 샌드박스 DDL이 운영 스키마와 달라 `is_maintenance` 칼럼 부재 결함을 숨겼다
+- **실수**: 노이즈 컨텍스트·hostname 해소·MCP 자원 상태 SQL이 `cmm_resource.is_maintenance`를 직접 참조했다. 로컬 `testdata/pg/init/01_create_tables.sql`이 그 칼럼을 갖고 있어 테스트는 통과했지만, 운영 공동존 PostgreSQL에는 칼럼이 없고 별도 테이블 `cmm_resource_maintenance`에 있어 `polestar_cm_yd` 조회가 실패했다(중요도까지 잃음). D-175 G-4의 「b0도 보유」 근거도 같은 샌드박스 DDL이었다(plans/197 F2).
+- **원인**: 손으로 쓴 샌드박스 DDL(01)을 운영 덤프(`sample/cleaned_tables.json` → `04_create_all_tables.sql`)와 대조하지 않았고, 04의 `CREATE TABLE IF NOT EXISTS`가 01에 가려 차이가 드러나지 않았다. 샌드박스 DDL을 「실측」 근거로 인용했다.
+- **방지책**: 고정 SQL이 새 칼럼을 참조하면 `sample/cleaned_tables.json`(운영 덤프)에서 그 테이블·칼럼 존재를 먼저 grep한다. 샌드박스 DDL은 운영 스키마 근거로 인용하지 않는다(결정 근거에는 덤프 또는 내부망 실측을 쓴다). DB2(b0)는 덤프가 없으므로 W0 실측 전에는 「미확정」으로 적는다.

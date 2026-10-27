@@ -2269,6 +2269,12 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - **반영 시점**: 재시작.
 - **영향**: 같은 존 안에서만 묶고 존을 넘어 묶지 않는다. 켜면 공통 원인 장애의 통보가 줄어든다.
 
+##### `apm_correlation_domain_scope_enabled`(`NOISE_APM_CORRELATION_DOMAIN_SCOPE_ENABLED`)
+- **뜻**: 크로스-호스트 상관의 제니퍼 전용 보정이다. 제니퍼 알람은 같은 도메인(업무 앱)끼리만 묶고, 대표 외는 억제하지 않고 대시보드로 낮춘다.
+- **코드 기본값**: false.
+- **반영 시점**: 재시작.
+- **영향**: 켜면 다른 업무 앱의 장애가 한 묶음으로 억제되지 않는다. 대표 외 알람은 원래 판정이 대시보드보다 높을 때만 대시보드로 낮추고, 이미 그 이하면 그대로 둔다. 도메인 번호가 없는 제니퍼 알람과 폴스타 알람은 이 키와 무관하다. `NOISE_CROSS_HOST_CORRELATION_ENABLED`가 꺼져 있으면 효과가 없다.
+
 ##### `enable_llm_actionability`(`NOISE_ENABLE_LLM_ACTIONABILITY`)
 - **뜻**: 운영자 피드백을 예시로 쓴 LLM 액션가능성 의견이다([A-61](#a-61)).
 - **코드 기본값**: false.
@@ -2910,7 +2916,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 | 6.5 | [[인히비션|6.5 인히비션 (inhibition)]] | {{6.5 인히비션 (inhibition)}} (같은 서버에 더 높은 심각도 발생 중) | [[SUPPRESS|티어 SUPPRESS — 기록만]] | `NOISE_INHIBITION_ENABLED`(false) |
 | 6 | [[플래핑|6 플래핑 (flapping)]] | {{6 플래핑 (flapping)}} (상태 진동(상태 5개 이상, 가중 상태변화율, 임계 low 5 / high 20) + 심각도 ≤ 억제 상한) | [[SUPPRESS|티어 SUPPRESS — 기록만]] | `NOISE_FLAPPING_ENABLED`(false) |
 | 7 | [[스톰|7 스톰 (storm)]] | {{7 스톰 (storm)}} (같은 서버에 창(60초) 안 다발(5건 초과)) | 대표 외 [[SUPPRESS|티어 SUPPRESS — 기록만]] | `NOISE_STORM_GROUPING_ENABLED`(false) |
-| 7.5 | [[크로스-호스트 상관|7.5 크로스-호스트 상관 (correlation)]] | {{7.5 크로스-호스트 상관 (correlation)}} (서버를 넘어 유사 알람 군집(Jaccard ≥ 0.5, 120초)) | 대표 외 [[SUPPRESS|티어 SUPPRESS — 기록만]] | `NOISE_CROSS_HOST_CORRELATION_ENABLED`(false) |
+| 7.5 | [[크로스-호스트 상관|7.5 크로스-호스트 상관 (correlation)]] | {{7.5 크로스-호스트 상관 (correlation)}} (서버를 넘어 유사 알람 군집(Jaccard ≥ 0.5, 120초)) | 대표 외 [[SUPPRESS|티어 SUPPRESS — 기록만]](제니퍼는 `NOISE_APM_CORRELATION_DOMAIN_SCOPE_ENABLED`를 켜면 같은 도메인끼리만 묶고 DASHBOARD 상한) | `NOISE_CROSS_HOST_CORRELATION_ENABLED`(false) |
 | 7.6 | [[크로스소스 사건 상관|7.6 크로스소스 사건 상관 (cross_source)]] | {{7.6 크로스소스 사건 상관 (cross_source)}} (같은 존·같은 호스트의 폴스타 원인 알람이 통보 중이고 규칙 표 방향·창이 맞는 제니퍼 증상) | [[DASHBOARD|티어 DASHBOARD — 화면에만]] 상한(올리지 않음) | `NOISE_CROSS_SOURCE_MODE`(off) — `enforce`이면서 규칙 행 `enforce: true`일 때만 ([A-71](#a-71)) |
 | 7.7 | [[계획-무해 주석|7.7 계획-무해 주석 (annotation)]] | {{7.7 계획-무해 주석 (annotation)}} (계획작업 주석 **그리고** 해소·상관·변경 근접 중 하나) | [[DASHBOARD|티어 DASHBOARD — 화면에만]] | `NOISE_ANNOTATION_PLANNED_SUPPRESS`(false) |
 | 8~9 | [[우선순위 매트릭스|8 우선순위 매트릭스 (matrix)]] | {{8 우선순위 매트릭스 (matrix)}} | 매트릭스 + [[보조 조정|9 보조 조정 (matrix 안)]] | 항상 |
@@ -3059,8 +3065,8 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - **보는 것**: 알람명·자원 유형·조건 로그의 장애 시그니처 이름을 소문자 토큰 집합으로 만든 값(서버명 제외, `NOISE_CORRELATION_SITE_DIMENSION_ENABLED`를 켜면 사이트 토큰 추가).
 - **조건**: 같은 DB의 활성 군집 중 대표 토큰과 Jaccard 유사도가 `NOISE_CORRELATION_SIM_THRESHOLD`(0.5) 이상인 가장 높은 군집(동점이면 먼저 생긴 군집)에 합류했고, 합류 후 멤버 수가 `NOISE_CORRELATION_MIN_CLUSTER_SIZE`(2) 이상.
 - **결과**: SUPPRESS. 결정 기록 최상위에 `correlation_meta`(대표 지문·멤버 순번·유사도).
-- **켜는 키**: `NOISE_CROSS_HOST_CORRELATION_ENABLED`(false). 위상 가중 `NOISE_CORRELATION_TOPOLOGY_WEIGHT_ENABLED`(false)를 켜면 인접 군집 점수에 `NOISE_CORRELATION_TOPOLOGY_WEIGHT`(0.2)를 더한다.
-- **예외**: 맞는 군집이 없으면 새 군집의 대표가 되어 통과한다. 마지막 합류 뒤 `NOISE_CORRELATION_WINDOW_SECONDS`(120)가 지나면 군집이 사라지고, DB당 `NOISE_CORRELATION_BUFFER_MAX`(1000)에 닿으면 가장 오래된 군집부터 버린다. 존을 넘어 묶지 않는다.
+- **켜는 키**: `NOISE_CROSS_HOST_CORRELATION_ENABLED`(false). 위상 가중 `NOISE_CORRELATION_TOPOLOGY_WEIGHT_ENABLED`(false)를 켜면 인접 군집 점수에 `NOISE_CORRELATION_TOPOLOGY_WEIGHT`(0.2)를 더한다. `NOISE_APM_CORRELATION_DOMAIN_SCOPE_ENABLED`(false)를 켜면 제니퍼 알람은 같은 DB·같은 도메인끼리만 묶이고, 대표 외는 SUPPRESS 대신 DASHBOARD 상한이다(매트릭스가 DASHBOARD보다 높을 때만 낮추고 `stage_evidence`에 `capped_from` — 이하면 이 단계를 통과한다).
+- **예외**: 맞는 군집이 없으면 새 군집의 대표가 되어 통과한다. 마지막 합류 뒤 `NOISE_CORRELATION_WINDOW_SECONDS`(120)가 지나면 군집이 사라지고, DB당(`NOISE_APM_CORRELATION_DOMAIN_SCOPE_ENABLED`가 켜진 제니퍼 알람은 DB·도메인 묶음마다) `NOISE_CORRELATION_BUFFER_MAX`(1000)에 닿으면 가장 오래된 군집부터 버린다. 존을 넘어 묶지 않는다.
 
 ##### 7.6 크로스소스 사건 상관 (`cross_source`)
 - **보는 것**: 워커의 사건 추적기가 붙인 크로스소스 신호(사건 id·규칙·원인 알람·시차·빠진 조건). 폴스타 알람과 제니퍼 이벤트를 같은 존·같은 호스트 키로 한 사건에 묶는다.
