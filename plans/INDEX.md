@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-26 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-27 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -237,6 +237,8 @@
 | 192 | [`192-sre-investigation-navigation.md`](./192-sre-investigation-navigation.md) | 192. SRE 조사 화면 진입 동선 정리 — 조사 대화·장애 진단 진입점 일관성 · 진행 중 목록이 비는 문제 | **완료(2026-10-26 · 커밋 전)** · W1 로그인 next 복귀·safeNext 보안 보강·break-glass 관제 버튼 숨김 · W2 포털 진입 문구 규칙 · W3 진행 중 목록 범위 · W4 조사 대화 새로고침 복원 · D-341 부기 17·18 · D-248 ⑧ 부기 · 잔여·관제 진입은 193 | 2026-10-26 |
 | 193 | [`193-noise-console-portal-tab.md`](./193-noise-console-portal-tab.md) | 193. 노이즈 관제를 포털 안 뷰 탭으로 이식 — 관제 → 조사 진입을 같은 창 탭 전환으로 | **완료(2026-10-26 · 커밋 전)** · W1 noise.js mount 모듈(동작 불변) · W2·W3 포털 「노이즈 관제」 뷰 탭(플래그 `NOISE_CONSOLE_PORTAL_TAB_ENABLED` 기본 off)·서랍 진입 같은 창 · W4 독립 페이지 「(새 탭)」 표지·매뉴얼 · D-341 부기 19 · 플래그 켜는 시점 사용자 확인 | 2026-10-26 |
 | 194 | [`194-WIP-investigation-manual-only-load-limits.md`](./194-WIP-investigation-manual-only-load-limits.md) | 194. 알람 조사 수동 전용(선별 실행) 전환 · 조사로 인한 행 대책 | **WIP** · W0~W6 완료(커밋 전 · D-347) · 수동 전용 기본 · 저장소 증분 tail · sre 대기열·좀비·전역 상한 · mcp·apm 동시 상한 · U1~U6 UI·매뉴얼 · 검증 Critical 0 · 회귀 귀속 0 · 잔여 내부망 확인(S7·DB2·RSS) | 2026-10-26 |
+| 195 | [`195-TODO-investigation-content-requery-prompt.md`](./195-TODO-investigation-content-requery-prompt.md) | 195. 조사 화면에 「조사 내용」과 「다시 조회할 질의」 보여 주기 — 검토안 | **TODO** · v1.1 결정 확정(코드 0) · 조사 단계 → 질의응답 질의 결정적 템플릿 · Q2 골드셋+제니퍼 벤치 · 위치 둘 다 · 조사 대화에서 확인 후 조회 · W4 조회 내용 저장 · D-341 ⑪·D-192 부기는 구현 때 · W0 대기 | 2026-10-27 |
+| 196 | [`196-TODO-investigation-screen-defects.md`](./196-TODO-investigation-screen-defects.md) | 196. 장애 진단 조사 화면 결함 정리 — 폴스타 브리지 미구현 외 | **TODO** · 코드 0 · 내부망 실화면 판독 결함 D1~D8 · D1 v0.2 유사 호스트 후보→사용자 선택→확정 연결·패턴 학습(자동 결합은 확정만 · LLM 0) · D2 SQL 이벤트 fallback · D5 완료 경과 증가 · D6 내부 용어 노출 · 결정 Q1~Q7 | 2026-10-27 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |
