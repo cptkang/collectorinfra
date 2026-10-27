@@ -2289,3 +2289,13 @@
 - **실수**: `noise.js` `connectStream`의 헤더 `"Bearer " + token`을 토큰 게터 `"Bearer " + currentToken()`으로 바꾸면서, 그 문자열을 정규식으로 단언하는 기존 `tests/test_api/test_noise_dashboard_api.py::test_noise_js_stream_sends_token_in_header_not_url`을 찾지 않았다. implementer 자기 테스트(지정 271·확장 1,011)는 그 파일을 고르지 않아 통과했고, 교정분 모듈 단위 회귀에서 「이번 변경 탓」 1건으로 드러났다.
 - **원인**: 정적 자산(JS) 테스트는 이 저장소에서 함수 본문을 정규식으로 단언하는 경우가 많은데, 자기 테스트 선택을 「계획 이름이 붙은 파일 + 직전 의존 목록」으로만 잡았다.
 - **방지책**: JS·CSS·HTML의 식을 바꾸면 바뀐 식의 원문(예: `"Bearer " + token`)과 함수 이름(`connectStream`)을 `tests`·`noise_gate/tests` 전체에서 grep해 단언하는 테스트를 자기 테스트에 넣는다. 단언의 의도(헤더로 싣기·URL 미부착)가 그대로면 정규식만 새 식에 맞춘다.
+
+### 2026-10-27 · (plans/196) 병렬 위임 계약에 응답 모양·직접 입력 body를 적지 않아 프론트·백엔드가 어긋남
+- **실수**: 팀 리드가 계획서 §5 계약에 관리자 목록 응답 키(`links` vs `items`)와 후보 0건 직접 입력 body(`db_id` 유무)를 적지 않고 프론트·백엔드 implementer를 병렬로 띄웠다. 둘 다 자기 테스트는 통과했지만(프론트는 응답을 목으로 꾸밈) 관리자 목록은 늘 비고 직접 입력은 늘 400이었다 — verifier가 실제 응답 모양 하네스로 Critical 2건을 잡았다.
+- **원인**: 「너그럽게 읽기」로 추정한 프론트 가정과 백엔드 실제 응답을 맞대는 단계가 없었다. 목으로 만든 응답은 계약 불일치를 덮는다.
+- **방지책**: 병렬 위임 전에 계약 절에 **모든 라우트의 요청 body·응답 최상위 키**를 적는다. 백엔드 보고의 실제 응답 키를 받으면 프론트 소비 키와 grep으로 대조한 뒤 검증에 넘긴다. UI 테스트의 목 응답은 백엔드 테스트가 고정한 모양을 그대로 쓴다.
+
+### 2026-10-27 · 플레이북 YAML 추가가 본체 사본 동등성 테스트를 깨뜨렸는데 계획 끝 회귀가 못 잡음 (plans/196)
+- **실수**: `sre_agent/config/playbooks/`에 `was.sql`·`was.fallback`을 더한 뒤 본체 `tests/test_plan187_w12_symptom_router.py`의 사본 동등성 단언 2건이 실패 상태로 남았다. 계획 끝 `regress.py --files`는 YAML·sre_agent 파일만 받아 본체의 그 테스트를 고르지 않아 「실패 0」으로 보고됐다.
+- **원인**: 사본 동등성 테스트는 sre_agent 파일을 import 없이 읽는다 — 회귀 선택기의 import·파일 참조 규칙에 걸리지 않는다. `src/domain/symptom_router.py` 사본(`PLAYBOOK_SURFACE_TERMS`·`VIRTUAL_EVENTS`)도 갱신하지 않았다.
+- **방지책**: 플레이북 YAML을 더하거나 바꾸면 `src/domain/symptom_router.py` 사본을 같이 고치고 `tests/test_plan187_w12_symptom_router.py`·`sre_agent/tests/test_plan187_w12_virtual.py`를 직접 돌린다(회귀 `--files`에 `src/domain/symptom_router.py`를 넣으면 선택된다).

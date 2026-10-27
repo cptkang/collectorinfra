@@ -539,6 +539,10 @@ class NoiseGateConfig(BaseSettings):
     # PAGE, 그 밖(표 밖 유형·default)은 TICKET(DASHBOARD 아래로 내리지 않음 · D-317 ①). 폴스타·
     # 수집 실패는 현행 단락 PAGE. 기본 off = 비트 동일(D-035 원 문구가 운영 동작). 기동 시 1회 해석.
     apm_sev3_policy_enabled: bool = False
+    # (plans/196 §1.1 · §5) 제니퍼 알람 → 폴스타 서버 연결 학습 — 유사 호스트 후보 API·사용자 선택·
+    # 확정 연결 저장(Redis `hostlink:*`)·조사 페이로드 `meta.hints.polestar_link`. 자동 결합은 확정
+    # 연결만(LLM 0). 기본 off = 페이로드·조사 응답 비트 동일 · 후보·연결 라우트 404. 기동 시 1회 해석.
+    host_link_enabled: bool = False
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
 

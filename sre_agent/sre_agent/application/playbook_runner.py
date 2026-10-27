@@ -44,6 +44,8 @@ from sre_agent.application.playbook_narrator import (
 )
 from sre_agent.application.playbook_steps import (
     ACTION_TITLES,
+    POLESTAR_AXIS_ACTIONS,
+    POLESTAR_UNRESOLVED,
     SCOPE_ACTIONS,
     STEP_LIBRARY,
     BaselineWindow,
@@ -52,6 +54,7 @@ from sre_agent.application.playbook_steps import (
     StepContext,
     StepFn,
     StepResult,
+    scope_polestar_reason,
 )
 from sre_agent.domain.activity_log import ActivityLog, safe_append
 from sre_agent.domain.correlation import correlate
@@ -84,6 +87,8 @@ from sre_agent.domain.playbook_hypotheses import (
 )
 from sre_agent.domain.playbook_readings import (
     READING_ACTIONS,
+    READING_RULES,
+    ReadingEvidence,
     Readings,
     compute_readings,
     enabled_readings,
@@ -93,6 +98,7 @@ from sre_agent.domain.step_findings import (
     BUDGET_SKIP,
     default_because,
     skip_because,
+    step_status_label,
     summarize,
     when_because,
 )
@@ -116,6 +122,18 @@ _SYNTHESIZE = "synthesize"
 #: 응답시간·지연 이벤트 유형(제니퍼 원문 — `was_signals`에 지연 kind가 없어 이벤트로 매칭한다 ·
 #: §2.3).
 LATENCY_EVENT_TYPES = frozenset({"TX_BAD_RESPONSE"})
+#: SQL 패턴 이벤트 유형(정규화 값 — plans/196 D2 · Q2 권고 `was.sql`). 제니퍼 이벤트 카탈로그
+#: (plans/87 §2.3)의 SQL·JDBC 계열 + 내부망 실화면의 `SQL_TOOMANY_FETCH`. 게이트웨이 시그니처
+#: 매핑에 없는 유형이라 지연 유형처럼 이벤트로 매칭한다.
+SQL_EVENT_TYPES = frozenset({
+    "SQL_TOOMANY_FETCH",
+    "DB_TOOMANY_FETCH",
+    "DB_BAD_RESPONSE",
+    "JDBC_BAD_RESPONSE",
+    "JDBC_STMT_EXCEPTION",
+})
+#: SQL 패턴 이벤트의 정규화 kind(`was.sql` 플레이북 `any_kind`).
+SQL_PATTERN_KIND = "was_sql_pattern"
 _LATENCY_WORDS = (
     "응답시간",
     "응답 시간",
@@ -221,6 +239,8 @@ def alarm_facts_from_payload(payload: Mapping[str, Any]) -> AlarmFacts:
         or any(w in haystack for w in _LATENCY_WORDS)
     ):
         kinds += ["latency", "response_time"]
+    if any(normalize_event_type(raw) in SQL_EVENT_TYPES for raw in (event_type, alarm_name)):
+        kinds.append(SQL_PATTERN_KIND)
     if alarm_kind == "disk":
         if any(w in haystack for w in _DISK_IO_WORDS):
             kinds.append("disk_io")
@@ -256,35 +276,92 @@ def compute_windows(alarm_time: str, spec: WindowSpec) -> RunWindows:
     )
 
 
-#: 폴스타 소스를 정할 수 없는 사유(§8 위험 1 · plans/165 F3).
-POLESTAR_BRIDGE_MISSING = (
+#: 폴스타 소스를 정할 수 없는 사유 — 사용자 문장(plans/196 D6 · §5.3). 운영자 상세(필드명·계획
+#: 번호)는 `POLESTAR_BRIDGE_MISSING_DETAIL`이며 섹션 `reason_detail`로 간다.
+POLESTAR_BRIDGE_MISSING = "제니퍼 대상 서버를 폴스타에서 찾지 못해 폴스타 조회를 건너뜀"
+POLESTAR_BRIDGE_MISSING_DETAIL = (
     "APM 알람 페이로드에 폴스타 소스(meta.episode.infra_db_ids)가 없고 설정된 폴스타 소스도 없다 — "
     "APM 호스트 → 폴스타 서버 브리지 미구현(plans/165 F3)"
 )
+#: 폴스타 알람인데 소스가 없을 때의 사유 — 사용자 문장 · 운영자 상세(D6).
+POLESTAR_SOURCE_MISSING = "알람에 폴스타 소스 정보가 없어 폴스타 조회를 건너뜀"
+POLESTAR_SOURCE_MISSING_DETAIL = "페이로드에 폴스타 소스(event.dbId) 없음"
+#: 사용자 문장 → 운영자 상세(D6 — 섹션 `reason_detail`).
+POLESTAR_REASON_DETAILS: dict[str, str] = {
+    POLESTAR_BRIDGE_MISSING: POLESTAR_BRIDGE_MISSING_DETAIL,
+    POLESTAR_SOURCE_MISSING: POLESTAR_SOURCE_MISSING_DETAIL,
+}
+
+#: 연결 힌트(`meta.hints.polestar_link` — plans/196 §5.2) 문장. 근거는 침묵 대체 금지
+#: (`POLESTAR_MAPPED_BASIS`와 같은 자리 — run notes·S0·S4 사유).
+POLESTAR_LINK_BASIS: dict[str, str] = {
+    "previous_confirmed": "이전 확정 연결 — {by}·{at}",
+    "user_selected": "사용자 선택으로 연결 — {by}·{at}",
+}
+#: 위 두 값 밖의 `basis` — 근거를 비우지 않는다(침묵 대체 금지).
+POLESTAR_LINK_BASIS_OTHER = "확정 연결 — {by}·{at}"
+POLESTAR_LINK_ABSENT = "폴스타 미등록(사용자 확인 · {by}·{at})"
+POLESTAR_LINK_UNRESOLVED = "폴스타 서버 선택 대기 — 조사 화면에서 후보를 골라 다시 조회"
+_LINK_STATUSES = frozenset({"linked", "absent", "unresolved"})
+_UNKNOWN = "미상"
+
+
+def polestar_link(payload: Mapping[str, Any]) -> dict[str, str] | None:
+    """APM 알람의 연결 힌트 `meta.hints.polestar_link`(plans/196 §5.2). 없거나 형식이 맞지 않으면
+    None(= 현행 동작). `linked`는 `db_id`·`server_name`이 모두 있어야 유효하다(모호하면 승격하지
+    않는다 · D-188)."""
+    if not is_apm_trigger(payload):
+        return None
+    raw = _hints(payload).get("polestar_link")
+    if not isinstance(raw, Mapping):
+        return None
+    status = str(raw.get("status") or "").strip()
+    if status not in _LINK_STATUSES:
+        return None
+    link = {k: str(v).strip() for k, v in raw.items() if v is not None and str(v).strip()}
+    link["status"] = status
+    if status == "linked" and not (link.get("db_id") and link.get("server_name")):
+        return None
+    return link
+
+
+def _link_text(template: str, link: Mapping[str, str]) -> str:
+    return template.format(by=link.get("by") or _UNKNOWN, at=link.get("at") or _UNKNOWN)
 
 
 def resolve_polestar_source(
     payload: Mapping[str, Any],
     configured: str | None = None,
 ) -> tuple[str | None, str | None]:
-    """폴스타 소스(db_id)와 미확정 사유. 결정적으로 정할 수 없으면 (None, 사유).
+    """폴스타 소스(db_id)와 미확정 사유(사용자 문장). 결정적으로 정할 수 없으면 (None, 사유).
 
-    APM 트리거: `meta.episode.infra_db_ids[0]` → 호출자가 명시한 `configured` → 미확정.
+    APM 트리거: `meta.episode.infra_db_ids[0]` → 연결 힌트 `meta.hints.polestar_link`가 linked면
+    그 `db_id` → absent면 미확정(미등록 사유) → 호출자가 명시한 `configured` → unresolved면
+    미확정(선택 대기 사유) → 미확정(plans/196 §5.2 — 플래그를 켜도 현행보다 나빠지지 않게
+    unresolved는 설정 매핑을 이기지 않는다).
     폴스타 알람: `event.dbId`(또는 pull 진단 `db_id`) → `configured` → 미확정.
     """
     if is_apm_trigger(payload):
         episode = episode_from_payload(payload)
         if episode is not None and episode.infra_db_ids:
             return episode.infra_db_ids[0], None
+        link = polestar_link(payload)
+        status = link["status"] if link is not None else None
+        if link is not None and status == "linked":
+            return link["db_id"], None
+        if link is not None and status == "absent":
+            return None, _link_text(POLESTAR_LINK_ABSENT, link)
         if configured:
             return configured, None
+        if status == "unresolved":
+            return None, POLESTAR_LINK_UNRESOLVED
         return None, POLESTAR_BRIDGE_MISSING
     source = str(_event(payload).get("dbId") or payload.get("db_id") or "").strip()
     if source:
         return source, None
     if configured:
         return configured, None
-    return None, "페이로드에 폴스타 소스(event.dbId) 없음"
+    return None, POLESTAR_SOURCE_MISSING
 
 
 #: 설정 매핑으로 폴스타 소스를 대체했을 때의 근거 문장(plans/187 W21 P6 — 결정적).
@@ -338,6 +415,22 @@ def initial_scope(
         if apm
         else (str(event.get("serverName") or payload.get("server_name") or "").strip() or None)
     )
+    # 연결 힌트(plans/196 §5.2) — 실제로 소스 결정에 쓰였을 때만 반영한다(infra_db_ids 우선)
+    link = polestar_link(payload)
+    link_status: str | None = None
+    basis: str | None = None
+    if link is not None:
+        if link["status"] == "linked" and polestar_source == link["db_id"]:
+            episode = episode_from_payload(payload)
+            if episode is None or not episode.infra_db_ids:
+                link_status = "linked"
+                server = link["server_name"]  # 폴스타 등록명(D-046)
+                template = POLESTAR_LINK_BASIS.get(
+                    link.get("basis") or "", POLESTAR_LINK_BASIS_OTHER
+                )
+                basis = _link_text(template, link)
+        elif link["status"] != "linked" and polestar_source is None:
+            link_status = link["status"]
     return RunScope(
         alarm_instance=instance,
         host=host,
@@ -350,6 +443,9 @@ def initial_scope(
         ]
         if instance
         else [],
+        polestar_basis=basis,
+        polestar_reason_detail=POLESTAR_REASON_DETAILS.get(reason or ""),
+        polestar_link=link_status,
     )
 
 
@@ -423,7 +519,70 @@ def _readings_of(playbook: Playbook, results: Mapping[str, StepResult]) -> Readi
     }
     readings = compute_readings(steps, enabled=enabled_readings(playbook), params=params)
     readings.notes.extend(param_notes)
+    _apply_prior_readings(playbook, results, readings)
     return readings
+
+
+#: 재조회에서 부모 판독을 쓴 메모 — 결정적(침묵 대체 금지).
+RERUN_READINGS_NOTE = "재조회 — 재사용 단계가 낸 판독 {n}건은 부모 조사 값 사용({names})"
+
+
+def _evidence_of(raw: Mapping[str, Any], rule: str) -> ReadingEvidence:
+    """브리핑 `readings.evidence` 1건(dict) → `ReadingEvidence`."""
+    kwargs: dict[str, Any] = {}
+    if raw.get("source"):
+        kwargs["source"] = str(raw["source"])
+    values = raw.get("values")
+    return ReadingEvidence(
+        str(raw.get("rule") or rule),
+        tuple(str(x) for x in raw.get("steps") or ()),
+        dict(values) if isinstance(values, Mapping) else {},
+        raw.get("reason"),
+        **kwargs,
+    )
+
+
+def _apply_prior_readings(
+    playbook: Playbook, results: Mapping[str, StepResult], readings: Readings
+) -> None:
+    """재조회(plans/196 §5.2 `rerun.prior_readings`) — 재사용 단계만이 내는 판독·보조 사실은
+    부모 값으로 바꾼다. 재사용 섹션에는 원자료(`data`)가 없어 다시 계산하면 비기 때문이다.
+    다시 돈 단계가 하나라도 입력인 판독은 새로 계산한 값을 그대로 둔다."""
+    reused = {
+        sid for sid, r in results.items() if r.reused_from and "prior_readings" in r.artifacts
+    }
+    if not reused:
+        return
+    prior = results[next(iter(reused))].artifacts["prior_readings"]
+    values = prior.get("values")
+    if not isinstance(values, Mapping):
+        return
+    evidence = prior.get("evidence") if isinstance(prior.get("evidence"), Mapping) else {}
+    enabled = enabled_readings(playbook)
+    used: list[str] = []
+    for name, actions in READING_ACTIONS.items():
+        if name not in enabled or name not in values:
+            continue
+        producers = {st.id for st in playbook.steps if st.action in actions}
+        if not producers or not producers <= reused:
+            continue
+        readings.values[name] = values[name]
+        ev = evidence.get(name)
+        if isinstance(ev, Mapping):
+            readings.evidence[name] = _evidence_of(ev, READING_RULES[name])
+        used.append(name)
+    facts = prior.get("facts") if isinstance(prior.get("facts"), Mapping) else {}
+    fact_ev = (
+        prior.get("fact_evidence") if isinstance(prior.get("fact_evidence"), Mapping) else {}
+    )
+    for sid in sorted(reused):
+        if isinstance(facts.get(sid), Mapping):
+            readings.facts[sid] = dict(facts[sid])
+            for key, ev in fact_ev.items():
+                if str(key).startswith(f"{sid}.") and isinstance(ev, Mapping):
+                    readings.fact_evidence[str(key)] = _evidence_of(ev, "fact")
+    if used:
+        readings.notes.append(RERUN_READINGS_NOTE.format(n=len(used), names=", ".join(used)))
 
 
 # ── 결과 ────────────────────────────────────────────────────────────────────
@@ -626,6 +785,123 @@ def run_playbook(
     return run
 
 
+#: 재조회(plans/196 §5.2 `rerun`) 문장 — 결정적.
+RERUN_NOTE = (
+    "재조회 — 폴스타 축 단계만 다시 조회 · 나머지 {n}단계는 부모 조사({parent}) 결과 재사용"
+)
+RERUN_NO_PRIOR = "재조회 — 부모 조사에 이 단계 결과가 없어 다시 조회하지 않음"
+
+
+@dataclass(frozen=True)
+class RerunHint:
+    """재조회 힌트 `meta.hints.rerun` — 부모 조사 id와 부모 섹션(스텝 ID → 섹션 원본)·부모 판독
+    (`prior_readings` = 부모 `briefing.playbook.readings` · 없을 수 있음)."""
+
+    parent_investigation_id: str
+    sections: Mapping[str, Mapping[str, Any]]
+    readings: Mapping[str, Any] | None = None
+
+
+def rerun_hint(payload: Mapping[str, Any]) -> RerunHint | None:
+    """`meta.hints.rerun`(plans/196 §5.2) — `axes`에 `polestar`가 있고 부모 id·`prior_sections`
+    목록이 있을 때만. 아니면 None(= 현행 동작)."""
+    raw = _hints(payload).get("rerun")
+    if not isinstance(raw, Mapping):
+        return None
+    parent = str(raw.get("parent_investigation_id") or "").strip()
+    axes = raw.get("axes")
+    prior = raw.get("prior_sections")
+    if not parent or not isinstance(axes, list) or "polestar" not in axes:
+        return None
+    if not isinstance(prior, list):
+        return None
+    sections = {
+        str(sec["step"]): sec
+        for sec in prior
+        if isinstance(sec, Mapping) and str(sec.get("step") or "").strip()
+    }
+    readings = raw.get("prior_readings")
+    return RerunHint(
+        parent_investigation_id=parent,
+        sections=sections,
+        readings=readings if isinstance(readings, Mapping) else None,
+    )
+
+
+_STEP_STATUSES = frozenset({"ok", "missing", "skipped"})
+
+
+def _reused_section(
+    step: StepSpec,
+    prior: Mapping[str, Any] | None,
+    parent: str,
+    *,
+    scope: RunScope | None = None,
+    prior_readings: Mapping[str, Any] | None = None,
+) -> StepResult:
+    """부모 조사 섹션을 그대로 쓴 결과(도구 호출 0 · `reused_from` 표지). 부모 소견은 실행 후
+    처리가 다시 부르지 않고 쓰도록 `artifacts["prior_opinion"]`에 둔다(LLM 추가 호출 0).
+
+    부모 섹션에는 판독 원자료(`data`)가 없다(브리핑 섹션) — 부모 판독(`prior_readings`)을
+    `artifacts["prior_readings"]`에 두어 판독 계산이 쓰게 한다(`_apply_prior_readings`).
+    대상 확정 단계(S0)의 사유 속 폴스타 토막은 지금 범위(`scope`) 기준으로 바꾼다 — 부모의
+    「선택 대기」 문장이 새 연결과 어긋나지 않게.
+    """
+    if prior is None:
+        res = _placeholder(step, "skipped", RERUN_NO_PRIOR)
+        res.reused_from = parent
+        return res
+    status = str(prior.get("status") or "")
+    table = prior.get("table")
+    axis = prior.get("axis_status")
+    res = StepResult(
+        step=step.id,
+        action=step.action,
+        title=ACTION_TITLES.get(step.action, step.action),
+        status=status if status in _STEP_STATUSES else "missing",  # type: ignore[arg-type]
+        verdict=prior.get("verdict"),
+        verdict_source=prior.get("verdict_source"),
+        table=dict(table) if isinstance(table, Mapping) else None,
+        badges=[str(b) for b in prior.get("badges") or []],
+        tools=[str(t) for t in prior.get("tools") or []],
+        missing=[str(m) for m in prior.get("missing") or []],
+        reason=prior.get("reason"),
+        reason_detail=prior.get("reason_detail"),
+        reused_from=parent,
+        axis_status=(
+            {str(k): str(v) for k, v in axis.items()} if isinstance(axis, Mapping) else None
+        ),
+    )
+    if scope is not None and step.action == "scope.resolve_was_targets":
+        res.reason = _refresh_polestar_reason(res.reason, scope)
+        res.reason_detail = None if scope.polestar_source else scope.polestar_reason_detail
+    if prior_readings is not None:
+        res.artifacts["prior_readings"] = prior_readings
+    res.artifacts["prior_opinion"] = Opinion(
+        text=str(prior.get("opinion") or ""),
+        dropped_reason=prior.get("opinion_dropped_reason"),
+        guard=[str(g) for g in prior.get("opinion_guard") or []],
+    )
+    return res
+
+
+#: S0 사유에서 폴스타 토막이 시작하는 표지(`scope_polestar_reason` 문장 · 맨 끝 토막).
+_POLESTAR_REASON_MARKS: tuple[str, ...] = (
+    f"{POLESTAR_UNRESOLVED} — ",
+    *(t.split("{")[0] for t in POLESTAR_LINK_BASIS.values()),
+    POLESTAR_LINK_BASIS_OTHER.split("{")[0],
+    POLESTAR_MAPPED_BASIS.split("{")[0],
+)
+
+
+def _refresh_polestar_reason(reason: str | None, scope: RunScope) -> str | None:
+    """S0 사유의 폴스타 토막(맨 끝)을 지금 범위 기준 문장으로 바꾼다. 나머지 토막은 그대로."""
+    text = reason or ""
+    cuts = [i for i in (text.find(m) for m in _POLESTAR_REASON_MARKS) if i >= 0]
+    head = text[: min(cuts)].rstrip(" ·") if cuts else text
+    return " · ".join(p for p in (head, scope_polestar_reason(scope)) if p) or None
+
+
 def _placeholder(step: StepSpec, status: str, reason: str | None) -> StepResult:
     return StepResult(
         step=step.id,
@@ -664,6 +940,11 @@ def _run(
     scope = initial_scope(payload, source, source_reason)
     if source is None:
         notes.append(f"폴스타 서버 미확정 — {source_reason}")
+        if scope.polestar_reason_detail:  # 운영자 상세는 서버 로그로(D6)
+            logger.info("폴스타 서버 미확정 상세: %s", scope.polestar_reason_detail)
+    elif scope.polestar_basis:
+        # 연결 힌트로 정한 서버 — 근거를 남긴다(plans/196 §5.2 · 침묵 대체 금지)
+        notes.append(scope.polestar_basis)
     elif polestar_source_basis and resolve_polestar_source(payload)[0] is None:
         # 페이로드에 소스가 없어 호출자 대체값을 썼다 — 근거를 남긴다(W21 P6 · 침묵 대체 금지)
         scope.polestar_basis = polestar_source_basis
@@ -685,11 +966,34 @@ def _run(
         )
 
     windows = compute_windows(alarm_time, playbook.window)
+    rerun = rerun_hint(payload)
+    if rerun is not None:
+        reused = [
+            st for st in playbook.steps
+            if st.action != _SYNTHESIZE and st.action not in POLESTAR_AXIS_ACTIONS
+        ]
+        notes.append(
+            RERUN_NOTE.format(n=len(reused), parent=rerun.parent_investigation_id)
+        )
     # 실행기는 단계마다 새로 만든다(W21 교정) — 타임아웃으로 중단된 스텝 스레드가 워커를 붙잡아
     # 다음 단계 스텝이 늦게 시작하지 않게 한다(중단된 스레드는 새 호출을 내지 않는다).
     executor: ThreadPoolExecutor | None = None
     try:
         for stage in plan_stages(playbook):
+            if rerun is not None:
+                # 재조회 — 폴스타 축이 아닌 단계는 부모 섹션 그대로(도구 호출 0 · plans/196 §5.2)
+                for step in stage:
+                    if step.action not in POLESTAR_AXIS_ACTIONS:
+                        results[step.id] = _reused_section(
+                            step,
+                            rerun.sections.get(step.id),
+                            rerun.parent_investigation_id,
+                            scope=scope,
+                            prior_readings=rerun.readings,
+                        )
+                stage = [st for st in stage if st.id not in results]
+                if not stage:
+                    continue
             remaining = budget_s - (clock() - started)
             if remaining <= 0:
                 for step in stage:
@@ -1062,7 +1366,14 @@ def _correlation(results: Sequence[StepResult], alarm_time: str | None) -> dict[
         elif r.action == "xsource.related_alarms":
             alarms = list(r.artifacts.get("alarms") or [])
             points = list(r.artifacts.get("episode_points") or [])
-            alarm_axis = "polestar_incident_alarms" not in r.missing
+            axes = r.data.get("axes") if isinstance(r.data, Mapping) else None
+            pol = axes.get("polestar") if isinstance(axes, Mapping) else None
+            # 축 상태가 있으면 그것으로(연결 생략은 결손이 아니지만 알람 축도 아니다 · plans/196)
+            alarm_axis = (
+                pol.get("status") == "ok"
+                if isinstance(pol, Mapping)
+                else "polestar_incident_alarms" not in r.missing
+            )
             found = True
     if not found:
         return None
@@ -1169,7 +1480,7 @@ def _narration_plan(
         sec = sections.get(step.id)
         if sec is None or sec.status != "ok":
             status = sec.status if sec is not None else "missing"
-            skipped[step.id] = STEP_STATUS_NO_OPINION.format(status=status)
+            skipped[step.id] = STEP_STATUS_NO_OPINION.format(status=step_status_label(status))
             continue
         eligible.append(step)
     ordered = sorted(
@@ -1335,6 +1646,13 @@ def finalize_playbook_run(
     limit = len(playbook.steps) if cap is None else cap
     planned, skipped = _narration_plan(playbook, collected, hyps, limit)
     opinions: dict[str, Opinion] = {sid: Opinion(dropped_reason=r) for sid, r in skipped.items()}
+    # 재조회(plans/196 §5.2)로 재사용한 섹션은 부모 소견을 그대로 쓴다(소견기 재호출 0)
+    reused_ops = {
+        sid: op for sid, s in collected.items()
+        if isinstance(op := s.artifacts.get("prior_opinion"), Opinion)
+    }
+    if reused_ops:
+        step_opinions = {**reused_ops, **(step_opinions or {})}
     if step_opinions is not None:
         for step in planned:
             if step.id in step_opinions:
@@ -1426,7 +1744,14 @@ __all__ = [
     "GATEWAY_EVENT_SIGNAL_KINDS",
     "LATENCY_EVENT_TYPES",
     "POLESTAR_BRIDGE_MISSING",
+    "POLESTAR_BRIDGE_MISSING_DETAIL",
+    "POLESTAR_LINK_ABSENT",
+    "POLESTAR_LINK_BASIS",
+    "POLESTAR_LINK_UNRESOLVED",
     "PlaybookRun",
+    "RerunHint",
+    "SQL_EVENT_TYPES",
+    "SQL_PATTERN_KIND",
     "alarm_facts_from_payload",
     "compute_windows",
     "finalize_playbook_run",
@@ -1434,6 +1759,8 @@ __all__ = [
     "initial_scope",
     "normalize_event_type",
     "plan_stages",
+    "polestar_link",
+    "rerun_hint",
     "resolve_polestar_source",
     "run_playbook",
     "step_because",

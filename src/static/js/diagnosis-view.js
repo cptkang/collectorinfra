@@ -184,6 +184,43 @@
         holmesRound: "HolmesGPT {n}회차",
         holmesJudge: "AI 판단 — 검증 전",
         holmesNoQuery: "이 회차에는 조회가 없습니다.",
+        // (plans/196 D6) 섹션 운영자 상세(`reason_detail` — 운영자 뷰에만 온다)는 펼침으로만
+        detailBtn: "ⓘ 상세",
+        // (plans/196 D7) 종결 + 종합 가설 없음 — 왜 판정이 없는지 결정적 집계 1줄
+        sofarGap: "판정 근거 부족 — {parts}",
+        sofarGapMissing: "수집 결손 {n}단계",
+        sofarGapSkipped: "생략 {n}단계",
+        sofarGapEmpty: "0건 {n}단계",
+        // (plans/196 D7) 섹션 축별 상태(`axis_status`)가 있으면 축별로 묶는다 — 축 순서 고정 · 라벨 없는 축은 「기타」
+        sofarGapAxis: "{axis}: {parts}",
+        sofarGapAxisSep: " / ",
+        sofarGapAxes: [["polestar", "폴스타"], ["apm", "제니퍼"], ["itsm", "ITSM"]],
+        sofarGapAxisOther: "기타",
+        // (plans/196 §1.1 ② · §5.5) 폴스타 서버 선택 — 제니퍼 대상을 폴스타 서버에 잇는다(사람이 고를 때만)
+        host: {
+            loading: "폴스타에서 비슷한 서버를 찾는 중…",
+            failed: "서버 후보를 불러오지 못했습니다 — {reason}",
+            intro: "제니퍼 대상 「{hostname}」과 비슷한 폴스타 서버입니다. 맞는 서버를 고르면 폴스타 단계만 다시 조회합니다.",
+            introNoHost: "비슷한 폴스타 서버입니다. 맞는 서버를 고르면 폴스타 단계만 다시 조회합니다.",
+            empty: "비슷한 폴스타 서버를 찾지 못했습니다 — 서버명을 직접 입력하세요.",
+            inputLabel: "폴스타 서버명",
+            unchecked: "확인하지 못한 소스 — {db_id}: {reason}",
+            rerun: "이 서버로 다시 조회",
+            absent: "해당 서버 없음",
+            sending: "보내는 중…",
+            pick: "후보를 하나 고르거나 서버명을 입력하세요.",
+            rerunOk: "다시 조회를 접수했습니다 — 새 조사 탭에서 결과를 봅니다.",
+            absentOk: "폴스타 미등록으로 기록했습니다 — 같은 대상의 다음 조사는 폴스타 단계를 바로 생략합니다.",
+            pending: "관리자 승인 전까지 이 연결은 이번 다시 조회에만 쓰입니다.",
+            sendFailed: "보내지 못했습니다 — {reason}",
+            // 직접 입력(db_id 없이 서버명만) 거부 사유 — 서버 `detail.code`
+            codes: {
+                server_not_found: "폴스타에서 그 서버를 찾지 못했습니다 — 서버명을 확인하세요.",
+                server_ambiguous: "같은 이름의 폴스타 서버가 여러 대라 하나로 정하지 못했습니다 — 전체 이름(FQDN)으로 입력하세요.",
+            },
+            linkedHead: "폴스타 서버 연결",
+            change: "연결 변경",
+        },
         engineGroups: { playbook: "플레이북", holmes: "HolmesGPT" },
         // ⓖ C1~C8 — 해당하는 문구만 카드 ⓘ에 펼친다
         caution: {
@@ -341,9 +378,17 @@
         asList(events).forEach(function (e) {
             if (!isObj(e) || !e.purpose) return;
             var plan = (e.kind === "started" && e.engine === "playbook") || e.kind === "deep_start";
-            if (plan) out.push({ seq: Number(e.seq) || 0, text: String(e.label || "") + " — " + String(e.purpose) });
+            if (plan) out.push({ seq: Number(e.seq) || 0, text: whyLabel(e.label) + " — " + String(e.purpose) });
         });
         return out;
+    }
+
+    // (plans/196 D6) 조사 이유 줄 라벨의 원시 키 — 플레이북 id `fallback` · 심층 조사 방식(sre_agent DEEP_PURPOSES 키)
+    var DEEP_MODE_LABELS = { parallel: "병렬", conditional: "조건부" };  // sre_agent DEEP_MODE_LABELS와 같은 말
+    function whyLabel(label) {
+        return String(label || "")
+            .replace(/^플레이북 fallback 선택$/, "플레이북 공통 점검 선택")
+            .replace(/ — (parallel|conditional)$/, function (_m, k) { return " — " + DEEP_MODE_LABELS[k]; });
     }
 
     /** 스텝 id → 그 스텝의 목적(`step_start` purpose) — 도구 행의 마우스 올림 설명에 쓴다. */
@@ -410,8 +455,16 @@
     }
 
     // (W24) 조사 항목의 단계 상태 — 플레이북 섹션 `status`
-    var STEP_STATUS_LABELS = { ok: "완료", skipped: "생략", missing: "자료 없음", error: "실패",
+    // (plans/196 D6) 화면에 원시 상태값을 찍지 않는다 — 단계 카드·해석 사유도 이 맵을 쓴다
+    var STEP_STATUS_LABELS = { ok: "완료", skipped: "생략", missing: "수집 결손", error: "실패",
         failed: "실패", timeout: "시간 초과", incomplete: "일부만" };
+
+    // 서버 사유 문장 속 「단계 상태 missing」 → 「단계 상태 수집 결손」(구버전 조사 서비스 문구 대비)
+    function statusWords(text) {
+        return String(text || "").replace(/단계 상태 ([a-z_]+)/g, function (all, st) {
+            return STEP_STATUS_LABELS[st] ? "단계 상태 " + STEP_STATUS_LABELS[st] : all;
+        });
+    }
 
     // (W24) 조사 항목 — 종결 브리핑의 단계(없으면 진행 중 부분 브리핑의 끝난 단계 + 진척)
     function stepsLine(view) {
@@ -833,8 +886,11 @@
             var skipped = c.skipped || (sec && sec.status === "skipped");
             var title = (sec && sec.title) || c.title || c.step;
             var m = { step: c.step, no: circled(i + 1), title: title, time: clockOf(c.at), skipped: !!skipped };
+            m.detail = sec && sec.reason_detail ? String(sec.reason_detail) : "";
+            m.axisStatus = axisStatusOf(sec);
             if (skipped) {
                 m.because = c.because || (sec && (sec.because || skipReason(sec.reason))) || "";
+                m.skipRaw = sec && sec.reason ? String(sec.reason) : "";
                 return m;
             }
             var status = c.status || (sec ? String(sec.status || "") : "");
@@ -847,7 +903,7 @@
             m.because = c.because || c.purpose;
             m.queries = c.queries;
             m.finding = c.finding || (sec && sec.finding ? String(sec.finding) : "");
-            m.reason = !m.finding && sec && sec.reason ? String(sec.reason) : "";
+            m.reason = !m.finding && sec && sec.reason ? statusWords(sec.reason) : "";
             m.table = sec && isObj(sec.table) && Array.isArray(sec.table.columns) && asList(sec.table.rows).length
                 ? sec.table : null;
             m.rows = rowCount(m.table, c.queries);
@@ -882,7 +938,8 @@
                 queries: r.queries,
                 notes: r.note ? [TEXT.caution.c1, TEXT.caution.c2, TEXT.caution.c7, TEXT.caution.holmes] : [] };
         });
-        return { cards: models, holmes: holmes, sofar: sofarLine(models, o.done, top, o.synthesis) };
+        var ai = o.done && !top ? deepSummary(o.deepDive) : "";
+        return { cards: models, holmes: holmes, sofar: sofarLine(models, o.done, top, o.synthesis), sofarAi: ai };
     }
 
     // 건너뜀 섹션 사유 원문 → 카드 문장(조건식·예산 원문은 감춘다)
@@ -915,7 +972,113 @@
         }).map(function (c) { return corePhrase(c.finding); }).slice(-4);
         var run = cards.filter(function (c) { return c.running; })[0];
         if (run && !done) links.push(fill(TEXT.sofarChecking, { title: run.title }));
-        return links.length ? links.join(" → ") : "";
+        if (links.length) return links.join(" → ");
+        return done ? gapLine(cards) : "";
+    }
+
+    /**
+     * (plans/196 D7) 종결인데 종합 가설도 고리도 없을 때 — 왜 판정이 없는지 단계 집계 1줄(결정적 · LLM 0).
+     * 수집 결손 = 경고 상태(결손·실패·시간 초과) · 생략 = 건너뜀 · 0건 = 성공했지만 결과 행 0. 집계가 없으면 "".
+     */
+    function gapLine(cards) {
+        if (cards.some(function (c) { return c.axisStatus; })) return axisGapLine(cards);
+        var n = { missing: 0, skipped: 0, empty: 0 };
+        cards.forEach(function (c) {
+            if (c.skipped) n.skipped += 1;
+            else if (c.warn) n.missing += 1;
+            else if (!c.running && !c.rows) n.empty += 1;
+        });
+        var parts = gapParts(n);
+        return parts.length ? fill(TEXT.sofarGap, { parts: parts.join(" · ") }) : "";
+    }
+
+    function gapParts(n) {
+        var parts = [];
+        if (n.missing) parts.push(fill(TEXT.sofarGapMissing, { n: n.missing }));
+        if (n.skipped) parts.push(fill(TEXT.sofarGapSkipped, { n: n.skipped }));
+        if (n.empty) parts.push(fill(TEXT.sofarGapEmpty, { n: n.empty }));
+        return parts;
+    }
+
+    /** 섹션 축별 상태(`axis_status` — `{축: 상태}`) → 문자열 값만 남긴 사본. 없거나 비면 null. */
+    function axisStatusOf(sec) {
+        if (!sec || !isObj(sec.axis_status)) return null;
+        var out = {};
+        var any = false;
+        Object.keys(sec.axis_status).forEach(function (k) {
+            var v = sec.axis_status[k];
+            if (typeof v === "string" && v) { out[k] = v; any = true; }
+        });
+        return any ? out : null;
+    }
+
+    /**
+     * (plans/196 D7) 축별 집계 — 카드마다 축 상태로 센다(혼합 단계는 각 축에 1씩). 생략 = skipped ·
+     * 수집 결손 = 경고 상태 · 0건 = 그 외(ok)인데 카드 결과 행 0. 축 상태가 없는 카드는 건너뜀이면
+     * 세지 않고(미연동 등), 결손·0건만 카드 기준으로 「기타」 축에 센다. 축 순서는 `TEXT.sofarGapAxes` 고정, 표에 없는 축 키는 「기타」로 묶는다.
+     */
+    function axisGapLine(cards) {
+        var known = {};
+        TEXT.sofarGapAxes.forEach(function (a) { known[a[0]] = true; });
+        var counts = {};
+        function bump(axis, kind) {
+            var key = known[axis] ? axis : "";
+            counts[key] = counts[key] || { missing: 0, skipped: 0, empty: 0 };
+            counts[key][kind] += 1;
+        }
+        cards.forEach(function (c) {
+            if (c.running) return;
+            if (!c.axisStatus) {
+                if (c.skipped) return;  // 축 없는 건너뜀(미연동 DPM 등)은 판정 근거 부족의 원인이 아니다
+                if (c.warn) bump("", "missing");
+                else if (!c.rows) bump("", "empty");
+                return;
+            }
+            Object.keys(c.axisStatus).sort().forEach(function (axis) {
+                var st = c.axisStatus[axis];
+                if (st === "skipped") bump(axis, "skipped");
+                else if (WARN_STATUS[st]) bump(axis, "missing");
+                else if (!c.skipped && !c.rows) bump(axis, "empty");
+            });
+        });
+        var groups = [];
+        TEXT.sofarGapAxes.concat([["", TEXT.sofarGapAxisOther]]).forEach(function (a) {
+            var parts = counts[a[0]] ? gapParts(counts[a[0]]) : [];
+            if (parts.length) groups.push(fill(TEXT.sofarGapAxis, { axis: a[1], parts: parts.join(" · ") }));
+        });
+        return groups.length ? fill(TEXT.sofarGap, { parts: groups.join(TEXT.sofarGapAxisSep) }) : "";
+    }
+
+    // (plans/196 D7 · Q4) HolmesGPT 결과 요약 한 줄 — 종결(`done`)된 심층 조사만. 화면은 「AI 판단 — 검증 전」 표지와 함께 쓴다(G-48).
+    function deepSummary(dd) {
+        if (!isObj(dd) || dd.status !== "done") return "";
+        function pick(v) {
+            if (v === null || v === undefined) return "";
+            if (typeof v !== "object") return String(v);
+            return String(v.title || v.text || v.summary || v.cause || v.name || "");
+        }
+        var text = pick(dd.cause) || pick(asList(dd.root_cause_hypotheses)[0]) || firstSentence(dd.summary);
+        return firstLine(text, 160);
+    }
+
+    // ── (plans/196 §1.1 ② · §5.2) 폴스타 서버 연결 상태 — 화면이 서버 선택 UI를 어디에 둘지(순수) ──
+    // 서버 사유 문장(§5.2): 대기 = 「폴스타 서버 선택 대기 — …」(구 문구 「폴스타 서버 미확정」 포함) ·
+    // 부정 연결 = 「폴스타 미등록(사용자 확인 · …)」 · 확정 연결 근거(`scope.polestar_basis`) = 「이전 확정 연결 — …」/「사용자 선택으로 연결 — …」
+    var HOST_WAIT_RE = /폴스타 서버 (선택 대기|미확정)/;
+    var HOST_ABSENT_RE = /폴스타 미등록\(사용자 확인/;
+    var HOST_LINKED_RE = /^(이전 확정 연결|사용자 선택으로 연결)/;
+    function hostLinkState(cards, scope) {
+        var list = asList(cards);
+        for (var i = 0; i < list.length; i++) {
+            var c = list[i];
+            if (!c || !c.skipped) continue;
+            var text = String(c.because || "") + " " + String(c.skipRaw || "");
+            if (HOST_WAIT_RE.test(text)) return { mode: "wait", step: c.step, basis: "" };
+            if (HOST_ABSENT_RE.test(text)) return { mode: "absent", step: c.step, basis: String(c.because || c.skipRaw || "") };
+        }
+        var basis = isObj(scope) ? String(scope.polestar_basis || "") : "";
+        if (HOST_LINKED_RE.test(basis)) return { mode: "linked", step: "", basis: basis };
+        return null;
     }
 
     // ─── 컨트롤러 ───────────────────────────────────────────────────────
@@ -928,6 +1091,7 @@
      *   onOpenConversation(id) — 종결 화면 [조사 대화로 열기](기존 조사 대화 진입 함수)
      *   analyzeFor(id, view) — 공용 렌더 analyze 옵션(기존 [다시 분석]) 또는 null
      *   startInvestigation(alarmId) — (W18) 「이벤트 찾아 조사」 접수 → Promise<{ok,status,body}>(없으면 칸 숨김)
+     *   linkHost(investigationId, body) — (plans/196) 폴스타 서버 선택 저장(본체 host-link 접수 — 쓰기 경로는 app.js가 주입) → Promise<{ok,status,body}>(없으면 선택 UI 숨김)
      *   deps: {fetch, EventSource, setTimeout, clearTimeout, now, storage, document} — 시험용 주입
      */
     function create(opts) {
@@ -1418,6 +1582,9 @@
             sofar.appendChild(el("span", "dv-label", TEXT.sofarHead));
             var sofarText = el("span", "dv-sofar-text");
             sofar.appendChild(sofarText);
+            var sofarAi = el("span", "dv-sofar-ai");
+            sofarAi.hidden = true;
+            sofar.appendChild(sofarAi);
             flowBox.appendChild(sofar);
             var flowBody = el("div", "dv-flow-body");
             flowBox.appendChild(flowBody);
@@ -1467,7 +1634,7 @@
             tab.dom = { wrap: wrap, btn: btn, label: label, state: state, panel: panel, title: title, target: target, meta: meta,
                 warn: warn, filters: filters, logNote: logNote, rows: rows, partBox: partBox, partBody: partBody,
                 finalBox: finalBox, finalBody: finalBody, grid: grid, modeBtns: modeBtns, flowBox: flowBox,
-                sofar: sofar, sofarText: sofarText, flowBody: flowBody };
+                sofar: sofar, sofarText: sofarText, sofarAi: sofarAi, flowBody: flowBody };
             setMode(tab, tab.mode);
             renderTabButton(tab);
         }
@@ -1504,9 +1671,10 @@
         function flowSource(tab) {
             var v = tab.view || {};
             var fin = isObj(v.briefing) && isObj(v.briefing.playbook) ? v.briefing.playbook : null;
-            if (tab.done && fin) return { sections: fin.sections, synthesis: fin.synthesis };
+            if (tab.done && fin) return { sections: fin.sections, synthesis: fin.synthesis, scope: fin.scope,
+                deepDive: v.briefing.deep_dive };
             var part = isObj(tab.partial) && isObj(tab.partial.playbook) ? tab.partial.playbook : null;
-            return { sections: part ? part.sections : [], synthesis: null };
+            return { sections: part ? part.sections : [], synthesis: null, scope: null, deepDive: null };
         }
 
         function toggler(tab, key, closedText, openText, target) {
@@ -1576,7 +1744,7 @@
             return div;
         }
 
-        function cardNode(tab, m) {
+        function cardNode(tab, m, host) {
             var li = el("li", "dv-card" + (m.skipped ? " dv-card--skip" : "") + (m.running ? " dv-card--running" : "") +
                 (m.warn ? " dv-card--warn" : ""));
             li.setAttribute("data-step", m.step);
@@ -1587,6 +1755,11 @@
                 head.appendChild(el("span", "dv-card-title", fill(TEXT.skipTitle, { title: m.title }) + " — " +
                     (m.because || TEXT.skipNoReason)));
                 li.appendChild(head);
+                detailNode(tab, m, li);
+                if (host) {
+                    var hn = hostNode(tab, host);
+                    if (hn) li.appendChild(hn);
+                }
                 return li;
             }
             head.appendChild(el("span", "dv-card-title", m.title));
@@ -1624,13 +1797,176 @@
                 } else if (m.opinion.status === "pending") {
                     op.textContent = TEXT.opinionPending;
                 } else {
-                    op.textContent = fill(TEXT.opinionNone, { reason: m.opinion.reason || TEXT.opinionNoneReason });
+                    op.textContent = fill(TEXT.opinionNone, { reason: statusWords(m.opinion.reason) || TEXT.opinionNoneReason });
                 }
                 line(dl, TEXT.cardOpinion, op);
             }
             if (dl.children.length) li.appendChild(dl);
             cautionNode(tab, "note:" + m.step, m.notes, li);
+            detailNode(tab, m, li);
             return li;
+        }
+
+        // (plans/196 D6) 운영자 상세 — 서버가 운영자 뷰에만 싣는 `reason_detail`(필드명·내부 사유)을 펼침으로만
+        function detailNode(tab, m, parent) {
+            if (!m.detail) return;
+            var box = el("div", "dv-detail", m.detail);
+            parent.appendChild(toggler(tab, "detail:" + m.step, TEXT.detailBtn, TEXT.detailBtn, box));
+            parent.appendChild(box);
+        }
+
+        // ── (plans/196 §1.1 ② · §5.5) 폴스타 서버 선택 — 404(기능 꺼짐)면 아무것도 그리지 않는다 ──
+        function hostOf(tab) {
+            if (!tab.host) tab.host = { state: "", body: null, error: "", open: false, pick: -1, input: "", msg: "", warn: false, busy: false, sent: false };
+            return tab.host;
+        }
+
+        function loadHostCandidates(tab) {
+            var h = hostOf(tab);
+            if (h.state === "loading") return;
+            h.state = "loading";
+            getJSON(API + "/" + encodeURIComponent(tab.id) + "/host-candidates").then(function (res) {
+                if (res.status === 404) h.state = "off";
+                else if (!res.ok) { h.state = "error"; h.error = reasonOf(res); }
+                else { h.state = "ok"; h.body = res.body; h.pick = -1; }
+            }, function (err) {
+                h.state = "error";
+                h.error = (err && err.message) || String(err || "");
+            }).then(function () { if (tabs[tab.id]) renderFlow(tab); });
+        }
+
+        function hostNode(tab, host) {
+            var h = hostOf(tab);
+            // 저장 경로(`opts.linkHost`)가 없거나 기능이 꺼졌으면(404) 선택 UI를 그리지 않는다
+            if (h.state === "off" || !opts.linkHost) return null;
+            var T = TEXT.host;
+            var box = el("div", "dv-host");
+            if (host.mode !== "wait") {
+                if (host.mode === "linked") box.appendChild(el("div", "dv-host-basis", T.linkedHead + " — " + host.basis));
+                if (!h.open) {
+                    var change = el("button", "dv-host-change", T.change);
+                    change.type = "button";
+                    change.addEventListener("click", function () {
+                        h.open = true;
+                        loadHostCandidates(tab);
+                        renderFlow(tab);
+                    });
+                    box.appendChild(change);
+                    return box;
+                }
+            } else if (!h.state) {
+                loadHostCandidates(tab);
+            }
+            if (h.state === "loading" || !h.state) {
+                box.appendChild(el("div", "dv-note", T.loading));
+                return box;
+            }
+            if (h.state === "error") {
+                box.appendChild(el("div", "dv-note dv-note--warn", fill(T.failed, { reason: h.error })));
+                return box;
+            }
+            var b = isObj(h.body) ? h.body : {};
+            var cands = asList(b.candidates).filter(isObj);
+            box.appendChild(el("div", "dv-host-intro", b.hostname ? fill(T.intro, { hostname: b.hostname }) : T.introNoHost));
+            if (cands.length) {
+                var list = el("div", "dv-host-cands");
+                list.setAttribute("role", "radiogroup");
+                cands.forEach(function (c, i) {
+                    var row = el("label", "dv-host-cand");
+                    var radio = el("input", "dv-host-radio");
+                    radio.type = "radio";
+                    radio.name = "dv-host-" + tab.id;
+                    radio.checked = h.pick === i;
+                    radio.disabled = h.busy || h.sent;
+                    radio.addEventListener("change", function () { h.pick = i; });
+                    row.appendChild(radio);
+                    row.appendChild(el("span", "dv-host-grade", c.grade || ""));
+                    row.appendChild(el("span", "dv-host-name", c.server_name || c.hostname || ""));
+                    var meta = [c.hostname && c.hostname !== c.server_name ? c.hostname : "", c.ipaddress, c.db_id]
+                        .filter(Boolean).join(" · ");
+                    if (meta) row.appendChild(el("span", "dv-meta", meta));
+                    var why = asList(c.reasons).map(String).filter(Boolean).join(" · ");
+                    if (why) row.appendChild(el("span", "dv-host-why", why));
+                    list.appendChild(row);
+                });
+                box.appendChild(list);
+            } else {
+                box.appendChild(el("div", "dv-note", T.empty));
+                var field = el("label", "dv-host-field");
+                field.appendChild(el("span", null, T.inputLabel));
+                var input = el("input", "dv-host-input");
+                input.type = "text";
+                input.value = h.input;
+                input.disabled = h.busy || h.sent;
+                input.addEventListener("input", function (e) { h.input = String((e && e.target && e.target.value) || ""); });
+                field.appendChild(input);
+                box.appendChild(field);
+            }
+            asList(b.unchecked).filter(isObj).forEach(function (u) {
+                box.appendChild(el("div", "dv-note dv-note--warn", fill(T.unchecked, { db_id: u.db_id || "-", reason: u.reason || "" })));
+            });
+            var actions = el("div", "dv-host-actions");
+            [["select", T.rerun], ["none", T.absent]].forEach(function (a) {
+                var btn = el("button", "dv-host-" + a[0], a[1]);
+                btn.type = "button";
+                btn.disabled = h.busy || h.sent;
+                btn.addEventListener("click", function () { submitHost(tab, a[0]); });
+                actions.appendChild(btn);
+            });
+            box.appendChild(actions);
+            if (h.msg) box.appendChild(el("div", "dv-note" + (h.warn ? " dv-note--warn" : ""), h.msg));
+            return box;
+        }
+
+        function submitHost(tab, action) {
+            var h = hostOf(tab);
+            if (h.busy || h.sent) return;
+            var T = TEXT.host;
+            var body = { action: action };
+            if (action === "select") {
+                var cands = asList(isObj(h.body) ? h.body.candidates : null).filter(isObj);
+                var c = cands[h.pick];
+                var typed = String(h.input || "").trim();
+                if (c) {
+                    body.db_id = c.db_id;
+                    body.server_name = c.server_name;
+                    body.hostname = c.hostname;
+                } else if (!cands.length && typed) {
+                    body.server_name = typed;
+                } else {
+                    h.msg = T.pick;
+                    h.warn = true;
+                    renderFlow(tab);
+                    return;
+                }
+            }
+            h.busy = true;
+            h.msg = T.sending;
+            h.warn = false;
+            renderFlow(tab);
+            Promise.resolve().then(function () { return opts.linkHost(tab.id, body); }).then(function (res) {
+                res = res || {};
+                res.body = isObj(res.body) ? res.body : {};
+                h.busy = false;
+                if (res.status === 404) { h.state = "off"; return; }
+                if (!res.ok) {
+                    var d = res.body.detail;
+                    var code = isObj(d) ? String(d.code || "") : "";
+                    h.msg = T.codes[code] || fill(T.sendFailed, { reason: reasonOf(res) });
+                    h.warn = true;
+                    return;
+                }
+                h.sent = true;
+                var link = isObj(res.body.link) ? res.body.link : {};
+                if (action === "none") { h.msg = T.absentOk; return; }
+                h.msg = T.rerunOk + (link.state === "pending" ? " " + T.pending : "");
+                var next = res.body.investigation_id ? String(res.body.investigation_id) : "";
+                if (next) open(next);
+            }, function (err) {
+                h.busy = false;
+                h.msg = fill(T.sendFailed, { reason: (err && err.message) || String(err || "") });
+                h.warn = true;
+            }).then(function () { if (tabs[tab.id]) renderFlow(tab); });
         }
 
         function roundNode(tab, r) {
@@ -1661,12 +1997,30 @@
             var src = flowSource(tab);
             var model = flowModel(tab.flow.events, src.sections, {
                 done: tab.done, synthesis: src.synthesis, alarmTime: isObj(tab.alarm) ? tab.alarm.alarm_time : null,
+                deepDive: src.deepDive,
             });
-            tab.dom.sofarText.textContent = model.sofar || TEXT.sofarNone;
+            tab.dom.sofarText.textContent = model.sofar || (model.sofarAi ? "" : TEXT.sofarNone);
+            // (plans/196 D7 · Q4) 플레이북 판정이 없을 때만 HolmesGPT 요약 — 「AI 판단 — 검증 전」 표지(G-48)
+            var ai = tab.dom.sofarAi;
+            ai.textContent = "";
+            ai.hidden = !model.sofarAi;
+            if (model.sofarAi) {
+                ai.appendChild(el("span", "dv-ai-badge", TEXT.holmesJudge));
+                ai.appendChild(el("span", "dv-sofar-ai-text", model.sofarAi));
+            }
+            var host = tab.done ? hostLinkState(model.cards, src.scope) : null;
             var body = tab.dom.flowBody;
             body.textContent = "";
+            if (host && host.mode === "linked") {
+                var hostBox = hostNode(tab, host);
+                if (hostBox) body.appendChild(hostBox);
+            }
             var groups = [];
-            if (model.cards.length) groups.push(["playbook", model.cards.map(function (m) { return cardNode(tab, m); })]);
+            if (model.cards.length) {
+                groups.push(["playbook", model.cards.map(function (m) {
+                    return cardNode(tab, m, host && host.step && host.step === m.step ? host : null);
+                })]);
+            }
             if (model.holmes.length) groups.push(["holmes", model.holmes.map(function (r) { return roundNode(tab, r); })]);
             groups.forEach(function (g) {
                 // 두 엔진이 함께 돌면 엔진별 줄을 나눈다(parallel)
@@ -1698,7 +2052,8 @@
             var bv = root.BriefingView;
             if (tab.done) parts.push(bv ? bv.statusChip(v.status ? v : { status: tab.status }).text : tab.status);
             else parts.push(statusText({ phase: tab.phase, queue_position: tab.queue, status: tab.status }));
-            var elapsed = liveElapsed(tab.elapsed, tab.elapsedAt);
+            // (plans/196 D5) 종결이면 서버 최종 경과 그대로 — 받은 뒤 흐른 시간을 더하지 않는다(renderTabButton과 대칭)
+            var elapsed = tab.done ? fmtElapsed(tab.elapsed === null ? NaN : tab.elapsed) : liveElapsed(tab.elapsed, tab.elapsedAt);
             if (elapsed) parts.push(elapsed);
             if (!tab.done && !tab.denied) parts.push(connText(conn, now()));
             tab.dom.meta.textContent = parts.filter(Boolean).join(" · ");
@@ -2265,6 +2620,8 @@
         conversationHeadLines: conversationHeadLines,
         flowModel: flowModel,
         opinionOf: opinionOf,
+        hostLinkState: hostLinkState,
+        statusWords: statusWords,
         conflictsWithSynthesis: conflictsWithSynthesis,
         watchParam: watchParam,
         connText: connText,

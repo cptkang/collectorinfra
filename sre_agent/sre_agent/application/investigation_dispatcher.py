@@ -76,6 +76,7 @@ from sre_agent.application.playbook_runner import (
     finalize_playbook_run,
     flow_readings,
     mapped_polestar_source,
+    rerun_hint,
     retry_reason,
     run_playbook,
     step_because,
@@ -113,8 +114,9 @@ from sre_agent.domain.investigation_limits import (
 from sre_agent.domain.engine_agreement import compare_engines
 from sre_agent.domain.job_watchdog import STUCK_WATCHDOG_REASON, stuck_after_seconds
 from sre_agent.domain.known_error import KnownError
-from sre_agent.domain.playbook import Playbook, select_playbook
+from sre_agent.domain.playbook import APM_FALLBACK_ID, Playbook, select_playbook
 from sre_agent.domain.remediation import recommend_lines
+from sre_agent.domain.step_findings import step_status_label
 from sre_agent.domain.severity_signatures import (
     LEVEL_NAMES,
     ImportanceVerdict,
@@ -455,6 +457,15 @@ MATCH_CONDITION_LABELS: dict[str, str] = {
 PLAYBOOK_FALLBACK_PURPOSE = (
     "맞는 유형 플레이북이 없어 공통 점검(사용량 추이·관련 알람·재발·최근 변경)을 돈다"
 )
+#: APM 공통 점검(`was.fallback` · plans/196 D2 ②) 선택 근거.
+APM_FALLBACK_PURPOSE = (
+    "맞는 유형 플레이북이 없어 WAS 공통 점검(골든 시그널·제니퍼 이벤트·연관 알람·최근 변경)을 돈다"
+)
+#: 실행 기록 라벨의 원시 키 → 사용자 말(plans/196 D6) — 플레이북 ID·심층 모드.
+PLAYBOOK_LABELS: dict[str, str] = {"fallback": "공통 점검", APM_FALLBACK_ID: "WAS 공통 점검"}
+DEEP_MODE_LABELS: dict[str, str] = {"parallel": "병렬", "conditional": "조건부", "off": "끔"}
+#: 재조회(plans/196 §5.2 `rerun`)는 심층 조사를 돌지 않는다 — 폴스타 축 재조회 + 종합만.
+DEEP_SKIP_RERUN = "심층 생략 — 재조회(폴스타 축 단계만 다시 조회 · 종합만 다시 수행)"
 HOLMES_PURPOSE = "정해진 절차가 없어 HolmesGPT가 도구를 직접 골라 알람 원인을 찾는다"
 DEEP_PURPOSES: dict[str, str] = {
     "parallel": "플레이북과 따로 두 번째 의견을 낸다(플레이북 결과를 넘기지 않음)",
@@ -1228,7 +1239,7 @@ class InvestigationDispatcher:
         log = _activity(job)
         if log is not None:
             safe_append(log, "deep_start", engine="system",
-                        label=f"심층 조사(HolmesGPT) 시작 — {mode}",
+                        label=f"심층 조사(HolmesGPT) 시작 — {DEEP_MODE_LABELS.get(mode, mode)}",
                         purpose=DEEP_PURPOSES.get(mode))
         deep = _Background(
             self._diagnose_for(deep_job), deep_job, f"sre-deep-{str(job.investigation_id)[:8]}"
@@ -1530,7 +1541,7 @@ class InvestigationDispatcher:
             if spec is None or spec.narrate is None:
                 return entry  # 소견 대상 아님 — opinion 키 없음
             if status != "ok":
-                reason = STEP_STATUS_NO_OPINION.format(status=status)
+                reason = STEP_STATUS_NO_OPINION.format(status=step_status_label(status))
             elif flow.stream is None:
                 reason = flow.no_stream_reason or NOT_CONFIGURED
             else:
@@ -1699,10 +1710,15 @@ class InvestigationDispatcher:
         """
         deadline = started + self._timeout
         # (plans/187 W17) 어떤 플레이북을 왜 골랐는지 — 실행 기록 맨 앞(스텝·심층 시작보다 먼저)
-        safe_append(_activity(job), "started", engine="playbook", label=f"플레이북 {pb.id} 선택",
-                    purpose=playbook_purpose(matched_by))
+        safe_append(_activity(job), "started", engine="playbook",
+                    label=f"플레이북 {PLAYBOOK_LABELS.get(pb.id, pb.id)} 선택",
+                    purpose=APM_FALLBACK_PURPOSE if pb.id == APM_FALLBACK_ID
+                    else playbook_purpose(matched_by))
         mode, degrade = self._deep_mode(pb)
-        forced = pb.is_fallback  # fallback 플레이북은 모드와 무관하게 심층을 돈다
+        # fallback 플레이북(호스트·APM 공통 점검)은 모드와 무관하게 심층을 돈다
+        forced = pb.is_fallback or pb.id == APM_FALLBACK_ID
+        if rerun_hint(job.payload or {}) is not None:
+            mode, degrade, forced = "off", DEEP_SKIP_RERUN, False
         deep_state: dict = {"status": "pending", "mode": mode, "reason": degrade,
                             "label": DEEP_DIVE_LABEL}
         deep: _Background | None = None
@@ -1772,7 +1788,7 @@ class InvestigationDispatcher:
             triggered = forced or bool(synth.get("top_inconclusive")) or missing >= 2
             pinned_ke = [k["id"] for k in run.known_errors if k.get("pinned")]
             if mode == "off" and not forced:
-                status, reason = "skipped", DEEP_SKIP_MODE_OFF
+                status, reason = "skipped", degrade or DEEP_SKIP_MODE_OFF
             elif pinned_ke and not forced:
                 status = "skipped"
                 ke_skip = DEEP_SKIP_KNOWN_ERROR.format(ids=", ".join(pinned_ke))
@@ -1824,7 +1840,7 @@ class InvestigationDispatcher:
                 status = "done"
             if log is not None:
                 safe_append(log, "deep_end", engine="system", status=status,
-                            label=f"심층 조사(HolmesGPT) 종료 — {status}")
+                            label=f"심층 조사(HolmesGPT) 종료 — {step_status_label(status)}")
         result = deep.result if (deep is not None and status == "done") else None
         self._finish_playbook(job, started, run, block, pb, mode, status, reason,
                               degrade, result, pb_outputs, cache, gate_severity, gate_tier)

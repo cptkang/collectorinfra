@@ -169,6 +169,10 @@ class _WorkerEpisodeHost:
         return self._w._sre_agent_client
 
     @property
+    def redis(self) -> Any:
+        return getattr(self._w, "_redis", None)
+
+    @property
     def incident_publisher(self) -> Any:
         return self._w._incident_publisher
 

@@ -35,6 +35,7 @@ from sre_agent.application.playbook_steps import (
 )
 from sre_agent.domain import source_adapter as sa
 from sre_agent.domain.playbook import (
+    APM_FALLBACK_ID,
     FALLBACK_ID,
     STEP_ACTIONS,
     AlarmFacts,
@@ -51,6 +52,7 @@ _APM = "apm.Instance"
 CATALOG_IDS = sorted(
     [
         "was.latency", "was.error", "was.active", "was.heap", "was.pool",
+        "was.sql", APM_FALLBACK_ID,  # plans/196 D2
         "host.cpu", "host.memory", "host.fs", "host.disk_io", "host.process", "host.network",
         FALLBACK_ID,
     ]
@@ -63,6 +65,8 @@ TYPE_TABLE: list[tuple[str, AlarmFacts, str]] = [
     ("was.active", AlarmFacts(_APM, "apm", ("was_service_queuing",)), "was.active"),
     ("was.heap", AlarmFacts(_APM, "apm", ("was_heap_pressure",)), "was.heap"),
     ("was.pool", AlarmFacts(_APM, "apm", ("was_db_pool_exhaustion",)), "was.pool"),
+    ("was.sql", AlarmFacts(_APM, "apm", ("was_sql_pattern",)), "was.sql"),  # plans/196 D2
+    ("was.unmatched", AlarmFacts(_APM, "apm", ()), APM_FALLBACK_ID),  # plans/196 D2 ②
     ("host.cpu", AlarmFacts("server", "cpu", ()), "host.cpu"),
     ("host.memory", AlarmFacts("server", "memory", ()), "host.memory"),
     ("host.fs", AlarmFacts("server", "disk", ("filesystem",)), "host.fs"),
@@ -171,7 +175,9 @@ def test_priorities_unique(playbooks) -> None:
 
 def test_was_types_require_apm_resource_type(playbooks) -> None:
     for pb in playbooks.values():
-        if pb.id.startswith("was."):
+        if pb.id == APM_FALLBACK_ID:  # APM 공통 점검 — 자원 유형만(plans/196 D2 ②)
+            assert pb.match.resource_type == _APM and not pb.match.any_kind
+        elif pb.id.startswith("was."):
             assert pb.match.resource_type == _APM and pb.match.any_kind
         elif pb.id.startswith("host."):
             assert pb.match.alarm_kind and pb.match.resource_type is None
@@ -181,7 +187,7 @@ def test_surface_terms_consistent_with_classify_alarm_kind(playbooks) -> None:
     """W12 표면어 — host.*는 `classify_alarm_kind`와 같은 kind, was.*는 OS kind에 걸리지 않는다."""
     seen: dict[str, str] = {}
     for pb in playbooks.values():
-        if pb.is_fallback:
+        if pb.is_fallback or pb.id == APM_FALLBACK_ID:  # 공통 점검은 증상 질의로 고르지 않는다
             assert pb.match.surface_terms == []
             continue
         assert pb.match.surface_terms, pb.id

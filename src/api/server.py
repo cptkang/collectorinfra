@@ -890,6 +890,11 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     application.include_router(admin_components.router, prefix="/api/v1", tags=["admin"])
     # (plans/194 W5 · C5) 관리자 조사 설정 요약 — 읽기 전용(모드·상한·조사 서비스 부하)
     application.include_router(admin_investigation.router, prefix="/api/v1", tags=["admin"])
+    # (plans/196) 관리자 「호스트 연결」 — NOISE_HOST_LINK_ENABLED 켰을 때만 등록(기동 시 1회).
+    if config.noise_gate.host_link_enabled:
+        from src.api.routes import admin_host_links
+
+        application.include_router(admin_host_links.router, prefix="/api/v1", tags=["admin"])
     # (Plan 54) 알람 노이즈 캔슬링 관제 — 운영자 JWT 뒤의 집계·조회·침묵 관리.
     application.include_router(
         noise_dashboard.router, prefix="/api/v1", tags=["noise-console"]

@@ -31,6 +31,9 @@ from sre_agent.domain.playbook_expr import STEP_ID_PATTERN, Expr, compile_expr
 
 #: fallback 플레이북 ID — 어떤 유형에도 맞지 않으면 이것을 고른다(§4.1 · G-3).
 FALLBACK_ID = "fallback"
+#: APM 알람용 공통 점검 플레이북 ID(plans/196 D2 ②) — 유형 플레이북에 맞지 않는 APM 알람이
+#: 호스트용 fallback 대신 고른다(`match.resource_type: apm.Instance` · 최하위 우선순위).
+APM_FALLBACK_ID = "was.fallback"
 
 #: 스텝 액션 화이트리스트 — §5.3 스텝 라이브러리 S0~S9 + §4.1 표의 보조 액션
 #: (액션 ID만 · 도구명 없음).

@@ -73,6 +73,26 @@ STATUS_LABELS: dict[str, str] = {
     "skipped": "생략",
     "pending_synthesis": "종합 대기",
 }
+#: 단계 상태 원시값 → 사용자 화면 라벨(plans/196 D6 · §5.3). 스텝 상태(ok·missing·skipped·
+#: pending_synthesis)와 심층 조사 상태(running·done·failed·timeout)를 함께 둔다.
+STEP_STATUS_LABELS: dict[str, str] = {
+    "ok": "완료",
+    "missing": "수집 결손",
+    "skipped": "생략",
+    "pending_synthesis": "종합 대기",
+    "pending": "대기",
+    "running": "진행 중",
+    "done": "완료",
+    "failed": "실패",
+    "timeout": "시간 초과",
+}
+
+
+def step_status_label(status: object) -> str:
+    """단계 상태 원시값의 한국어 라벨 — 모르는 값은 원문 그대로(침묵 대체 금지)."""
+    return STEP_STATUS_LABELS.get(str(status), str(status))
+
+
 KIND_LABELS: dict[str, str] = {
     "cpu": "CPU",
     "memory": "메모리",
@@ -455,6 +475,25 @@ def _generic(section: Mapping[str, Any], readings: Mapping[str, Any]) -> str | N
     return out
 
 
+#: ITSM 미연동 꼬리(plans/196 D4 ③ — 해석 근거에서 빼고 결과 줄 끝에만).
+ITSM_NOT_CONNECTED_TAIL = " · ITSM 미연동"
+
+
+def _with_axes(section: Mapping[str, Any], readings: Mapping[str, Any]) -> str | None:
+    """일반 문형 + 축별 결정적 요약(S5·S7 — plans/196 D4) + ITSM 미연동 꼬리."""
+    text = _generic(section, readings)
+    if text is None:
+        return None
+    data = _data(section)
+    summary = data.get("axes_summary")
+    if isinstance(summary, str) and summary:
+        text += f" — {_clip(summary, _REASON_CHARS)}"
+    itsm = _map(_map(data.get("axes")).get("itsm"))
+    if itsm.get("reason") == "not_connected":
+        text += ITSM_NOT_CONNECTED_TAIL
+    return text
+
+
 #: 액션 → 정교 문형(그 밖은 일반 문형).
 PRECISE_ACTIONS: dict[str, Callable[[Mapping[str, Any], Mapping[str, Any]], str | None]] = {
     "host.usage_trend": _usage_trend,
@@ -465,6 +504,8 @@ PRECISE_ACTIONS: dict[str, Callable[[Mapping[str, Any], Mapping[str, Any]], str 
     "apm.active_sql": _active_sql,
     "apm.slow_tx_breakdown": _slow_tx,
     "apm.golden_signals": _golden_signals,
+    "xsource.related_alarms": _with_axes,
+    "change.recent": _with_axes,
 }
 
 
@@ -911,6 +952,8 @@ __all__ = [
     "READING_LABELS",
     "REALTIME_DRIFT_MINUTES",
     "REALTIME_DRIFT_NOTE",
+    "ITSM_NOT_CONNECTED_TAIL",
+    "STEP_STATUS_LABELS",
     "TOOL_PHRASES",
     "WHEN_SKIP_FALLBACK",
     "WHEN_UNKNOWN",
@@ -919,6 +962,7 @@ __all__ = [
     "fmt_number",
     "josa",
     "skip_because",
+    "step_status_label",
     "summarize",
     "tool_phrase",
     "when_because",
