@@ -7,13 +7,18 @@ PostgreSQL(asyncpg 풀) · DB2(ibm_db, asyncio.to_thread 래핑) · MariaDB(aiom
 `validate_readonly`를 거치고(완전 중재 — 도구·스키마 헬퍼·exporter·헬스체크 공통), 연결은 세션
 읽기 전용으로 연다(PostgreSQL·MariaDB). 세션 읽기 전용은 보조 수단이다 — 같은 세션에서 되돌릴 수
 있으므로 본질은 SELECT 권한만 가진 접속 계정이다.
+
+조회 대상 보호(plans/194 W4a · D-347): 소스별 동시 실행 상한(`asyncio.Semaphore`)과 대기
+타임아웃을 `execute`에 건다. 넘치면 무기한 줄 서지 않고 `QueryQueueTimeoutError`로 끊는다.
 """
 
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import time
+from collections.abc import AsyncIterator
 from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Optional
@@ -24,6 +29,22 @@ from mcp_server.config import SourceConfig
 from mcp_server.security import validate_readonly
 
 logger = logging.getLogger(__name__)
+
+
+class QueryQueueTimeoutError(Exception):
+    """소스별 동시 실행 상한에 걸려 대기 타임아웃 안에 실행 슬롯·연결을 얻지 못했다(D-347).
+
+    도구는 기존 관행대로 `{"error": str(e)}`로 돌려준다 — 메시지가 곧 사용자 안내다.
+    """
+
+
+def _queue_timeout_message(src: SourceConfig) -> str:
+    """대기 초과 안내 문구 — 소스·동시 상한·대기 시간을 싣는다(SQL·연결 문자열은 싣지 않는다)."""
+    return (
+        f"대상 DB 조회 대기 초과(소스 {src.name} · "
+        f"동시 {src.effective_max_concurrent()}건 진행 중 · "
+        f"{src.effective_queue_timeout():g}초 대기) — 잠시 뒤 다시 시도하세요"
+    )
 
 
 class DBPoolManager:
@@ -39,6 +60,13 @@ class DBPoolManager:
         self._pg_pools: dict[str, Any] = {}  # asyncpg.Pool
         self._db2_configs: dict[str, SourceConfig] = {}
         self._mariadb_pools: dict[str, Any] = {}  # aiomysql.Pool
+        # 소스별 동시 실행 상한(D-347). D-162(무기한 대기 허용) 예외 — 조사 1건이 폴스타 MCP를
+        # 최대 16건 동시 호출하고 조사 수만큼 곱해져, 상한·타임아웃 없이는 프로세스 안 대기열이
+        # 끝없이 자라 행(hang)이 된다. 기본 상한 = 풀 크기라 정상 부하(풀 크기 이하)는 무대기.
+        self._query_limits: dict[str, asyncio.Semaphore] = {
+            name: asyncio.Semaphore(src.effective_max_concurrent())
+            for name, src in self._sources.items()
+        }
 
     async def initialize(self) -> None:
         """활성 소스에 대해 연결을 초기화한다."""
@@ -130,6 +158,7 @@ class DBPoolManager:
         Raises:
             ValueError: 알 수 없는 소스명
             ReadOnlyViolationError: readonly 소스에 읽기 전용이 아닌 SQL
+            QueryQueueTimeoutError: 소스 동시 상한 대기 초과(D-347)
         """
         if source_name in self._pg_pools:
             runner = self._execute_pg
@@ -146,7 +175,8 @@ class DBPoolManager:
         started = time.perf_counter()
         try:
             self._guard_readonly(source_name, sql)
-            rows = await runner(source_name, sql)
+            async with self._query_slot(source_name):
+                rows = await runner(source_name, sql)
         except Exception as e:
             sql_log.log_sql(
                 sql,
@@ -163,6 +193,28 @@ class DBPoolManager:
         )
         return rows
 
+    @contextlib.asynccontextmanager
+    async def _query_slot(self, source_name: str) -> AsyncIterator[None]:
+        """소스 동시 실행 슬롯을 대기 타임아웃 안에 얻는다. 못 얻으면 `QueryQueueTimeoutError`.
+
+        슬롯이 비어 있으면 즉시 통과한다. 타임아웃은 대기에만 걸린다 — 실행 시간은 엔진별
+        `query_timeout`이 맡는다.
+        """
+        src = self._sources[source_name]
+        limit = self._query_limits[source_name]
+        try:
+            await asyncio.wait_for(limit.acquire(), timeout=src.effective_queue_timeout())
+        except TimeoutError:
+            logger.warning(
+                "조회 대기 초과 (%s): 동시 상한 %d · 대기 %gs",
+                source_name, src.effective_max_concurrent(), src.effective_queue_timeout(),
+            )
+            raise QueryQueueTimeoutError(_queue_timeout_message(src)) from None
+        try:
+            yield
+        finally:
+            limit.release()
+
     def _guard_readonly(self, source_name: str, sql: str) -> None:
         """readonly 소스면 `validate_readonly`를 건다. 설정이 없는 소스도 검사한다(실패 시 닫힘).
 
@@ -173,17 +225,29 @@ class DBPoolManager:
             validate_readonly(sql)
 
     async def _execute_pg(self, source_name: str, sql: str) -> list[dict[str, Any]]:
-        """PostgreSQL 쿼리를 실행한다."""
+        """PostgreSQL 쿼리를 실행한다.
+
+        풀 연결 대기에도 대기 타임아웃을 건다(D-347) — 동시 상한을 풀 크기보다 크게 잡았거나
+        헬스체크가 연결을 쥔 경우의 무기한 대기를 막는다. 실행 timeout(`command_timeout`)과
+        구분하려고 acquire만 따로 감싼다(둘 다 `TimeoutError`다).
+        """
         pool = self._pg_pools[source_name]
-        async with pool.acquire() as conn:
+        src = self._sources[source_name]
+        try:
+            conn = await pool.acquire(timeout=src.effective_queue_timeout())
+        except TimeoutError:
+            raise QueryQueueTimeoutError(_queue_timeout_message(src)) from None
+        try:
             rows = await conn.fetch(sql)
             return [_normalize_row(dict(r)) for r in rows]
+        finally:
+            await pool.release(conn)
 
     async def _execute_db2(self, source_name: str, sql: str) -> list[dict[str, Any]]:
         """DB2 쿼리를 실행한다 (ibm_db를 asyncio.to_thread로 래핑)."""
         src = self._db2_configs[source_name]
         return await asyncio.to_thread(
-            self._execute_db2_sync, src.connection, sql
+            self._execute_db2_sync, src.connection, sql, src.query_timeout
         )
 
     async def _execute_mariadb(
@@ -203,13 +267,22 @@ class DBPoolManager:
                 return [_normalize_row(dict(r)) for r in rows]
 
     @staticmethod
-    def _execute_db2_sync(conn_str: str, sql: str) -> list[dict[str, Any]]:
-        """DB2 동기 쿼리를 실행한다."""
+    def _execute_db2_sync(
+        conn_str: str, sql: str, query_timeout: int = 0
+    ) -> list[dict[str, Any]]:
+        """DB2 동기 쿼리를 실행한다.
+
+        `query_timeout`(초)이 양수면 statement 옵션 `SQL_ATTR_QUERY_TIMEOUT`으로 건다(D-347).
+        """
         import ibm_db
 
         conn = ibm_db.connect(conn_str, "", "")
         try:
-            stmt = ibm_db.exec_immediate(conn, sql)
+            options = _db2_statement_options(ibm_db, query_timeout)
+            if options:
+                stmt = ibm_db.exec_immediate(conn, sql, options)
+            else:
+                stmt = ibm_db.exec_immediate(conn, sql)
             rows: list[dict[str, Any]] = []
             row = ibm_db.fetch_assoc(stmt)
             while row:
@@ -286,6 +359,21 @@ class DBPoolManager:
             except Exception as e:
                 logger.warning("MariaDB 풀 종료 실패 (%s): %s", name, e)
         self._mariadb_pools.clear()
+
+
+def _db2_statement_options(ibm_db: Any, query_timeout: int) -> dict[int, int]:
+    """DB2 statement 옵션 — 쿼리 타임아웃(초)을 `SQL_ATTR_QUERY_TIMEOUT`으로 싣는다(D-347).
+
+    ibm_db가 루트 venv에 없어 상수를 실측하지 못했다(plans/194 W4a) — 상수가 없는 빌드면
+    경고를 남기고 옵션 없이 실행한다(종전 동작). 내부망 설치본에서 확인이 필요하다.
+    """
+    if query_timeout <= 0:
+        return {}
+    attr = getattr(ibm_db, "SQL_ATTR_QUERY_TIMEOUT", None)
+    if attr is None:
+        logger.warning("ibm_db에 SQL_ATTR_QUERY_TIMEOUT 없음 — DB2 쿼리 타임아웃 미적용")
+        return {}
+    return {attr: int(query_timeout)}
 
 
 # 세션 읽기 전용 변수명 — MariaDB 11.1부터 `transaction_read_only`, 그 전(10.x)은 `tx_read_only`만

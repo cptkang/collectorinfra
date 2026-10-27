@@ -16,7 +16,7 @@ SPEC-apm-question-coverage §3.4).
   `[한계]` 메모(`note`)는 봉투 `limits`에, 자격증명 검사가 실제로 가린 칸 이름(`masked`)은 봉투
   고지 `disclosures`(`apm_masked_fields`)에 쓰인다.
 - **동시 폭**: 병렬 헬퍼(`application/parallel.py`)가 겹쳐 부르는 동안 `parallel(폭)` 블록을 연다 —
-  작업은 남은 예상 시간을 그 폭으로 나눠 잡는다(plans/192 · 직렬 루프는 신고하지 않아 폭 1).
+  작업은 남은 예상 시간을 그 폭으로 나눠 잡는다(plans/197 · 직렬 루프는 신고하지 않아 폭 1).
 
 맥락이 없으면(작업 밖 호출) 기본 맥락(`interactive` · 훅 없음 · 메모는 경고 로그)을 쓴다. 표준
 라이브러리만 쓰는 순수 모듈이라 어댑터·애플리케이션 양쪽이 import한다.

@@ -7,6 +7,8 @@
 #   clip      잘라낼 요소(없으면 뷰포트 전체) · pad 여백(px)
 #   callouts  [번호, 셀렉터] — 매뉴얼 「화면 요소」 표의 번호와 같다. 대상이 없으면 캡처 실패
 #   theme     dark 면 다크 테마
+#   routes    응답 가로채기 [{url, sse|json|merge, status, method}] — Redis·조사 서비스 없이 화면 상태를 만든다(capture._route)
+#             merge: 실제 응답(JSON 객체)을 받아 적은 키만 덮어쓴다
 captures:
   # ── 사용자: 시작하기 ─────────────────────────────────────
   - id: login
@@ -403,6 +405,121 @@ captures:
     steps:
       - goto: /noise
       - wait: 2500
+  # 포털 「노이즈 관제」 탭(plans/193 · U-44) — 캡처 서버 프로필은 플래그(NOISE_CONSOLE_PORTAL_TAB_ENABLED)가 꺼져 있어
+  # 다른 포털 캡처(머리글 등)는 종전 그대로다. 이 장면만 기능 조회 응답에 `noise_console_portal_tab: true`를 얹는다
+  # (예시 — 실제 응답을 받아 그 키만 바꾼다 · 나머지 필드는 실제 응답 그대로)
+  - id: noise-portal-tab
+    login: user
+    routes:
+      - {url: "**/api/v1/alarm/capabilities", merge: {noise_console_portal_tab: true}}
+    steps:
+      - wait: "#noiseTab"
+      # 플래그 on이면 머리글 링크는 숨김이 아니라 DOM에서 빠진다(assert_hidden은 요소가 있어야 판정한다)
+      - eval: "(() => { if (document.getElementById('noiseConsoleLink')) throw new Error('머리글 노이즈 관제 링크가 남아 있다'); })()"
+      - click: "#noiseTab"
+      - wait: "#noiseView #decisionBody tr"
+      - wait: 2500
+    callouts: [[1, "#noiseTab"], [2, "#noiseView .noise-top"]]
+  # 장애 진단 탭·조사 대화(plans/187 U-70·U-63) — 실시간 화면을 켠 capture-diag 서버에서만 탭이 보인다.
+  # 예시 조사·실행 기록 요약은 손으로 만든 것(fixtures/alarms/briefing.json · 모두 종결 — 조사 서비스 호출 0)
+  # 장애 진단 탭은 조사 흐름 예시(inv-manual-flow · plans/187 W20)를 연다
+  - id: diagnosis-tab
+    server: capture-diag
+    login: admin
+    height: 2300
+    steps:
+      - goto: /?diagnosis=inv-manual-flow
+      - wait: "#diagnosisView .dv-subtab"
+      - wait: "#diagnosisView .dv-flow .dv-card"
+      - wait: "#diagnosisView .dv-final-body .bv--playbook"
+      - wait: 800
+    callouts: [[1, ".view-tab[data-view='diagnosis']"], [2, "#diagnosisView .dv-tab--list"], [3, "#diagnosisView .dv-subtab"], [4, "#diagnosisView .dv-target"], [5, "#diagnosisView .dv-modes"], [6, "#diagnosisView .dv-flow"], [7, "#diagnosisView .dv-open-conv"]]
+  - id: investigation-conversation
+    server: capture-diag
+    login: admin
+    height: 1100
+    steps:
+      - goto: /?conversation=inv-manual-ep
+      - wait: ".investigation-pin .investigation-pin-body .bv-item--limit"
+      - wait: 800
+    callouts: [[1, "#investigationTab"], [2, "#investigationTabClose"], [3, ".investigation-pin-head"], [4, "#prompt"]]
+  # 수동 조사 장면(plans/194 · U-71·U-70·U-44·A-83) — capture-diag(조사 서비스 주소 = 닫힌 포트 · 수동 조사 기본 on ·
+  # 자동 조사 off)에서만 「조사」 칸이 보인다. 알람 카드는 알람 스트림을, 접수·대기·운영 요약은 그 응답을 가로챈
+  # 예시(접수 응답 계약 모양) — 조사 서비스 호출 0 · LLM 0
+  - id: alarm-inv-start
+    server: capture-diag
+    login: admin
+    routes:
+      - {url: "**/api/v1/alarm/notifications/stream", sse: alarms/inv_start.json}
+    steps:
+      - click: ".view-tab[data-view='alarm']"
+      - wait: "#alarmList .message--alarm .alarm-inv-section"
+      - wait: 600
+    clip: "#alarmList .message--alarm"
+    pad: 8
+    callouts: [[1, "#alarmList .alarm-inv-section .bv-chip"], [2, "#alarmList .inv-start-btn"], [3, "#alarmList .alarm-inv-body .bv-meta"]]
+  - id: alarm-inv-reject
+    server: capture-diag
+    login: admin
+    routes:
+      - {url: "**/api/v1/alarm/notifications/stream", sse: alarms/inv_start.json}
+      - url: "**/api/v1/alarm/MANUAL-INV-WEB03/investigations"
+        method: POST
+        json: {investigation_id: inv-manual-rejected, status: rejected, joined: false, reason: host_investigation_in_flight,
+               reason_text: "같은 서버를 조사 중입니다 — 진행 중인 조사가 끝난 뒤 다시 요청하세요.", existing_investigation_id: inv-manual-cpu}
+    steps:
+      - click: ".view-tab[data-view='alarm']"
+      - wait: "#alarmList .message--alarm .inv-start-btn"
+      - wait: 600
+      - click: "#alarmList .inv-start-btn"
+      - wait: "#alarmList .inv-start-msg .inv-go"
+      - wait: 600
+    clip: "#alarmList .message--alarm"
+    pad: 8
+    callouts: [[1, "#alarmList .inv-start-msg .bv-note span"], [2, "#alarmList .inv-start-msg .inv-go"]]
+  - id: alarm-inv-queued
+    server: capture-diag
+    login: admin
+    routes:
+      - {url: "**/api/v1/alarm/notifications/stream", sse: alarms/inv_queued.json}
+      - url: "**/api/v1/alarm/investigations/by-alarm/MANUAL-INV-WEB03*"
+        json: {investigation_id: inv-manual-queued, status: submitted, kind: manual, phase: queued, queue_position: 2,
+               service_load: {running: 2, queued: 2}, briefing_lines: [], previous: []}
+    steps:
+      - click: ".view-tab[data-view='alarm']"
+      - wait: "#alarmList .message--alarm .alarm-briefing-toggle"
+      - wait: 600
+      - click: "#alarmList .alarm-briefing-toggle"
+      - wait: "#alarmList .alarm-briefing-body .bv-chip--hold"
+      - wait: 600
+    clip: "#alarmList .message--alarm"
+    pad: 8
+    callouts: [[1, "#alarmList .alarm-briefing-body .bv-chip--hold"], [2, "#alarmList .alarm-briefing-body .bv-head + .bv-meta"], [3, "#alarmList .diagnosis-open"]]
+  - id: diagnosis-event-search
+    server: capture-diag
+    login: admin
+    height: 1000
+    steps:
+      - click: ".view-tab[data-view='diagnosis']"
+      - wait: "#diagnosisView .dv-search-btn"
+      - wait: 1500
+      - click: "#diagnosisView .dv-search-btn"
+      - wait: "#diagnosisView .dv-search-row"
+      - wait: 1000
+    callouts: [[1, "#diagnosisView .dv-search-tier"], [2, "#diagnosisView .dv-search-check"], [3, "#diagnosisView .dv-search-statecol"], [4, "#diagnosisView .dv-search-row .dv-start-btn"], [5, "#diagnosisView .dv-search-go"]]
+  - id: noise-drawer-manual
+    server: capture-diag
+    login: admin
+    steps:
+      - goto: /noise
+      - wait: "#decisionBody tr"
+      - wait: 2500
+      - click: "#decisionBody tr:has-text('svr-web-03') >> nth=0"
+      - wait: "#drawer .noise-mode-chip"
+      - wait: 800
+      - scroll: "#drawer .noise-mode-chip"
+      - wait: 400
+    callouts: [[1, ".noise-mode-chip--top"], [2, "#drawer .noise-mode-chip"], [3, "#drawer [data-bv-action='analyze']"]]
   - id: noise-drawer
     login: user
     steps:
@@ -425,7 +542,7 @@ captures:
       - wait: 800
     clip: "#drawer"
     pad: 0
-    callouts: [[1, "#drawerSummary .tier-shift"], [2, "#drawerSummary .drawer-summary-text"], [3, "#drawerCause .cause-handling"], [4, "#drawerCause .cause-ai"], [5, "#drawerCause .cause-briefing"]]
+    callouts: [[1, "#drawerSummary .tier-shift"], [2, "#drawerSummary .drawer-summary-text"], [3, "#drawerCause .cause-handling"], [4, "#drawerCause .cause-ai"], [5, "#drawerCause .cause-briefing"], [6, "#drawerCause .cause-live-open"]]
   - id: noise-admin
     login: admin
     steps:
@@ -475,14 +592,37 @@ captures:
       - goto: /admin
       - wait: ".settings-group"
     callouts: [[1, ".tabs, .admin-tabs, nav"], [2, "#themeToggle"], [3, "#logoutBtn"]]
+  # 설정 탭 장면은 「알람 조사 — 운영 요약」(A-83) 칸이 함께 찍힌다 — 그 응답을 예시로 가로채 조사 서비스 연결 실패 문구 대신
+  # 예시 값으로 찍는다(capture 프로필의 조사 서비스 주소는 열려 있지 않다 · 실호출 0)
   - id: settings-list
     login: admin
+    routes: &INV_SUMMARY
+      - url: "**/api/v1/admin/investigation/summary"
+        json: {mode: {auto_enabled: false, manual_enabled: true},
+               limits: {max_concurrent: 2, max_queued: 4, per_user_active: 1, per_user_hourly: 3, tool_global_concurrency: 8, hourly_budget: 20},
+               load: {running: 1, queued: 0, abandoned_slots: 0, abandoned_threads: 0},
+               checked_at: "2026-10-26T01:15:20+00:00", service_error: null}
     steps:
       - goto: /admin
       - wait: ".settings-group"
     callouts: [[1, "#settingsSearch"], [2, "#toggleAllGroupsBtn"], [3, "#reloadSettingsBtn"], [4, "#saveSettingsBtn"]]
+  # 알람 조사 운영 요약(plans/194 · A-83) — 조사 서비스 주소가 있는 capture-diag 에서 찍고, 요약 응답은 예시로 가로챈다
+  # (조사 서비스 실호출 0 — 가로채지 않으면 서비스 칸이 「확인 불가」 + 연결 실패 사유로 찍힌다)
+  - id: admin-inv-summary
+    server: capture-diag
+    login: admin
+    routes: *INV_SUMMARY
+    steps:
+      - goto: /admin
+      - wait: "#investigationSummary .inv-summary__table"
+      - wait: 600
+    clip: "#investigationSummary"
+    pad: 8
+    callouts: [[1, "#investigationSummary .inv-summary__mode"], [2, "#investigationSummary .inv-summary__table"], [3, "#investigationSummary .inv-summary__gauges"], [4, "#refreshInvestigationSummaryBtn"]]
   - id: settings-group
     login: admin
+    routes: *INV_SUMMARY
+    height: 1300
     steps:
       - goto: /admin
       - wait: ".settings-group"
@@ -490,6 +630,8 @@ captures:
       - wait: 300
   - id: settings-help
     login: admin
+    routes: *INV_SUMMARY
+    height: 1300
     steps:
       - goto: /admin
       - wait: ".settings-group"
@@ -498,6 +640,7 @@ captures:
       - wait: 800
   - id: settings-diff
     login: admin
+    routes: *INV_SUMMARY
     steps:
       - goto: /admin
       - wait: ".settings-group"

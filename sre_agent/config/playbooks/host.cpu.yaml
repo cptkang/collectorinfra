@@ -1,7 +1,7 @@
 # 호스트 CPU 과다 플레이북 (plans/187 §4.1 host.cpu · §5.2 · §5.7.2 · D-341)
 # 액션 ID만 쓴다 — 도구명은 스텝 라이브러리(application)에만 둔다(§5.2).
 id: host.cpu
-version: 1
+version: 4
 match:
   alarm_kind: cpu                        # classify_alarm_kind 결과
   surface_terms: [CPU, CPU 사용률, CPU 과다]
@@ -16,17 +16,42 @@ steps:
     action: host.process_top
     args: {top_n: 10, sort: cpu}
     narrate: {focus: "CPU 상위 프로세스와 그 비중", max_sentences: 3}
-  - id: S5
-    action: xsource.related_alarms
-    narrate: {focus: "알람 전후 선행·동시·후행 알람", max_sentences: 3}
   - id: S0r
     action: scope.host_to_was            # 역방향 — 이 호스트의 WAS 인스턴스(제니퍼 미배포면 생략)
+    timeout_s: 120                       # 인스턴스 수만큼 app_health — 실행기 기본 90s 대신(W21 P3 · W22 60→120 · 수집 예산 240s 안)
     narrate: {focus: "이 호스트 WAS 인스턴스의 이상 여부", max_sentences: 2}
+  # S1은 S3a보다 앞에 둔다 — R-E cpu_owner의 부하/로직 구분(TPS 변화)이 S1 결과를 읽는다.
   - id: S1
     action: apm.golden_signals           # WAS 영향 확인 — 이상 인스턴스가 있을 때만
     for_each: targets
     when: "S0r.status == 'ok' and S0r.verdict == 'degraded'"
     narrate: {focus: "이상 WAS 인스턴스의 p95·TPS 변화", max_sentences: 3}
+  - id: S2
+    action: apm.runtime_and_pool         # WAS 프로세스 CPU — R-E cpu_owner 판독 근거(G-49)
+    for_each: host_was                   # 이 호스트 WAS 전부(응답이 정상이어도 — 대상 targets와 별개)
+    when: "S0r.status == 'ok' and S0r.verdict != 'no_was'"
+    narrate:
+      focus: "WAS 프로세스 CPU가 호스트 CPU 상승과 겹치는지"
+      why: "호스트 CPU를 WAS 프로세스가 쓰는지 가려 CPU 주인을 판단한다"
+      max_sentences: 3
+  - id: S3a
+    action: apm.active_services          # CPU 주인 인스턴스의 실행 중 요청(현재값 — 배지)
+    args: {n: 5, target: was_cpu_top}     # 대상 = S2 프로세스 CPU 최대(R-E가 본 인스턴스)
+    when: "S2.status == 'ok' and cpu_owner in ['was_load', 'was_logic']"
+    narrate:
+      focus: "CPU 시간·SQL 수·경과가 큰 실행 중 요청"
+      why: "CPU를 WAS가 쓰고 있어 어떤 요청이 CPU를 쓰는지 본다"
+      max_sentences: 3
+  - id: S3b
+    action: apm.active_sql               # S3a CPU 시간 상위 3건의 실행 중 SQL 문(리터럴 가림)
+    when: "S3a.status == 'ok'"
+    narrate:
+      focus: "CPU 시간 상위 요청이 실행 중인 SQL 문"
+      why: "CPU 시간이 큰 요청이 어떤 SQL을 실행 중인지 본다"
+      max_sentences: 3
+  - id: S5
+    action: xsource.related_alarms
+    narrate: {focus: "알람 전후 선행·동시·후행 알람", max_sentences: 3}
   - id: S7
     action: change.recent
     args: {lookback_hours: 24}

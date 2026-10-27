@@ -63,7 +63,8 @@ def test_arm_env_has_every_table_key(tmp_path: Path) -> None:
     assert env["INVESTIGATION_AUDIT_PATH"] == str(tmp_path / "arm-h4" / "audit.jsonl")
     assert env["CITATION_VALUE_CHECK"] == "true"  # 실험군 플래그
     assert "INVESTIGATION_DEDUP_TTL_SECONDS" not in env
-    assert "INVESTIGATION_HOURLY_BUDGET" not in env
+    # 시간당 상한은 러너가 가드에 닿지 않는 값으로 고정(부모 "5"를 물려받지 않는다 · plans/194 W5)
+    assert env["INVESTIGATION_HOURLY_BUDGET"] == str(runner.BENCH_HOURLY_BUDGET)
     # 부모에게서는 최소 키만 — Gemini·OpenAI 키·임의 비밀이 섞이지 않는다
     assert env["PATH"] == "/usr/bin" and env["HOME"] == "/home/u"
     assert "OPENAI_API_KEY" not in env and "SOME_SECRET" not in env
@@ -266,6 +267,7 @@ def harness(monkeypatch: pytest.MonkeyPatch) -> dict[str, Any]:
             (Path(cwd) / "settings_echo.json").write_text(json.dumps({
                 "model": env["MODEL"], "api_base": env["API_BASE"],
                 "secret_fields_set": {"gemini_api_key": False},
+                "investigation_hourly_budget": int(env["INVESTIGATION_HOURLY_BUDGET"]),
                 "non_default_fields": state["non_default"].get(name[4:], ["model", "api_base"])}))
         return _Popen()
 
@@ -390,7 +392,7 @@ def test_redact_spec_text_flow_block_and_comma() -> None:
     assert runner.redact_spec(spec)["x"] == {"api_key": "<unset>", "other_key": "<set>"}
 
 
-@pytest.mark.parametrize("extra", [["investigation_hourly_budget"], ["severity_judge_enabled"]])
+@pytest.mark.parametrize("extra", [["investigation_dedup_ttl_seconds"], ["severity_judge_enabled"]])
 def test_echo_with_outside_settings_aborts(tmp_path: Path, harness: dict[str, Any],
                                            extra: list[str]) -> None:
     """에코의 기본값과 다른 필드가 러너·명세 밖이면(.env 유입 등) 실행 전에 멈춘다."""
@@ -402,12 +404,17 @@ def test_echo_with_outside_settings_aborts(tmp_path: Path, harness: dict[str, An
 
 def test_verify_echo_rules() -> None:
     base = {"model": "m", "api_base": "a", "secret_fields_set": {"gemini_api_key": False},
-            "investigation_hourly_budget": None, "investigation_dedup_ttl_seconds": None,
+            "investigation_hourly_budget": runner.BENCH_HOURLY_BUDGET,
+            "investigation_dedup_ttl_seconds": None,
             "non_default_fields": ["api_base", "max_steps", "model"]}
     assert runner.verify_echo(base, model="m", api_base="a", allowed_fields={"max_steps"}) == []
     assert runner.verify_echo(base, model="m", api_base="a", allowed_fields=set())  # max_steps 밖
     assert runner.verify_echo({**base, "investigation_dedup_ttl_seconds": 60}, model="m",
                               api_base="a", allowed_fields={"max_steps"})
+    # 시간당 상한이 러너 값이 아니면(코드 기본 20 · .env 값 · 가드 off None) 멈춘다(plans/194 W5)
+    for budget in (20, None, 5):
+        assert runner.verify_echo({**base, "investigation_hourly_budget": budget}, model="m",
+                                  api_base="a", allowed_fields={"max_steps"})
     no_list = {k: v for k, v in base.items() if k != "non_default_fields"}
     assert runner.verify_echo(no_list, model="m", api_base="a", allowed_fields={"max_steps"})
     assert runner.spec_fields({"base_env": {"MAX_STEPS": 3}, "arms": {"h": {"X_Y": 1}}},

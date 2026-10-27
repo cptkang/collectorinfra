@@ -13,7 +13,7 @@ import re
 from collections.abc import Mapping
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Optional
+from typing import Any
 
 logger = logging.getLogger(__name__)
 
@@ -153,6 +153,10 @@ class OpenMetricsConfig:
     bridge_sources: list[OpenMetricsBridgeSource] = field(default_factory=list)
 
 
+#: 풀 없는 DB2(요청별 연결)의 동시 실행 상한 기본값(plans/194 W4a · D-347).
+DB2_DEFAULT_MAX_CONCURRENT = 4
+
+
 @dataclass
 class SourceConfig:
     """데이터소스 설정."""
@@ -165,6 +169,26 @@ class SourceConfig:
     max_rows: int = 10000
     pool_min_size: int = 1
     pool_max_size: int = 5
+    # 동시 실행 상한·대기 타임아웃(plans/194 W4a · D-347). None = 자동 — 아래 effective_* 참조.
+    max_concurrent_queries: int | None = None
+    queue_timeout_seconds: int | None = None
+
+    def effective_max_concurrent(self) -> int:
+        """소스 동시 실행 상한. 미기재면 풀 크기(풀 없는 DB2는 `DB2_DEFAULT_MAX_CONCURRENT`).
+
+        풀 크기와 같게 두면 풀 크기 이하 동시 요청은 대기 없이 그대로 실행된다(현행과 같음).
+        """
+        if self.max_concurrent_queries is not None:
+            return self.max_concurrent_queries
+        if self.type == "db2":
+            return DB2_DEFAULT_MAX_CONCURRENT
+        return self.pool_max_size
+
+    def effective_queue_timeout(self) -> float:
+        """동시 상한 대기 타임아웃(초). 미기재면 `query_timeout`."""
+        if self.queue_timeout_seconds is not None:
+            return float(self.queue_timeout_seconds)
+        return float(self.query_timeout)
 
 
 @dataclass
@@ -295,6 +319,8 @@ def _load_toml(path: Path) -> AppServerConfig:
             max_rows=src_data.get("max_rows", 10000),
             pool_min_size=src_data.get("pool_min_size", 1),
             pool_max_size=src_data.get("pool_max_size", 5),
+            max_concurrent_queries=_positive_int_or_none(src_data, "max_concurrent_queries"),
+            queue_timeout_seconds=_positive_int_or_none(src_data, "queue_timeout_seconds"),
         )
         sources.append(src)
 
@@ -339,6 +365,22 @@ def _load_toml(path: Path) -> AppServerConfig:
     return AppServerConfig(
         server=server, sources=sources, prometheus=prometheus, openmetrics=openmetrics
     )
+
+
+def _positive_int_or_none(src_data: dict[str, Any], key: str) -> int | None:
+    """`[[sources]]`의 선택 양의 정수 키를 읽는다. 미기재 = None(자동).
+
+    Raises:
+        ValueError: 1 미만이거나 정수가 아닐 때(상한 0은 모든 조회를 막는다 — 기동 실패로 드러낸다).
+    """
+    value = src_data.get(key)
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(
+            f"[[sources]] {src_data.get('name', '')} {key}는 1 이상 정수여야 함: {value!r}"
+        )
+    return value
 
 
 def _parse_openmetrics_targets(raw: list[dict]) -> list[OpenMetricsTarget]:

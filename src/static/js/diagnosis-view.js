@@ -10,8 +10,12 @@
  *   - 연결 상태를 머리에 보인다(● 실시간 / ◌ 재연결 중 / ⚠ 끊김 — 사유). 자동 재연결이 3회 연속
  *     실패하면 15초 커서 조회로 내려가고 그 사실을 보인다(침묵 강등 금지). 60초 무수신이면 「마지막 수신
  *     n초 전」을 덧붙인다. 401·403·404면 다시 연결하지 않는다(재연결 루프 금지 — docs/18 2026-07-14).
- *   - 실행 기록은 최신이 위, 탭당 300행 상한. AI 메모(`kind=ai_note`)는 서버가 관리자에게만 보내며
- *     화면도 운영자가 아니면 버린다(G-38 · D-035 — 결론처럼 보이지 않게 다른 배경 + 「검증 전」 배지).
+ *   - 실행 기록은 최신이 위, 탭당 300행 상한. AI 메모(`kind=ai_note`) 행은 종전대로 운영자 화면에만
+ *     그린다(G-38 · D-035 — 결론처럼 보이지 않게 다른 배경 + 「검증 전」 배지).
+ *   - (plans/187 W20 · §5.6.4 · G-47~G-50) 조사 하위 탭 안에 「조사 흐름」(처음)·「실행 기록」 전환 탭.
+ *     실행 기록 = 위 종전 화면 그대로(숨김만 바꾼다) · 조사 흐름 = 단계 카드(왜 → 조회 → 결과 → 해석)와
+ *     「지금까지」 줄 · HolmesGPT 회차 카드(AI 메모를 「AI 판단 — 검증 전」으로 — G-48 사용자·관리자 모두,
+ *     서버가 두 겹 가림 후 보낸다). 같은 이벤트를 두 보기로 그린다 — 스트림 연결·커서는 하나다.
  *   - 중간 결과는 `briefing-view.js` 상세형 렌더를 그대로 쓴다(새 렌더 0). 종결되면 조사를 다시 읽어
  *     상세형 전체 + [조사 대화로 열기] + 기존 [다시 분석](공용 렌더의 analyze 옵션)을 그린다.
  *
@@ -26,6 +30,9 @@
     "use strict";
 
     var API = "/api/v1/alarm/investigations";
+    // (plans/187 W18) 「이벤트 찾아 조사」 검색 — 지난 알람 검색(G-29)과 같은 판정 기록 사용자 경로
+    var DECISIONS_API = "/api/v1/noise/decisions";
+    var SEARCH_SIZE = 30;
     var ROW_CAP = 300;              // 탭당 화면 행 상한(허브 버퍼 상한과 같다)
     var FAIL_LIMIT = 3;             // 자동 재연결 연속 실패 → 조회 강등
     var FALLBACK_POLL_MS = 15000;   // 강등 시 커서 조회 간격
@@ -47,7 +54,44 @@
         title: "장애 진단",
         readOnly: "읽기 전용 — 조사를 멈추거나 명령을 실행하는 버튼은 없습니다.",
         listTab: "진행 중 목록",
-        listEmpty: "진행 중인 조사가 없습니다.",
+        // (plans/192 W3) 목록 범위 안내 — 「이벤트 찾아 조사」 칸이 숨겨지면(showSearch와 같은 조건) 그 구절을 뺀 문구
+        listEmpty: "진행 중인 조사만 보입니다 — 관리자는 전체, 일반 사용자는 직접 요청한 조사만. 끝난 조사는 이벤트 알람 탭의 지난 알람 검색에서 엽니다. 다시 조사하려면 위 「이벤트 찾아 조사」를 씁니다.",
+        listEmptyNoSearch: "진행 중인 조사만 보입니다 — 관리자는 전체, 일반 사용자는 직접 요청한 조사만. 끝난 조사는 이벤트 알람 탭의 지난 알람 검색에서 엽니다.",
+        // (plans/187 W18) 이벤트 찾아 조사
+        searchTitle: "이벤트 찾아 조사",
+        searchSince: "시작",
+        searchUntil: "끝",
+        searchAlarm: "알람명",
+        searchServer: "서버",
+        searchBtn: "찾기",
+        searchHint: "판정 시각 기준 · 시간을 비우면 최근 24시간(보존 30일) · 최근 30건까지",
+        // (plans/194 W5 · U4) 「조사 상태」 열은 판정 기록에 `investigation` 키가 있을 때만 보인다(구서버 = 종전 4열)
+        searchHead: ["판정 시각", "서버", "알람명", "판정", "조사 상태", ""],
+        searching: "찾는 중…",
+        searchEmpty: "조건에 맞는 알람이 없습니다.",
+        searchCount: "판정 기록 {total}건 중 최근 {n}건",
+        searchFailed: "알람을 찾지 못했습니다 — {reason}",
+        searchBadRange: "시작이 끝보다 늦습니다.",
+        startBtn: "조사 시작",
+        starting: "접수 중…",
+        startJoined: "다른 사용자가 먼저 요청한 조사에 합류했습니다.",
+        startRejected: "조사 서비스가 거부했습니다 — {reason}",
+        startFailed: "조사를 시작하지 못했습니다 — {reason}",
+        // (plans/194 W5 · U2) 접수 거부·합류의 다음 행동 — 카드(app.js)와 이 화면이 함께 쓴다
+        // (plans/192 W2) 진행 중 조사로 가는 버튼도 목적지 규칙 문구 하나로 쓴다
+        viewInDiagnosis: "장애 진단에서 보기",
+        // (U3) 대기 표시 — 동시 조사 수는 서비스 부하(`service_load.running`)가 있을 때만
+        queuedPos: "대기 중 · 순번 {n}",
+        queuedLoad: " / 동시 조사 {m}건 진행 중",
+        // (U4) 이벤트 찾아 조사 — 조사 상태 · 등급 필터 · 「조사 안 됨만」
+        invStates: { none: "조사 안 됨", running: "진행 중", done: "완료", fail: "실패" },
+        tierFilter: "등급",
+        tierAll: "즉시 통보(PAGE) 먼저 · 전체",
+        tierOnly: "{code} — {label}",   // 노이즈 콘솔 KPI 제목과 같은 꼴(「화면 표시만」에 「만」을 겹치지 않는다)
+        uninvestigatedOnly: "조사 안 됨만",
+        searchOrder: "즉시 통보(PAGE) 알람을 위에, 그 안에서는 아직 조사하지 않은 알람을 먼저 보여 줍니다.",
+        filterEmpty: "필터에 맞는 알람이 없습니다.",
+        noAlarmId: "알람 id가 없는 판정 기록이라 조사할 수 없습니다.",
         listFailed: "진행 중 목록을 불러오지 못했습니다 — 사유: {reason}",
         listHead: ["대상", "유형", "엔진", "상태", "경과", "기원"],
         ownerHead: "요청자",
@@ -81,6 +125,22 @@
         loading: "조사 기록을 불러오는 중…",
         loadFailed: "조사 기록을 불러오지 못했습니다 — 사유: {reason}",
         openConversation: "조사 대화로 열기",
+        // (plans/187 W17) 머리 — 어떤 알람·대상을 왜 조사하는지
+        alarmHead: "알람",
+        targetHead: "대상",
+        whyHead: "조사 이유",
+        conditionHead: "조건",
+        alarmUnknown: "알람 정보를 찾지 못했습니다(판정 기록 보존 범위 밖이거나 알람 없는 요청 조사).",
+        // (W23) 조사 대화 카드 머리 — 무엇을 어떤 방식으로 조사하는지
+        kindHead: "조사",
+        decisionHead: "판정 사유",
+        relatedHead: "함께 조사하는 알람",
+        playbookHead: "플레이북",
+        // (W24) 알람 발생 소스 · 조사 항목(플레이북 단계)
+        sourceHead: "발생 소스",
+        stepsHead: "조사 항목",
+        stepsRunning: "진행 중 {step} · {done}/{total}단계 끝남",
+        purposePrefix: "목적: ",
         pollError: "갱신 실패 — {reason}",
         denied: {
             invalid: "조사 id 형식이 올바르지 않아 열 수 없습니다.",
@@ -93,9 +153,58 @@
         running: "⟳ 진행",
         submitted: "⏸ 접수",
         progress: "진행 S{done}/{total}",
+        // (plans/187 W20 · §5.6.4 · G-50) 「조사 흐름」 — 단계 카드(왜 → 조회 → 결과 → 해석)
+        modeFlow: "조사 흐름",
+        modeLog: "실행 기록",
+        flowEmpty: "아직 조사 단계가 없습니다. 단계가 시작되면 카드가 쌓입니다.",
+        sofarHead: "지금까지",
+        sofarChecking: "{title} 확인 중 ⟳",
+        sofarFinal: "종합 — {title}({status})",
+        sofarNone: "아직 이상으로 본 단계가 없습니다.",
+        cardWhy: "왜",
+        cardQuery: "조회",
+        cardResult: "결과",
+        cardOpinion: "해석",
+        cardRunning: "⟳ 진행 중",
+        skipTitle: "건너뜀 {title}",
+        skipNoReason: "생략",
+        // 섹션 사유 원문(`when_false — <조건식>`·`budget — …`)은 카드 문장에 쓰지 않는다(원문은 실행 기록 탭)
+        skipWhenFalse: "조건에 맞지 않아 생략",
+        skipBudget: "시간 예산 소진으로 생략",
+        tableOpen: "표 보기 ▸",
+        tableClose: "표 접기 ▾",
+        verdicts: { degraded: "이상", normal: "정상", no_was: "WAS 아님" },
+        liveBadge: "현재값 · 조사 시각 {hm}",
+        opinionMark: "AI · 이 단계까지의 근거",
+        opinionPending: "AI 해석 작성 중 ⟳",
+        opinionNone: "AI 해석 없음 — {reason}",
+        opinionNoneReason: "사유 미상",
+        conflictChip: "종합과 다름 — 종합 기준",
+        cautionBtn: "ⓘ주의",
+        holmesRound: "HolmesGPT {n}회차",
+        holmesJudge: "AI 판단 — 검증 전",
+        holmesNoQuery: "이 회차에는 조회가 없습니다.",
+        engineGroups: { playbook: "플레이북", holmes: "HolmesGPT" },
+        // ⓖ C1~C8 — 해당하는 문구만 카드 ⓘ에 펼친다
+        caution: {
+            c1: "뒤 단계 결과에 따라 달라질 수 있습니다. 최종 판단은 종합을 따르세요.",
+            c2: "원인 확정이 아닌 단계 해석입니다.",
+            c3: "종합(가설 순위)과 판정 방향이 다릅니다 — 종합을 기준으로 보세요.",
+            c4: "현재값입니다 — 알람 시각이 아니라 조사 시각 기준입니다.",
+            c4drift: "알람 시점과 다를 수 있음",
+            c5: "가드 탈락·시간 초과 등으로 AI 해석이 없습니다 — 결과 한 줄(사실)은 그대로입니다.",
+            c6: "수치는 표에 있는 값만 씁니다 — 「표 보기 ▸」로 원 표를 확인하세요.",
+            c7: "사용자 화면에도 보이는 문장입니다 — 민감값은 두 번 가리지만 놓친 값이 있을 수 있습니다.",
+            c8: "단계가 끝난 뒤 AI 응답 시간만큼 늦게 붙습니다.",
+            holmes: "자동 검사를 거치지 않은 AI 중간 판단입니다.",
+        },
     };
 
     var ENGINE_LABELS = { playbook: "플레이북", holmes: "HolmesGPT", system: "시스템" };
+    // 폴스타 심각도 숫자 → 이름(판정 기록 `signals.severity` · 0 = 해소)
+    var SEVERITY_LABELS = { 0: "해소", 1: "정보", 2: "경고", 3: "위험", 4: "치명" };
+    // 판정 4티어(noise_gate `notification_policy` TIER_*) — 문구는 노이즈 콘솔과 같다
+    var TIER_LABELS = { page: "즉시 통보", ticket: "대기열·기록", dashboard: "화면 표시만", suppress: "억제" };
     var ORIGIN_LABELS = { chat: "채팅", manual: "요청" };
     // sre_agent `activity_log.PHASES` 어휘와 같은 키 — 모르는 phase는 영문 대신 「진행 중」
     var PHASE_LABELS = {
@@ -193,7 +302,190 @@
             warn: !!WARN_STATUS[String(e.status || "")],
             pending: /_start$/.test(String(e.kind || "")) ? key : "",
             ends: /_end$/.test(String(e.kind || "")) ? key : "",
+            // (plans/187 W17) 무엇 때문에 무엇을 보는지 — 플레이북 선택 근거 · 스텝 초점 · HolmesGPT 조사 이유
+            purpose: String(e.purpose || ""),
         };
+    }
+
+    /**
+     * (plans/187 W18) 검색 칸 값 → 판정 기록 조회 쿼리(순수). 시간을 하나라도 넣으면 30일 창 + 구간,
+     * 비우면 최근 24시간. 시작이 끝보다 늦으면 null(화면이 사유를 보인다).
+     * f = {since, until, alarm, server} — since/until은 datetime-local 값(브라우저 지역 시각).
+     */
+    function searchQuery(f) {
+        f = isObj(f) ? f : {};
+        var params = [];
+        function add(k, v) { params.push(encodeURIComponent(k) + "=" + encodeURIComponent(v)); }
+        function iso(v) {
+            if (!v) return "";
+            var d = new Date(String(v));
+            return isNaN(d.getTime()) ? "" : d.toISOString();
+        }
+        var since = iso(f.since);
+        var until = iso(f.until);
+        if (since && until && since >= until) return null;
+        add("range", since || until ? "30d" : "24h");
+        if (since) add("since", since);
+        if (until) add("until", until);
+        var alarm = String(f.alarm || "").trim();
+        var server = String(f.server || "").trim();
+        if (alarm) add("alarm_q", alarm);
+        if (server) add("server_q", server);
+        add("size", String(SEARCH_SIZE));
+        return params.join("&");
+    }
+
+    /** 실행 기록에서 조사 이유 줄을 모은다 — 플레이북 선택(`started`·playbook)과 HolmesGPT 시작(`deep_start`). */
+    function whyLines(events) {
+        var out = [];
+        asList(events).forEach(function (e) {
+            if (!isObj(e) || !e.purpose) return;
+            var plan = (e.kind === "started" && e.engine === "playbook") || e.kind === "deep_start";
+            if (plan) out.push({ seq: Number(e.seq) || 0, text: String(e.label || "") + " — " + String(e.purpose) });
+        });
+        return out;
+    }
+
+    /** 스텝 id → 그 스텝의 목적(`step_start` purpose) — 도구 행의 마우스 올림 설명에 쓴다. */
+    function stepPurposes(events, into) {
+        asList(events).forEach(function (e) {
+            if (isObj(e) && e.kind === "step_start" && e.step && e.purpose) into[String(e.step)] = String(e.purpose);
+        });
+        return into;
+    }
+
+    function fmtStamp(value) {
+        if (!value) return "";
+        var d = new Date(value);
+        if (isNaN(d.getTime())) return String(value);
+        return d.getFullYear() + "-" + pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " +
+            pad(d.getHours()) + ":" + pad(d.getMinutes()) + ":" + pad(d.getSeconds());
+    }
+
+    /**
+     * 머리의 「어떤 알람·대상을 조사하는가」 줄 모델(순수 · 서버 텍스트는 화면이 textContent로 넣는다).
+     * alarm = 조회 응답 `alarm`(판정 기록 요약), subject = 레코드 `subject`(채팅·요청 조사).
+     */
+    function targetLines(alarm, subject) {
+        var lines = [];
+        if (isObj(alarm)) {
+            var sev = alarm.severity !== undefined ? SEVERITY_LABELS[alarm.severity] || ("심각도 " + alarm.severity) : "";
+            var where = [alarm.server_name || alarm.hostname, alarm.resource_name].filter(Boolean).join(" · ");
+            var when = fmtStamp(alarm.alarm_time || alarm.ts);
+            var tier = alarm.tier ? (TIER_LABELS[alarm.tier] || String(alarm.tier)) : "";
+            lines.push({ head: TEXT.alarmHead, text: [sev ? "[" + sev + "]" : "", alarm.alarm_name || alarm.alarm_id]
+                .filter(Boolean).join(" ") + (where ? " — " + where : "") + (when ? " · 발생 " + when : "") +
+                (tier ? " · 판정 " + tier : "") +
+                (alarm.alarm_count > 1 ? " · 같은 사건 알람 " + alarm.alarm_count + "건 중 첫 알람" : "") });
+            if (alarm.source || alarm.db_id) {
+                lines.push({ head: TEXT.sourceHead, text: (alarm.source || alarm.db_id) +
+                    (alarm.db_id && alarm.source && alarm.source !== alarm.db_id ? " (" + alarm.db_id + ")" : "") });
+            }
+            if (alarm.condition_log) lines.push({ head: TEXT.conditionHead, text: firstLine(alarm.condition_log, 200) });
+        }
+        if (isObj(subject)) {
+            var who = subject.server_name || subject.hostname;
+            var ref = fmtStamp(subject.reference_time);
+            if (who || ref) {
+                lines.push({ head: TEXT.targetHead, text: (who || "") + (ref ? (who ? " · " : "") + "기준 " + ref : "") });
+            }
+            if (subject.route_label || subject.route_reason) {
+                lines.push({ head: TEXT.whyHead, text: [subject.route_label, subject.route_reason].filter(Boolean).join(" — ") });
+            }
+        }
+        return lines;
+    }
+
+    // (W23) 조사 종류 문구 — 조사 기록 `kind`·`origin`·`focus`
+    function kindText(view) {
+        if (view.parent_investigation_id) return "추가 조사" + (view.focus ? " — 초점 " + view.focus : "");
+        if (view.kind === "episode") {
+            var n = asList(view.alarm_ids).length || (isObj(view.alarm) && view.alarm.alarm_count) || 0;
+            return "사건 종합 조사" + (n > 1 ? " — 같은 사건 알람 " + n + "건을 함께 조사" : "");
+        }
+        if (view.kind === "manual") return "다시 분석(사용자 요청)";
+        if (view.origin === "chat") return "채팅 증상 조사";
+        if (view.kind === "diagnosis") return "요청 조사";
+        return "알람 자동 조사";
+    }
+
+    // (W24) 조사 항목의 단계 상태 — 플레이북 섹션 `status`
+    var STEP_STATUS_LABELS = { ok: "완료", skipped: "생략", missing: "자료 없음", error: "실패",
+        failed: "실패", timeout: "시간 초과", incomplete: "일부만" };
+
+    // (W24) 조사 항목 — 종결 브리핑의 단계(없으면 진행 중 부분 브리핑의 끝난 단계 + 진척)
+    function stepsLine(view) {
+        var pb = playbookOf(view);
+        var sections = pb ? asList(pb.sections).filter(isObj) : [];
+        var items = sections.map(function (sec, i) {
+            var label = STEP_STATUS_LABELS[sec.status] || sec.status || "";
+            return circled(i + 1) + " " + (sec.title || sec.step || "-") + (label ? " — " + label : "");
+        });
+        var prog = isObj(view.progress) ? view.progress : null;
+        var finished = isObj(view.briefing) && isObj(view.briefing.playbook);
+        if (!finished && prog && Number(prog.total)) {
+            items.push(fill(TEXT.stepsRunning, { step: prog.current_step || "-",
+                done: Number(prog.done) || 0, total: Number(prog.total) }));
+        }
+        return items.length ? { head: TEXT.stepsHead, text: items.join(" / "), items: items } : null;
+    }
+
+    // 종결 브리핑의 플레이북 — 없으면 진행 중 부분 브리핑의 플레이북
+    function playbookOf(view) {
+        if (isObj(view.briefing) && isObj(view.briefing.playbook)) return view.briefing.playbook;
+        var part = view.partial_briefing;
+        return isObj(part) && isObj(part.playbook) ? part.playbook : null;
+    }
+
+    // 플레이북 선택 근거(`matched_by`) — sre_agent `playbook_purpose`와 같은 말(MATCH_CONDITION_LABELS)
+    var MATCH_CONDITION_LABELS = { resource_type: "자원 유형", alarm_kind: "알람 종류", any_kind: "알람 키워드" };
+    function matchedByText(m) {
+        m = String(m || "");
+        if (m.indexOf("match:") === 0) {
+            var names = m.slice(6).split("+").filter(Boolean).map(function (c) { return MATCH_CONDITION_LABELS[c] || c; });
+            if (names.length) return "알람의 " + names.join("·") + "가 이 플레이북 조건과 일치";
+        }
+        if (m === "fallback") return "맞는 유형 플레이북이 없어 공통 점검";
+        return m;
+    }
+
+    /**
+     * 조사 대화 카드 머리 줄 모델(순수 · W23) — 조사 종류 · 알람 · 판정 사유 · 조건 · 함께 조사하는 알람 ·
+     * 대상/조사 이유 · 플레이북. view = 조사 조회 응답(`with_alarm=true`면 `alarm`·`alarm.related`가 있다).
+     */
+    function conversationHeadLines(view) {
+        if (!isObj(view)) return [];
+        var lines = [{ head: TEXT.kindHead, text: kindText(view) }];
+        var alarm = isObj(view.alarm) ? view.alarm : null;
+        var target = targetLines(alarm, view.subject);
+        if (!alarm && (asList(view.alarm_ids).length || view.parent_alarm_id || view.kind === "alarm")) {
+            target.unshift({ head: TEXT.alarmHead, text: TEXT.alarmUnknown });
+        }
+        target.forEach(function (line, i) {
+            lines.push(line);
+            if (i === 0 && alarm && (alarm.reason || alarm.stage_label)) {
+                lines.push({ head: TEXT.decisionHead,
+                    text: [alarm.stage_label, firstLine(alarm.reason || "", 200)].filter(Boolean).join(" — ") });
+            }
+        });
+        var related = alarm ? asList(alarm.related) : [];
+        if (related.length) {
+            var more = (alarm.alarm_count || 0) - 1 - related.length;
+            lines.push({ head: TEXT.relatedHead, text: related.map(function (r) {
+                var when = fmtStamp(r.alarm_time || r.ts);
+                return (r.alarm_name || r.alarm_id || "-") + " — " + (r.server_name || r.hostname || "-") +
+                    (r.source ? " · " + r.source : "") + (when ? " · " + when : "");
+            }).join(" / ") + (more > 0 ? " 외 " + more + "건" : "") });
+        }
+        var pb = playbookOf(view);
+        if (pb && pb.id) {
+            var scope = isObj(pb.scope) ? (pb.scope.host || pb.scope.polestar_server || "") : "";
+            lines.push({ head: TEXT.playbookHead, text: pb.id + (pb.version ? " v" + pb.version : "") +
+                (pb.matched_by ? " — " + matchedByText(pb.matched_by) : "") + (scope ? " · 범위 " + scope : "") });
+        }
+        var steps = stepsLine(view);
+        if (steps) lines.push(steps);
+        return lines;
     }
 
     /**
@@ -256,6 +548,66 @@
         return TEXT.running + (phase ? " · " + phase : "");
     }
 
+    // ─── (plans/194 W5 · D-347) 대기 · 접수 결과 · 조사 상태 — 순수 함수(카드와 공용) ───
+
+    /** 목록 「대상」 — 문자열·`name` 계열이 없으면 레코드 `subject`의 「서버 · 알람명」(요청 조사). */
+    function subjectText(subject) {
+        var text = textOf(subject);
+        if (text || !isObj(subject)) return text;
+        return [subject.server_name || subject.hostname, subject.alarm_name]
+            .filter(Boolean).map(String).join(" · ");
+    }
+
+    /**
+     * (U3) 대기 중이면 `{position, running}` — 아니면 null. 순번(`queue_position` 정수 ≥1)이 있고
+     * phase가 `queued`이거나, phase 없이 미종결일 때다(sre는 대기 중에만 순번을 싣는다). phase가 다른
+     * 값이면 그쪽이 앞선다. running = `service_load.running`(없으면 null).
+     */
+    function queueInfo(item, load) {
+        if (!isObj(item)) return null;
+        var pos = item.queue_position;
+        if (typeof pos !== "number" || !isFinite(pos) || pos < 1 || Math.floor(pos) !== pos) return null;
+        if (item.phase ? item.phase !== "queued" : isTerminal(String(item.status || ""))) return null;
+        var running = isObj(load) && typeof load.running === "number" && isFinite(load.running) ? load.running : null;
+        return { position: pos, running: running };
+    }
+
+    /** 「대기 중 · 순번 N」 + (부하가 있으면) 「 / 동시 조사 M건 진행 중」 — `[칩 문구, 덧붙임]`. */
+    function queueParts(q) {
+        if (!q) return ["", ""];
+        return [fill(TEXT.queuedPos, { n: q.position }), q.running === null ? "" : fill(TEXT.queuedLoad, { m: q.running })];
+    }
+
+    /**
+     * (U4) 판정 기록 행의 `investigation` → `{kind, text, startable}`. 키가 없으면(구서버) undefined를,
+     * null이면 「조사 안 됨」을 준다. 실패·거부·시간 초과는 다시 시작할 수 있게 둔다.
+     */
+    function investigationState(item) {
+        if (!isObj(item) || !("investigation" in item)) return undefined;
+        var inv = item.investigation;
+        if (!isObj(inv)) return { kind: "none", text: TEXT.invStates.none, startable: true, none: true };
+        var status = String(inv.status || "");
+        var id = String(inv.investigation_id || "");
+        // 판정 기록 쪽에는 phase가 없다 — 미종결이고 순번이 있으면 대기로 본다
+        var q = isTerminal(status) ? null : queueInfo({ queue_position: inv.queue_position, phase: "queued" }, null);
+        if (q) return { kind: "hold", text: queueParts(q)[0], id: id };
+        if (status === "done" || status === "episode_existing") return { kind: "done", text: TEXT.invStates.done, id: id };
+        if (status === "failed" || status === "timeout" || status === "rejected") {
+            return { kind: "fail", text: TEXT.invStates.fail, startable: true, id: id };
+        }
+        return { kind: "running", text: TEXT.invStates.running, id: id };
+    }
+
+    /**
+     * (U2) 접수 응답 → 화면 결과 — 공용 렌더(`BriefingView.startOutcome`)에 이 화면 문구를 넘긴다.
+     * 카드(app.js)도 같은 함수를 쓴다(거부 사유 · 다음 행동 · 시간당 상한 잠금 · 합류 판정이 한 곳).
+     */
+    function startOutcome(res, nowMs) {
+        return root.BriefingView.startOutcome(res, nowMs, {
+            failed: TEXT.startFailed, rejected: TEXT.startRejected, joined: TEXT.startJoined,
+        });
+    }
+
     function progressText(progress) {
         if (!isObj(progress) || !Number(progress.total)) return "";
         return fill(TEXT.progress, { done: Number(progress.done) || 0, total: Number(progress.total) }) +
@@ -280,6 +632,292 @@
         return names.length ? names.join(" + ") : "—";
     }
 
+    // ─── (plans/187 W20) 조사 흐름 — 순수 함수 ─────────────────────────────
+
+    // 시각 — 실행 기록 `at`은 epoch 초(실시간), 보관 요약은 ISO 문자열일 수 있다
+    function atMs(at) {
+        if (typeof at === "number" || (typeof at === "string" && /^\d+(\.\d+)?$/.test(at))) {
+            var n = Number(at);
+            return isFinite(n) && n > 0 ? n * 1000 : null;
+        }
+        if (!at) return null;
+        var d = new Date(String(at));
+        return isNaN(d.getTime()) ? null : d.getTime();
+    }
+
+    function clockOf(at, short) {
+        var ms = atMs(at);
+        if (ms === null) return "";
+        var d = new Date(ms);
+        return pad(d.getHours()) + ":" + pad(d.getMinutes()) + (short ? "" : ":" + pad(d.getSeconds()));
+    }
+
+    function circled(n) {
+        return n >= 1 && n <= 20 ? String.fromCharCode(0x2460 + n - 1) : "(" + n + ")";
+    }
+
+    // 「S3a 실행 중 요청」 → 「실행 중 요청」(단계 id 머리 제거)
+    function stripStep(label, step) {
+        var text = String(label || "");
+        if (step && text.indexOf(step + " ") === 0) return text.slice(step.length + 1);
+        return text;
+    }
+
+    /** 단계 해석 정규화 — 진행 중 `{status,text,reason}`(W20 계약) · 종결 문자열 + `opinion_dropped_reason`. */
+    function opinionOf(sec) {
+        if (!isObj(sec)) return null;
+        var op = sec.opinion;
+        if (isObj(op)) {
+            var st = String(op.status || "");
+            if (st === "ok" && op.text) return { status: "ok", text: String(op.text) };
+            if (st === "pending") return { status: "pending" };
+            if (st === "none" || st === "ok") return { status: "none", reason: String(op.reason || "") };
+            return null;
+        }
+        if (typeof op === "string" && op) return { status: "ok", text: op };
+        if (sec.opinion_dropped_reason) return { status: "none", reason: String(sec.opinion_dropped_reason) };
+        return null;
+    }
+
+    // 「지금까지」 고리 한 구 — 결과 한 줄의 첫 마디(「 · 」·「 — 」 앞)
+    function corePhrase(finding) {
+        var text = String(finding || "").split("\n")[0];
+        text = text.split(" · ")[0].split(" — ")[0];
+        return firstLine(text, 60);
+    }
+
+    function firstSentence(text) {
+        var line = String(text || "").split("\n")[0];
+        var m = /^(.+?[.!?。])(\s|$)/.exec(line);
+        return firstLine(m ? m[1] : line, 120);
+    }
+
+    function topHypothesis(synthesis) {
+        var hyps = asList(isObj(synthesis) ? synthesis.hypotheses : null).filter(isObj).slice();
+        hyps.sort(function (a, b) { return (Number(a.rank) || 99) - (Number(b.rank) || 99); });
+        return hyps[0] || null;
+    }
+
+    /**
+     * C3 「종합과 다름」(결정적 · LLM 0). 규칙:
+     *   - 종결 뒤에만 · 해석(`opinion` ok)이 있는 단계만 · 종합 1위 가설(rank 최소)의 `evidence_steps`에 든 단계만.
+     *   - 가설 극성: `supported`(지지) = 이상 · `refuted`(반박) = 정상 · `inconclusive`(판단 보류) = 극성 없음(칩 0).
+     *   - 단계 극성: `verdict` `degraded` = 이상 · `normal` = 정상 · 그 밖(판정 없음·no_was) = 극성 없음(칩 0).
+     *   - 두 극성이 모두 있고 서로 다르면 칩을 단다.
+     */
+    function conflictsWithSynthesis(sec, top) {
+        if (!isObj(sec) || !isObj(top)) return false;
+        if (asList(top.evidence_steps).map(String).indexOf(String(sec.step || "")) < 0) return false;
+        var hyp = { supported: "bad", refuted: "good" }[top.status];
+        var step = { degraded: "bad", normal: "good" }[sec.verdict];
+        return !!(hyp && step && hyp !== step);
+    }
+
+    // 현재값 배지가 알람 시각과 10분 넘게 떨어졌는가 — 배지 「알람 후 N분」을 먼저, 없으면 시각 차이
+    var DRIFT_MIN = 10;
+    function liveDrift(badge, stepAt, alarmTime) {
+        var m = /알람 후 (\d+)분/.exec(badge) || /알람 (\d+)분 전/.exec(badge);
+        if (m) return Number(m[1]) > DRIFT_MIN;
+        var a = atMs(stepAt);
+        var b = atMs(alarmTime);
+        return a !== null && b !== null && Math.abs(a - b) > DRIFT_MIN * 60000;
+    }
+
+    function queryOf(e) {
+        return {
+            text: String(e.phrase || e.label || e.tool || ""),
+            tool: String(e.tool || ""),
+            icon: rowIcon(e),
+            warn: !!WARN_STATUS[String(e.status || "")],
+            rows: e.rows !== undefined && e.rows !== null ? String(e.rows) + "행" : "",
+            elapsed: e.elapsed_ms !== undefined && e.elapsed_ms !== null ? fmtMs(e.elapsed_ms) : "",
+            excerpt: String(e.excerpt || ""),
+            seq: Number(e.seq) || 0,
+            open: e.kind === "tool_start",
+            phrase: !!e.phrase,
+        };
+    }
+
+    // 도구 시작·끝을 한 줄로 합친다 — 끝 행이 오면 같은 도구의 열린 줄을 채운다
+    function addQuery(list, e) {
+        if (e.kind === "tool_end") {
+            for (var i = 0; i < list.length; i++) {
+                if (list[i].open && list[i].tool === String(e.tool || "")) {
+                    var q = queryOf(e);
+                    if (!q.phrase && list[i].phrase) { q.text = list[i].text; q.phrase = true; }
+                    list[i] = q;
+                    return;
+                }
+            }
+        }
+        list.push(queryOf(e));
+    }
+
+    /**
+     * 실행 기록 이벤트 + 단계 섹션(진행 중 `partial_briefing` 또는 종결 브리핑) → 조사 흐름 모델(순수).
+     * o = {done, synthesis, alarmTime}. 새 키(`because`·`finding`·`phrase`·`step_skip`)가 없는 구버전
+     * 이벤트도 한 줄(`label`)로 카드를 만든다(빈칸 0).
+     */
+    function flowModel(events, sections, o) {
+        o = o || {};
+        var evs = asList(events).filter(isObj).slice().sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
+        var secs = asList(sections).filter(function (s) {
+            return isObj(s) && s.step && s.action !== "synthesize" && s.status !== "pending_synthesis";
+        });
+        var secBy = {};
+        secs.forEach(function (s) { secBy[String(s.step)] = s; });
+        var cards = [];
+        var by = {};
+        function card(step) {
+            if (!by[step]) {
+                by[step] = { step: step, title: "", at: null, started: false, ended: false, skipped: false,
+                    status: "", elapsed: "", because: "", purpose: "", finding: "", queries: [] };
+                cards.push(by[step]);
+            }
+            return by[step];
+        }
+        var rounds = [];
+        var round = null;
+        evs.forEach(function (e) {
+            var kind = String(e.kind || "");
+            if (e.engine === "holmes") {
+                if (kind === "ai_note") {
+                    round = { at: e.at, note: String(e.note || ""), label: String(e.label || ""), queries: [] };
+                    rounds.push(round);
+                } else if (kind === "tool_start" || kind === "tool_end") {
+                    if (!round) { round = { at: e.at, note: "", label: "", queries: [] }; rounds.push(round); }
+                    addQuery(round.queries, e);
+                }
+                return;
+            }
+            // 단계 카드는 단계·도구 이벤트로만 만든다(소견 LLM·초안 메모는 카드의 「해석」이 섹션에서 읽는다)
+            if (e.engine !== "playbook" || !e.step || !/^(step_start|step_end|step_skip|tool_start|tool_end)$/.test(kind)) return;
+            var c = card(String(e.step));
+            if (kind === "step_start") {
+                c.started = true;
+                c.at = e.at;
+                c.title = c.title || stripStep(e.label, c.step);
+                if (e.because) c.because = String(e.because);
+                if (e.purpose) c.purpose = String(e.purpose);
+            } else if (kind === "step_end") {
+                c.ended = true;
+                c.endAt = e.at;
+                if (c.at === null) c.at = e.at;
+                c.title = c.title || stripStep(e.label, c.step);
+                c.status = String(e.status || "");
+                c.elapsed = e.elapsed_ms !== undefined && e.elapsed_ms !== null ? fmtMs(e.elapsed_ms) : "";
+                if (e.finding) c.finding = String(e.finding);
+                if (!c.purpose && e.purpose) c.purpose = String(e.purpose);
+            } else if (kind === "step_skip") {
+                c.skipped = true;
+                c.at = c.at === null ? e.at : c.at;
+                c.title = c.title || stripStep(e.label, c.step);
+                if (e.because) c.because = String(e.because);
+            } else if (kind === "tool_start" || kind === "tool_end") {
+                if (c.at === null) c.at = e.at;
+                addQuery(c.queries, e);
+            }
+        });
+        // 카드 순서(결정적) — 섹션(플레이북 순서)에 있는 단계가 섹션 순서로 먼저, 섹션에 없는 단계(진행 중 ·
+        // 구버전 이벤트만)는 그 뒤에 첫 이벤트 seq 순. 병렬 단계의 시작 순서가 바뀌어도 순서가 같다.
+        var ordered = [];
+        secs.forEach(function (s) {
+            var c = card(String(s.step));
+            if (ordered.indexOf(c) < 0) ordered.push(c);
+        });
+        cards.forEach(function (c) { if (!secBy[c.step]) ordered.push(c); });
+        cards = ordered;
+        var top = o.done ? topHypothesis(o.synthesis) : null;
+        var models = cards.map(function (c, i) {
+            var sec = secBy[c.step] || null;
+            var skipped = c.skipped || (sec && sec.status === "skipped");
+            var title = (sec && sec.title) || c.title || c.step;
+            var m = { step: c.step, no: circled(i + 1), title: title, time: clockOf(c.at), skipped: !!skipped };
+            if (skipped) {
+                m.because = c.because || (sec && (sec.because || skipReason(sec.reason))) || "";
+                return m;
+            }
+            var status = c.status || (sec ? String(sec.status || "") : "");
+            m.running = !o.done && c.started && !c.ended && !sec;
+            m.warn = !!WARN_STATUS[status];
+            m.icon = m.running ? "" : (c.ended || sec ? (m.warn ? "⚠" : "✓") : "");
+            m.elapsed = c.elapsed;
+            m.verdict = sec && TEXT.verdicts[sec.verdict] ? String(sec.verdict) : "";
+            m.verdictLabel = m.verdict ? TEXT.verdicts[m.verdict] : "";
+            m.because = c.because || c.purpose;
+            m.queries = c.queries;
+            m.finding = c.finding || (sec && sec.finding ? String(sec.finding) : "");
+            m.reason = !m.finding && sec && sec.reason ? String(sec.reason) : "";
+            m.table = sec && isObj(sec.table) && Array.isArray(sec.table.columns) && asList(sec.table.rows).length
+                ? sec.table : null;
+            m.rows = rowCount(m.table, c.queries);
+            m.opinion = opinionOf(sec);
+            m.badges = [];
+            m.live = "";
+            m.drift = false;
+            asList(sec && sec.badges).forEach(function (b) {
+                b = String(b);
+                if (/^현재값/.test(b)) {
+                    var hm = clockOf(c.endAt || c.at, true);
+                    m.live = hm ? fill(TEXT.liveBadge, { hm: hm }) : b;
+                    m.drift = liveDrift(b, c.endAt || c.at, o.alarmTime);
+                } else {
+                    m.badges.push(b);
+                }
+            });
+            m.conflict = !!(m.opinion && m.opinion.status === "ok" && conflictsWithSynthesis(sec, top));
+            var notes = [];
+            var C = TEXT.caution;
+            if (m.opinion && m.opinion.status === "ok") notes.push(C.c1, C.c2);
+            if (m.conflict) notes.push(C.c3);
+            if (m.live) notes.push(C.c4 + (m.drift ? " " + C.c4drift : ""));
+            if (m.opinion && m.opinion.status === "none") notes.push(C.c5);
+            if (m.opinion && m.opinion.status === "ok") notes.push(C.c6, C.c7);
+            if (m.opinion && m.opinion.status === "pending") notes.push(C.c8);
+            m.notes = notes;
+            return m;
+        });
+        var holmes = rounds.map(function (r, i) {
+            return { no: i + 1, title: fill(TEXT.holmesRound, { n: i + 1 }), time: clockOf(r.at), note: r.note,
+                queries: r.queries,
+                notes: r.note ? [TEXT.caution.c1, TEXT.caution.c2, TEXT.caution.c7, TEXT.caution.holmes] : [] };
+        });
+        return { cards: models, holmes: holmes, sofar: sofarLine(models, o.done, top, o.synthesis) };
+    }
+
+    // 건너뜀 섹션 사유 원문 → 카드 문장(조건식·예산 원문은 감춘다)
+    function skipReason(reason) {
+        var text = String(reason || "");
+        if (/^when_false\b/.test(text)) return TEXT.skipWhenFalse;
+        if (/^budget\b/.test(text)) return TEXT.skipBudget;
+        return text;
+    }
+
+    // 단계 결과 행 수 — 섹션 표 행 수, 없으면 도구 끝 행의 `rows` 합(모르면 0)
+    function rowCount(table, queries) {
+        if (table) return asList(table.rows).length;
+        return asList(queries).reduce(function (n, q) { return n + (parseInt(q.rows, 10) || 0); }, 0);
+    }
+
+    /** 「지금까지」 줄(결정적) — 종결이면 종합 1위 가설 + 서술 첫 문장, 진행 중이면 결과 고리 최대 4 + 확인 중. */
+    function sofarLine(cards, done, top, synthesis) {
+        if (done && top) {
+            var head = fill(TEXT.sofarFinal, { title: top.title || "", status: top.status_label || top.status || "" });
+            var lead = isObj(synthesis) && synthesis.narrative ? firstSentence(synthesis.narrative) : "";
+            return lead ? head + " · " + lead : head;
+        }
+        // 고리 규칙: ① 이상 판정(`degraded`) 단계 ② 판정이 없는 성공 단계 중 결과 행이 1개 이상인 것만.
+        // 정상 판정·건너뜀·결손(경고 상태)·0행(「판정 없음 · 결과 0건」)은 뺀다. 걸러진 뒤 최근 4고리.
+        var links = cards.filter(function (c) {
+            if (c.skipped || c.running || c.warn || !c.finding) return false;
+            if (c.verdict === "degraded") return true;
+            return !c.verdict && c.rows > 0;
+        }).map(function (c) { return corePhrase(c.finding); }).slice(-4);
+        var run = cards.filter(function (c) { return c.running; })[0];
+        if (run && !done) links.push(fill(TEXT.sofarChecking, { title: run.title }));
+        return links.length ? links.join(" → ") : "";
+    }
+
     // ─── 컨트롤러 ───────────────────────────────────────────────────────
 
     /**
@@ -289,6 +927,7 @@
      *   onActivate() — 장애 진단 뷰 탭으로 전환
      *   onOpenConversation(id) — 종결 화면 [조사 대화로 열기](기존 조사 대화 진입 함수)
      *   analyzeFor(id, view) — 공용 렌더 analyze 옵션(기존 [다시 분석]) 또는 null
+     *   startInvestigation(alarmId) — (W18) 「이벤트 찾아 조사」 접수 → Promise<{ok,status,body}>(없으면 칸 숨김)
      *   deps: {fetch, EventSource, setTimeout, clearTimeout, now, storage, document} — 시험용 주입
      */
     function create(opts) {
@@ -320,6 +959,9 @@
         var dom = null;
         var firstItems = null;      // 사전 게이트(/active) 응답 — 화면을 만든 뒤 그린다
         var firstError = "";
+        var searchOn = false;       // (W18) /active `event_search` — 알람 다시 분석 접수가 켜졌는지
+        var serviceLoad = null;     // (plans/194 W5 · U3) /active·summary 최상위 `service_load`(없으면 null)
+        var firstLoad = null;
 
         function safeSession() {
             try { return root.sessionStorage || null; } catch (_) { return null; }
@@ -393,13 +1035,220 @@
             table.appendChild(thead);
             var tbody = el("tbody");
             table.appendChild(tbody);
+            var search = buildSearch();
+            listPanel.appendChild(search.box);
             listPanel.appendChild(listNote);
             listPanel.appendChild(table);
             panels.appendChild(listPanel);
             r.appendChild(panels);
 
             dom = { conn: connEl, strip: strip, listBtn: listBtn, menuBtn: menuBtn, menu: menu,
-                panels: panels, listPanel: listPanel, listNote: listNote, tbody: tbody };
+                panels: panels, listPanel: listPanel, listNote: listNote, tbody: tbody, search: search };
+        }
+
+        // ── (plans/187 W18) 이벤트 찾아 조사 ──
+        // 검색은 판정 기록 사용자 경로(GET)만 묻는다. 조사 접수(쓰기)는 이 파일에 두지 않고 app.js가 넘긴
+        // `startInvestigation(alarmId)`(기존 「분석 요청」과 같은 접수 라우트 — 존 검사·상한·합류)로 한다.
+        function buildSearch() {
+            var box = el("section", "dv-search");
+            box.hidden = true;
+            box.appendChild(el("h3", null, TEXT.searchTitle));
+            var form = el("div", "dv-search-form");
+            function field(label, type, cls) {
+                var wrap = el("label", "dv-search-field");
+                wrap.appendChild(el("span", null, label));
+                var input = el("input", cls);
+                input.type = type;
+                if (type === "text") input.maxLength = 200;
+                input.addEventListener("keydown", function (e) {
+                    if (e && e.key === "Enter") { if (e.preventDefault) e.preventDefault(); runSearch(); }
+                });
+                wrap.appendChild(input);
+                form.appendChild(wrap);
+                return input;
+            }
+            var since = field(TEXT.searchSince, "datetime-local", "dv-search-since");
+            var until = field(TEXT.searchUntil, "datetime-local", "dv-search-until");
+            var alarm = field(TEXT.searchAlarm, "text", "dv-search-alarm");
+            var server = field(TEXT.searchServer, "text", "dv-search-server");
+            var btn = el("button", "dv-search-btn", TEXT.searchBtn);
+            btn.type = "button";
+            btn.addEventListener("click", function () { runSearch(); });
+            form.appendChild(btn);
+            box.appendChild(form);
+            // (plans/194 W5 · U4) 등급 필터 · 「조사 안 됨만」 — 받은 결과를 화면에서만 거른다(다시 묻지 않는다)
+            var filter = el("div", "dv-search-filter");
+            var tierWrap = el("label", "dv-search-field");
+            tierWrap.appendChild(el("span", null, TEXT.tierFilter));
+            var tier = el("select", "dv-search-tier");
+            [["", TEXT.tierAll]].concat(Object.keys(TIER_LABELS).map(function (k) {
+                return [k, fill(TEXT.tierOnly, { code: k.toUpperCase(), label: TIER_LABELS[k] })];
+            })).forEach(function (o) {
+                var opt = el("option", null, o[1]);
+                opt.value = o[0];
+                tier.appendChild(opt);
+            });
+            tier.value = "";
+            tier.addEventListener("change", function () { renderSearchRows(); });
+            tierWrap.appendChild(tier);
+            filter.appendChild(tierWrap);
+            var noneWrap = el("label", "dv-search-check");
+            var onlyNone = el("input", "dv-search-none");
+            onlyNone.type = "checkbox";
+            onlyNone.addEventListener("change", function () { renderSearchRows(); });
+            noneWrap.appendChild(onlyNone);
+            noneWrap.appendChild(el("span", null, TEXT.uninvestigatedOnly));
+            filter.appendChild(noneWrap);
+            filter.appendChild(el("span", "bv-meta", TEXT.searchOrder));
+            box.appendChild(filter);
+            box.appendChild(el("div", "dv-note", TEXT.searchHint));
+            var status = el("div", "dv-search-status");
+            status.setAttribute("role", "status");
+            box.appendChild(status);
+            var table = el("table", "dv-search-list");
+            table.hidden = true;   // (plans/194 W5) 결과 행이 생길 때까지 빈 머리줄을 보이지 않는다
+            var hr = el("tr");
+            var stateTh = null;
+            TEXT.searchHead.forEach(function (h, i) {
+                var th = el("th", null, h);
+                if (i === 4) { th.className = "dv-search-statecol"; stateTh = th; }
+                hr.appendChild(th);
+            });
+            var thead = el("thead");
+            thead.appendChild(hr);
+            table.appendChild(thead);
+            var body = el("tbody");
+            table.appendChild(body);
+            box.appendChild(table);
+            return { box: box, since: since, until: until, alarm: alarm, server: server, btn: btn,
+                status: status, table: table, body: body, seq: 0, tier: tier, onlyNone: onlyNone, noneWrap: noneWrap,
+                stateTh: stateTh, found: [], hasInv: false };
+        }
+
+        function showSearch(on) {
+            if (dom) dom.search.box.hidden = !(on && opts.startInvestigation);
+        }
+
+        function runSearch() {
+            var s = dom && dom.search;
+            if (!s) return Promise.resolve();
+            var qs = searchQuery({ since: s.since.value, until: s.until.value, alarm: s.alarm.value,
+                server: s.server.value });
+            s.body.textContent = "";
+            s.table.hidden = true;
+            s.found = [];
+            if (qs === null) { s.status.textContent = TEXT.searchBadRange; return Promise.resolve(); }
+            var mine = ++s.seq;   // 늦게 온 이전 응답이 새 결과를 덮지 않게
+            s.status.textContent = TEXT.searching;
+            return getJSON(DECISIONS_API + "?" + qs).then(function (res) {
+                if (mine !== s.seq) return;
+                if (!res.ok) { s.status.textContent = fill(TEXT.searchFailed, { reason: reasonOf(res) }); return; }
+                var found = asList(res.body.items).filter(isObj);
+                s.found = found;
+                // (U4) 판정 기록에 `investigation` 키가 하나도 없으면 구서버 — 조사 상태 열·체크를 감춘다
+                s.hasInv = found.some(function (it) { return "investigation" in it; });
+                s.countText = found.length
+                    ? fill(TEXT.searchCount, { total: res.body.total || found.length, n: found.length })
+                    : TEXT.searchEmpty;
+                renderSearchRows();
+            }, function (err) {
+                if (mine === s.seq) s.status.textContent = fill(TEXT.searchFailed, { reason: (err && err.message) || String(err) });
+            });
+        }
+
+        // (plans/194 W5 · U4) 즉시 통보(PAGE) 먼저, 그 안에서 조사 안 됨 먼저(같은 순위는 받은 순서 = 최신순)
+        function renderSearchRows() {
+            var s = dom && dom.search;
+            if (!s) return;
+            s.body.textContent = "";
+            if (s.stateTh) s.stateTh.hidden = !s.hasInv;
+            s.noneWrap.hidden = !s.hasInv;
+            var tier = String(s.tier.value || "");
+            var onlyNone = s.hasInv && !!s.onlyNone.checked;
+            var rows = s.found.map(function (item, i) {
+                return { item: item, i: i, st: investigationState(item) };
+            }).filter(function (r) {
+                if (tier && r.item.tier !== tier) return false;
+                return !onlyNone || !!(r.st && r.st.none);
+            });
+            function rank(r) { return (r.item.tier === "page" ? 0 : 2) + (r.st && !r.st.none ? 1 : 0); }
+            rows.sort(function (a, b) { return rank(a) - rank(b) || a.i - b.i; });
+            s.status.textContent = s.countText + (s.found.length && !rows.length ? " · " + TEXT.filterEmpty : "");
+            s.table.hidden = !rows.length;
+            rows.forEach(function (r) { s.body.appendChild(searchRow(r.item, r.st)); });
+        }
+
+        function searchRow(item, st) {
+            var tr = el("tr", "dv-search-row" + (item.tier === "page" ? "" : " dv-search-row--muted"));
+            var tier = item.tier ? (TIER_LABELS[item.tier] || String(item.tier)) : "";
+            [fmtStamp(item.ts), item.server_name || item.hostname || "-", item.alarm_name || "-",
+                [tier, item.stage_label].filter(Boolean).join(" · ")].forEach(function (c) {
+                tr.appendChild(el("td", null, c));
+            });
+            if (st) {
+                var stCell = el("td", "dv-search-state");
+                stCell.appendChild(el("span", "bv-chip bv-chip--" + st.kind, st.text));
+                tr.appendChild(stCell);
+            }
+            var cell = el("td", "dv-search-act");
+            var note = el("div", "dv-search-note");
+            var alarmId = String(item.alarm_id || "");
+            if (st && !st.startable && ID_RE.test(st.id || "")) {
+                // 진행·대기·완료 — 새로 띄우지 않고 이미 있는 조사로 간다
+                cell.appendChild(goButton(TEXT.viewInDiagnosis, function () { open(st.id, { alarmId: alarmId }); }));
+            } else if (!alarmId) {
+                note.textContent = TEXT.noAlarmId;
+            } else {
+                var btn = el("button", "dv-start-btn", TEXT.startBtn);
+                btn.type = "button";
+                btn.addEventListener("click", function () { startFor(alarmId, btn, note); });
+                cell.appendChild(btn);
+            }
+            cell.appendChild(note);
+            tr.appendChild(cell);
+            return tr;
+        }
+
+        function goButton(label, onClick) {
+            var b = el("button", "bv-choice dv-search-go", label);
+            b.type = "button";
+            b.addEventListener("click", onClick);
+            return b;
+        }
+
+        // (plans/194 W5 · U2) 접수 결과 — 사유 한 줄 + 다음 행동(진행 중·합류한 조사로 가는 버튼 · 잠금)
+        function showOutcome(r, note, btn, alarmId) {
+            note.textContent = "";
+            if (!r.text) return;
+            note.appendChild(el("span", null, r.text));
+            if (r.kind === "joined") {
+                note.appendChild(goButton(TEXT.viewInDiagnosis, function () { open(r.investigationId, { alarmId: alarmId }); }));
+            } else if (r.kind === "in_flight" && ID_RE.test(r.existingId || "")) {
+                // 열 수 있는 기존 조사가 있을 때만 — 없으면 사유만(진행 중 목록에는 남의·자동 조사가 없다)
+                note.appendChild(goButton(TEXT.viewInDiagnosis, function () { open(r.existingId); }));
+            } else if (r.kind === "retry_later") {
+                btn.disabled = true;   // 다시 요청할 수 있는 시각까지 잠근다
+                setT(function () { btn.disabled = false; }, Math.max(0, r.retryAt - now()));
+            }
+        }
+
+        function startFor(alarmId, btn, note) {
+            btn.disabled = true;
+            btn.textContent = TEXT.starting;
+            note.textContent = "";
+            return Promise.resolve()
+                .then(function () { return opts.startInvestigation(alarmId); })
+                .then(function (res) {
+                    btn.disabled = false;
+                    btn.textContent = TEXT.startBtn;
+                    var r = startOutcome(res, now());
+                    showOutcome(r, note, btn, alarmId);
+                    if (r.kind === "accepted" || r.kind === "joined") open(r.investigationId, { alarmId: alarmId });
+                }, function (err) {
+                    btn.disabled = false;
+                    btn.textContent = TEXT.startBtn;
+                    note.textContent = fill(TEXT.startFailed, { reason: (err && err.message) || String(err) });
+                });
         }
 
         function setVisible(on) {
@@ -407,8 +1256,9 @@
         }
 
         // ── 진행 중 목록 ──
-        function setItems(list) {
+        function setItems(list, load) {
             items = asList(list).filter(isObj);
+            serviceLoad = isObj(load) ? load : null;
             itemsAt = now();
             listError = "";
             items.forEach(function (it) {
@@ -443,7 +1293,7 @@
             if (!dom) return;
             dom.tbody.textContent = "";
             dom.listNote.textContent = listError ? fill(TEXT.listFailed, { reason: listError })
-                : (items.length ? "" : TEXT.listEmpty);
+                : (items.length ? "" : (searchOn && opts.startInvestigation ? TEXT.listEmpty : TEXT.listEmptyNoSearch));
             items.forEach(function (it) {
                 var tr = el("tr", "dv-list-row");
                 tr.setAttribute("tabindex", "0");
@@ -457,16 +1307,26 @@
                     var tab = tabs[it.investigation_id];
                     if (tab) Object.keys(tab.engines).forEach(function (k) { engines[k] = true; });
                 }
+                var pollErr = it.poll_error ? " · " + fill(TEXT.pollError, { reason: it.poll_error }) : "";
                 var cells = [
-                    textOf(it.subject) || String(it.investigation_id || ""),
+                    // (plans/194 W5) 요청 조사는 레코드 `subject`의 「서버 · 알람명」 — 조사 id는 마지막 폴백
+                    subjectText(it.subject) || String(it.investigation_id || ""),
                     kindLabel(it.kind),
                     enginesText(engines),
-                    statusText(it) + (it.poll_error ? " · " + fill(TEXT.pollError, { reason: it.poll_error }) : ""),
+                    statusText(it) + pollErr,
                     liveElapsed(it.elapsed_s, itemsAt),
                     originLabel(it),
                 ];
                 if (operator) cells.push(String(it.owner_sub || ""));
-                cells.forEach(function (c) { tr.appendChild(el("td", null, c)); });
+                // (U3) 대기 중이면 「대기 중 · 순번 N」 칩 + 「 / 동시 조사 M건 진행 중」
+                var q = queueParts(queueInfo(it, serviceLoad));
+                cells.forEach(function (c, i) {
+                    if (i !== 3 || !q[0]) { tr.appendChild(el("td", null, c)); return; }
+                    var td = el("td", "dv-list-state");
+                    td.appendChild(el("span", "bv-chip bv-chip--hold", q[0]));
+                    if (q[1] || pollErr) td.appendChild(el("span", "bv-meta", q[1] + pollErr));
+                    tr.appendChild(td);
+                });
                 var id = String(it.investigation_id || "");
                 tr.addEventListener("click", function () { open(id); });
                 tr.addEventListener("keydown", function (e) { if (e && e.key === "Enter") open(id); });
@@ -480,15 +1340,24 @@
                 id: id, seq: 0, status: "", view: null, done: false, denied: "", error: "",
                 phase: null, queue: null, elapsed: null, elapsedAt: 0, progress: null, pollError: "",
                 partial: null, truncated: false, source: "", engines: {}, alarmId: null,
+                alarm: null, why: [], stepPurpose: {},
                 log: { rows: [], seen: {}, clipped: false, tools: 0 },
                 filter: { playbook: true, holmes: true, system: true, ai: true },
                 autoScroll: true, expanded: {}, finalPanel: null, dom: null,
+                // (W20) 조사 흐름 — 같은 이벤트를 두 보기로 그린다(연결·커서는 하나)
+                mode: "flow", flow: { events: [], seen: {} }, flowOpen: {},
             };
         }
 
         function tabLabel(tab) {
             var v = tab.view || {};
-            return textOf(v.subject) || tab.subject || tab.id;
+            // (plans/187 W17) 알람 조사는 「서버 · 알람명」, 채팅·요청 조사는 대상 서버
+            var a = tab.alarm;
+            if (isObj(a) && (a.alarm_name || a.server_name || a.hostname)) {
+                return [a.server_name || a.hostname, a.alarm_name].filter(Boolean).join(" · ");
+            }
+            var sub = isObj(v.subject) ? (v.subject.server_name || v.subject.hostname) : "";
+            return textOf(v.subject) || sub || tab.subject || tab.id;
         }
 
         function tabState(tab) {
@@ -521,13 +1390,38 @@
             panel.hidden = true;
             var head = el("div", "dv-tab-head");
             var title = el("div", "dv-tab-title");
+            var target = el("dl", "dv-target");
             var meta = el("div", "dv-tab-meta");
             var warn = el("div", "dv-note dv-note--warn");
             warn.hidden = true;
             head.appendChild(title);
+            head.appendChild(target);
             head.appendChild(meta);
             head.appendChild(warn);
             panel.appendChild(head);
+
+            // (W20 · G-50) 「조사 흐름」·「실행 기록」 전환 — 실행 기록(dv-grid)은 종전 화면 그대로 숨김만 바꾼다
+            var modes = el("div", "dv-modes");
+            modes.setAttribute("role", "tablist");
+            var modeBtns = {};
+            [["flow", TEXT.modeFlow], ["log", TEXT.modeLog]].forEach(function (m) {
+                var b = el("button", "dv-mode", m[1]);
+                b.type = "button";
+                b.setAttribute("role", "tab");
+                b.addEventListener("click", function () { setMode(tab, m[0]); });
+                modes.appendChild(b);
+                modeBtns[m[0]] = b;
+            });
+            panel.appendChild(modes);
+            var flowBox = el("section", "dv-flow");
+            var sofar = el("div", "dv-sofar");
+            sofar.appendChild(el("span", "dv-label", TEXT.sofarHead));
+            var sofarText = el("span", "dv-sofar-text");
+            sofar.appendChild(sofarText);
+            flowBox.appendChild(sofar);
+            var flowBody = el("div", "dv-flow-body");
+            flowBox.appendChild(flowBody);
+            panel.appendChild(flowBox);
 
             var grid = el("div", "dv-grid");
             var logBox = el("section", "dv-log");
@@ -570,10 +1464,218 @@
             panel.appendChild(finalBox);
             dom.panels.appendChild(panel);
 
-            tab.dom = { wrap: wrap, btn: btn, label: label, state: state, panel: panel, title: title, meta: meta,
+            tab.dom = { wrap: wrap, btn: btn, label: label, state: state, panel: panel, title: title, target: target, meta: meta,
                 warn: warn, filters: filters, logNote: logNote, rows: rows, partBox: partBox, partBody: partBody,
-                finalBox: finalBox, finalBody: finalBody };
+                finalBox: finalBox, finalBody: finalBody, grid: grid, modeBtns: modeBtns, flowBox: flowBox,
+                sofar: sofar, sofarText: sofarText, flowBody: flowBody };
+            setMode(tab, tab.mode);
             renderTabButton(tab);
+        }
+
+        // ── (W20) 조사 흐름 ──
+        function setMode(tab, mode) {
+            tab.mode = mode === "log" ? "log" : "flow";
+            if (!tab.dom) return;
+            tab.dom.grid.hidden = tab.mode !== "log";
+            tab.dom.flowBox.hidden = tab.mode !== "flow";
+            Object.keys(tab.dom.modeBtns).forEach(function (k) {
+                var on = k === tab.mode;
+                tab.dom.modeBtns[k].className = "dv-mode" + (on ? " active" : "");
+                tab.dom.modeBtns[k].setAttribute("aria-selected", on ? "true" : "false");
+            });
+        }
+
+        function keepFlowEvents(tab, events) {
+            var f = tab.flow;
+            asList(events).forEach(function (e) {
+                if (!isObj(e)) return;
+                var seq = Number(e.seq) || 0;
+                if (seq && f.seen[seq]) return;
+                if (seq) f.seen[seq] = true;
+                f.events.push(e);
+            });
+            if (f.events.length > ROW_CAP) {
+                f.events.sort(function (a, b) { return (a.seq || 0) - (b.seq || 0); });
+                f.events.splice(0, f.events.length - ROW_CAP);
+            }
+        }
+
+        // 단계 섹션 — 종결 브리핑이 있으면 그것(해석·판정 최종), 없으면 진행 중 partial_briefing
+        function flowSource(tab) {
+            var v = tab.view || {};
+            var fin = isObj(v.briefing) && isObj(v.briefing.playbook) ? v.briefing.playbook : null;
+            if (tab.done && fin) return { sections: fin.sections, synthesis: fin.synthesis };
+            var part = isObj(tab.partial) && isObj(tab.partial.playbook) ? tab.partial.playbook : null;
+            return { sections: part ? part.sections : [], synthesis: null };
+        }
+
+        function toggler(tab, key, closedText, openText, target) {
+            var btn = el("button", "dv-flow-toggle", tab.flowOpen[key] ? openText : closedText);
+            btn.type = "button";
+            btn.setAttribute("aria-expanded", tab.flowOpen[key] ? "true" : "false");
+            target.hidden = !tab.flowOpen[key];
+            btn.addEventListener("click", function () {
+                var on = !tab.flowOpen[key];
+                tab.flowOpen[key] = on;
+                target.hidden = !on;
+                btn.textContent = on ? openText : closedText;
+                btn.setAttribute("aria-expanded", on ? "true" : "false");
+            });
+            return btn;
+        }
+
+        function tableNode(table) {
+            var t = el("table", "dv-card-table");
+            var cols = table.columns.map(String);
+            var hr = el("tr");
+            cols.forEach(function (c) { hr.appendChild(el("th", null, c)); });
+            var thead = el("thead");
+            thead.appendChild(hr);
+            t.appendChild(thead);
+            var body = el("tbody");
+            asList(table.rows).forEach(function (row) {
+                if (isObj(row)) row = cols.map(function (c) { return row[c]; });
+                if (!Array.isArray(row)) return;
+                var tr = el("tr");
+                row.forEach(function (v) {
+                    var text = v === null || v === undefined ? "—" : typeof v === "object" ? JSON.stringify(v) : String(v);
+                    tr.appendChild(el("td", null, text));
+                });
+                body.appendChild(tr);
+            });
+            t.appendChild(body);
+            return t;
+        }
+
+        function cautionNode(tab, key, notes, parent) {
+            if (!notes.length) return;
+            var ul = el("ul", "dv-caution");
+            notes.forEach(function (n) { ul.appendChild(el("li", null, n)); });
+            parent.appendChild(toggler(tab, key, TEXT.cautionBtn, TEXT.cautionBtn, ul));
+            parent.appendChild(ul);
+        }
+
+        function line(dl, head, node) {
+            dl.appendChild(el("dt", null, head));
+            var dd = el("dd");
+            dd.appendChild(node);
+            dl.appendChild(dd);
+            return dd;
+        }
+
+        function queryNode(tab, q, key) {
+            var div = el("div", "dv-q" + (q.warn ? " dv-q--warn" : ""));
+            div.appendChild(el("span", "dv-q-text", q.text));
+            var meta = [q.open ? "⟳" : q.icon, q.elapsed, q.rows].filter(Boolean).join(" ");
+            if (meta) div.appendChild(el("span", "dv-meta", meta));
+            if (q.excerpt) {
+                var pre = el("pre", "dv-excerpt", q.excerpt);
+                div.appendChild(toggler(tab, key, "▸", "▾", pre));
+                div.appendChild(pre);
+            }
+            return div;
+        }
+
+        function cardNode(tab, m) {
+            var li = el("li", "dv-card" + (m.skipped ? " dv-card--skip" : "") + (m.running ? " dv-card--running" : "") +
+                (m.warn ? " dv-card--warn" : ""));
+            li.setAttribute("data-step", m.step);
+            var head = el("div", "dv-card-head");
+            head.appendChild(el("span", "dv-card-no", m.no));
+            if (m.time) head.appendChild(el("span", "dv-time", m.time));
+            if (m.skipped) {
+                head.appendChild(el("span", "dv-card-title", fill(TEXT.skipTitle, { title: m.title }) + " — " +
+                    (m.because || TEXT.skipNoReason)));
+                li.appendChild(head);
+                return li;
+            }
+            head.appendChild(el("span", "dv-card-title", m.title));
+            var state = m.running ? TEXT.cardRunning : [m.icon, m.elapsed].filter(Boolean).join(" ");
+            if (state) head.appendChild(el("span", "dv-card-state", state));
+            if (m.verdictLabel) head.appendChild(el("span", "dv-verdict dv-verdict--" + m.verdict, m.verdictLabel));
+            if (m.live) head.appendChild(el("span", "dv-live", m.live));
+            m.badges.forEach(function (b) { head.appendChild(el("span", "dv-badge", b)); });
+            if (m.conflict) head.appendChild(el("span", "dv-conflict", TEXT.conflictChip));
+            li.appendChild(head);
+            var dl = el("dl", "dv-card-body");
+            if (m.because) line(dl, TEXT.cardWhy, el("span", "dv-why", m.because));
+            if (m.queries.length) {
+                var qs = el("div", "dv-queries");
+                m.queries.forEach(function (q, i) { qs.appendChild(queryNode(tab, q, "ex:" + m.step + ":" + i)); });
+                line(dl, TEXT.cardQuery, qs);
+            }
+            if (m.finding || m.reason || m.table) {
+                var res = el("div", "dv-result");
+                if (m.finding) res.appendChild(el("span", "dv-finding", m.finding));
+                else if (m.reason) res.appendChild(el("span", "dv-finding dv-finding--reason", m.reason));
+                if (m.table) {
+                    var wrap = el("div", "dv-card-table-wrap");
+                    wrap.appendChild(tableNode(m.table));
+                    res.appendChild(toggler(tab, "table:" + m.step, TEXT.tableOpen, TEXT.tableClose, wrap));
+                    res.appendChild(wrap);
+                }
+                line(dl, TEXT.cardResult, res);
+            }
+            if (m.opinion) {
+                var op = el("div", "dv-opinion dv-opinion--" + m.opinion.status);
+                if (m.opinion.status === "ok") {
+                    op.appendChild(el("span", "dv-ai-mark", TEXT.opinionMark));
+                    op.appendChild(el("span", "dv-opinion-text", m.opinion.text));
+                } else if (m.opinion.status === "pending") {
+                    op.textContent = TEXT.opinionPending;
+                } else {
+                    op.textContent = fill(TEXT.opinionNone, { reason: m.opinion.reason || TEXT.opinionNoneReason });
+                }
+                line(dl, TEXT.cardOpinion, op);
+            }
+            if (dl.children.length) li.appendChild(dl);
+            cautionNode(tab, "note:" + m.step, m.notes, li);
+            return li;
+        }
+
+        function roundNode(tab, r) {
+            var li = el("li", "dv-card dv-card--holmes");
+            var head = el("div", "dv-card-head");
+            head.appendChild(el("span", "dv-card-no", circled(r.no)));
+            if (r.time) head.appendChild(el("span", "dv-time", r.time));
+            head.appendChild(el("span", "dv-card-title", r.title));
+            li.appendChild(head);
+            var dl = el("dl", "dv-card-body");
+            var qs = el("div", "dv-queries");
+            r.queries.forEach(function (q, i) { qs.appendChild(queryNode(tab, q, "hx:" + r.no + ":" + i)); });
+            if (!r.queries.length) qs.appendChild(el("span", "dv-note", TEXT.holmesNoQuery));
+            line(dl, TEXT.cardQuery, qs);
+            if (r.note) {
+                var op = el("div", "dv-opinion dv-opinion--holmes");
+                op.appendChild(el("span", "dv-ai-badge", TEXT.holmesJudge));
+                op.appendChild(el("span", "dv-opinion-text", r.note));
+                line(dl, TEXT.holmesJudge, op);
+            }
+            li.appendChild(dl);
+            cautionNode(tab, "hnote:" + r.no, r.notes, li);
+            return li;
+        }
+
+        function renderFlow(tab) {
+            if (!tab.dom) return;
+            var src = flowSource(tab);
+            var model = flowModel(tab.flow.events, src.sections, {
+                done: tab.done, synthesis: src.synthesis, alarmTime: isObj(tab.alarm) ? tab.alarm.alarm_time : null,
+            });
+            tab.dom.sofarText.textContent = model.sofar || TEXT.sofarNone;
+            var body = tab.dom.flowBody;
+            body.textContent = "";
+            var groups = [];
+            if (model.cards.length) groups.push(["playbook", model.cards.map(function (m) { return cardNode(tab, m); })]);
+            if (model.holmes.length) groups.push(["holmes", model.holmes.map(function (r) { return roundNode(tab, r); })]);
+            groups.forEach(function (g) {
+                // 두 엔진이 함께 돌면 엔진별 줄을 나눈다(parallel)
+                if (groups.length > 1) body.appendChild(el("div", "dv-label dv-flow-engine", TEXT.engineGroups[g[0]]));
+                var ol = el("ol", "dv-cards");
+                g[1].forEach(function (n) { ol.appendChild(n); });
+                body.appendChild(ol);
+            });
+            if (!groups.length) body.appendChild(el("div", "dv-note", TEXT.flowEmpty));
         }
 
         function renderTabButton(tab) {
@@ -589,6 +1691,7 @@
             if (!tab.dom) return;
             var v = tab.view || {};
             tab.dom.title.textContent = tabLabel(tab);
+            renderTarget(tab);
             var parts = [kindLabel(v.kind || tab.kind || ""), enginesText(tab.engines)];
             var prog = progressText(tab.progress);
             if (prog) parts.push(prog);
@@ -602,6 +1705,23 @@
             var warn = tab.denied || tab.error || (tab.pollError ? fill(TEXT.pollError, { reason: tab.pollError }) : "");
             tab.dom.warn.textContent = warn;
             tab.dom.warn.hidden = !warn;
+        }
+
+        // (plans/187 W17) 어떤 알람·대상을 왜 조사하는지 — 알람 요약 · 채팅 경로 · 플레이북 선택/HolmesGPT 이유
+        function renderTarget(tab) {
+            var box = tab.dom.target;
+            var v = tab.view || {};
+            var lines = targetLines(tab.alarm, v.subject);
+            if (!lines.length && (asList(v.alarm_ids).length || v.parent_alarm_id || v.kind === "alarm")) {
+                lines.push({ head: TEXT.alarmHead, text: TEXT.alarmUnknown });
+            }
+            tab.why.forEach(function (w) { lines.push({ head: TEXT.whyHead, text: w.text }); });
+            box.textContent = "";
+            lines.forEach(function (line) {
+                box.appendChild(el("dt", null, line.head));
+                box.appendChild(el("dd", null, line.text));
+            });
+            box.hidden = !lines.length;
         }
 
         function renderFilters(tab) {
@@ -630,7 +1750,11 @@
             if (row.step) li.appendChild(el("span", "dv-step", row.step));
             if (row.ai) li.appendChild(el("span", "dv-ai-badge", TEXT.aiBadge));
             else li.appendChild(el("span", "dv-icon", row.icon));
-            li.appendChild(el("span", "dv-text", row.text));
+            var text = el("span", "dv-text", row.text);
+            // 도구 행은 그 스텝의 목적을 마우스 올림 설명으로 단다(행마다 되풀이하지 않는다)
+            var stepWhy = row.step ? tab.stepPurpose[row.step] : "";
+            if (!row.purpose && stepWhy) text.title = TEXT.purposePrefix + stepWhy;
+            li.appendChild(text);
             if (row.elapsed) li.appendChild(el("span", "dv-meta", row.elapsed));
             if (row.rows) li.appendChild(el("span", "dv-meta", row.rows));
             if (row.detail) {
@@ -650,6 +1774,7 @@
                 li.appendChild(toggle);
                 li.appendChild(pre);
             }
+            if (row.purpose) li.appendChild(el("span", "dv-purpose", TEXT.purposePrefix + row.purpose));
             return li;
         }
 
@@ -779,6 +1904,12 @@
         function applyActivity(tab, act) {
             if (!isObj(act)) return;
             asList(act.events).forEach(function (e) { if (isObj(e) && (e.engine === "playbook" || e.engine === "holmes")) tab.engines[e.engine] = true; });
+            // 조사 이유·스텝 목적은 행 상한(300)으로 오래된 행이 빠져도 머리에 남긴다
+            var seen = {};
+            tab.why.forEach(function (w) { seen[w.seq] = true; });
+            whyLines(act.events).forEach(function (w) { if (!seen[w.seq]) tab.why.push(w); });
+            stepPurposes(act.events, tab.stepPurpose);
+            keepFlowEvents(tab, act.events);
             mergeEvents(tab.log, act.events, operator, ROW_CAP);
             var next = Number(act.next_seq);
             if (isFinite(next) && next > tab.seq) tab.seq = next;
@@ -792,6 +1923,7 @@
             // SSE `done`을 먼저 받았으면 조회 응답이 늦게 따라와도 종결 상태를 되돌리지 않는다
             if (!(tab.done && !isTerminal(view.status))) tab.status = view.status || tab.status;
             tab.kind = view.kind || tab.kind;
+            if (isObj(view.alarm)) tab.alarm = view.alarm;
             if (!tab.alarmId && view.parent_alarm_id) tab.alarmId = String(view.parent_alarm_id);
             if (isObj(view.activity)) applyActivity(tab, view.activity);
             setState(tab, view);
@@ -806,6 +1938,7 @@
             } else {
                 renderPartial(tab);
             }
+            renderFlow(tab);
             renderTabButton(tab);
             renderTabHead(tab);
         }
@@ -845,7 +1978,7 @@
             var tab = newTab(id);
             var item = items.filter(function (it) { return it.investigation_id === id; })[0];
             if (item) {
-                tab.subject = textOf(item.subject);
+                tab.subject = subjectText(item.subject);
                 tab.kind = item.kind;
                 if (asList(item.alarm_ids).length) tab.alarmId = String(item.alarm_ids[0]);
                 tab.status = item.status || "";
@@ -856,6 +1989,7 @@
             order.push(id);
             buildTab(tab);
             renderRows(tab);
+            renderFlow(tab);
             if (!o.background) select(id);
             else persist();
             renderMenu();
@@ -979,14 +2113,14 @@
         // `/active` 상태 코드 — 끊김 사유 판정(성공이면 목록도 갱신한다)
         function gate() {
             return getJSON(API + "/active").then(function (res) {
-                if (res.ok) setItems(res.body.items);
+                if (res.ok) setItems(res.body.items, res.body.service_load);
                 return res.status;
             }, function () { return 0; });
         }
 
         function handle(type, data) {
             var tab = data && data.investigation_id ? tabs[String(data.investigation_id)] : null;
-            if (type === "summary") { setItems(data.items); return; }
+            if (type === "summary") { setItems(data.items, data.service_load); return; }
             if (type === "ping" || !tab) { renderConn(); return; }
             if (type === "activity") {
                 tab.status = data.status || tab.status;
@@ -994,9 +2128,11 @@
                 setState(tab, data);
                 renderRows(tab);
                 renderPartial(tab);
+                renderFlow(tab);
             } else if (type === "partial") {
                 if (isObj(data.partial_briefing)) tab.partial = data.partial_briefing;
                 renderPartial(tab);
+                renderFlow(tab);
             } else if (type === "poll_error") {
                 tab.pollError = data.reason || "";
             } else if (type === "done") {
@@ -1025,7 +2161,7 @@
             if (stopped || !polling) return;
             getJSON(API + "/active").then(function (res) {
                 if (TEXT.stopReasons[res.status]) { stop(TEXT.stopReasons[res.status]); return; }
-                if (res.ok) setItems(res.body.items);
+                if (res.ok) setItems(res.body.items, res.body.service_load);
                 else { listError = reasonOf(res); renderList(); }
                 return Promise.all(liveTabs().filter(function (t) { return !t.done && !t.denied; }).map(loadTab));
             }, function (err) {
@@ -1062,7 +2198,11 @@
         function probe() {
             return getJSON(API + "/active").then(function (res) {
                 if (res.status === 404 || res.status === 401 || res.status === 403) return false;
-                if (res.ok) firstItems = res.body.items;
+                if (res.ok) {
+                    firstItems = res.body.items;
+                    firstLoad = res.body.service_load;
+                    searchOn = res.body.event_search === true;
+                }
                 else firstError = reasonOf(res);
                 return true;
             }, function (err) {
@@ -1079,7 +2219,8 @@
             enabled = true;
             build();
             setVisible(true);
-            setItems(firstItems || []);
+            setItems(firstItems || [], firstLoad);
+            showSearch(searchOn);
             if (firstError) { listError = firstError; renderList(); }
             var saved = restore();
             if (saved) {
@@ -1103,6 +2244,7 @@
                     watch: watchKey, tabs: order.slice(), current: current, items: items.length };
             },
             tab: function (id) { return tabs[id] || null; },
+            search: runSearch,
         };
     }
 
@@ -1116,10 +2258,24 @@
         FALLBACK_POLL_MS: FALLBACK_POLL_MS,
         eventRow: eventRow,
         mergeEvents: mergeEvents,
+        whyLines: whyLines,
+        searchQuery: searchQuery,
+        stepPurposes: stepPurposes,
+        targetLines: targetLines,
+        conversationHeadLines: conversationHeadLines,
+        flowModel: flowModel,
+        opinionOf: opinionOf,
+        conflictsWithSynthesis: conflictsWithSynthesis,
         watchParam: watchParam,
         connText: connText,
         statusText: statusText,
         fmtElapsed: fmtElapsed,
+        // (plans/194 W5) 카드(app.js)와 공용 — 대기 표시 · 접수 결과 · 조사 상태
+        subjectText: subjectText,
+        queueInfo: queueInfo,
+        queueParts: queueParts,
+        investigationState: investigationState,
+        startOutcome: startOutcome,
         create: create,
         init: function (opts) {
             instance = create(opts);

@@ -202,11 +202,13 @@ def test_steps_follow_catalog_order(playbooks) -> None:
         "was.active": ["S0", "S1", "S1a", "S2", "S3", "S5", "S9"],
         "was.heap": ["S0", "S2", "S1", "S7", "S4", "S9"],
         "was.pool": ["S0", "S2", "S3", "S8", "S1", "S5", "S9"],
-        "host.cpu": ["S4", "S6", "S5", "S0r", "S1", "S7", "S9"],
+        "host.cpu": ["S4", "S6", "S0r", "S1", "S2", "S3a", "S3b", "S5", "S7", "S9"],
         "host.memory": ["S4", "S6", "S0r", "S2", "S5", "S9"],
         "host.fs": ["S4", "S5", "S7", "S9"],
         "host.disk_io": ["S4", "S6", "S5", "S9"],
-        "host.process": ["S4r", "S5", "S5a", "S0r", "S1", "S7", "S9"],
+        "host.process": [
+            "S4r", "S4", "S6", "S5", "S5a", "S0r", "S1", "S2", "S3a", "S3b", "S7", "S9",
+        ],
         "host.network": ["S4r", "S4t", "S5", "S9"],
     }
     for pid, order in expected.items():

@@ -1,5 +1,5 @@
 """병렬 기반 — 유계 병렬 헬퍼 · 소스별 동시 요청 상한 · `wait_slot` 경합 · 예상 시간 동시 폭
-(plans/192 W1 · D-296 ⑤).
+(plans/197 W1 · D-296 ⑤).
 
 외부 호출 0 — 가짜 코루틴 · httpx `MockTransport`(지연) · 가상 시계.
 """
@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import asyncio
-import logging
 import time
 
 import httpx
@@ -22,7 +21,6 @@ from apm_gateway.domain.errors import API_ERROR, ApmError
 from conftest import NOW_S, make_tools
 
 from apm_gateway.config import (
-    DEFAULT_MAX_IN_FLIGHT,
     GatewayConfig,
     JenniferApiConfig,
     JobConfig,
@@ -176,7 +174,7 @@ def _delayed_client(delay: float, **cfg) -> tuple[JenniferClient, dict[str, int]
 
 
 async def test_client_in_flight_bounded_even_without_rate_limit():
-    client, stats, _ = _delayed_client(0.03, max_in_flight=2)
+    client, stats, _ = _delayed_client(0.03, max_inflight_per_source=2)
     await asyncio.gather(
         *(client.get_json("/api/instance", {"domain_id": d}) for d in range(8))
     )
@@ -185,7 +183,7 @@ async def test_client_in_flight_bounded_even_without_rate_limit():
 
 
 async def test_client_in_flight_one_is_serial():
-    client, stats, _ = _delayed_client(0.01, max_in_flight=1)
+    client, stats, _ = _delayed_client(0.01, max_inflight_per_source=1)
     await asyncio.gather(
         *(client.get_json("/api/instance", {"domain_id": d}) for d in range(4))
     )
@@ -196,7 +194,7 @@ async def test_client_in_flight_one_is_serial():
 async def test_client_in_flight_keeps_start_interval():
     # 호출(0.3초)이 속도 간격(10회/초 = 0.1초)보다 길어 겹쳐도 시작 간격은 지켜진다 — 동시 상한을
     # 속도 제어 앞에서 잡기 때문이다(뒤에서 잡으면 상한 대기를 마친 호출이 몰려 나간다)
-    client, stats, starts = _delayed_client(0.3, max_in_flight=3, rate_limit_per_sec=10)
+    client, stats, starts = _delayed_client(0.3, max_inflight_per_source=3, rate_limit_per_sec=10)
     await client.get_json("/api/domain")  # 간격 기준점
     await asyncio.gather(
         *(client.get_json("/api/instance", {"domain_id": d}) for d in range(5))
@@ -355,7 +353,7 @@ def test_from_config_takes_slowest_source_in_flight():
             "JENNIFER_BANK_API_TOKEN": "a",
             "JENNIFER_LEGACY_API_URL": "http://legacy.test",
             "JENNIFER_LEGACY_API_TOKEN": "b",
-            "JENNIFER_LEGACY_MAX_IN_FLIGHT": "2",
+            "JENNIFER_LEGACY_MAX_INFLIGHT_PER_SOURCE": "2",
         },
         dotenv=None,
     )
@@ -363,53 +361,4 @@ def test_from_config_takes_slowest_source_in_flight():
     mgr = JobManager.from_config(cfg, envelope=tools.ok, error_envelope=tools.err)
     assert mgr.max_in_flight == 2
     single = JobManager.from_config(GatewayConfig(), envelope=tools.ok, error_envelope=tools.err)
-    assert single.max_in_flight == DEFAULT_MAX_IN_FLIGHT
-
-
-# ── 설정 파싱 ──────────────────────────────────────────────
-
-
-def _multi(**extra: str) -> dict[str, str]:
-    return {
-        "JENNIFER_SOURCES": '["bank", "legacy"]',
-        "JENNIFER_BANK_API_URL": "http://bank.test",
-        "JENNIFER_BANK_API_TOKEN": "a",
-        "JENNIFER_LEGACY_API_URL": "http://legacy.test",
-        "JENNIFER_LEGACY_API_TOKEN": "b",
-        **extra,
-    }
-
-
-def test_max_in_flight_default_is_four():
-    cfg = load_config({"JENNIFER_API_URL": "http://one.test"}, dotenv=None)
-    assert DEFAULT_MAX_IN_FLIGHT == 4
-    assert cfg.jennifer.max_in_flight == 4 and cfg.sources[0].max_in_flight == 4
-    assert JenniferApiConfig().max_in_flight == 4
-
-
-def test_max_in_flight_global_and_per_source_keys():
-    cfg = load_config(
-        _multi(JENNIFER_MAX_IN_FLIGHT="6", JENNIFER_LEGACY_MAX_IN_FLIGHT="1"), dotenv=None
-    )
-    assert cfg.jennifer.max_in_flight == 6
-    assert [(s.source_id, s.max_in_flight) for s in cfg.sources] == [("bank", 6), ("legacy", 1)]
-
-
-@pytest.mark.parametrize("bad", ["0", "-3", "abc", "2.5"])
-def test_max_in_flight_invalid_warns_and_uses_default(bad, caplog):
-    with caplog.at_level(logging.WARNING, logger="apm_gateway.config"):
-        cfg = load_config(
-            _multi(JENNIFER_MAX_IN_FLIGHT=bad, JENNIFER_BANK_MAX_IN_FLIGHT=bad), dotenv=None
-        )
-    assert cfg.jennifer.max_in_flight == DEFAULT_MAX_IN_FLIGHT
-    assert [s.max_in_flight for s in cfg.sources] == [DEFAULT_MAX_IN_FLIGHT] * 2
-    assert "JENNIFER_MAX_IN_FLIGHT" in caplog.text and "JENNIFER_BANK_MAX_IN_FLIGHT" in caplog.text
-
-
-def test_per_source_invalid_falls_back_to_global_value(caplog):
-    with caplog.at_level(logging.WARNING, logger="apm_gateway.config"):
-        cfg = load_config(
-            _multi(JENNIFER_MAX_IN_FLIGHT="3", JENNIFER_BANK_MAX_IN_FLIGHT="0"), dotenv=None
-        )
-    assert [s.max_in_flight for s in cfg.sources] == [3, 3]
-    assert "JENNIFER_BANK_MAX_IN_FLIGHT" in caplog.text
+    assert single.max_in_flight == JenniferApiConfig().max_inflight_per_source

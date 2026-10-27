@@ -20,7 +20,7 @@ SPEC-apm-question-coverage §3.2~§3.5·§3.7 · D-299 ④).
   상태 조회마다 다시 계산), 없으면 종전 `api_calls / 속도`(`basis = rate_only` — 호출 지연
   미반영)다(plans/164 W7-B — 순차 호출이라 응답 지연이 속도 간격보다 길면 그쪽이 지배한다).
   병렬 헬퍼가 동시 폭을 신고한 동안은 호출당 소요를 `min(신고 폭, 소스 동시 상한, 남은 호출)`로
-  나눈다(plans/192 — 신고 없는 직렬 루프는 폭 1 · 실행 전 견적 `estimate_calls`는 직렬 식 그대로).
+  나눈다(plans/197 — 신고 없는 직렬 루프는 폭 1 · 실행 전 견적 `estimate_calls`는 직렬 식 그대로).
 - 취소 시 스풀 조각을 지운다(취소한 결과를 전체로 오인하지 않게). 정체 감시 · 재기동 스캔 · 보관
   만료 정리를 한다. 작업 도구는 같은 주체 + 같은 `owner`일 때만 응답한다(아니면 `job_not_found`).
 - 기록에는 인자 원문·토큰·자격증명을 싣지 않는다(대상은 마스킹 요약 · `owner`는 불투명 문자열).
@@ -239,7 +239,7 @@ class Job(CallScope):
         self.expected_calls = 0
         self.promoted = False
         self.holds_slot = False
-        # 같은 작업의 병렬 호출이 슬롯을 한 번만 받게(plans/192 — 여럿이 받고 하나만 반납하면 누수)
+        # 같은 작업의 병렬 호출이 슬롯을 한 번만 받게(plans/197 — 여럿이 받고 하나만 반납하면 누수)
         self.slot_lock = asyncio.Lock()
         # 병렬 헬퍼가 신고 중인 동시 폭(겹친 신고는 가장 넓은 폭 · 비면 직렬 = 1)
         self._parallel_widths: list[int] = []
@@ -438,8 +438,8 @@ class JobManager:
         """비용 예측 속도·동시 폭 상한 = 설정 소스 중 가장 느린 값(보수적)."""
         rates = [s.rate_limit_per_sec for s in cfg.sources if s.rate_limit_per_sec > 0]
         rate = min(rates) if rates else cfg.jennifer.rate_limit_per_sec
-        widths = [s.max_in_flight for s in cfg.sources]
-        width = min(widths) if widths else cfg.jennifer.max_in_flight
+        widths = [s.max_inflight_per_source for s in cfg.sources]
+        width = min(widths) if widths else cfg.jennifer.max_inflight_per_source
         return cls(
             Spool(cfg.jobs.spool_dir),
             cfg.jobs,

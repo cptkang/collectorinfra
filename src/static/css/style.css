@@ -446,6 +446,29 @@ body:has(.chat-layout.history-collapsed) {
     outline-offset: -2px;
 }
 
+/* plans/187 W16 「조사 대화」 탭 닫기 — 탭 버튼 안에 버튼을 넣지 않으려 바로 옆 형제로 둔다 */
+.view-tab-close {
+    align-self: center;
+    margin-left: -6px;
+    padding: 2px 6px;
+    background: transparent;
+    border: none;
+    border-radius: var(--radius-sm);
+    color: var(--text-muted);
+    font-size: 0.875rem;
+    line-height: 1;
+    cursor: pointer;
+}
+
+.view-tab-close:hover {
+    background: var(--surface-hover);
+    color: var(--text);
+}
+
+.view-tab-close:focus-visible {
+    outline: 2px solid var(--accent);
+}
+
 /* 미확인 알람 수 — 다른 뷰에 있는 동안 도착한 건수만 센다(0이면 감춘다) */
 .view-tab-badge {
     display: none;
@@ -473,6 +496,44 @@ body:has(.chat-layout.history-collapsed) {
 /* 장애 진단 탭 배지 — 미확인 알람(빨강)이 아니라 진행 중 건수라 강조색을 쓴다 */
 .view-tab-badge--live.has-unread {
     background: var(--accent);
+}
+
+/* ─── 노이즈 관제 뷰 (plans/193 W2) ───
+   다른 뷰처럼 머리글·뷰 탭 아래 높이를 채우는 스크롤 영역이다. 단 **쌓임 맥락을 만들지 않는다**
+   (position·z-index 없음) — 관제 오버레이(스크림·서랍·세부 패널·팝오버)는 position:fixed라 이 뷰 안에
+   있어도 문서 층에서 겨루고, noise-console.css의 포털 범위 규칙(`.noise-view` 조상)이 그 층을 머리글(z 100)
+   위로 올린다. 장애 진단 뷰처럼 z-index:1을 주면 오버레이가 그 안에 갇혀 머리글 밑에 깔린다.
+   본문 그리기 순서는 독립 관제 페이지(body 직계)와 같다. */
+.noise-view {
+    height: calc(100vh - var(--header-h) - var(--view-tabs-h));
+    overflow-y: auto;
+}
+
+/* 관제를 불러오지 못했거나(조각·자산 실패는 다음 활성 때 재시도 · mount 실패는 새로고침) 권한이 없을 때 뷰 안에 띄우는 안내 */
+.noise-view-notice {
+    max-width: 720px;
+    margin: 24px auto;
+    padding: 12px 16px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--surface);
+    color: var(--text-secondary);
+    font-size: 0.875rem;
+}
+
+/* 진입 거부 사유(답변 중 조사 대화 열기 등) — 서랍·스크림(140·141) 위에 떠서 스크롤·서랍과 무관하게 보이고
+   몇 초 뒤 사라진다. 뷰 안 요소라 뷰가 숨으면 함께 숨는다. */
+.noise-view-flash {
+    position: fixed;
+    top: calc(var(--header-h) + var(--view-tabs-h) + 12px);
+    left: 50%;
+    transform: translateX(-50%);
+    z-index: 160;
+    width: max-content;
+    max-width: min(560px, calc(100vw - 32px));
+    margin: 0;
+    color: var(--text);
+    box-shadow: var(--shadow-lg);
 }
 
 /* ─── 장애 진단 뷰 (plans/187 W15 · §5.6.3 ⓓ) ─── */
@@ -637,20 +698,24 @@ body:has(.chat-layout.history-collapsed) {
 .dv-note:empty { display: none; }
 .dv-note--warn { color: var(--warning); }
 
-.dv-list {
+.dv-list,
+.dv-search-list {
     width: 100%;
     border-collapse: collapse;
     font-size: 0.8125rem;
 }
 
 .dv-list th,
-.dv-list td {
+.dv-list td,
+.dv-search-list th,
+.dv-search-list td {
     padding: 6px 8px;
     border-bottom: 1px solid var(--table-cell-border);
     text-align: left;
 }
 
-.dv-list th {
+.dv-list th,
+.dv-search-list th {
     color: var(--text-secondary);
     border-bottom-color: var(--table-header-border);
 }
@@ -669,6 +734,24 @@ body:has(.chat-layout.history-collapsed) {
 .dv-tab-meta {
     font-size: 0.8125rem;
     color: var(--text-secondary);
+}
+
+/* (plans/187 W17) 어떤 알람·대상을 왜 조사하는지 */
+.dv-target {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 2px 8px;
+    margin: 4px 0;
+    font-size: 0.8125rem;
+}
+
+.dv-target dt {
+    color: var(--text-secondary);
+}
+
+.dv-target dd {
+    margin: 0;
+    overflow-wrap: anywhere;
 }
 
 .dv-grid {
@@ -783,6 +866,126 @@ body:has(.chat-layout.history-collapsed) {
     overflow-wrap: anywhere;
 }
 
+/* (plans/187 W18) 이벤트 찾아 조사 */
+.dv-search {
+    margin-bottom: 12px;
+    padding: 8px 10px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+}
+
+.dv-search h3 {
+    margin: 0 0 6px;
+    font-size: 0.875rem;
+}
+
+.dv-search-form {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 6px 10px;
+}
+
+.dv-search-field {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    min-width: 0;
+}
+
+.dv-search-field input {
+    max-width: 100%;
+    box-sizing: border-box;
+    height: 32px;
+    padding: 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font: inherit;
+    font-size: 0.8125rem;
+}
+
+.dv-search-btn,
+.dv-start-btn {
+    flex: 0 0 auto;
+    height: 32px;
+    padding: 0 12px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    color: var(--text);
+    font-size: 0.8125rem;
+    white-space: nowrap;
+    cursor: pointer;
+}
+
+.dv-search-btn:hover,
+.dv-start-btn:hover:not(:disabled) { background: var(--surface-hover); }
+.dv-start-btn:disabled { opacity: 0.6; cursor: default; }
+
+.dv-search-status,
+.dv-search-note {
+    font-size: 0.75rem;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
+/* (plans/194 W5 · U4) 등급 필터 · 「조사 안 됨만」 · 조사 상태 열 · 다음 행동 버튼 */
+.dv-search-filter {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 6px 14px;
+    margin: 8px 0 4px;
+}
+
+/* 둘레 글꼴을 그대로 쓴다 — 전역 select 규칙(폭 100%·큰 여백)과 브라우저 기본 글꼴·자간을 덮는다 */
+.dv-search-filter,
+.dv-search-filter label,
+.dv-search-filter select {
+    font-family: var(--font-display);
+    letter-spacing: normal;
+    text-transform: none;
+}
+
+.dv-search-filter select {
+    width: auto;
+    height: 32px;
+    padding: 4px 28px 4px 8px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background-color: var(--surface);
+    background-position: right 8px center;
+    color: var(--text);
+    font-size: 0.8125rem;
+}
+
+.dv-search-check {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    height: 32px;
+    font-size: 0.8125rem;
+    color: var(--text);
+}
+
+.dv-search-check[hidden],
+.dv-search-statecol[hidden],
+.dv-search-list[hidden] { display: none; }
+.dv-search-row--muted { opacity: 0.6; }
+.dv-search-go { margin-left: 6px; }
+.dv-list-state .bv-meta { margin-left: 4px; }
+
+.dv-purpose {
+    flex-basis: 100%;
+    padding-left: 18px;
+    color: var(--text-secondary);
+    overflow-wrap: anywhere;
+}
+
 .dv-expand {
     background: transparent;
     border: none;
@@ -817,7 +1020,97 @@ body:has(.chat-layout.history-collapsed) {
     margin-top: 8px;
 }
 
-/* 알람 카드 [진행 보기] · 관제 드로어 「장애 진단에서 보기」(공용 렌더 밖 진입 버튼) */
+/* (plans/187 W20 · G-50) 「조사 흐름」·「실행 기록」 전환 · 단계 카드 */
+.dv-modes { display: flex; gap: 2px; margin: 6px 0 8px; border-bottom: 1px solid var(--border); }
+.dv-mode {
+    background: transparent;
+    border: none;
+    border-bottom: 2px solid transparent;
+    padding: 5px 12px;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    cursor: pointer;
+}
+.dv-mode.active { color: var(--text); border-bottom-color: var(--accent); font-weight: 700; }
+.dv-grid[hidden],
+.dv-flow[hidden],
+.dv-caution[hidden],
+.dv-card-table-wrap[hidden] { display: none; }
+.dv-flow {
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface);
+    padding: 8px 10px;
+}
+.dv-sofar {
+    display: flex;
+    gap: 8px;
+    align-items: baseline;
+    padding: 4px 0 8px;
+    border-bottom: 1px solid var(--table-cell-border);
+    font-size: 0.8125rem;
+    overflow-wrap: anywhere;
+}
+.dv-cards { list-style: none; margin: 0; padding: 0; }
+.dv-card { padding: 8px 2px; border-bottom: 1px solid var(--table-cell-border); font-size: 0.8125rem; }
+.dv-card--skip { color: var(--text-muted); }
+.dv-card--warn .dv-card-state { color: var(--warning); }
+.dv-card-head { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.dv-card-title { font-weight: 700; flex: 1 1 160px; min-width: 0; overflow-wrap: anywhere; }
+.dv-card--skip .dv-card-title { font-weight: 400; }
+.dv-card-state { font-size: 0.75rem; color: var(--text-muted); }
+.dv-verdict,
+.dv-live,
+.dv-badge,
+.dv-conflict {
+    font-size: 0.6875rem;
+    padding: 0 5px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+.dv-verdict--degraded { color: var(--error); border-color: var(--error); background: var(--error-bg); }
+.dv-verdict--normal { color: var(--success); border-color: var(--success); }
+.dv-live { color: var(--tone-amber); border-color: var(--tone-amber); }
+.dv-conflict { color: var(--warning); border-color: var(--warning); background: var(--warning-bg); }
+.dv-card-body {
+    display: grid;
+    grid-template-columns: max-content minmax(0, 1fr);
+    gap: 3px 10px;
+    margin: 6px 0 0 22px;
+}
+.dv-card-body dt { color: var(--text-secondary); }
+.dv-card-body dd { margin: 0; overflow-wrap: anywhere; }
+.dv-q { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; }
+.dv-q--warn .dv-meta { color: var(--warning); }
+.dv-flow-toggle {
+    background: transparent;
+    border: none;
+    color: var(--accent);
+    cursor: pointer;
+    padding: 0 4px;
+    font-size: 0.75rem;
+}
+.dv-card-table-wrap { flex-basis: 100%; overflow-x: auto; margin-top: 4px; }
+.dv-card-table { border-collapse: collapse; font-size: 0.75rem; }
+.dv-card-table th,
+.dv-card-table td { border: 1px solid var(--table-cell-border); padding: 2px 6px; text-align: left; }
+.dv-opinion--ok,
+.dv-opinion--holmes { background: var(--info-bg); padding: 2px 6px; border-radius: 4px; }
+.dv-opinion--pending,
+.dv-opinion--none { color: var(--text-muted); }
+.dv-ai-mark {
+    font-size: 0.6875rem;
+    font-weight: 700;
+    color: var(--tone-violet);
+    margin-right: 6px;
+}
+.dv-opinion .dv-ai-badge { margin-right: 6px; }
+.dv-card > .dv-flow-toggle { margin-left: 18px; }
+.dv-caution { margin: 2px 0 0 22px; padding-left: 16px; font-size: 0.75rem; color: var(--text-secondary); }
+.dv-flow-engine { margin-top: 8px; }
+
+/* 알람 카드 [장애 진단에서 보기] · 관제 드로어 「장애 진단에서 보기」(공용 렌더 밖 진입 버튼) */
 .diagnosis-open,
 .cause-live-open {
     font-size: 0.72rem;
@@ -1518,7 +1811,8 @@ body.auth-pending > header,
 body.auth-pending > .view-tabs,
 body.auth-pending > .chat-layout,
 body.auth-pending > .alarm-view,
-body.auth-pending > .diagnosis-view {
+body.auth-pending > .diagnosis-view,
+body.auth-pending > .noise-view {
     visibility: hidden;
 }
 
@@ -3259,6 +3553,13 @@ body.auth-pending .auth-splash {
 .alarm-briefing-section--collapsed .alarm-briefing-body { display: none; }
 .alarm-briefing-body { margin-top: 4px; }
 
+/* plans/194 W5 · U1·U2: 카드 「조사」 칸 — 조사 안 됨 + [조사 시작] · 자동 조사 꺼짐 안내 · 거부 사유와 다음 행동
+   (본문 마크업은 briefing-view.js startBlockHtml · startMsgHtml) */
+.alarm-inv-body { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.alarm-inv-body .bv-head { gap: 8px; }
+.inv-start-msg[hidden] { display: none; }
+.alarm-inv-joined { margin-top: 4px; }
+
 /* ─── plans/153 W3: 조사 브리핑 공용 본문(briefing-view.js) — 카드·관제 드로어가 함께 쓴다 ─── */
 
 .bv { display: flex; flex-direction: column; gap: 6px; font-size: 0.78rem; line-height: 1.55; color: var(--text); }
@@ -3404,6 +3705,11 @@ input.bv-input { min-width: 16em; }
 /* 조사 대화 첫 고정 카드(app.js) — 브리핑 본문은 위 공용 스타일 */
 .investigation-pin .message-bubble { max-width: 100%; }
 .investigation-pin-head { display: flex; align-items: center; gap: 8px; font-weight: 700; font-size: 0.8rem; margin-bottom: 6px; }
+.investigation-pin-target { display: grid; grid-template-columns: max-content 1fr; gap: 2px 10px; margin: 0 0 8px; font-size: 0.78rem; line-height: 1.5; padding: 6px 8px; border-radius: 6px; background: var(--surface-hover); }
+.investigation-pin-target[hidden] { display: none; }
+.investigation-pin-target dt { font-weight: 700; white-space: nowrap; }
+.investigation-pin-target dd { margin: 0; overflow-wrap: anywhere; }
+.investigation-pin-target dd ol { margin: 0; padding: 0; list-style: none; }
 .investigation-pin-foot { margin-top: 8px; display: flex; flex-direction: column; gap: 2px; font-size: 0.72rem; color: var(--text-muted); }
 .investigation-pin-scope { color: var(--warning); }
 

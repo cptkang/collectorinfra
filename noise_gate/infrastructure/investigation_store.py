@@ -34,13 +34,13 @@ from __future__ import annotations
 
 import json
 import logging
-from collections import deque
 from collections.abc import Callable, Mapping, Sequence
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
 from noise_gate.domain.investigation_briefing import render_briefing_lines
+from noise_gate.infrastructure import jsonl_tail
 
 logger = logging.getLogger(__name__)
 
@@ -484,27 +484,17 @@ class InvestigationStore:
             )
 
     def _tail(self) -> list[dict[str, Any]]:
-        """파일 끝에서 max_lines 줄을 읽어 레코드 목록(오래된 것 → 최신)을 돌려준다."""
-        if not self.path.exists():
-            return []
+        """파일 끝에서 max_lines 줄을 읽어 레코드 목록(오래된 것 → 최신)을 돌려준다.
+
+        (plans/194 W2) 경로 단위 증분 캐시(`jsonl_tail`)로 읽는다 — 새로 붙은 바이트만 파싱한다.
+        레코드 dict는 캐시와 공유하므로 이 클래스의 조회 메서드는 레코드를 고치지 않는다
+        (사본만 만든다).
+        """
         try:
-            with self.path.open("r", encoding="utf-8") as fh:
-                lines = deque(fh, maxlen=self.max_lines)
+            return jsonl_tail.tail_records(self.path, self.max_lines)
         except OSError as exc:
             logger.warning("조사 저장소 읽기 실패(무시): %s", exc)
             return []
-        out: list[dict[str, Any]] = []
-        for line in lines:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                continue
-            if isinstance(rec, dict):
-                out.append(rec)
-        return out
 
     @staticmethod
     def _resolve(
@@ -610,6 +600,31 @@ class InvestigationStore:
             latest.pop(str(investigation_id), None)
             latest[str(investigation_id)] = rec
         return list(latest.values())
+
+    def resolved_records(self) -> list[dict[str, Any]]:
+        """조사 id별 최신 상태(`get_by_investigation`과 같은 병합 — 연결 행의 `alarm_ids`·
+        `alarm_db_ids` 합집합) 전부 — 파일을 한 번만 훑는다(plans/194 W5 · 판정 목록 조사 상태).
+
+        순서는 그 조사의 마지막 **상태 행** 위치 순(시간 순 · 연결 행뿐이면 마지막 연결 행 위치)이다
+        — 연결 행이 붙었다고 오래된 조사가 뒤로 가지 않게 한다. 조사 id 없는 행은 뺀다.
+        """
+        rows: dict[str, list[dict[str, Any]]] = {}
+        order: dict[str, tuple[int, int]] = {}  # id → (상태 행 있음, 위치)
+        for idx, rec in enumerate(self._tail()):
+            investigation_id = rec.get("investigation_id")
+            if not investigation_id:
+                continue
+            key = str(investigation_id)
+            rows.setdefault(key, []).append(rec)
+            status_row = rec.get("status") != STATUS_EPISODE_EXISTING
+            if status_row or order.get(key, (0, -1))[0] == 0:
+                order[key] = (int(status_row), idx)
+        out: list[tuple[int, dict[str, Any]]] = []
+        for key, group in rows.items():
+            resolved = self._resolve(group, group[0]["investigation_id"])
+            if resolved is not None:
+                out.append((order[key][1], resolved))
+        return [rec for _, rec in sorted(out, key=lambda item: item[0])]
 
     def get_by_alarm(
         self, alarm_id: str, *, include_manual: bool = False

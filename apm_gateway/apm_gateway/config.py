@@ -55,13 +55,8 @@ SOURCE_KEY_SUFFIXES = (
     "API_TIMEOUT_SECONDS",
     "RATE_LIMIT_PER_SEC",
     "MAX_RESPONSE_BYTES",
-    "MAX_IN_FLIGHT",
+    "MAX_INFLIGHT_PER_SOURCE",
 )
-# 소스별 동시 요청 상한 기본값(plans/192 · 「신규 설정 기본 off」의 예외) — D-296 ⑤가 큰 조회의
-# 소스·도메인 병렬 호출을 이미 정했고, 속도 상한(호출 시작 간격)은 그대로라 초당 호출 수는 늘지
-# 않는다. 1이면 호출 지연이 속도 간격보다 길 때 보고된 지연이 그대로 남는다(D-344 기본 10 선례).
-# `1` = 종전 직렬 동작.
-DEFAULT_MAX_IN_FLIGHT = 4
 # `load_dotenv`가 `os.environ`에 넣은 키(설정 관리 API의 프로세스 환경 원천 판정용 · plans/191)
 DOTENV_INJECTED_KEYS: set[str] = set()
 
@@ -71,13 +66,17 @@ class JenniferApiConfig:
     url: str = ""
     token: str = ""
     domain_ids: tuple[int, ...] = ()
-    timeout_seconds: float = 10.0
+    # 제니퍼 API 1건 상한(plans/187 W22 · D-341 부기 13)
+    # — sre_agent MCP 도구 1건 상한(60s)보다 작게.
+    timeout_seconds: float = 30.0
     rate_limit_per_sec: float = 5.0
     # 메모리 임계(D-296 ④) — 넘는 응답 본문은 스풀 임시 파일로 받아 점진 파싱한다(오류 아님).
     max_response_bytes: int = 4 * 1024 * 1024
+    # 소스별 동시 호출 상한(plans/194 W4b · D-347) — 「기본값 = 현행 동일」의 예외: 종전은 동시
+    # 무제한이라 응답이 느려지면 `rate × 지연`만큼 제니퍼에 요청이 쌓였다(제니퍼 부하). 응답이
+    # 1.6s(= 8 / 5회/s) 안이면 이 상한에 닿지 않아 정상 부하 동작은 같다.
+    max_inflight_per_source: int = 8
     source_id: str = DEFAULT_SOURCE_ID
-    # 소스별 동시 요청 상한(폴러·동기·작업 호출 공용 · 속도 상한과 별개)
-    max_in_flight: int = DEFAULT_MAX_IN_FLIGHT
 
 
 @dataclass
@@ -220,8 +219,10 @@ def _load_sources(
                 timeout_seconds=float(pick("API_TIMEOUT_SECONDS") or base.timeout_seconds),
                 rate_limit_per_sec=float(pick("RATE_LIMIT_PER_SEC") or base.rate_limit_per_sec),
                 max_response_bytes=int(pick("MAX_RESPONSE_BYTES") or base.max_response_bytes),
-                max_in_flight=_in_flight(
-                    pick("MAX_IN_FLIGHT"), base.max_in_flight, prefix + "MAX_IN_FLIGHT"
+                max_inflight_per_source=_positive_int(
+                    pick("MAX_INFLIGHT_PER_SOURCE"),
+                    base.max_inflight_per_source,
+                    prefix + "MAX_INFLIGHT_PER_SOURCE",
                 ),
                 source_id=sid,
             )
@@ -285,17 +286,17 @@ def _positive(value: str | None, default: float, key: str) -> float:
     return number
 
 
-def _in_flight(value: str | None, default: int, key: str) -> int:
-    """동시 요청 상한 — 비면 `default`, 0 이하·정수 아님은 경고 후 `default`(기동을 막지 않는다)."""
+def _positive_int(value: str | None, default: int, key: str) -> int:
+    """1 이상 정수 키를 읽는다 — 소수·문자는 `int()` 버림(0.5 → 0) 대신 키 이름을 담아 거부한다."""
     if value is None or not value.strip():
-        return default
-    try:
-        number = int(value.strip())
-    except ValueError:
-        number = 0
-    if number <= 0:
-        logger.warning("%s=%r 은 1 이상의 정수여야 한다 — %d로 둔다", key, value, default)
-        return default
+        number = default
+    else:
+        try:
+            number = int(value.strip())
+        except ValueError:
+            raise ValueError(f"{key}는 정수여야 한다: {value!r}") from None
+    if number < 1:
+        raise ValueError(f"{key}는 1 이상이어야 한다")
     return number
 
 
@@ -384,11 +385,11 @@ def load_config(
         url=(get("JENNIFER_API_URL") or "").strip(),
         token=(get("JENNIFER_API_TOKEN") or "").strip(),
         domain_ids=_int_list(get("JENNIFER_DOMAIN_IDS")),
-        timeout_seconds=float(get("JENNIFER_API_TIMEOUT_SECONDS") or 10),
+        timeout_seconds=float(get("JENNIFER_API_TIMEOUT_SECONDS") or 30),
         rate_limit_per_sec=float(get("JENNIFER_RATE_LIMIT_PER_SEC") or 5),
         max_response_bytes=int(get("JENNIFER_MAX_RESPONSE_BYTES") or 4 * 1024 * 1024),
-        max_in_flight=_in_flight(
-            get("JENNIFER_MAX_IN_FLIGHT"), DEFAULT_MAX_IN_FLIGHT, "JENNIFER_MAX_IN_FLIGHT"
+        max_inflight_per_source=_positive_int(
+            get("JENNIFER_MAX_INFLIGHT_PER_SOURCE"), 8, "JENNIFER_MAX_INFLIGHT_PER_SOURCE"
         ),
     )
     sources = _load_sources(get("JENNIFER_SOURCES"), jennifer, env)

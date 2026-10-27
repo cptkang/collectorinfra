@@ -6,11 +6,14 @@ HolmesGPT ReAct 조사 루프를 감싸되, **트리거·dedup·동시성·타�
 가드 6종:
 0. **대상 가용성**(Plan 81 · `docs/25` L-5) — 호출자가 실은 `target_state`가 `unavailable`이면
    조사 전에 거부한다. 죽은 호스트에서는 도구가 **에러가 아니라 빈 데이터**를 돌려주므로
-   ReAct 루프가 전체 타임아웃(300s)까지 돌며 근거 없는 서술을 만들 수 있다.
+   ReAct 루프가 전체 타임아웃(600s)까지 돌며 근거 없는 서술을 만들 수 있다.
    **필드가 없으면 통과**한다(fail-open) — 이 가드는 보안 통제가 아니라 낭비 방지다.
 1. fingerprint dedup TTL — 완료된 조사도 `investigation_dedup_ttl_seconds` 내 재조사 억제.
-2. 동시 상한 — `investigation_max_concurrent`(기본 2) 세마포어.
-3. 전체 타임아웃 — `investigation_timeout_seconds`(기본 300s), **조사 1건 전체**에 asyncio.wait_for
+2. 동시 상한 — `investigation_max_concurrent`(기본 2) 세마포어 + 대기 상한
+   `investigation_max_queued`(기본 4 · plans/194 W3 · D-347 — 넘치면 `rejected(queue_full)`).
+   타임아웃으로 버린 조사 스레드는 끝날 때까지(최대 `investigation_abandon_grace_seconds`) 슬롯·
+   L-4 호스트 키를 붙들고 협조적 중단 신호(`job.cancel_event`)를 받는다.
+3. 전체 타임아웃 — `investigation_timeout_seconds`(기본 600s), **조사 1건 전체**에 asyncio.wait_for
    (per-call 아님). collectorinfra MCP 동기 타임아웃(60s)보다 길므로 조사는 백그라운드 워커에서
    실행하고 submit은 즉시 `running`을 남겨 반환한다(submit/poll 계약 성립).
 4. 시간당 예산 — `investigation_hourly_budget` 초과 시 신규 조사 거부.
@@ -58,12 +61,26 @@ from typing import Any, Protocol
 
 from sre_agent.application.briefing_builder import build_playbook_briefing
 from sre_agent.application.investigation_guidance import PROM_ANCHOR_REASONS, deep_dive_note
-from sre_agent.application.playbook_narrator import LlmCall, NarratorLimits, PlaybookNarrator
+from sre_agent.application.playbook_narrator import (
+    NOT_CONFIGURED,
+    LlmCall,
+    NarratorLimits,
+    Opinion,
+    PlaybookNarrator,
+    StepOpinionStream,
+)
 from sre_agent.application.playbook_runner import (
+    STEP_STATUS_NO_OPINION,
     PlaybookRun,
     alarm_facts_from_payload,
     finalize_playbook_run,
+    flow_readings,
+    mapped_polestar_source,
+    retry_reason,
     run_playbook,
+    step_because,
+    step_finding,
+    step_narration_request,
 )
 from sre_agent.application.playbook_steps import (
     ACTION_TITLES,
@@ -107,6 +124,7 @@ from sre_agent.domain.severity_signatures import (
     match_signatures,
     was_signals_from_outputs,
 )
+from sre_agent.infrastructure.activity_masking import mask_activity_text
 from sre_agent.infrastructure.tool_result_cache import (
     BatchCaller,
     CacheClosedError,
@@ -214,6 +232,34 @@ def _add_limitations(briefing_kwargs: dict[str, Any], lines: list[str]) -> None:
         briefing_kwargs["limitations"] = [*briefing_kwargs.get("limitations", []), *lines]
 
 
+#: 단계 끝 해석의 근거 표지(§5.6.4 ⓖ C1).
+OPINION_BASIS = "이 단계까지의 근거"
+
+
+@dataclass
+class _FlowHooks:
+    """조사 흐름 배선(plans/187 W20 · §5.6.4) — 실행 기록이 켜졌을 때만 만든다.
+
+    꺼지면 None(비트 동일).
+
+    stream:  단계 끝 해석 실행기(LLM 미배선이면 None — 종결 일괄 경로).
+    on_skip: 건너뜀 통지 — `_progress_library`가 채우고 `run_playbook`에 넘긴다.
+    no_stream_reason: stream이 None인 사유(단계 해석 「없음」 표기에 쓴다).
+    """
+
+    stream: StepOpinionStream | None = None
+    on_skip: Callable[[StepResult, str], None] | None = None
+    #: 실행기를 만들지 못한 실제 사유(예: 남은 시간 부족) — None이면 LLM 미배선(「소견기 미구성」).
+    no_stream_reason: str | None = None
+
+
+def _opinion_view(op: Opinion) -> dict[str, Any]:
+    """부분 브리핑 `sections[].opinion` — ok(가드 통과 문단) / none(사유)."""
+    if op.text and not op.dropped_reason:
+        return {"status": "ok", "text": mask_activity_text(op.text), "basis": OPINION_BASIS}
+    return {"status": "none", "reason": op.dropped_reason or "소견 없음", "basis": OPINION_BASIS}
+
+
 def _activity(job: object) -> ActivityLog | None:
     """잡의 실행 기록(plans/187 W13).
 
@@ -265,6 +311,8 @@ class JobLike(Protocol):
     # 플레이북 모드 진척(plans/187 W4) — 플레이북 경로에서만 채운다.
     progress: dict | None
     partial_briefing: dict | None
+    # 동시 상한 대기 순번(plans/194 W3) — 대기 중에만 값이 있다(1부터).
+    queue_position: int | None
 
 
 @dataclass
@@ -335,6 +383,10 @@ def _host_key(job: JobLike, episode_scoped: bool = False) -> tuple[str, ...] | N
 
 #: 대상 가용성 가드의 거부 사유 코드(Plan 81).
 GUARD_TARGET_UNAVAILABLE = "target_unavailable"
+#: 대기 상한 거부 사유(plans/194 W3 · D-347) — 슬롯 대기가 `investigation_max_queued`에 닿음.
+GUARD_QUEUE_FULL = "queue_full"
+#: 같은 상한인데 슬롯 일부를 타임아웃 뒤 버려진 조사 스레드가 붙들고 있음(끝나지 않는 조사가 원인).
+GUARD_SERVICE_OVERLOADED = "service_overloaded"
 
 
 def _target_state(job: JobLike) -> dict | None:
@@ -364,7 +416,7 @@ def _target_state(job: JobLike) -> dict | None:
 
 
 # 사전수집(prefetch) 타임박스 하한(초) — D-213 후속.
-# **per-call 타임아웃이 아니다**: 도구 1건당 상한은 `evidence_prefetch_timeout_seconds`(기본 20s)가
+# **per-call 타임아웃이 아니다**: 도구 1건당 상한은 `evidence_prefetch_timeout_seconds`(기본 60s)가
 # `mcp_tool_client`에서 이미 강제한다. 이쪽은 배치 전체(알람 1 + 지표 4 + 선택 항목)가 통째로
 # 매달렸을 때를 끊는 wedge 네트라, 정상 배치(도구 수 × per-call)를 자르지 않도록 넉넉해야 한다.
 # 조사 본예산의 절반을 상한으로 삼아 조사 쪽 예산을 최소 절반 남긴다.
@@ -396,10 +448,35 @@ DEEP_MIN_REMAINING_S = 30.0
 NARRATOR_MIN_REMAINING_S = 2.0
 NARRATOR_SKIPPED_NOTE = "소견 생략 — 수집 후 남은 시간 {remaining:.1f}s(전체 예산 소진)"
 NO_PLAYBOOK_LIMIT = "플레이북 미선택(일치 없음 · fallback 미적재) — 종전 HolmesGPT 조사로 진행"
+#: (plans/187 W17) 실행 기록 `purpose` — 플레이북 선택 근거(`matched_by`)를 사람이 읽는 말로.
+MATCH_CONDITION_LABELS: dict[str, str] = {
+    "resource_type": "자원 유형", "alarm_kind": "알람 종류", "any_kind": "알람 키워드",
+}
+PLAYBOOK_FALLBACK_PURPOSE = (
+    "맞는 유형 플레이북이 없어 공통 점검(사용량 추이·관련 알람·재발·최근 변경)을 돈다"
+)
+HOLMES_PURPOSE = "정해진 절차가 없어 HolmesGPT가 도구를 직접 골라 알람 원인을 찾는다"
+DEEP_PURPOSES: dict[str, str] = {
+    "parallel": "플레이북과 따로 두 번째 의견을 낸다(플레이북 결과를 넘기지 않음)",
+    "conditional": "플레이북 판정 요약을 넘겨 원인을 더 깊이 확인한다",
+}
+
+
+def playbook_purpose(matched_by: str) -> str:
+    """플레이북 선택 근거 한 줄 — `match:a+b` → 「알람의 자원 유형·알람 종류가 … 일치」."""
+    if matched_by.startswith("match:"):
+        names = [MATCH_CONDITION_LABELS.get(c, c) for c in matched_by[6:].split("+") if c]
+        if names:
+            return "알람의 " + "·".join(names) + "가 이 플레이북 조건과 일치"
+    if matched_by == "fallback":
+        return PLAYBOOK_FALLBACK_PURPOSE
+    return matched_by
 #: 기동 적재에서 거부된 설정 파일(플레이북·KE) — 브리핑 `playbook.notes` 1줄(거부 0이면 문구 없음).
 REJECTED_FILES_NOTE = "설정 파일 거부 {n}건({names}) — 관리자 확인 필요"
 #: 잡이 끝난(예산 초과·예외) 뒤 수집기가 시작하려던 스텝의 사유.
 STEP_STOPPED_REASON = "수집 중단 — 잡 종료(예산 초과·예외) 뒤 시작하지 않음"
+#: 결손 스텝 재시도(plans/187 W22)의 단계 시작 「왜」 — 첫 시도 사유를 그대로 인용한다.
+RETRY_BECAUSE = "첫 시도가 시간 안에 끝나지 않아 1회 다시 확인(첫 시도: {first})"
 #: 잡 종료로 닫힌 캐시에 호출한 스텝의 사유(이후 스텝은 시작하지 않는다).
 STEP_CACHE_CLOSED_REASON = "수집 중단 — 잡 종료로 도구 캐시가 닫힘({error})"
 
@@ -510,8 +587,22 @@ class InvestigationDispatcher:
         # 플레이북 모드 심층 조사 시작 시각들(최근 1시간) — 예산 강등 판정(plans/187 W4).
         self._deep_window: deque[float] = deque()
         self._workers: set[threading.Thread] = set()
-        # 동시 상한 대기 중인 잡의 실행 기록(대기 순번 — plans/187 W13). 기록이 있는 잡만 들어온다.
-        self._waiting: list[ActivityLog] = []
+        # 동시 상한 대기 중인 잡(대기 순번 — plans/187 W13 · plans/194 W3에서 기록 유무와 무관하게
+        # 모든 대기 잡으로 넓혔다 — `job.queue_position`은 상시, 기록이 있으면 `phase`도).
+        self._waiting: list[JobLike] = []
+        # 부하 계수(plans/194 W3 · D-347 — lock 보유 중에만 바꾼다).
+        # queued: 워커를 만들었고 아직 슬롯을 못 얻은 잡 수(대기 상한 판정 — 가드에서 미리 센다).
+        # holding: 슬롯을 쥔 수(살아 있는 워커 + 버려진 조사 스레드를 기다리는 반환 대기).
+        # zombie_holding: 그중 버려진 조사 스레드 때문에 붙든 슬롯 수.
+        self._queued = 0
+        self._holding = 0
+        self._zombie_holding = 0
+        # 잡별 보조 스레드 종료 신호(조사·사전수집·플레이북 수집기·심층) — 워커 끝에 아직
+        # 안 끝난 것이 버려진 스레드다. 키는 investigation_id(심층 잡 사본도 같은 id).
+        self._helpers: dict[str, list[threading.Event]] = {}
+        # 버려진 뒤 아직 안 끝난 스레드의 종료 신호(게이지 `abandoned_threads` — 끝난 것은
+        # 조회 때 정리).
+        self._abandoned: list[threading.Event] = []
 
     # ── executor 진입점 ────────────────────────────────────────
 
@@ -519,28 +610,46 @@ class InvestigationDispatcher:
         """JobStore가 호출하는 executor. 동기 가드 → (통과 시) 백그라운드 조사 위임."""
         # 스텁 경로(조사 불가): 조사 LLM 게이트 차단(D-230) 또는 조사함수 미주입 → 동기 스텁 확정.
         # 스텁도 폭주 가드(dedup·예산)는 그대로 통과시켜야 하므로 가드 판정을 먼저 한다.
-        blocked = self._apply_sync_guards(job)
+        # 대기 상한(plans/194 W3)은 워커를 만드는 실 조사에만 건다 — 스텁은 슬롯을 쓰지 않는다.
+        stub = (self._diagnose_fn is None
+                or self._settings.investigation_llm_stub_reason() is not None)
+        blocked = self._apply_sync_guards(job, admit=not stub)
         if blocked is not None:
-            job.status, job.reason = "rejected", blocked
-            job.verdict = self._blocked_verdict(job, blocked)
-            job.briefing = {"stub": True, "message": job.verdict, "elements": None}
-            job.tool_calls_summary, job.tokens, job.cost = [], 0, 0.0
-            job.updated_at = self._wall_clock()
-            self._audit({"event": "rejected", "investigation_id": job.investigation_id,
-                         "reason": blocked, **self._episode_audit(job)})
+            self._reject(job, blocked)
             return
 
-        if self._diagnose_fn is None or self._settings.investigation_llm_stub_reason() is not None:
+        if stub:
             self._finalize_stub(job)
             return
 
         # 실 조사: running 유지 + 백그라운드 워커 위임(submit 즉시 반환).
+        # 대기 자리(`_queued`)는 가드가 이미 잡았다 — 워커가 슬롯을 얻거나 끝날 때 돌려준다.
         job.status = "running"
         job.updated_at = self._wall_clock()
         worker = threading.Thread(target=self._worker, args=(job,), daemon=True)
         with self._lock:
             self._workers.add(worker)
-        worker.start()
+        try:
+            worker.start()
+        except RuntimeError:
+            # 스레드 자원 고갈(`can't start new thread`) — 가드가 잡은 대기 자리·호스트 키와 워커
+            # 등록을 되돌리지 않으면 대기 상한이 영구히 줄고 그 호스트가 조사 불가로 남는다.
+            logger.exception("조사 워커 시작 실패: investigation_id=%s", job.investigation_id)
+            with self._lock:
+                self._workers.discard(worker)
+                self._queued -= 1
+            self._release_host(job)
+            self._reject(job, GUARD_SERVICE_OVERLOADED)
+
+    def _reject(self, job: JobLike, blocked: str) -> None:
+        """잡을 거부(`rejected`)로 확정하고 감사를 남긴다."""
+        job.status, job.reason = "rejected", blocked
+        job.verdict = self._blocked_verdict(job, blocked)
+        job.briefing = {"stub": True, "message": job.verdict, "elements": None}
+        job.tool_calls_summary, job.tokens, job.cost = [], 0, 0.0
+        job.updated_at = self._wall_clock()
+        self._audit({"event": "rejected", "investigation_id": job.investigation_id,
+                     "reason": blocked, **self._episode_audit(job)})
 
     @staticmethod
     def _blocked_verdict(job: JobLike, blocked: str) -> str:
@@ -562,10 +671,12 @@ class InvestigationDispatcher:
 
     # ── 동기 가드(대상 가용성 · dedup TTL · 시간당 예산) + sweep ──────────────
 
-    def _apply_sync_guards(self, job: JobLike) -> str | None:
+    def _apply_sync_guards(self, job: JobLike, admit: bool = True) -> str | None:
         """dedup TTL·예산 가드를 판정한다. 통과면 None, 차단이면 사유 문자열.
 
         통과 시 dedup·예산 상태를 기록한다. in-memory 상태는 값 bound + 키 만료 sweep한다.
+        `admit`(실 조사 — 워커를 만든다)이면 대기 상한(plans/194 W3)도 보고, 통과 시 대기 자리를
+        같은 lock 안에서 미리 센다(판정과 계수 사이 경합 0).
         """
         now = self._clock()
         with self._lock:
@@ -595,6 +706,12 @@ class InvestigationDispatcher:
             if host_key is not None and host_key in self._inflight_hosts:
                 return "host_investigation_in_flight"
 
+            if admit:
+                full = self._queue_full_reason()
+                if full is not None:
+                    return full
+                self._queued += 1
+
             # 통과 — 상태 기록.
             if fp and ttl is not None:
                 self._dedup[fp] = now
@@ -603,6 +720,22 @@ class InvestigationDispatcher:
             if host_key is not None:
                 self._inflight_hosts[host_key] = (job.investigation_id, now)
             return None
+
+    def _queue_full_reason(self) -> str | None:
+        """대기 상한(plans/194 W3 · D-347) 판정 — 넘치면 사유, 아니면 None(lock 보유 전제).
+
+        슬롯을 쥔 수 + 슬롯 대기 수가 동시 상한 + 대기 상한에 닿으면 새 잡도 대기 줄 끝에
+        서야 하므로 거부한다. 슬롯 일부를 버려진 조사 스레드가 붙들고 있으면
+        `service_overloaded` — 대기가 많아서가 아니라 끝나지 않는 조사가 자리를 차지한 것이라
+        사유를 나눈다.
+        """
+        limit = self._settings.investigation_max_queued
+        if limit is None:
+            return None
+        capacity = max(1, self._settings.investigation_max_concurrent) + max(0, limit)
+        if self._holding + self._queued < capacity:
+            return None
+        return GUARD_SERVICE_OVERLOADED if self._zombie_holding > 0 else GUARD_QUEUE_FULL
 
     def _release_host(self, job: JobLike) -> None:
         """L-4 in-flight 키를 해제한다.
@@ -619,7 +752,8 @@ class InvestigationDispatcher:
                 self._inflight_hosts.pop(key, None)
 
     def _sweep(self, now: float) -> None:
-        """dedup dict(ttl 만료·하드 상한)·budget window(1시간 만료)를 정리한다(lock 보유 전제)."""
+        """dedup dict(ttl 만료·하드 상한)·budget window(1시간 만료)·끝난 버려진 스레드를 정리한다
+        (lock 보유 전제)."""
         ttl = self._settings.investigation_dedup_ttl_seconds
         if ttl is not None:
             expired = [fp for fp, ts in self._dedup.items() if (now - ts) > ttl]
@@ -634,6 +768,7 @@ class InvestigationDispatcher:
             self._budget_window.popleft()
         while self._deep_window and (now - self._deep_window[0]) > 3600.0:
             self._deep_window.popleft()
+        self._prune_abandoned()
         # in-flight 호스트: 해제는 워커·스텁 경로가 명시로 하지만, 워커가 죽으면 키가 남는다.
         # 조사 전체 타임아웃의 2배가 지난 항목은 방어적으로 축출한다 — 없으면 그 호스트가
         # **영구히 조사 불가**가 된다(가드가 장애가 되는 형태).
@@ -647,6 +782,12 @@ class InvestigationDispatcher:
 
     def _worker(self, job: JobLike) -> None:
         started: float | None = None
+        # 슬롯·호스트 키를 버려진 조사 스레드의 반환 대기로 넘겼는가(plans/194 W3) — 넘겼으면 반환은
+        # 그쪽(`_hold_for_abandoned`)이 한다.
+        handed_off = False
+        # 협조적 중단 신호(plans/194 W3 · D-347) — 조사 함수가 잡에서 읽는다
+        # (심층 잡 사본도 같은 객체).
+        job.cancel_event = threading.Event()  # type: ignore[attr-defined]
         try:
             self._acquire_slot(job)  # 동시 상한
             try:
@@ -659,7 +800,7 @@ class InvestigationDispatcher:
                     log.set_phase("collecting")
                 self._run_and_postprocess(job, started)
             finally:
-                self._semaphore.release()
+                handed_off = self._release_slot(job)
         except BaseException as exc:  # noqa: BLE001 — Exception만 잡으면 잡이 영구 running으로 남는다
             # ★ `Exception`이 아니라 `BaseException`이다 (D-213 근본원인 · 2026-09-11 스택 덤프 확정).
             # `asyncio.CancelledError`는 3.8+에서 **BaseException 파생**이라 `except Exception`을
@@ -677,42 +818,154 @@ class InvestigationDispatcher:
             self._audit({"event": "failed", "investigation_id": job.investigation_id,
                          "error": job.error, **job.instrumentation, **self._episode_audit(job)})
         finally:
-            self._release_host(job)
+            if not handed_off:
+                self._release_host(job)
             with self._lock:
                 self._workers.discard(threading.current_thread())
+
+    # ── 버려진 조사 스레드 계상(plans/194 W3 · D-347) ──────────────────────────
+
+    def _track(self, job: JobLike, finished: threading.Event) -> None:
+        """잡의 보조 스레드(조사·사전수집·플레이북 수집기·심층) 종료 신호를 등록한다."""
+        with self._lock:
+            self._helpers.setdefault(job.investigation_id, []).append(finished)
+
+    def _free_slot(self) -> None:
+        """동시 상한 슬롯 1개를 돌려준다."""
+        with self._lock:
+            self._holding -= 1
+        self._semaphore.release()
+
+    def _release_slot(self, job: JobLike) -> bool:
+        """워커 끝 — 슬롯을 돌려주거나, 아직 안 끝난 보조 스레드가 있으면 반환 대기로 넘긴다.
+
+        타임아웃으로 버린 스레드도 LLM·도구를 계속 부르므로(실부하) 끝날 때까지 슬롯과 L-4 호스트
+        키를 붙든다 — 바로 돌려주면 동시 상한을 넘는 조사가 돌고 같은 호스트 새 조사가 통과한다.
+        잡 상태는 이미 확정됐다(호출자에게 보이는 상태·시각 불변). 넘기기 전에 협조적 중단 신호를
+        세운다(HolmesGPT 스트림이 다음 확인 지점에서 멈춘다). 넘겼으면 True.
+        """
+        with self._lock:
+            events = self._helpers.pop(job.investigation_id, [])
+        pending = [ev for ev in events if not ev.is_set()]
+        if not pending:
+            self._free_slot()
+            return False
+        cancel = getattr(job, "cancel_event", None)
+        if isinstance(cancel, threading.Event):
+            cancel.set()
+        grace = float(self._settings.investigation_abandon_grace_seconds)
+        with self._lock:
+            self._zombie_holding += 1
+            self._abandoned.extend(pending)
+        logger.warning("버려진 조사 스레드 %d개 — 끝날 때까지(최대 %.0fs) 슬롯·호스트 키 유지: "
+                       "investigation_id=%s", len(pending), grace, job.investigation_id)
+        threading.Thread(
+            target=self._hold_for_abandoned, args=(job, pending, grace), daemon=True,
+            name=f"sre-abandoned-{str(job.investigation_id)[:8]}",
+        ).start()
+        return True
+
+    def _hold_for_abandoned(self, job: JobLike, pending: list[threading.Event],
+                            grace: float) -> None:
+        """버려진 스레드가 끝나거나 `grace`초가 지나면 슬롯·호스트 키를 돌려준다.
+
+        grace를 넘기면 강제 반환하고 감사 `zombie_released`를 남긴다 — 스레드는 데몬이라 계속 돌 수
+        있다(게이지 `abandoned_threads`에 남는다). 무한 정체(슬롯 영구 점유) 방지가 목적이다.
+        """
+        deadline = time.monotonic() + grace
+        try:
+            for ev in pending:
+                ev.wait(max(0.0, deadline - time.monotonic()))
+            left = sum(1 for ev in pending if not ev.is_set())
+            if left:
+                logger.warning("버려진 조사 스레드 %d개가 %.0fs 안에 끝나지 않음 — "
+                               "슬롯·호스트 키 강제 반환: investigation_id=%s",
+                               left, grace, job.investigation_id)
+                self._audit({"event": "zombie_released", "investigation_id": job.investigation_id,
+                             "threads": left, "grace_s": grace, **self._episode_audit(job)})
+        finally:
+            with self._lock:
+                self._zombie_holding -= 1
+            self._free_slot()
+            self._release_host(job)
+
+    def _prune_abandoned(self) -> None:
+        """버려진 스레드 목록에서 이미 끝난 것을 뺀다(lock 보유 전제 — 가드 진입·게이지 조회)."""
+        self._abandoned = [ev for ev in self._abandoned if not ev.is_set()]
+
+    def load_snapshot(self) -> dict[str, Any]:
+        """조사 서비스 부하 게이지(plans/194 W3 — `sre_health` 가산 키 · 관리자 화면 표시용).
+
+        running = 살아 있는 워커가 쥔 슬롯 · queued = 슬롯 대기 잡 · abandoned_slots = 버려진
+        스레드 때문에 붙든 슬롯 · abandoned_threads = 버려진 뒤 아직 안 끝난 스레드(강제 반환 뒤에도
+        도는 것 포함)와 상한 값들. hourly_budget(plans/194 W5)은 시간당 조사 상한
+        (None = 가드 off)이다.
+        """
+        with self._lock:
+            self._prune_abandoned()
+            return {
+                "running": self._holding - self._zombie_holding,
+                "queued": len(self._waiting),
+                "abandoned_slots": self._zombie_holding,
+                "abandoned_threads": len(self._abandoned),
+                "max_concurrent": max(1, self._settings.investigation_max_concurrent),
+                "max_queued": self._settings.investigation_max_queued,
+                "abandon_grace_seconds": float(self._settings.investigation_abandon_grace_seconds),
+                "tool_global_concurrency": self._settings.sre_tool_global_concurrency,
+                "hourly_budget": self._settings.investigation_hourly_budget,
+            }
 
     # ── 실행 기록(plans/187 W13 — 잡에 기록이 없으면 전부 무동작) ──────────────
 
     def _acquire_slot(self, job: JobLike) -> None:
         """동시 상한 슬롯을 얻는다. 기록이 있으면 대기·획득을 `queued`·`started`로 남긴다.
 
-        대기 순번은 기록이 있는 대기 잡 사이의 순서(1부터)다
-        — 세마포어는 엄밀한 FIFO가 아니라 근사다.
+        대기 순번은 대기 잡 사이의 순서(1부터)다 — 세마포어는 엄밀한 FIFO가 아니라 근사다.
+        plans/194 W3: 기록 유무와 무관하게 대기 중이면 `job.queue_position`을 단다(조회 응답 상시
+        노출). 가드가 미리 센 대기 자리(`_queued`)는 슬롯을 얻든 못 얻든 여기서 돌려준다.
         """
-        log = _activity(job)
-        if log is None:
-            self._semaphore.acquire()
-            return
-        if self._semaphore.acquire(blocking=False):
-            self._after_acquire(lambda: log.append("started", engine="system", label="조사 시작"))
-            return
-        with self._lock:
-            self._waiting.append(log)
-            self._renumber_waiting()
         try:
-            safe_append(log, "queued", engine="system", status="waiting",
-                        label=f"동시 조사 상한 대기 — 대기 순번 {log.queue_position}")
-            waited_from = self._clock()
-            self._semaphore.acquire()
+            self._wait_for_slot(job)
         finally:
             with self._lock:
-                self._waiting.remove(log)
+                self._queued -= 1
+
+    def _wait_for_slot(self, job: JobLike) -> None:
+        log = _activity(job)
+        if self._semaphore.acquire(blocking=False):
+            self._count_slot()
+            if log is not None:
+                self._after_acquire(
+                    lambda: log.append("started", engine="system", label="조사 시작")
+                )
+            return
+        with self._lock:
+            self._waiting.append(job)
+            self._renumber_waiting()
+        try:
+            if log is not None:
+                safe_append(log, "queued", engine="system", status="waiting",
+                            label=f"동시 조사 상한 대기 — 대기 순번 {log.queue_position}")
+            waited_from = self._clock()
+            self._semaphore.acquire()
+            self._count_slot()
+        finally:
+            with self._lock:
+                self._waiting.remove(job)
+                job.queue_position = None
                 self._renumber_waiting()
+        if log is None:
+            return
         waited = self._clock() - waited_from
         self._after_acquire(lambda: log.append(
             "started", engine="system", elapsed_ms=int(waited * 1000),
             label=f"동시 조사 상한 대기 종료(대기 {waited:.0f}초)",
         ))
+
+    def _count_slot(self) -> None:
+        """슬롯 획득 계수(세마포어 acquire 직후)."""
+        with self._lock:
+            self._holding += 1
 
     def _skip_if_stale(self, job: JobLike) -> bool:
         """슬롯을 얻은 직후 — 대기 중 이미 종결됐거나 워치독 임계를 넘긴 잡은 조사하지 않는다.
@@ -754,13 +1007,19 @@ class InvestigationDispatcher:
         try:
             record()
         except BaseException:
-            self._semaphore.release()
+            self._free_slot()
             raise
 
     def _renumber_waiting(self) -> None:
-        """대기 순번을 다시 매긴다(lock 보유 전제)."""
-        for i, log in enumerate(self._waiting, 1):
-            log.set_phase("queued", i)
+        """대기 순번을 다시 매긴다(lock 보유 전제).
+
+        잡 `queue_position`은 상시, 기록이 있으면 phase도 단다(plans/194 W3).
+        """
+        for i, waiting in enumerate(self._waiting, 1):
+            waiting.queue_position = i
+            log = _activity(waiting)
+            if log is not None:
+                log.set_phase("queued", i)
 
     def _log_finalize(self, job: JobLike, started: float | None, status: str) -> None:
         """종결 이벤트(`finalize` — 곧 대입할 종결 상태·조사 소요).
@@ -809,7 +1068,9 @@ class InvestigationDispatcher:
         log = _activity(job)
         if log is not None:
             log.set_phase("deep_dive")
-            safe_append(log, "deep_start", engine="system", label="HolmesGPT 조사 시작")
+            why = HOLMES_PURPOSE + (" — " + NO_PLAYBOOK_LIMIT if extra_limits else "")
+            safe_append(log, "deep_start", engine="system", label="HolmesGPT 조사 시작",
+                        purpose=why)
         investigate_started = self._clock()
         try:
             result = self._investigate_with_timeout(job)
@@ -967,20 +1228,26 @@ class InvestigationDispatcher:
         log = _activity(job)
         if log is not None:
             safe_append(log, "deep_start", engine="system",
-                        label=f"심층 조사(HolmesGPT) 시작 — {mode}")
-        return _Background(
+                        label=f"심층 조사(HolmesGPT) 시작 — {mode}",
+                        purpose=DEEP_PURPOSES.get(mode))
+        deep = _Background(
             self._diagnose_for(deep_job), deep_job, f"sre-deep-{str(job.investigation_id)[:8]}"
         )
+        self._track(job, deep.finished)
+        return deep
 
     @staticmethod
-    def _deep_job(job: JobLike, pb: Playbook, prior_findings: dict | None) -> JobLike:
+    def _deep_job(job: JobLike, pb: Playbook, prior_findings: dict | None,
+                  cache: ToolResultCache) -> JobLike:
         """심층 조사 입력 — 잡 사본에 정적 지시(+ conditional이면 판정 요약)만 싣는다.
 
         `correlation`은 비운다 — 플레이북 결과(S4·S5 상관)는 `prior_findings` 요약으로만 넘기고,
         `parallel`이면 아무 결과도 넘기지 않는다(독립된 두 번째 의견 · §5.0.1 2번).
+        잡 단위 도구 캐시는 사본의 `tool_cache`로 실어 HolmesGPT 도구 경로와 공용한다(G-26).
         """
         deep_job = copy.copy(job)
         deep_job.correlation = None
+        deep_job.tool_cache = cache  # type: ignore[attr-defined]
         deep_job.deep_dive_guidance = deep_dive_note(  # type: ignore[attr-defined]
             pb.id,
             meaning=pb.runbook.meaning,
@@ -1036,12 +1303,17 @@ class InvestigationDispatcher:
         return block
 
     def _progress_library(self, job: JobLike, pb: Playbook, matched_by: str,
-                          deep_state: dict, stop: threading.Event) -> dict[str, StepFn]:
+                          deep_state: dict, stop: threading.Event,
+                          hooks: _FlowHooks | None = None) -> dict[str, StepFn]:
         """스텝 라이브러리를 감싸 진척(`job.progress`)·부분 브리핑(`job.partial_briefing`)을 남긴다.
 
         스텝이 끝날 때마다 새 dict로 바꿔 단다(제자리 수정 없음 — 조회 스레드와 경합하지 않는다).
         `stop`이 서면(잡 종료) 남은 스텝은 시작하지 않고 사유만 남긴다. 닫힌 캐시 호출
         (`CacheClosedError`)은 스텝 사유로 남기고 `stop`을 세운다(이후 스텝 시작 0).
+
+        `hooks`(plans/187 W20 — 실행 기록이 켜졌을 때만): `step_start.because`·`step_end.finding`
+        (결정적 문장) · 부분 브리핑 `sections[].finding`·`opinion`·건너뜀 항목 · 단계 끝 해석 제출
+        (`hooks.stream`). 해석이 도착하면 부분 브리핑을 새 dict로 다시 단다.
         """
         lock = threading.Lock()
         pending: dict[str, list[str]] = {}
@@ -1050,9 +1322,25 @@ class InvestigationDispatcher:
         total = len(pb.steps)
         done: dict[str, dict] = {}
         order = [st.id for st in pb.steps]
+        focus = {st.id: st.narrate.focus for st in pb.steps if st.narrate is not None}
         log = _activity(job)
+        flow = hooks if log is not None else None
+        specs = {st.id: st for st in pb.steps}
+        finished: dict[str, StepResult] = {}
+        findings: dict[str, str] = {}
+        # 단계 끝을 이미 낸 (스텝, 시도) — 타임아웃 중단과 늦은 완료 중 먼저 온 것만.
+        # 시도는 1(첫 시도)·2(결손 스텝 재시도 · W22)로 나눠, 재시도가 단계 끝을 다시 내도
+        # 첫 시도의 늦은 결과는 0건이다.
+        ended: set[tuple[str, int]] = set()
+        last: dict[str, str | None] = {"current": None}
+        event = job.payload.get("event") if isinstance(job.payload, Mapping) else None
+        alarm_name = (
+            str(event.get("alarmName") or "").strip() or None
+            if isinstance(event, Mapping) else None
+        )
 
         def publish(current: str | None) -> None:
+            last["current"] = current
             job.progress = {"done": len(done), "total": total, "current_step": current}
             job.partial_briefing = {
                 "partial": True,
@@ -1070,52 +1358,204 @@ class InvestigationDispatcher:
             def run(ctx: StepContext) -> StepResult:
                 if stop.is_set():
                     return StepResult(status="missing", reason=STEP_STOPPED_REASON)
+                retry_of = getattr(ctx, "retry_of", None)
                 with lock:
-                    ids = pending.get(action) or [action]
-                    sid = ids.pop(0) if len(ids) > 1 else ids[0]
+                    if retry_of is not None and ctx.step_id:
+                        sid = ctx.step_id  # 재시도(W22) — 실행기가 단 스텝 ID(sid 재배정 없음)
+                    else:
+                        ids = pending.get(action) or [action]
+                        sid = ids.pop(0) if len(ids) > 1 else ids[0]
                     publish(sid)
+                retry = retry_of is not None
+                attempt = 2 if retry else 1
                 label = f"{sid} {ACTION_TITLES.get(action, action)}"
                 t0 = self._clock()
                 if log is not None:
                     ctx.activity, ctx.step_id = log, sid
-                    safe_append(log, "step_start", engine="playbook", step=sid, label=label)
+                    because = (
+                        RETRY_BECAUSE.format(first=retry_of)
+                        if retry_of is not None else because_of(sid)
+                    )
+                    safe_append(log, "step_start", engine="playbook", step=sid,
+                                label=f"{label} (재시도)" if retry_of is not None else label,
+                                purpose=focus.get(sid), because=because)
 
-                def step_end(status: str) -> None:
+                def step_end(status: str, finding: str | None = None) -> None:
                     if log is not None:
                         safe_append(log, "step_end", engine="playbook", step=sid, label=label,
-                                    status=status, elapsed_ms=int((self._clock() - t0) * 1000))
+                                    status=status, elapsed_ms=int((self._clock() - t0) * 1000),
+                                    purpose=focus.get(sid), finding=finding)
 
+                def claim() -> bool:
+                    """단계 끝을 낼 차례인가 — 스텝마다 한 번만(중단 통지 · 완료 중 먼저)."""
+                    with lock:
+                        if (sid, attempt) in ended:
+                            return False
+                        ended.add((sid, attempt))
+                        return True
+
+                def on_abort(reason: str) -> None:
+                    """스텝 타임아웃 중단(W21 P4) — 실행기 사유를 단계 끝·부분 브리핑에 싣는다."""
+                    if not claim():
+                        return
+                    out = StepResult(status="missing", reason=reason)
+                    finding = finish(sid, action, out, retry)[0] if flow else None
+                    step_end("missing", finding)
+                    with lock:
+                        entry = {
+                            "step": sid, "action": action,
+                            "title": ACTION_TITLES.get(action, action), "status": "missing",
+                            "reason": reason, "tools": list(ctx.tools),
+                        }
+                        done[sid] = add_flow(sid, entry, finding, "missing")
+                        publish(sid)
+
+                ctx.on_abort = on_abort
+                cancel = getattr(ctx, "cancel", None)
+                if cancel is not None and cancel.is_set():  # 통지 전에 이미 중단 — 그 사유로 끝
+                    reason = ctx.abort_reason or STEP_STOPPED_REASON
+                    on_abort(reason)
+                    return StepResult(status="missing", reason=reason)
                 try:
                     res = fn(ctx)
                 except CacheClosedError as e:
                     stop.set()
                     logger.info("플레이북 수집 중단 %s(%s): %s", sid, action, e)
-                    step_end("missing")
-                    return StepResult(
+                    out = StepResult(
                         status="missing", reason=STEP_CACHE_CLOSED_REASON.format(error=e)
                     )
+                    if claim():
+                        step_end("missing", finish(sid, action, out, retry)[0] if flow else None)
+                    return out
                 except Exception as e:  # noqa: BLE001 — 진척 기록 후 원예외 그대로(실행기가 격리)
-                    step_end("missing")
+                    if not claim():
+                        raise
+                    reason = f"스텝 실패 — {type(e).__name__}: {e}"
+                    finding = (
+                        finish(sid, action, StepResult(status="missing", reason=reason), retry)[0]
+                        if flow else None
+                    )
+                    step_end("missing", finding)
                     with lock:
-                        done[sid] = {
-                        "step": sid, "action": action,
-                        "title": ACTION_TITLES.get(action, action), "status": "missing",
-                        "reason": f"스텝 실패 — {type(e).__name__}: {e}",
-                        "tools": list(ctx.tools),
-                    }
+                        entry = {
+                            "step": sid, "action": action,
+                            "title": ACTION_TITLES.get(action, action), "status": "missing",
+                            # 재시도 실패는 최종 섹션과 같은 사유(W22 — 실행기 `retry_reason`)
+                            "reason": reason if retry_of is None
+                            else retry_reason(action, "missing", retry_of, reason),
+                            "tools": list(ctx.tools),
+                        }
+                        done[sid] = add_flow(sid, entry, finding, "missing")
                         publish(sid)
                     raise
-                step_end(str(res.status))
+                if not claim():
+                    return res  # 타임아웃으로 이미 끝난 스텝 — 늦은 결과는 기록·해석하지 않는다
+                finding, request = finish(sid, action, res, retry) if flow else (None, None)
+                step_end(str(res.status), finding)
                 with lock:
-                    done[sid] = {
+                    entry = {
                         **res.to_dict(include_data=False), "step": sid, "action": action,
                         "title": ACTION_TITLES.get(action, action), "tools": list(ctx.tools),
                     }
+                    if retry_of is not None:  # 재시도 결과 — 최종 섹션과 같은 사유(W22)
+                        entry["reason"] = retry_reason(action, str(res.status), retry_of,
+                                                       res.reason)
+                    done[sid] = add_flow(sid, entry, finding, str(res.status))
                     publish(sid)
+                # 단계 끝 해석 — 락 밖에서 제출한다(통지가 이 락을 잡는다 · 다음 단계를 막지 않음)
+                if flow is not None and flow.stream is not None and request is not None:
+                    flow.stream.submit(request, functools.partial(on_opinion, sid))
                 return res
 
             return run
 
+        def because_of(sid: str) -> str | None:
+            """단계 시작의 「왜」(결정적) — 실패는 문장 없음(기록은 best-effort)."""
+            spec = specs.get(sid)
+            if flow is None or spec is None:
+                return None
+            with lock:
+                snap, quotes = dict(finished), dict(findings)
+            try:
+                return step_because(pb, spec, snap, quotes, alarm_name=alarm_name)
+            except Exception as e:  # noqa: BLE001 — 문장 실패가 스텝을 막지 않는다
+                logger.warning("조사 흐름 「왜」 실패(무시) %s: %s: %s", sid, type(e).__name__, e)
+                return None
+
+        def finish(sid: str, action: str, res: StepResult,
+                   retry: bool = False) -> tuple[str | None, Any]:
+            """단계 끝 — 결과 한 줄 + (소견 대상이면) 해석 요청. 판독은 끝난 스텝만으로(C1).
+
+            `retry`(W22 결손 스텝 재시도)면 그 사이 끝난 뒤 단계 결과가 섞이지 않게 YAML 순서상
+            이 스텝 앞의 결과만 판독·앞 단계 결과 한 줄에 넣는다(「이 단계까지의 근거」).
+            """
+            snapshot = dataclasses.replace(
+                res, step=sid, action=action, title=ACTION_TITLES.get(action, action)
+            )
+            before = set(order[: order.index(sid)]) if retry and sid in order else None
+            with lock:
+                finished[sid] = snapshot
+                snap = dict(finished) if before is None else {
+                    s: r for s, r in finished.items() if s in before or s == sid
+                }
+                prior = [f"{s} {ACTION_TITLES.get(specs[s].action, s)}: {findings[s]}"
+                         for s in order if s in findings and s != sid and s in specs
+                         and (before is None or s in before)]
+            try:
+                readings = flow_readings(pb, snap)
+                finding = step_finding(snapshot, readings)
+                spec = specs.get(sid)
+                request = (
+                    step_narration_request(spec, snapshot, readings, prior)
+                    if spec is not None and flow is not None and flow.stream is not None
+                    else None
+                )
+            except Exception as e:  # noqa: BLE001 — 문장 실패가 스텝을 막지 않는다
+                logger.warning("조사 흐름 결과 한 줄 실패(무시) %s: %s: %s",
+                               sid, type(e).__name__, e)
+                return None, None
+            if finding:
+                with lock:
+                    findings[sid] = finding
+            return finding, request
+
+        def add_flow(sid: str, entry: dict[str, Any], finding: str | None,
+                     status: str) -> dict[str, Any]:
+            """부분 브리핑 항목에 `finding`·`opinion`을 가산한다(기록이 꺼졌으면 그대로)."""
+            if flow is None:
+                return entry
+            if finding:
+                entry["finding"] = mask_activity_text(finding)
+            spec = specs.get(sid)
+            if spec is None or spec.narrate is None:
+                return entry  # 소견 대상 아님 — opinion 키 없음
+            if status != "ok":
+                reason = STEP_STATUS_NO_OPINION.format(status=status)
+            elif flow.stream is None:
+                reason = flow.no_stream_reason or NOT_CONFIGURED
+            else:
+                entry["opinion"] = {"status": "pending", "basis": OPINION_BASIS}
+                return entry
+            entry["opinion"] = {"status": "none", "reason": reason, "basis": OPINION_BASIS}
+            return entry
+
+        def on_opinion(sid: str, op: Opinion) -> None:
+            with lock:
+                if sid not in done:
+                    return
+                done[sid] = {**done[sid], "opinion": _opinion_view(op)}
+                publish(last["current"])
+
+        def on_skip(res: StepResult, because: str) -> None:
+            with lock:
+                done[res.step] = {
+                    "step": res.step, "action": res.action, "title": res.title,
+                    "status": "skipped", "because": mask_activity_text(because),
+                }
+                publish(last["current"])
+
+        if flow is not None:
+            flow.on_skip = on_skip
         with lock:
             publish(None)
         return {action: wrap(action, fn) for action, fn in STEP_LIBRARY.items()}
@@ -1144,36 +1584,57 @@ class InvestigationDispatcher:
 
     def _collect_playbook(self, job: JobLike, pb: Playbook, matched_by: str,
                           cache: ToolResultCache, deadline: float,
-                          library: Mapping[str, StepFn], stop: threading.Event) -> PlaybookRun:
+                          library: Mapping[str, StepFn], stop: threading.Event,
+                          hooks: _FlowHooks | None = None) -> PlaybookRun:
         """플레이북 수집(≤ `sre_playbook_budget_s`) → 남은 시간으로 소견·종합.
 
         `stop`이 서 있으면(잡 종료 뒤) 소견기·종합을 부르지 않고 수집 결과만 돌려준다.
+        `hooks.stream`(W20 단계 끝 해석)이 있으면 마지막 단계 해석까지 기다린 뒤 그 소견을
+        그대로 쓰고(재호출 0) 종합만 1회 부른다.
         """
         wiring = self._playbook
         assert wiring is not None
         remaining = max(0.0, deadline - self._clock())
         budget = min(float(self._settings.sre_playbook_budget_s), remaining)
+        flow_log = _activity(job) if hooks is not None else None
+        # 폴스타 소스 대체 — APM 소스 ID 설정 매핑(W21 P6). 페이로드 infra_db_ids가 우선이고
+        # 빈 매핑이면 종전과 같다.
+        mapped, basis = mapped_polestar_source(
+            job.payload or {}, self._settings.sre_playbook_polestar_source_map
+        )
         run = run_playbook(
             job.payload or {}, pb, matched_by=matched_by,
             polestar=wiring.polestar, apm=wiring.apm, clock=self._clock,
             budget_s=budget, cache=cache, steps=library,
             xview_confirm_over=self._settings.apm_xview_confirm_over,  # plans/190 W2
+            activity=flow_log, on_skip=hooks.on_skip if hooks is not None else None,
+            polestar_source=mapped, polestar_source_basis=basis,
+            retry_timed_out=bool(self._settings.sre_playbook_retry_timed_out_steps),
         )
+        stream = hooks.stream if hooks is not None else None
         if wiring.rejected_files:
             run.notes.append(REJECTED_FILES_NOTE.format(
                 n=len(wiring.rejected_files), names=", ".join(wiring.rejected_files)
             ))
         if stop.is_set():
+            if stream is not None:
+                stream.close()
             return run
         log = _activity(job)
         if log is not None:
             log.set_phase("narrating")
+        step_opinions = stream.drain() if stream is not None else None
         narrator, note = self._narrator(deadline - self._clock(), log)
         if note:
             run.notes.append(note)
+        if stream is not None and narrator is not None:
+            # 같은 소견기로 종합 — 호출 수(`llm_calls`)가 단계 끝 해석까지 센다.
+            stream.narrator.limits = narrator.limits
+            narrator = stream.narrator
         return finalize_playbook_run(
             run, pb, narrator=narrator, clock=self._clock,
             known_errors=wiring.known_errors, payload=job.payload or {},
+            step_opinions=step_opinions,
         )
 
     @staticmethod
@@ -1231,41 +1692,66 @@ class InvestigationDispatcher:
     ) -> None:
         """플레이북 모드 조사 1건 — 사전수집 생략 · 두 엔진 · 판정 합집합 · 플레이북 브리핑.
 
-        전체 예산은 종전과 같은 `investigation_timeout_seconds`(300s)이고 플레이북 수집은
+        전체 예산은 종전과 같은 `investigation_timeout_seconds`(기본 600s)이고 플레이북 수집은
         `sre_playbook_budget_s` 상한이다. 심층 조사는 정해진 모드대로 같은 예산 안에서 돈다.
         잡은 두 엔진이 모두 끝날 때까지 `running`이며(소비자 폴링 계약 유지), 그동안 플레이북 결과는
         `partial_briefing`으로 먼저 보인다.
         """
         deadline = started + self._timeout
+        # (plans/187 W17) 어떤 플레이북을 왜 골랐는지 — 실행 기록 맨 앞(스텝·심층 시작보다 먼저)
+        safe_append(_activity(job), "started", engine="playbook", label=f"플레이북 {pb.id} 선택",
+                    purpose=playbook_purpose(matched_by))
         mode, degrade = self._deep_mode(pb)
         forced = pb.is_fallback  # fallback 플레이북은 모드와 무관하게 심층을 돈다
         deep_state: dict = {"status": "pending", "mode": mode, "reason": degrade,
                             "label": DEEP_DIVE_LABEL}
         deep: _Background | None = None
+        # 잡 단위 캐시 — 플레이북·심층 조사 공용(G-26). 진행 중 호출 대기 상한은 조사 전체 상한에
+        # 묶는다(plans/187 W22 · D-341 부기 13 — 모듈 기본값과 설정이 갈라져도 잡보다 오래
+        # 기다리지 않는다).
+        cache = ToolResultCache(wait_timeout_s=self._timeout)
         if mode == "parallel":
-            deep = self._start_deep(job, self._deep_job(job, pb, None), mode)
+            deep = self._start_deep(job, self._deep_job(job, pb, None, cache), mode)
             deep_state["status"] = "running"
         stop = threading.Event()
-        library = self._progress_library(job, pb, matched_by, deep_state, stop)
-        cache = ToolResultCache()
+        hooks = self._flow_hooks(job, deadline)
+        library = self._progress_library(job, pb, matched_by, deep_state, stop, hooks=hooks)
         try:
             self._playbook_then_deep(job, started, pb, matched_by, deadline, mode, degrade,
-                                     forced, deep, deep_state, library, cache, stop)
+                                     forced, deep, deep_state, library, cache, stop, hooks=hooks)
         finally:
             # 잡 종료(정상·예산 초과·예외) — 남은 수집기 스텝을 시작하지 않게 신호부터 세운다.
             stop.set()
+            if hooks is not None and hooks.stream is not None:
+                hooks.stream.close()  # 종결 뒤 해석 통지 0
             cache.close()  # 잡 단위 캐시 — 잡이 끝나면 버린다(잡 간 누수 0)
+
+    def _flow_hooks(self, job: JobLike, deadline: float) -> _FlowHooks | None:
+        """조사 흐름 배선(W20) — 실행 기록이 꺼졌으면 None(종전 경로 비트 동일).
+
+        LLM이 배선돼 있으면 단계 끝 해석 실행기를 단다(없으면 결정적 문장만).
+        """
+        log = _activity(job)
+        if log is None:
+            return None
+        narrator, note = self._narrator(deadline - self._clock(), log)
+        return _FlowHooks(
+            stream=StepOpinionStream(narrator) if narrator is not None else None,
+            no_stream_reason=note,
+        )
 
     def _playbook_then_deep(self, job: JobLike, started: float, pb: Playbook, matched_by: str,
                             deadline: float, mode: str, degrade: str | None, forced: bool,
                             deep: _Background | None, deep_state: dict,
                             library: Mapping[str, StepFn], cache: ToolResultCache,
-                            stop: threading.Event) -> None:
+                            stop: threading.Event, hooks: _FlowHooks | None = None) -> None:
         """플레이북 수집·종합 → (모드별) 심층 대기·시작 → 종결."""
         collector = _Background(
-            lambda j: self._collect_playbook(j, pb, matched_by, cache, deadline, library, stop),
+            lambda j: self._collect_playbook(j, pb, matched_by, cache, deadline, library, stop,
+                                             hooks=hooks),
             job, f"sre-playbook-{str(job.investigation_id)[:8]}",
         )
+        self._track(job, collector.finished)
         if not collector.wait(deadline - self._clock()):
             stop.set()
             self._finish_timeout(job, started)
@@ -1301,7 +1787,7 @@ class InvestigationDispatcher:
                                                floor=DEEP_MIN_REMAINING_S)
             else:
                 deep = self._start_deep(
-                    job, self._deep_job(job, pb, self._prior_findings(run, block)), mode
+                    job, self._deep_job(job, pb, self._prior_findings(run, block), cache), mode
                 )
                 status = "running"
         if deep is not None and status == "running":
@@ -1529,8 +2015,11 @@ class InvestigationDispatcher:
         """`fn(job)`을 데몬 스레드에서 실행하고 join 타임박스로 감싼다(D-213 공용).
 
         만료 즉시 `TimeoutError`(3.11+에서 `asyncio.TimeoutError`와 동일 객체)를 올리고,
-        매달린 스레드는 데몬으로 버려진다(중단 불가·결과 폐기). `asyncio.run` 기반과 달리
+        매달린 스레드는 데몬으로 버려진다(결과 폐기). `asyncio.run` 기반과 달리
         정리 단계가 스레드 종료를 기다리지 않는다 — 그 '대기'가 폐쇄망 wedge의 원인이었다.
+        plans/194 W3: 버린 스레드는 잡 보조 스레드로 등록돼, 워커가 끝나도 그 스레드가 끝날
+        때까지(최대 `investigation_abandon_grace_seconds`) 슬롯·호스트 키를 붙들고 협조적 중단
+        신호를 받는다.
         """
         box: dict = {}
         finished = threading.Event()
@@ -1549,6 +2038,7 @@ class InvestigationDispatcher:
             name=f"{name_prefix}-{str(job.investigation_id)[:8]}",
         )
         worker.start()
+        self._track(job, finished)
         if not finished.wait(timeout=timeout):
             raise TimeoutError(f"{name_prefix} 타임박스({timeout}s) 만료 — 스레드 미종료(결과 폐기)")
         if "error" in box:
@@ -1680,6 +2170,8 @@ __all__ = [
     "DEEP_DIVE_LABEL",
     "INSTRUMENTATION_KEYS",
     "GUARD_TARGET_UNAVAILABLE",
+    "GUARD_QUEUE_FULL",
+    "GUARD_SERVICE_OVERLOADED",
     "ToolOutputLike",
     "DiagnosisLike",
     "JobLike",

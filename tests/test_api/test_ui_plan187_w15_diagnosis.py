@@ -217,7 +217,9 @@ out = { on: on, display: v.tabBtn.style.display, badge: v.badge.textContent,
     assert out["on"] is True and out["display"] == ""
     assert out["badge"] == "2" and out["badgeOn"] is True
     assert out["es"] == ["/api/v1/alarm/investigations/stream"]
-    assert "⏸ 대기 순번 2" in out["rows"][0] and "자동" in out["rows"][0]
+    # (plans/194 W5 · U3) 대기 중 칩 — service_load가 없으면 「 / 동시 조사」 부분은 뺀다
+    assert "대기 중 · 순번 2" in out["rows"][0] and "동시 조사" not in out["rows"][0]
+    assert "자동" in out["rows"][0]
     assert "채팅" in out["rows"][1] and "2분 10초" in out["rows"][1]
     assert out["conn"] == "◌ 연결 중"
 
@@ -348,16 +350,16 @@ es.emit("activity", {{ investigation_id: "inv-1", status: "running", next_seq: 5
 es.emit("activity", {{ investigation_id: "inv-1", status: "running", next_seq: 5,
     events: {json.dumps(_EVENTS[2:3], ensure_ascii=False)} }});
 var tab = v.ctl.tab("inv-1");
-var rows = findAll(tab.dom.panel, "dv-row");
+var rows = findAll(tab.dom.grid, "dv-row");
 var rowHtml = rows.some(function (r) {{ return htmlWrites.indexOf(r) >= 0 || findAll(r,
     "dv-text").some(function (t) {{ return htmlWrites.indexOf(t) >= 0; }}); }});
-var expand = findAll(tab.dom.panel, "dv-expand")[0];
-var pre = findAll(tab.dom.panel, "dv-excerpt")[0];
+var expand = findAll(tab.dom.grid, "dv-expand")[0];
+var pre = findAll(tab.dom.grid, "dv-excerpt")[0];
 var before = pre.hidden;
 expand.click();
-out = {{ rows: rows.map(function (r) {{ return r.textContent; }}), ai: findAll(tab.dom.panel,
+out = {{ rows: rows.map(function (r) {{ return r.textContent; }}), ai: findAll(tab.dom.grid,
     "dv-row--ai").length,
-        badges: texts(tab.dom.panel, "dv-ai-badge"), seq: tab.seq, rowHtml: rowHtml,
+        badges: texts(tab.dom.grid, "dv-ai-badge"), seq: tab.seq, rowHtml: rowHtml,
         excerpt: pre.textContent, before: before, after: pre.hidden,
         filters: texts(tab.dom.panel, "dv-filters")[0], conn: texts(v.root, "dv-conn")[0],
         watch: v.ctl.state().watch, partial: tab.dom.partBody.textContent }};
@@ -719,9 +721,9 @@ def test_tab_markup_hidden_by_default_and_script_order() -> None:
     tab = html[html.index('data-view="diagnosis"') - 60: html.index('id="diagnosisTabBadge"')]
     assert 'style="display: none;"' in tab and 'aria-controls="diagnosisView"' in tab
     assert 'id="diagnosisView"' in html and 'class="diagnosis-view view-hidden"' in html
-    bv = html.index("briefing-view.js?v=5")
-    dv = html.index("diagnosis-view.js?v=2")
-    app = html.index("app.js?v=31")
+    bv = html.index("briefing-view.js?v=8")
+    dv = html.index("diagnosis-view.js?v=11")
+    app = html.index("app.js?v=41")
     assert bv < dv < app
     css = (_STATIC / "css" / "style.css").read_text(encoding="utf-8")
     gate = css[css.index("body.auth-pending > header"):]
@@ -757,9 +759,11 @@ def test_entry_wiring_g34() -> None:
         "openInvestigationConversation(investigationId)"
     )
     noise = _NOISE_JS.read_text(encoding="utf-8")
-    assert '"/?diagnosis=" + encodeURIComponent(' in _js_function_body(noise, "liveEntryButton")
-    assert "liveViewOn" in _js_function_body(noise, "liveEntryRender")
-    assert noise.count("onView: liveEntryButton") == 2
+    # (W23) 항상 새 탭 — 켜짐이면 `/?diagnosis=` · 꺼짐이면 `/?conversation=`
+    entry = _js_function_body(noise, "openInPortal")
+    assert '"diagnosis" : "conversation"' in entry and '"_blank", "noopener"' in entry
+    assert "portalEntryButton(view)" in _js_function_body(noise, "onInvestigationView")
+    assert noise.count("onView: onInvestigationView") == 2
 
 
 def test_entry_render_is_identical_when_off_and_hides_button_when_on() -> None:

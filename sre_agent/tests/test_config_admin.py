@@ -427,7 +427,8 @@ def test_schema_default_and_effective_are_env_strings(pkg):
     assert fix["default"] == "true" and fix["effective_value"] == "true"
     assert items["MAX_STEPS"]["default"] == "40" and items["MAX_STEPS"]["effective_value"] == "40"
     assert items["SEVERITY_JUDGE_ENABLED"]["default"] == "false"
-    assert items["INVESTIGATION_HOURLY_BUDGET"]["default"] is None
+    # plans/194 W5 · D-347 ②: 코드 기본 20(사용자 확정 2026-10-26 · 종전 None)
+    assert items["INVESTIGATION_HOURLY_BUDGET"]["default"] == "20"
     # 시크릿은 effective가 truthy일 때만 is_set (파일에 줄이 있어도 기동 값이 없으면 False).
     assert items["API_KEY"]["is_set"] is False
 

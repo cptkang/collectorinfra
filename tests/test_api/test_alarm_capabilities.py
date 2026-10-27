@@ -24,6 +24,9 @@ def _client(**noise_over) -> TestClient:
         incident_tracking_enabled=False,
         sse_bridge_enabled=False,
         suppress_max_severity=2,
+        # plans/194 W1 · D-347: 「이 알람 분석」은 코드 기본 on — 이 파일은 조사 가용을
+        # 다루지 않으므로 종전 전제(off)로 고정한다.
+        investigation_manual_enabled=False,
     )
     ng.update(noise_over)
     app = FastAPI()
@@ -72,18 +75,49 @@ def test_capabilities_expose_no_paths_or_secrets():
         "prompt_suggest_enabled",   # Plan 86 — 불리언(경로·시크릿 아님)
         "investigation_enabled",    # plans/153 W2 — 불리언(서비스 URL 자체는 싣지 않는다)
         "investigation_followup_timeout_seconds",  # plans/153 W2 교정 — 실수(웹 재조회 상한)
+        "investigation_auto_enabled",    # plans/194 W1 — 불리언(자동 조사 가용)
+        "investigation_manual_enabled",  # plans/194 W1 — 불리언(이 알람 분석 가용)
+        "noise_console_portal_tab",      # plans/193 W2 — 불리언(포털 노이즈 관제 탭)
     }
     for value in body.values():
         assert isinstance(value, (bool, int, float)), value
 
 
 def test_investigation_followup_timeout_follows_config():
-    """웹 재조회 상한은 후속 poll 전체 타임아웃 설정값을 그대로 쓴다(미설정이면 300초)."""
+    """웹 재조회 상한 = 후속 poll 전체 타임아웃 설정값(미설정이면 1200초 · D-344 ④)."""
     assert _client().get("/api/v1/alarm/capabilities").json()[
         "investigation_followup_timeout_seconds"
-    ] == 300.0
+    ] == 1200.0
     body = _client(investigation_followup_timeout_seconds=45).get(
         "/api/v1/alarm/capabilities"
     ).json()
     assert body["investigation_followup_timeout_seconds"] == 45.0
     assert isinstance(body["investigation_followup_timeout_seconds"], float)
+
+
+# ─── plans/193 W2: 포털 「노이즈 관제」 뷰 탭 플래그 ─────────────────────────
+
+
+def test_noise_console_portal_tab_defaults_off():
+    """플래그 미설정(기본 off)이면 거짓 — 포털은 관제 자산을 싣지 않고 머리글 링크를 그대로 둔다."""
+    body = _client().get("/api/v1/alarm/capabilities").json()
+    assert body["noise_console_portal_tab"] is False
+
+
+def test_noise_console_portal_tab_reflects_flag():
+    """게이트(enable_noise_gate)와 무관하게 플래그 값 그대로 — 관제 화면 표시 방식일 뿐이다."""
+    for gate in (True, False):
+        body = _client(enable_noise_gate=gate, console_portal_tab_enabled=True).get(
+            "/api/v1/alarm/capabilities"
+        ).json()
+        assert body["noise_console_portal_tab"] is True
+
+
+def test_noise_console_portal_tab_config_default_and_env(monkeypatch):
+    """`NOISE_CONSOLE_PORTAL_TAB_ENABLED` — 코드 기본 False · env로 켠다(기동 시 1회 해석)."""
+    from src.config.alarm import NoiseGateConfig
+
+    monkeypatch.delenv("NOISE_CONSOLE_PORTAL_TAB_ENABLED", raising=False)
+    assert NoiseGateConfig.model_fields["console_portal_tab_enabled"].default is False
+    monkeypatch.setenv("NOISE_CONSOLE_PORTAL_TAB_ENABLED", "true")
+    assert NoiseGateConfig(_env_file=None).console_portal_tab_enabled is True

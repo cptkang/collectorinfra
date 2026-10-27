@@ -464,10 +464,10 @@ def test_past_alarm_search_calls_only_decisions_and_never_touches_alarm_list() -
             assert word not in body, word
     # 행 값은 textContent로만
     assert "textContent = text" in _js_function_body(src, "pastText")
-    # 카드는 by-alarm 조회 + 분석 요청 + 조사 대화
+    # 카드는 by-alarm 조회 + 분석 요청 + 조사 진입(plans/192 P4 — 진단 켜짐이면 진단 하위 탭)
     card = _js_function_body(src, "buildPastAlarmCard")
     assert "/api/v1/alarm/investigations/by-alarm/" in card
-    assert "analyzeOptions(item.alarm_id)" in card and "openInvestigationConversation" in card
+    assert "analyzeOptions(item.alarm_id)" in card and "openInvestigationEntry" in card
 
 
 def test_past_alarm_section_sits_outside_alarm_list() -> None:
@@ -490,8 +490,9 @@ def test_app_wiring_for_pin_and_alarm_card() -> None:
         assert key in pin, key
     bind = _js_function_body(src, "bindAlarmBriefing")
     assert "analyze: data.alarm_id ? analyzeOptions(data.alarm_id) : null" in bind
-    # W5b 고정 문자열 유지
-    assert "onOpenConversation: openInvestigationConversation" in bind
+    # W5b 고정 문자열 → (plans/192 P4) 클릭 시점의 진단 판정(openInvestigationEntry)
+    entry = "onOpenConversation: function (id) { openInvestigationEntry(id, data.alarm_id); }"
+    assert entry in bind
     opts = _js_function_body(src, "analyzeOptions")
     assert '"/api/v1/alarm/" + encodeURIComponent(alarmId) + "/investigations", "POST"' in opts
     init = _js_function_body(src, "initAlarmSubscription")
@@ -533,9 +534,9 @@ def test_renderer_still_assigns_markup_only_in_attach() -> None:
 
 def test_cache_versions_bumped() -> None:
     pages = {
-        "index.html": ("style.css?v=32", "briefing-view.js?v=5", "app.js?v=31"),
-        "noise.html": ("style.css?v=18", "briefing-view.js?v=5", "noise.js?v=16"),
-        "admin/noise.html": ("style.css?v=16", "briefing-view.js?v=5", "noise.js?v=16"),
+        "index.html": ("style.css?v=41", "briefing-view.js?v=8", "app.js?v=41"),
+        "noise.html": ("style.css?v=18", "briefing-view.js?v=8", "noise.js?v=24"),
+        "admin/noise.html": ("style.css?v=16", "briefing-view.js?v=8", "noise.js?v=24"),
         "admin/dashboard.html": ("style.css?v=23", "admin-incident-kb.js?v=1"),
     }
     for page, assets in pages.items():

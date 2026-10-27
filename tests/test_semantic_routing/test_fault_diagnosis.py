@@ -31,7 +31,7 @@ class FakeSreClient:
 
     def __init__(
         self, poll_result=None, sub_status="accepted",
-        connect_error=None, never_terminal=False,
+        connect_error=None, never_terminal=False, sub_result=None,
     ) -> None:
         self.poll_result = poll_result if poll_result is not None else {
             "status": "done", "answer": "web-01 메모리 고갈로 java(pid 12345) OOM 종료.",
@@ -39,6 +39,7 @@ class FakeSreClient:
         self.sub_status = sub_status
         self.connect_error = connect_error
         self.never_terminal = never_terminal
+        self.sub_result = sub_result  # 접수 응답 통째 대체(plans/194 W1 — 즉시 거부 계약)
         self.connect_calls = 0
         self.disconnect_calls = 0
         self.diagnose_calls: list[dict] = []
@@ -57,6 +58,8 @@ class FakeSreClient:
             {"question": question, "server_name": server_name,
              "hostname": hostname, "db_id": db_id}
         )
+        if self.sub_result is not None:
+            return dict(self.sub_result)
         if self.sub_status == "rejected":
             return {"status": "rejected", "investigation_id": None, "reason": "계약 위반"}
         return {"status": self.sub_status, "investigation_id": "inv-1"}
@@ -181,12 +184,34 @@ class TestGraceful:
         out = await fault_diagnosis(_state(), app_config=_app_cfg(gate))
         assert "제한 시간" in out["final_response"]
 
-    async def test_rejected_empty_text(self, monkeypatch):
+    async def test_rejected_reports_reason(self, monkeypatch):
+        # plans/194 W1: 접수 거부는 사유를 보인다(종전 「결과를 받지 못했」로 사유가 사라졌다).
         client = FakeSreClient(sub_status="rejected")
         _patch_client(monkeypatch, client)
         out = await fault_diagnosis(_state(), app_config=_app_cfg(_gate_cfg()))
         assert client.poll_calls == []  # rejected면 poll하지 않음
-        assert "결과를 받지 못했" in out["final_response"]
+        assert out["final_response"] == "조사 서비스가 요청을 거절했습니다(계약 위반)."
+
+    async def test_rejected_with_verdict_shows_verdict(self, monkeypatch):
+        verdict = "조사 거부 — 대상 호스트가 가용하지 않습니다 [판정 power_off]."
+        client = FakeSreClient(sub_result={
+            "status": "rejected", "investigation_id": "inv-r", "reason": "target_unavailable",
+            "verdict": verdict,
+        })
+        _patch_client(monkeypatch, client)
+        out = await fault_diagnosis(_state(), app_config=_app_cfg(_gate_cfg()))
+        assert client.poll_calls == []
+        assert out["final_response"] == verdict
+
+    async def test_rejected_code_only_uses_reason_text(self, monkeypatch):
+        from src.domain.investigation_reject_reasons import REJECT_REASON_TEXTS
+
+        client = FakeSreClient(sub_result={
+            "status": "rejected", "investigation_id": "inv-r", "reason": "queue_full",
+        })
+        _patch_client(monkeypatch, client)
+        out = await fault_diagnosis(_state(), app_config=_app_cfg(_gate_cfg()))
+        assert out["final_response"] == REJECT_REASON_TEXTS["queue_full"]
 
     async def test_terminal_without_text(self, monkeypatch):
         client = FakeSreClient(poll_result={"status": "failed"})

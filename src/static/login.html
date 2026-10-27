@@ -144,9 +144,11 @@
         var loginBtn = document.getElementById("loginBtn");
 
         // Plan 59-a §3: 로그인 후 복귀 경로(next). 오픈 리다이렉트 방지 — 같은 출처 상대경로("/…")만 허용.
+        // plans/192 W1: 브라우저는 `\`를 `/`로 바꾸고 탭·개행을 지운다 — `\`·제어문자가 있으면 `//…`가 될 수 있어 거른다.
         function safeNext() {
             var n = new URLSearchParams(window.location.search).get("next");
-            if (n && n.charAt(0) === "/" && n.charAt(1) !== "/") return n;
+            if (n && n.charAt(0) === "/" && n.charAt(1) !== "/"
+                && !/[\x00-\x1f\x7f\\]/.test(n)) return n;
             return "/";
         }
 

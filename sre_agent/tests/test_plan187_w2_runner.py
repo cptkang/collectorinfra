@@ -617,7 +617,7 @@ def test_briefing_dict_shape():
     fx = _load("latency_sql")
     run = _run(fx, FakeCaller(fx))
     b = run.to_briefing_dict()
-    assert (b["id"], b["version"]) == ("was.latency", 1) and b["matched_by"].startswith("match:")
+    assert (b["id"], b["version"]) == ("was.latency", 3) and b["matched_by"].startswith("match:")
     assert b["synthesis"] == {"hypotheses": [], "actions": [], "followups": []}
     sec = b["sections"][1]
     assert sec["opinion"] == "" and sec["opinion_dropped_reason"] is None and "data" not in sec

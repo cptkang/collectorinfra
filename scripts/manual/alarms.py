@@ -173,7 +173,18 @@ def seed_briefing(app_dir: Path) -> int:
     (logs / "alarm_investigations.jsonl").write_text(
         "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in investigations), "utf-8"
     )
-    return len(decisions) + len(investigations)
+    # 종결 조사의 실행 기록 요약(plans/187 U-70) — 조사 저장소 옆 보관 파일.
+    # 실시간 허브가 조사 서비스 대신 읽는다
+    activity = _rows("activity")
+    for rec in activity:
+        rec["events"] = [
+            {**e, "at": (now - dt.timedelta(minutes=e.pop("ago_min"))).isoformat()}
+            for e in (dict(e) for e in rec["events"])
+        ]
+    (logs / "investigation_activity.jsonl").write_text(
+        "".join(json.dumps(r, ensure_ascii=False) + "\n" for r in activity), "utf-8"
+    )
+    return len(decisions) + len(investigations) + len(activity)
 
 
 def main() -> None:

@@ -14,6 +14,7 @@ import hmac
 import json
 import logging
 import threading
+from collections.abc import Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -34,6 +35,8 @@ from sre_agent.application.investigation_jobs import (
     JobStore,
     default_audit_path,
 )
+from sre_agent.application.playbook_narrator import NarratorLimits
+from sre_agent.application.playbook_runner import DEFAULT_STEP_TIMEOUT_S
 from sre_agent.diagnosis import (
     DiagnosisAgent,
     DiagnosisResult,
@@ -48,12 +51,13 @@ from sre_agent.domain.cross_source_episode import (
     active_episode,
     prompt_text,
 )
+from sre_agent.domain.playbook import Playbook
 from sre_agent.infrastructure.known_error_loader import DEFAULT_KNOWN_ERROR_DIR, load_known_errors
 from sre_agent.infrastructure.mcp_tool_client import make_apm_batch_caller, make_batch_caller
 from sre_agent.infrastructure.playbook_loader import DEFAULT_PLAYBOOK_DIR, load_playbooks
 from sre_agent.interface.config_admin import AdminPathRouter, build_admin_app
 from sre_agent.interface.config_admin_adapter import build_adapter
-from sre_agent.settings import AgentSettings
+from sre_agent.settings import AgentSettings, timechain_warnings
 from sre_agent.toolset_profiles import remote_vm_profile
 
 logger = logging.getLogger(__name__)
@@ -285,7 +289,15 @@ def _default_diagnose_fn(
         # 조사 지침 주입(plans/50 G5 · D-197): 원격 셸 안내 · 사건 구간 · 운영자 추가 지침.
         # 종전에는 additions를 넘기지 않아 REMOTE_VM_SHELL_NOTE조차 주입되지 않았다.
         # 기록이 없으면 종전 호출 그대로(선택 인자를 넘기지 않는다 — 플래그 off 비트 동일).
-        extra = {"activity": activity} if activity is not None else {}
+        extra: dict = {"activity": activity} if activity is not None else {}
+        # 플레이북 모드 심층 잡(G-26)은 잡 사본에 잡 단위 도구 캐시가 실려 온다 — 두 엔진 공용.
+        tool_cache = getattr(job, "tool_cache", None)
+        if tool_cache is not None:
+            extra["tool_cache"] = tool_cache
+        # 협조적 중단 신호(plans/194 W3 · D-347) — dispatcher가 잡을 타임아웃으로 버리면 세운다.
+        cancel_event = getattr(job, "cancel_event", None)
+        if cancel_event is not None:
+            extra["cancel_event"] = cancel_event
         result = agent.ask(
             _job_to_question(job, settings),
             system_prompt_additions=build_guidance(
@@ -326,6 +338,31 @@ def _default_prefetch_fn(settings: AgentSettings):
     return _prefetch
 
 
+def _log_timechain(settings: AgentSettings, playbooks: Sequence[Playbook]) -> None:
+    """조사 시간 사슬 정합(plans/187 W22 · D-341 부기 13)을 기동 시 1회 로그로 남긴다.
+
+    어긋나면 경고 1줄(어긋난 관계 문장 전부), 정합이면 정보 1줄(값 나열). 기동은 막지 않는다.
+    """
+    step_limits = [s.timeout_s for pb in playbooks for s in pb.steps if s.timeout_s is not None]
+    max_step = max(step_limits) if step_limits else None
+    values = (
+        f"도구 1건 {settings.evidence_prefetch_timeout_seconds:g}s · "
+        f"스텝 기본 {DEFAULT_STEP_TIMEOUT_S:g}s · 스텝 최대 "
+        f"{'없음' if max_step is None else f'{max_step:g}s'} · "
+        f"수집 예산 {settings.sre_playbook_budget_s:g}s · "
+        f"소견 {settings.sre_narrator_step_timeout_s:g}s · "
+        f"종합 {settings.sre_narrator_synthesis_timeout_s:g}s · "
+        f"조사 전체 {settings.investigation_timeout_seconds:g}s"
+    )
+    problems = timechain_warnings(
+        settings, step_default_s=DEFAULT_STEP_TIMEOUT_S, max_step_timeout_s=max_step
+    )
+    if problems:
+        logger.warning("조사 시간 사슬 불일치 — %s (%s)", "; ".join(problems), values)
+    else:
+        logger.info("조사 시간 사슬 정합 (%s)", values)
+
+
 def _default_playbook_wiring(
     settings: AgentSettings, agent_getter  # noqa: ANN001 — `_agent_getter` 반환 콜러블
 ) -> PlaybookWiring | None:
@@ -355,6 +392,7 @@ def _default_playbook_wiring(
     for name, reason in known.rejected:
         logger.warning("알려진 오류 거부(기동 적재): %s — %s", name, reason)
     logger.info("알려진 오류 %d건 적재(%s)", len(known.known_errors), DEFAULT_KNOWN_ERROR_DIR)
+    _log_timechain(settings, loaded.playbooks)
 
     def _llm(messages: list[dict[str, str]]) -> str:
         response = agent_getter().llm.llm.completion(messages, temperature=0)
@@ -365,6 +403,11 @@ def _default_playbook_wiring(
         polestar=make_batch_caller(settings),
         apm=make_apm_batch_caller(settings),
         llm=_llm,
+        # 소견 LLM 1건 타임아웃(W21 P5) — 남은 시간이 적으면 dispatcher `_narrator`가 줄인다.
+        narrator_limits=NarratorLimits(
+            step_timeout_s=settings.sre_narrator_step_timeout_s,
+            synthesis_timeout_s=settings.sre_narrator_synthesis_timeout_s,  # W22 — 종전 30s 고정
+        ),
         known_errors=known.known_errors,
         # 거부 파일명(플레이북 → KE 순) — 브리핑 notes 1줄로 드러낸다(비면 문구 없음 · 지적 9).
         rejected_files=tuple(name for name, _ in (*loaded.rejected, *known.rejected)),
@@ -429,7 +472,9 @@ def create_service(
     async def sre_investigate_alarm(payload: dict, wait_seconds: int = 0) -> str:
         """알람 트리거 페이로드(contract_version "1")로 조사 잡을 제출한다(§3·§4).
 
-        반환(JSON): {investigation_id, status: accepted|duplicate|rejected, reason?}.
+        반환(JSON): {investigation_id, status: accepted|duplicate|rejected, reason?, verdict?}.
+        dispatcher 동기 가드 거부(대기 상한 `queue_full`·`service_overloaded`·같은 호스트
+        조사 중 등)도 poll 없이 `rejected`로 바로 돌려준다(plans/194 W3).
         wait_seconds>0이면 현재 잡 상태를 함께 반환한다(스텁 경로는 즉시 확정 — 실
         타임아웃 대기는 2-D 소관).
         """
@@ -449,6 +494,8 @@ def create_service(
         `SRE_ACTIVITY_LOG_ENABLED`면 `activity{next_seq, truncated, events[seq > activity_since]}`·
         `phase`(queued|collecting|narrating|deep_dive|finalizing — 종결이면 null)·`queue_position`·
         `elapsed_s`를 더한다. 다음 조회에는 `activity.next_seq`를 넘긴다. 플래그 off면 무시한다.
+        동시 상한 대기 중인 잡은 플래그·`activity_since`와 무관하게 `phase="queued"`·
+        `queue_position`을 더한다(plans/194 W3).
         """
         return json.dumps(store.get(investigation_id, activity_since), ensure_ascii=False)
 
@@ -475,6 +522,9 @@ def create_service(
         `prior_findings`(plans/187 W10 · 선택)는 이미 수집된 판정 요약(판정·판독 enum·
         사용 도구·사건창 — LLM 서술 제외)이다. 지침에 「이미 수집된 판정」 블록으로 렌더된다.
         넘기지 않으면 종전과 같다.
+
+        dispatcher 동기 가드 거부(대기 상한 등)는 `{status: "rejected", reason, verdict}`로 바로
+        돌려준다(plans/194 W3).
         """
         return json.dumps(
             store.submit_diagnosis(
@@ -502,6 +552,9 @@ def create_service(
         — true/false, 아직 조사 전이면 null. false면 선택 키 polestar_mcp_error(holmes 사유)를
         더한다. 헬스 호출마다 프로브하지 않는다. last_answer_malformed(C7)는 LLM 답을 받은 마지막
         조사의 답에 도구 호출 마크업이 섞였는지(true/false) — 그런 조사가 없으면 키가 없다.
+        부하 게이지(plans/194 W3 · executor가 실 dispatcher일 때만): running·queued·abandoned_slots·
+        abandoned_threads와 상한 max_concurrent·max_queued·abandon_grace_seconds·
+        tool_global_concurrency(null = 상한 없음).
         """
         health: dict[str, object] = {
             "status": "ok",
@@ -514,6 +567,9 @@ def create_service(
             health["polestar_mcp_error"] = toolset_check.polestar_error or ""
         if toolset_check.last_answer_malformed is not None:
             health["last_answer_malformed"] = toolset_check.last_answer_malformed
+        load = store.load_snapshot()
+        if load is not None:
+            health.update(load)
         return json.dumps(health, ensure_ascii=False)
 
     setattr(mcp, _JOB_STORE_ATTR, store)

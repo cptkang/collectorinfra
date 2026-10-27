@@ -8,11 +8,10 @@
   `{"result": [...]}` 배열을 원소 단위로 점진 디코드한다(오류로 끊지 않는다 · 파싱 뒤 파일 삭제).
 - 초당 호출 상한(토큰 사용량은 **실패 응답까지** 1건씩 센다 — §0.10 #10)을 클라이언트가 지킨다.
   대기열은 호출 맥락의 우선순위(`poller` > `interactive` > `background` · 에이징)로 판다(N-14).
+- 소스별 동시 호출 상한(plans/194 W4b · D-347): 떠 있는 요청 수를 `max_inflight_per_source`로
+  묶는다 — 순서는 **자리 → 속도 제어 → HTTP**(자리 대기도 같은 우선순위). 자리 대기는 API
+  timeout까지이고 넘치면 `SOURCE_UNAVAILABLE`이다. httpx 연결 풀도 같은 수로 맞춘다.
 - HTTP 직전에 호출 맥락의 훅을 부른다 — 작업의 동시 실행 슬롯 대기 · 호출 수·임대 시각 갱신.
-- 소스별 동시 요청 상한(`max_in_flight` · plans/192)을 지킨다 — 폴러·동기·작업 호출 공용. 순서는
-  훅 → 동시 상한 → 속도 제어 → HTTP → 본문 수신 끝에 반납이다. 동시 상한을 속도 제어 **뒤**에서
-  잡으면 상한 대기를 마친 호출들이 시작 간격 없이 몰려 나간다. 동시 상한 대기는 먼저 온 순서(FIFO)라
-  우선순위는 상한 안쪽(속도 제어 대기열)에서만 먹는다. 속도 상한 0(무제한)에서도 폭주하지 않는다.
 - 오류는 HTTP 상태가 아니라 본문으로 분류한다(도메인 미접속·파라미터 누락이 모두 500 — §0.10 #11).
 - **자격증명 제거**(N-17 · D-296 ③): JSON·텍스트를 파싱한 **직후** 이 클래스의 두 출구
   (`get_json`·`get_text`)와 오류 사유에서 `domain.credentials`를 지난다 — 위 계층은 가린 값만 본다.
@@ -45,7 +44,7 @@ from apm_gateway.adapters.jennifer.allowlist import (
     check_request,
 )
 from apm_gateway.adapters.json_stream import load_json_file
-from apm_gateway.adapters.throttle import PriorityThrottle
+from apm_gateway.adapters.throttle import PrioritySlots, PriorityThrottle
 from apm_gateway.config import JenniferApiConfig
 from apm_gateway.domain.call_context import current_scope
 from apm_gateway.domain.credentials import ROOT_FIELD, scrub_detail, scrub_text
@@ -110,7 +109,8 @@ class JenniferClient:
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
         self._throttle = PriorityThrottle(float(cfg.rate_limit_per_sec), aging_seconds)
-        self._in_flight = asyncio.Semaphore(self.max_in_flight)
+        # 동시 호출 자리(D-347) — 속도 제어는 시작 간격만 지켜 응답이 느리면 떠 있는 요청이 쌓인다
+        self._slots = PrioritySlots(int(cfg.max_inflight_per_source), aging_seconds)
         # 메모리 임계를 넘는 응답 본문의 임시 파일 위치(없으면 시스템 임시 디렉터리)
         self._spool_dir = spool_dir
         self.calls_total = 0
@@ -121,8 +121,8 @@ class JenniferClient:
 
     @property
     def max_in_flight(self) -> int:
-        """이 소스의 동시 요청 상한(세마포어와 같은 값 — 병렬 루프의 폭 · plans/192)."""
-        return max(1, int(self._cfg.max_in_flight))
+        """동시 호출 자리 수 — 병렬 루프의 폭(plans/197 · D-347 상한 재사용)."""
+        return self._slots.limit
 
     def _http(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -135,6 +135,11 @@ class JenniferClient:
                 timeout=float(self._cfg.timeout_seconds),
                 follow_redirects=False,
                 trust_env=False,
+                # 연결 수 = 동시 호출 자리 수(자리가 먼저 묶으므로 풀 대기는 생기지 않는다)
+                limits=httpx.Limits(
+                    max_connections=self._slots.limit,
+                    max_keepalive_connections=self._slots.limit,
+                ),
                 transport=self._transport,
             )
         return self._client
@@ -235,26 +240,33 @@ class JenniferClient:
         scope = current_scope()
         # 작업: 동시 실행 슬롯 대기 · 소스별 호출 수·임대 시각(감사 `api_calls`·`sources`)
         await scope.before_call(self._cfg.source_id)
-        # 동시 상한 → 속도 제어 순서(시작 간격 보존) · 본문 수신 끝에 반납
-        async with self._in_flight:
+        # 자리 → 속도 제어 순서(D-347): 속도 제어를 HTTP 바로 앞에 두어 시작 간격을 그대로 지키고,
+        # 자리 대기도 우선순위로 판다(먼저 들어간 background가 poller·interactive를 막지 않게)
+        timeout = float(self._cfg.timeout_seconds)
+        try:
+            await asyncio.wait_for(self._slots.acquire(scope.priority), timeout)
+        except TimeoutError as e:
+            raise ApmError(
+                SOURCE_UNAVAILABLE,
+                f"제니퍼 동시 호출 상한 대기 초과({self._slots.limit}건 · {timeout:g}s): {shown}",
+            ) from e
+        try:
             await self._throttle.acquire(scope.priority)
             self.calls_total += 1
             started = time.monotonic()
-            try:
-                async with self._http().stream(
-                    "GET", path, params=query, headers=headers
-                ) as resp:
-                    body = await self._read_body(resp, shown)
-            except ApmError:
-                raise
-            except httpx.TimeoutException as e:
-                raise ApmError(SOURCE_UNAVAILABLE, f"APM API timeout: {shown}") from e
-            except httpx.HTTPError as e:
-                raise ApmError(
-                    SOURCE_UNAVAILABLE,
-                    self.redact(f"APM API 연결 실패: {shown} ({type(e).__name__})"),
-                ) from e
-            elapsed_ms = (time.monotonic() - started) * 1000
+            async with self._http().stream("GET", path, params=query, headers=headers) as resp:
+                body = await self._read_body(resp, shown)
+        except ApmError:
+            raise
+        except httpx.TimeoutException as e:
+            raise ApmError(SOURCE_UNAVAILABLE, f"APM API timeout: {shown}") from e
+        except httpx.HTTPError as e:
+            raise ApmError(
+                SOURCE_UNAVAILABLE, self.redact(f"APM API 연결 실패: {shown} ({type(e).__name__})")
+            ) from e
+        finally:
+            self._slots.release()
+        elapsed_ms = (time.monotonic() - started) * 1000
         # 실 호출 소요(속도 제어 대기 뒤 ~ 본문 수신 끝 · 응답을 받은 호출만) — 남은 예상 시간 ·
         # 경로 군은 경로 템플릿(계정 ID 원값 없음)
         scope.after_call(self._cfg.source_id, elapsed_ms / 1000, group=template)

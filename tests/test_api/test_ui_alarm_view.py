@@ -92,8 +92,8 @@ def test_alarm_tab_hidden_without_permission(app_js: str) -> None:
 def test_body_height_accounts_for_tab_bar(style_css: str) -> None:
     """탭 바가 생긴 만큼 본문 높이에서 빼지 않으면 입력바가 화면 밖으로 밀린다."""
     expected = "calc(100vh - var(--header-h) - var(--view-tabs-h))"
-    # .chat-layout · .alarm-view · .diagnosis-view(plans/187 W15)
-    assert style_css.count(expected) == 3
+    # .chat-layout · .alarm-view · .diagnosis-view(plans/187 W15) · .noise-view(plans/193 W2)
+    assert style_css.count(expected) == 4
     assert "--header-h: 64px;" in style_css
     assert "--view-tabs-h: 44px;" in style_css
 

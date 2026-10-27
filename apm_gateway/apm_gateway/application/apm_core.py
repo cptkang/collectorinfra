@@ -225,7 +225,7 @@ class ApmCore:
         self, resolution: Resolution, limits: Limits
     ) -> dict[InstKey, dict[str, Any]]:
         """해소 인스턴스의 실시간 스냅샷((소스, 도메인)당 1호출 · 대상 인스턴스만 묻는다 · 호출은
-        소스 동시 요청 상한 폭으로 겹치고 결과는 묶음 순서대로 처리한다 — plans/192 W2)."""
+        소스 동시 요청 상한 폭으로 겹치고 결과는 묶음 순서대로 처리한다 — plans/197 W2)."""
         wanted = {inst_key(i) for i in resolution.instances}
         out: dict[InstKey, dict[str, Any]] = {}
         groups = group_by_domain(resolution)
@@ -305,7 +305,7 @@ class ApmCore:
     ) -> dict[str, Any] | None:
         """시 단위 애플리케이션 통계(창이 길 때 맥락) — 시 경계로 내림·올림. 합계는 받은 **전**
         애플리케이션 행으로 낸다(종전 `max_row=20` 합계 누락 교정 · plans/134 W1 N-2). 호출은 소스
-        동시 요청 상한 폭으로 겹치고 결과는 묶음 순서대로 처리한다(plans/192 W2)."""
+        동시 요청 상한 폭으로 겹치고 결과는 묶음 순서대로 처리한다(plans/197 W2)."""
         start, end = hour_floor(window.start_ms), hour_ceil(window.end_ms)
         rows: list[dict[str, Any]] = []
         groups = group_by_domain(resolution)

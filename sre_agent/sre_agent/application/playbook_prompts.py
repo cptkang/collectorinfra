@@ -34,6 +34,12 @@ STEP_USER = """[단계] {step} · {title}
 
 STEP_REALTIME = "\n[실시간 단면] 이 단계 값은 실시간 단면({badges})이다 — 알람 시점 값이 아니다."
 
+#: 단계 끝 해석(plans/187 W20 · G-47 · §5.6.4 ⓖ C1·C2) — `prior_findings`를 줄 때만 덧붙인다.
+STEP_STEPWISE_RULES = """
+- 이 단계까지의 근거(아래 「앞 단계 결과」와 이 단계 데이터)만 보고 쓴다. 뒤 단계 결과를 추측하지 마라.
+- 원인을 확정하거나 원인 순위(1순위·가장 유력·주원인 등)를 쓰지 마라."""  # noqa: E501
+STEP_PRIOR = "\n[앞 단계 결과]\n{lines}"
+
 SYNTH_SYSTEM = """너는 장애 조사 플레이북의 「종합 소견」 작성자다. 단계 판정·판독·결정적 가설 순위를 인용해 운영자에게 요약한다.
 규칙:
 - 원인 가설의 순위와 상태(지지·반박·판단 보류)는 코드가 정했다. 순위를 바꾸거나 다른 가설을 1순위로 쓰지 마라. 1순위를 언급하면 「가설 순위」의 1순위 제목을 그대로 쓴다. 「판단 보류」 가설은 확정처럼 쓰지 마라.
@@ -66,23 +72,34 @@ def _dump(value: Any) -> str:
 
 
 def _fit_table(section: Mapping[str, Any], budget: int) -> str:
-    """단계 표를 JSON으로 싣되 길이 상한을 넘으면 뒤 행부터 줄인다(줄인 수를 적는다)."""
+    """단계 표를 JSON으로 싣되 길이 상한을 넘으면 뒤 행부터 줄인다(줄인 수를 적는다).
+
+    남길 행 수는 이분 탐색으로 찾는다 — 한 행씩 줄이며 다시 직렬화하면 행 수의 제곱에 비례해
+    큰 표(수천 행)에서 코어 하나를 수 초~수 분 붙잡는다. 줄이는 구간(`keep < 행 수`)에서 길이는
+    `keep`에 대해 줄지 않으므로(행 하나 ≥ 1자 · 생략 수 자릿수는 1자 이하로 준다) 결과는 종전
+    선형 탐색과 같다(남길 수 있는 최대 행 수).
+    """
     table = section.get("table") or {}
     rows = list(table.get("rows") or [])
+    columns = list(table.get("columns") or [])
     extra = {k: section.get(k) for k in ("missing", "reason") if section.get(k)}
-    keep = len(rows)
-    while True:
-        payload: dict[str, Any] = {
-            "columns": list(table.get("columns") or []),
-            "rows": rows[:keep],
-            **extra,
-        }
+
+    def render(keep: int) -> str:
+        payload: dict[str, Any] = {"columns": columns, "rows": rows[:keep], **extra}
         if keep < len(rows):
             payload["rows_omitted"] = len(rows) - keep
-        text = _dump(payload)
-        if len(text) <= budget or keep == 0:
-            break
-        keep -= 1
+        return _dump(payload)
+
+    text = render(len(rows))
+    if len(text) > budget and rows:
+        best, lo, hi = 0, 1, len(rows) - 1
+        while lo <= hi:
+            mid = (lo + hi) // 2
+            if len(render(mid)) <= budget:
+                best, lo = mid, mid + 1
+            else:
+                hi = mid - 1
+        text = render(best)
     if len(text) > budget:
         text = text[: max(0, budget - len(_TRUNC))] + _TRUNC
     return text
@@ -109,23 +126,35 @@ def render_step_messages(
     readings: Mapping[str, Mapping[str, Any]],
     realtime_badges: Sequence[str] = (),
     max_input_chars: int = 6000,
+    prior_findings: Sequence[str] | None = None,
 ) -> list[dict[str, str]]:
-    """단계 소견 메시지. `section` = `StepResult.to_dict(include_data=False)` 모양."""
+    """단계 소견 메시지. `section` = `StepResult.to_dict(include_data=False)` 모양.
+
+    `prior_findings`(plans/187 W20 단계 끝 해석): 앞 단계 결과 한 줄 목록. 주면(빈 목록 포함)
+    「앞 단계 결과」 블록과 「뒤 단계 추측 금지 · 원인 확정·순위 어휘 금지」 지시를 덧붙인다.
+    None이면 종전 프롬프트와 비트 동일하다.
+    """
+    realtime = (
+        STEP_REALTIME.format(badges=" · ".join(realtime_badges)) if realtime_badges else ""
+    )
+    system = STEP_SYSTEM.format(max_sentences=max_sentences)
+    if prior_findings is not None:
+        lines = "\n".join(f"- {line}" for line in prior_findings) or "(없음)"
+        realtime += STEP_PRIOR.format(lines=lines)
+        system += STEP_STEPWISE_RULES
     head = STEP_USER.format(
         step=section.get("step"),
         title=section.get("title"),
         verdict=section.get("verdict"),
         verdict_source=section.get("verdict_source"),
         focus=focus,
-        realtime=STEP_REALTIME.format(badges=" · ".join(realtime_badges))
-        if realtime_badges
-        else "",
+        realtime=realtime,
         readings=_readings_lines(readings),
         data="",
     )
     data = _fit_table(section, max(200, max_input_chars - len(head)))
     return [
-        {"role": "system", "content": STEP_SYSTEM.format(max_sentences=max_sentences)},
+        {"role": "system", "content": system},
         {"role": "user", "content": head + data},
     ]
 

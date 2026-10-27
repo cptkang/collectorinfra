@@ -419,16 +419,19 @@ async def test_restart_resumes_active_from_store_cursor_zero(tmp_path, fake_sre)
 # ── 사용자 경로 이벤트 ───────────────────────────────────────────────────────
 
 
-def test_user_events_drop_ai_note_and_mask():
+def test_user_events_keep_ai_note_masked():
+    """(plans/187 W20 · G-48) HolmesGPT AI 메모는 사용자에게 간다 — `note`는 가린 뒤(G-38 개정).
+    플레이북 소견 초안(engine=playbook `ai_note` · 가드 전)은 사용자 경로에서 뺀다."""
     events = [
         ev(1, excerpt=f"x\n{SECRET}", label=SECRET),
-        ev(2, kind="ai_note", note="원인 추정"),
+        ev(2, kind="ai_note", engine="holmes", note=f"원인 추정\n{SECRET}"),
         ev(3, note="메모 키"),
+        ev(4, kind="ai_note", note="가드 전 초안"),
     ]
     out = hub_mod.user_events(events, lambda s: "***" if s == SECRET else s)
-    assert [e["seq"] for e in out] == [1, 3]
+    assert [e["seq"] for e in out] == [1, 2, 3]
     assert out[0]["excerpt"] == "x\n***" and out[0]["label"] == "***"
-    assert all("note" not in e for e in out)
+    assert out[1]["kind"] == "ai_note" and out[1]["note"] == "원인 추정\n***"
 
 
 @pytest.mark.parametrize(

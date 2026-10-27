@@ -116,6 +116,10 @@ KEYWORD_EXCLUSIONS: dict[str, tuple[str, ...]] = {
     "로그": ("로그인", "로그아웃", "로그온", "로그오프", "블로그", "카탈로그", "다이얼로그"),
 }
 
+#: 진단 요청 표지 — 3단 라우터 프롬프트의 판단 규칙(「원인·진단·왜」가 없는 단순 조회는 진단이
+#: 아니다)을 결정적으로 옮긴 것. 2단(LLM 의도 분류 없음)이 조회 질의를 조사로 가로채지 않게 한다.
+DIAGNOSIS_CUES: tuple[str, ...] = ("원인", "진단", "왜", "rca")
+
 _SPACE_RE = re.compile(r"\s+")
 
 
@@ -220,6 +224,12 @@ def symptom_candidates(query: str, dictionary: SymptomDictionary = DEFAULT_DICTI
     return sorted(picked)
 
 
+def has_diagnosis_cue(query: str) -> bool:
+    """질의에 진단 요청 표지(`DIAGNOSIS_CUES`)가 있는가 — 소문자 부분 일치."""
+    lowered = (query or "").lower()
+    return any(cue in lowered for cue in DIAGNOSIS_CUES)
+
+
 def route_symptom(
     query: str,
     targets: Sequence[Mapping[str, Any]],
@@ -282,6 +292,7 @@ def virtual_event_fields(playbook_id: str) -> tuple[str, str]:
 
 __all__ = [
     "DEFAULT_DICTIONARY",
+    "DIAGNOSIS_CUES",
     "INVESTIGATION_REF_KIND",
     "KEYWORD_EXCLUSIONS",
     "KIND_KEYWORDS",
@@ -293,6 +304,7 @@ __all__ = [
     "SymptomDictionary",
     "SymptomRoute",
     "VIRTUAL_EVENTS",
+    "has_diagnosis_cue",
     "route_symptom",
     "symptom_candidates",
     "virtual_event_fields",

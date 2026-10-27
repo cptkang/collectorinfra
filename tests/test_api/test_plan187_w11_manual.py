@@ -206,7 +206,10 @@ def test_flag_off_by_alarm_unchanged_even_with_manual_records(tmp_path, monkeypa
         investigation_id="man-a2", alarm_ids=["a2"], kind="manual", status="done",
         source="manual", origin="manual", parent_alarm_id="a2",
     )
-    assert off.get("/api/v1/alarm/investigations/by-alarm/a2").json() == {"status": "none"}
+    # (plans/194 W5 · C1) `service_load`는 늘 붙는다(여기선 연결 불가 → null)
+    assert off.get("/api/v1/alarm/investigations/by-alarm/a2").json() == {
+        "status": "none", "service_load": None,
+    }
 
 
 # ── 존 · 범위 ────────────────────────────────────────────────────────────
@@ -607,7 +610,9 @@ async def _gate_record(tmp_path, **gate) -> dict:  # noqa: ANN003
 
 
 async def test_gate_records_alarm_source_fields_only_when_on(tmp_path):
-    off = await _gate_record(tmp_path / "off")
+    # plans/194 W1 · D-347: 플래그 미지정은 이제 on(코드 기본) — off 경로는 명시 off로 고정한다
+    # (미지정 = on 은 test_plan194_w1_manual_only가 본다).
+    off = await _gate_record(tmp_path / "off", investigation_manual_enabled=False)
     off_explicit = await _gate_record(tmp_path / "off2", investigation_manual_enabled=False)
     on = await _gate_record(tmp_path / "on", investigation_manual_enabled=True)
     for rec in (off, off_explicit):
@@ -649,8 +654,12 @@ def test_recorded_alarm_time_hostname_and_type_drive_payload(tmp_path, monkeypat
     assert event["hostname"] == "was-real-01" and event["resourceType"] == "apm.Instance"
     assert fake.submit_calls[0]["meta"]["hints"]["solution"] == "apm"
     rec = _store(tmp_path).get_by_investigation(body["investigation_id"])
+    # (plans/194 W5 · C4) 목록 「대상」 칸용 서버·알람명을 함께 싣는다
     assert rec["subject"] == {"reference_time": alarm_at.isoformat(),
-                              "reference_time_source": "alarm_time"}
+                              "reference_time_source": "alarm_time",
+                              "server_name": "WAS-01", "hostname": "was-real-01",
+                              "alarm_name": rec["subject"]["alarm_name"],
+                              "label": f"WAS-01 · {rec['subject']['alarm_name']}"}
     assert audits[-1]["reference_time_source"] == "alarm_time"
 
 

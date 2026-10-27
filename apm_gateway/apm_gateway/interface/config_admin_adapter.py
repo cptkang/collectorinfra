@@ -100,20 +100,20 @@ _TABLE: tuple[tuple[str, str, str, Any, _Getter, str], ...] = (
         "초당 호출 상한",
     ),
     (
-        "JENNIFER_MAX_IN_FLIGHT",
-        "jennifer",
-        "int",
-        "4",
-        lambda c: c.jennifer.max_in_flight,
-        "소스별 동시 요청 상한(1 = 종전 직렬)",
-    ),
-    (
         "JENNIFER_MAX_RESPONSE_BYTES",
         "jennifer",
         "int",
         "4194304",
         lambda c: c.jennifer.max_response_bytes,
         "응답 본문 메모리 임계(바이트 — 넘으면 스풀 파일)",
+    ),
+    (
+        "JENNIFER_MAX_INFLIGHT_PER_SOURCE",
+        "jennifer",
+        "int",
+        "8",
+        lambda c: c.jennifer.max_inflight_per_source,
+        "소스별 동시 호출 상한(대기는 API 타임아웃까지)",
     ),
     (
         "APM_GATEWAY_HOST",
@@ -291,7 +291,11 @@ _SOURCE_SUFFIX_META: dict[str, tuple[str, Callable[[Any], Any], str]] = {
     "API_TIMEOUT_SECONDS": ("float", lambda s: s.timeout_seconds, "타임아웃(초 · 비면 전역 값)"),
     "RATE_LIMIT_PER_SEC": ("float", lambda s: s.rate_limit_per_sec, "초당 호출 상한(비면 전역 값)"),
     "MAX_RESPONSE_BYTES": ("int", lambda s: s.max_response_bytes, "응답 메모리 임계(비면 전역 값)"),
-    "MAX_IN_FLIGHT": ("int", lambda s: s.max_in_flight, "동시 요청 상한(비면 전역 값)"),
+    "MAX_INFLIGHT_PER_SOURCE": (
+        "int",
+        lambda s: s.max_inflight_per_source,
+        "동시 호출 상한(비면 전역 값)",
+    ),
 }
 
 

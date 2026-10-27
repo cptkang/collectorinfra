@@ -1,0 +1,31 @@
+{
+ "_note": "장애 조사 「조사 시작」 장면(plans/194 · U-71) — 알람 스트림 가로채기로 넣는 예시 카드(captures.yaml routes). 조사 서비스 호출 0. 조사 id가 실린 카드 — 조사 조회(by-alarm)는 가로챈 대기 중 응답",
+ "cards": [
+  {
+   "type": "alarm_notification",
+   "alarm_id": "MANUAL-INV-WEB03",
+   "severity": 2,
+   "severity_label": "경고",
+   "alarm_name": "CPU 사용률",
+   "db_id": "polestar",
+   "server_name": "svr-web-03",
+   "hostname": "svr-web-03",
+   "ip_address": "",
+   "resource_type": "server.Cpus",
+   "resource_name": "CPU",
+   "alarm_status": "Y",
+   "summary": "svr-web-03 의 CPU 사용률이 3회 연속 90%를 넘었습니다.",
+   "probable_cause": "야간 배치 작업이나 특정 프로세스가 CPU를 오래 점유한 것으로 추정됩니다.",
+   "recommended_action": "CPU 점유 상위 프로세스와 배치 작업 일정을 확인하세요.",
+   "pattern_type": "첫 발생",
+   "is_routine": false,
+   "pattern_analysis": "",
+   "tier": "page",
+   "tier_reason": "매트릭스(심각도2×중요도높음) → page",
+   "stage": "matrix",
+   "alarm_time": null,
+   "received_at": null,
+   "investigation_id": "inv-manual-queued"
+  }
+ ]
+}

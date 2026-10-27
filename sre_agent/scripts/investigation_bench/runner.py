@@ -85,13 +85,18 @@ FIXED_ENV: dict[str, str] = {"LITELLM_LOCAL_MODEL_COST_MAP": "True", "LITELLM_MO
 PROTECTED_ENV_KEYS = frozenset({
     "MODEL", "API_BASE", "API_KEY", "INVESTIGATION_LLM_ENABLED", "GEMINI_API_KEY",
     "LLM_GEMINI_API_KEY", "POLESTAR_MCP_URL", "APM_MCP_URL", "INVESTIGATION_MAX_CONCURRENT",
-    "INVESTIGATION_AUDIT_PATH", "PYTHONPATH", *FIXED_ENV,
+    "INVESTIGATION_AUDIT_PATH", "INVESTIGATION_HOURLY_BUDGET", "PYTHONPATH", *FIXED_ENV,
 })
-NEVER_SET_ENV_KEYS = frozenset({"INVESTIGATION_DEDUP_TTL_SECONDS", "INVESTIGATION_HOURLY_BUDGET"})
+NEVER_SET_ENV_KEYS = frozenset({"INVESTIGATION_DEDUP_TTL_SECONDS"})
+# 시간당 조사 상한 — 반복 실행이 가드에 막히지 않게(§4.7). 코드 기본이 20이 되어(plans/194 W5 ·
+# D-347 ②) 「설정하지 않음 = 가드 off」가 더는 성립하지 않으므로, 러너가 가드에 닿지 않는 큰 값을
+# 명시하고 에코에서 그 값인지 확인한다(None은 env로 줄 수 없다). 명세는 이 키를 쓸 수 없다.
+BENCH_HOURLY_BUDGET = 1_000_000
 # 러너가 env로 정하는 설정 필드 — 에코에서 기본값과 달라도 된다(나머지는 명세 키만 허용).
 RUNNER_SET_FIELDS = frozenset({
     "model", "api_base", "api_key", "investigation_llm_enabled", "gemini_api_key",
     "polestar_mcp_url", "apm_mcp_url", "investigation_max_concurrent", "investigation_audit_path",
+    "investigation_hourly_budget",
 })
 REDACTED_SET, REDACTED_UNSET = "<set>", "<unset>"
 SECRET_MARKERS: tuple[str, ...] = ("KEY", "TOKEN", "SECRET", "PASSWORD")
@@ -264,8 +269,9 @@ def build_arm_env(
 ) -> dict[str, str]:
     """실험군 하나의 sre_agent 환경변수(§4.7 표) — 이것이 그 프로세스의 환경 전부다.
 
-    부모 환경에서는 `INHERITED_ENV_KEYS`만 물려받는다. 명세 `base_env`·`arms.<arm>`이 러너 고정 키나
-    `INVESTIGATION_DEDUP_TTL_SECONDS`·`INVESTIGATION_HOURLY_BUDGET`을 쓰면 RunnerError.
+    부모 환경에서는 `INHERITED_ENV_KEYS`만 물려받는다. 명세 `base_env`·`arms.<arm>`이 러너 고정 키
+    (`INVESTIGATION_HOURLY_BUDGET` 포함 — 러너가 `BENCH_HOURLY_BUDGET`으로 정한다)나
+    `INVESTIGATION_DEDUP_TTL_SECONDS`를 쓰면 RunnerError.
     """
     parent = os.environ if parent_env is None else parent_env
     llm = spec.get("llm") or {}
@@ -291,6 +297,7 @@ def build_arm_env(
         "APM_MCP_URL": apm_url or "",
         "INVESTIGATION_MAX_CONCURRENT": "1",
         "INVESTIGATION_AUDIT_PATH": str(Path(run_dir) / f"arm-{arm}" / "audit.jsonl"),
+        "INVESTIGATION_HOURLY_BUDGET": str(BENCH_HOURLY_BUDGET),
     })
     return env
 
@@ -655,12 +662,17 @@ def verify_echo(echo: Mapping[str, Any], *, model: str, api_base: str,
 
     `allowed_fields`(명세 키)가 주어지면 기본값과 다른 필드(`non_default_fields` — `_serve.py`)가
     러너·명세가 정한 것뿐인지도 본다 — `.env` 등 바깥에서 들어온 기능 플래그를 잡는다. 금지 키
-    (`investigation_hourly_budget`·`investigation_dedup_ttl_seconds`)는 미설정(None)이어야 한다.
+    (`investigation_dedup_ttl_seconds`)는 미설정(None)이어야 하고, 시간당 상한
+    (`investigation_hourly_budget`)은 러너가 정한 `BENCH_HOURLY_BUDGET`이어야 한다(코드 기본 20이면
+    반복 실행이 가드에 막힌다 — plans/194 W5).
     """
     problems = []
     for name in sorted(k.lower() for k in NEVER_SET_ENV_KEYS):
         if echo.get(name) is not None:
             problems.append(f"{name}={echo.get(name)!r} — 벤치는 설정하지 않는다(None이어야 함)")
+    if echo.get("investigation_hourly_budget") != BENCH_HOURLY_BUDGET:
+        problems.append(f"investigation_hourly_budget={echo.get('investigation_hourly_budget')!r}"
+                        f" ≠ 러너 값 {BENCH_HOURLY_BUDGET} — 반복 실행이 시간당 상한에 막힌다")
     if allowed_fields is not None:
         changed = echo.get("non_default_fields")
         if not isinstance(changed, list):

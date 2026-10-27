@@ -12,6 +12,7 @@
 - ``capture`` : 캡처 — 재생 그래프 · LLM 호출 0
 - ``capture-viz`` : 결과 그래프·값 해석 장면(plans/160) — ``capture`` + 두 플래그 on ·
   LLM 주소를 닫힌 포트로
+- ``capture-diag`` : 장애 진단·조사 대화 장면(plans/187) — ``capture`` + 실시간 화면 on
 """
 
 from __future__ import annotations
@@ -32,6 +33,7 @@ APP_DIRS = {
     "capture": BUILD / "app-capture",
     "capture-zones": BUILD / "app-capture-zones",
     "capture-viz": BUILD / "app-capture-viz",
+    "capture-diag": BUILD / "app-capture-diag",
 }
 APP = APP_DIRS["record"]
 FIXTURES = REPO / "scripts" / "manual" / "fixtures"
@@ -184,6 +186,15 @@ PROFILES["capture-viz"] = {
     "RESULT_VIZ_EXPLAIN_ENABLED": "true",
     "LLM_MLX_BASE_URL": "http://127.0.0.1:9/v1",
     "ORCHESTRATOR_BASE_URL": "http://127.0.0.1:9/v1",
+}
+# 장애 진단 탭·조사 대화 장면 전용(plans/187 U-63·U-70) — 실시간 화면은 기본 off 라
+# 기본 캡처 서버에 켜면 머리글 뷰 탭 줄에 「장애 진단」이 새로 찍혀 기존 장면이 바뀐다.
+# 예시 조사(seed_briefing)는 모두 종결이라 허브가 조사 서비스에 묻지 않는다 —
+# 조사 서비스 주소는 닫힌 포트로 둬 실호출 0을 보장한다
+PROFILES["capture-diag"] = {
+    **PROFILES["capture"],
+    "NOISE_INVESTIGATION_LIVE_VIEW_ENABLED": "true",
+    "NOISE_INVESTIGATION_SERVICE_URL": "http://127.0.0.1:9/sse",
 }
 
 

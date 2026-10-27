@@ -276,7 +276,8 @@ class _Agent:
     def tool_names(self) -> frozenset[str]:
         return frozenset()
 
-    def ask(self, question, system_prompt_additions=None):
+    def ask(self, question, system_prompt_additions=None, **_kw):
+        # `**_kw` — plans/194 W3 협조적 중단 `cancel_event`(dispatcher가 잡마다 싣는다)
         return DiagnosisResult(answer=type(self).answers.pop(0))
 
 

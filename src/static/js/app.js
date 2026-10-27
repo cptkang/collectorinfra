@@ -39,6 +39,19 @@
     var chatView = document.getElementById("chatView");
     var alarmView = document.getElementById("alarmView");
     var diagnosisView = document.getElementById("diagnosisView");   // plans/187 W15 장애 진단
+    var noiseView = document.getElementById("noiseView");   // plans/193 W2 노이즈 관제(플래그 아래)
+    var noiseTab = document.getElementById("noiseTab");
+    // 로드 시 `?view=noise`(새로고침·로그인 복귀) — 진입·복원(checkAuthOnLoad)과 기능 조회가 둘 다 끝난 뒤
+    // 마지막에 1회 판정한다(applyNoiseEntry). 먼저 열면 복원이 대화를 받은 뒤 조사 대화 탭으로 넘겨 버린다
+    // (최종 활성 탭 = 관제). 주소는 탭 전환이 고쳐 쓰므로 무엇보다 먼저 읽어 둔다.
+    var noiseEntry = {
+        wanted: new URLSearchParams(window.location.search).get("view") === "noise",
+        settled: false,
+        capsKnown: false,
+        done: false,
+    };
+    var investigationTab = document.getElementById("investigationTab");   // plans/187 W16 조사 대화
+    var investigationTabClose = document.getElementById("investigationTabClose");
     var alarmList = document.getElementById("alarmList");
     var alarmEmpty = document.getElementById("alarmEmpty");
     var alarmTabBadge = document.getElementById("alarmTabBadge");
@@ -124,7 +137,15 @@
         // 만료/무효 토큰을 정리하여 로그인 후 동일 증상 재발을 방지한다.
         localStorage.removeItem("user_token");
         localStorage.removeItem("user_info");
-        window.location.href = "/login";
+        // plans/192 W1: 지금 주소(`/?diagnosis=<id>` 등)를 next로 넘겨 로그인 뒤 그 자리로 돌아온다.
+        // 루트 맨 주소는 종전처럼 `/login` · 둘째 글자가 `/`·`\`면 다른 출처로 읽힐 수 있어 버린다.
+        var here = window.location.pathname + window.location.search + window.location.hash;
+        var c = here.charAt(1);
+        if (here === "/" || c === "/" || c === "\\") {
+            window.location.href = "/login";
+            return;
+        }
+        window.location.href = "/login?next=" + encodeURIComponent(here);
     }
 
     // §15: 인증 확정 전까지 앱 셸을 숨겨(FOUC 방지) 두었다가, 인증 성공/개발모드일 때만 노출한다.
@@ -166,6 +187,7 @@
                 loadScopeOptions().then(updateApmScopeChip);
                 // 사용자 정보 표시
                 var userInfo = data.user;
+                investigationConvUser = (userInfo && userInfo.user_id) || null;
                 var userArea = document.getElementById("userInfoArea");
                 if (userArea && userInfo) {
                     userArea.style.display = "inline-flex";
@@ -187,7 +209,11 @@
                 initAlarmSubscription(userInfo, data.auth_enabled);
                 // plans/187 W5b: `/?investigation=<id>` 진입 — 인증 확정 뒤에만 조사 기록을 읽는다.
                 // (W15) 장애 진단 사전 게이트(/active)를 먼저 끝내야 진입을 진단 탭으로 보낼지 정할 수 있다.
-                initDiagnosisView().then(function () { openInvestigationFromQuery(); });
+                initDiagnosisView().then(function () {
+                    // plans/192 W4: 쿼리 진입이 없으면 새로고침 전 조사 대화 탭을 되살린다.
+                    // (plans/193 W2) 복원이 대화를 받는 동안까지 기다린 뒤 관제 탭 복귀(`?view=noise`)를 판정한다.
+                    if (!openInvestigationFromQuery()) return restoreInvestigationConversation();
+                }).then(noiseEntrySettled, noiseEntrySettled);
                 // 로그아웃 버튼
                 var logoutBtn = document.getElementById("userLogoutBtn");
                 if (logoutBtn && data.auth_enabled) {
@@ -199,6 +225,7 @@
                         }).finally(function() {
                             localStorage.removeItem("user_token");
                             localStorage.removeItem("user_info");
+                            forgetInvestigationConversation();
                             window.location.href = "/login";
                         });
                     });
@@ -319,6 +346,11 @@
     // disclosures에 ref.investigation_id로 남겨 사이드바 재열기 때 고정 카드를 복원한다)와 고정 카드 패널.
     var pendingInvestigationRef = null;
     var investigationPinPanel = null;
+    // plans/187 W16 조사 대화 탭 — 대화 화면에 올라 있는 쪽("chat"|"investigation")과 내려 둔 다른 쪽 대화
+    var conversationSlot = "chat";
+    var parkedConversation = null;
+    // plans/192 W4 — 조사 대화 새로고침 복원 저장값의 주인(checkAuthOnLoad가 확정한 user_id · 없으면 null)
+    var investigationConvUser = null;
     var PROMPT_PLACEHOLDER = promptEl ? promptEl.placeholder : "";
     // 존 역질문(파일 경로) 재전송용 — 마지막 업로드 파일 참조 (Plan 75 §4 확장)
     var lastUploadedFile = null;
@@ -4269,26 +4301,31 @@
     // (하드코딩 toggle을 늘리면 뷰 하나가 조용히 안 숨는 회귀가 생긴다).
     // 질의 이력은 여기 없다 — 탭으로 본문을 바꾸는 뷰가 아니라 채팅 옆에 붙는 사이드바다.
     function viewRegistry() {
-        return { chat: chatView, alarm: alarmView, diagnosis: diagnosisView };
+        return { chat: chatView, alarm: alarmView, diagnosis: diagnosisView, noise: noiseView };
     }
 
     function setActiveView(view) {
+        // plans/187 W16: 「조사 대화」 탭은 대화 화면(chatView)을 질의응답과 함께 쓴다 — 탭을 옮기면 대화를 바꿔 끼운다
+        if ((view === "chat" || view === "investigation") && view !== conversationSlot && !swapConversation(view)) return;
         activeView = view;
         var views = viewRegistry();
+        var shown = view === "investigation" ? "chat" : view;
         Object.keys(views).forEach(function (key) {
             var el = views[key];
-            if (el) el.classList.toggle("view-hidden", key !== view);
+            if (el) el.classList.toggle("view-hidden", key !== shown);
         });
         document.querySelectorAll(".view-tab").forEach(function (btn) {
             var on = btn.dataset.view === view;
             btn.classList.toggle("active", on);
             btn.setAttribute("aria-selected", on ? "true" : "false");
         });
+        // plans/193 W2: 노이즈 관제 탭 — 보이면 붙이거나(첫 활성) 재개하고, 떠나면 주기 갱신을 멈춘다
+        noiseViewShown(view === "noise");
         if (view === "alarm") {
             alarmUnreadCount = 0;
             renderAlarmBadge();
             updateAlarmScrollBtn();   // 복귀 시 스크롤 위치에 맞춰 "맨 위로" 버튼 표시 갱신
-        } else if (view === "chat" && stickToBottom && chatMessages) {
+        } else if (shown === "chat" && stickToBottom && chatMessages) {
             // 숨겨진 동안 chatMessages.scrollHeight는 0이라 스트리밍 추종이 맨 위로 밀어 놓는다.
             // 돌아올 때 "맨 아래 고정" 상태였던 경우에 한해 복원한다.
             // (조건을 else로 두면 이력 탭으로 *갈* 때 복원이 돌아 엉뚱한 곳을 만진다.)
@@ -4525,6 +4562,11 @@
     // 턴이 끝날 때마다 부른다. 서버는 done을 보내기 전에 기록을 마치므로 곧바로 다시 받아도 된다.
     function setCurrentThread(threadId) {
         if (threadId) currentThreadId = threadId;
+        // plans/192 W4: 조사 대화 탭의 턴이면 그 대화(thread)를 탭 저장값에 남긴다 — 새로고침하면 다시 연다
+        if (currentThreadId && conversationSlot === "investigation") {
+            var conv = storedInvestigationConversation();
+            if (conv) rememberInvestigationConversation(conv.id, currentThreadId);
+        }
         threadsState = "stale";
         renderHistoryList();   // 접혀 있으면 아무것도 안 하고, 펼칠 때 다시 받는다
     }
@@ -4634,19 +4676,42 @@
         if (historyClearBtn) historyClearBtn.style.display = threadItems.length ? "" : "none";
     }
 
-    function openThread(threadId) {
+    // 이력은 질의응답 탭에 연다(plans/187 W16). plans/192 W4: 고정 카드가 있는 대화(조사 대화로 시작)는
+    // 「조사 대화」 탭에 연다 — 질의응답 대화는 탭 교체로 보존된다. 탭은 대화를 받은 뒤에 바꾼다(404·오류면 그대로).
+    // onMissing — 새로고침 복원만 넘긴다. 대화를 받지 못하면(404·503·네트워크 오류) 오류 안내 대신 이것을 부른다.
+    function openThread(threadId, onMissing) {
         if (isProcessing) {
             showError("처리 중인 질의가 끝난 뒤 대화를 불러올 수 있습니다.");
             return;
         }
-        fetch("/api/v1/threads/" + encodeURIComponent(threadId), { headers: getAuthHeaders() })
+        // (plans/193 W2) 받기가 끝나는 시점을 돌려준다 — 새로고침 복원 뒤 관제 탭 복귀가 이것을 기다린다
+        return fetch("/api/v1/threads/" + encodeURIComponent(threadId), { headers: getAuthHeaders() })
             .then(function (res) {
+                if (!res.ok && onMissing) return null;
                 if (res.status === 404) throw new Error("대화를 찾을 수 없습니다");
                 if (!res.ok) throw new Error("HTTP " + res.status);
                 return res.json();
             })
-            .then(function (body) { showThreadTurns(threadId, body.turns || []); })
-            .catch(function (e) { showError("대화를 불러오지 못했습니다: " + e.message); });
+            .then(function (body) {
+                if (!body) { onMissing(); return; }
+                if (isProcessing) return;   // 받는 사이 새 질의가 시작됐으면 탭도 화면도 그대로 둔다
+                var turns = body.turns || [];
+                var ref = investigationRefOf(turns);
+                if (ref) {
+                    showInvestigationTab(true);
+                    setActiveView("investigation");
+                } else if (conversationSlot === "investigation") {
+                    // 조사 대화 슬롯을 덮지 않는다 — 받는 사이 다른 뷰로 옮겼으면 뷰는 두고 슬롯만 바꿔 끼운다
+                    if (activeView === "investigation") setActiveView("chat");
+                    else if (!swapConversation("chat")) return;
+                }
+                showThreadTurns(threadId, turns);
+                if (ref) rememberInvestigationConversation(ref, threadId);
+            })
+            .catch(function (e) {
+                if (onMissing) { onMissing(); return; }
+                showError("대화를 불러오지 못했습니다: " + e.message);
+            });
     }
 
     function showThreadTurns(threadId, turns) {
@@ -4731,6 +4796,53 @@
     var INVESTIGATION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
     var INVESTIGATION_PROMPT_HINT = "추가 질의 — 「이 서버」·「그 시간대」 같은 지시어는 풀리지 않습니다. 서버·인스턴스 이름과 시각을 직접 적으세요.";
 
+    // plans/192 W4 (Q-4 B) — 열린 조사 대화를 탭 저장소에 `{id, thread, user}`로 남겨 새로고침하면 다시 연다.
+    // thread는 첫 질의 턴이 끝나야 생긴다(그 전엔 null — 같은 조사로 새 조사 대화를 연다).
+    // user가 지금 사용자와 다르면(같은 탭에서 다른 계정으로 로그인 · user 없는 옛 형식) 지우고 복원하지 않는다.
+    // 저장소를 못 쓰면(사생활 보호 모드 등) 조용히 복원만 빠진다.
+    var INVESTIGATION_CONV_KEY = "investigation_conversation";
+
+    function rememberInvestigationConversation(id, thread) {
+        try {
+            sessionStorage.setItem(INVESTIGATION_CONV_KEY,
+                JSON.stringify({ id: String(id), thread: thread || null, user: investigationConvUser }));
+        } catch (e) { /* 저장소 사용 불가 — 복원 없이 진행 */ }
+    }
+
+    function forgetInvestigationConversation() {
+        try {
+            sessionStorage.removeItem(INVESTIGATION_CONV_KEY);
+        } catch (e) { /* 저장소 사용 불가 */ }
+    }
+
+    function storedInvestigationConversation() {
+        try {
+            var v = JSON.parse(sessionStorage.getItem(INVESTIGATION_CONV_KEY));
+            if (!v || typeof v !== "object" || typeof v.id !== "string" || !INVESTIGATION_ID_RE.test(v.id)) return null;
+            if (v.user !== investigationConvUser) {
+                forgetInvestigationConversation();
+                return null;
+            }
+            var thread = v.thread === undefined ? null : v.thread;
+            if (thread !== null && (typeof thread !== "string" || !INVESTIGATION_ID_RE.test(thread))) return null;
+            return { id: v.id, thread: thread };
+        } catch (e) {
+            return null;
+        }
+    }
+
+    // 새로고침 복원 — 저장값이 없거나 형식이 틀리면 false. 저장된 대화가 사라졌으면(404) 같은 조사로 새로 연다.
+    function restoreInvestigationConversation() {
+        var conv = storedInvestigationConversation();
+        if (!conv) return false;
+        if (!conv.thread) return openInvestigationConversation(conv.id);
+        // (plans/193 W2) 대화를 받는 중이면 그 약속(참)을 돌려준다 — 관제 탭 복귀가 받은 뒤에 열린다
+        return openThread(conv.thread, function () {
+            forgetInvestigationConversation();
+            openInvestigationConversation(conv.id);
+        }) || true;
+    }
+
     // 첫 질의 턴에만 조사 id를 헤더로 싣는다(서버 thread_history가 그 턴 disclosures에 ref로 남긴다)
     function investigationRefHeader() {
         return (pendingInvestigationRef && !currentThreadId) ? { "X-Investigation-Ref": pendingInvestigationRef } : {};
@@ -4759,18 +4871,131 @@
         if (promptEl) promptEl.placeholder = PROMPT_PLACEHOLDER;
     }
 
-    // 알람 카드 「조사 대화로 열기」 · `/?investigation=<id>` 진입 — 질의응답 탭으로 넘어가 새 대화를 연다.
+    // 「조사 대화로 열기」(알람 카드 · 장애 진단 종결 화면 · 노이즈 관제 · `/?conversation=<id>`) —
+    // 「조사 대화」 탭을 열고(없으면 보이고) 그 탭의 대화를 새 조사 대화로 바꾼다. 질의응답 탭 대화는 그대로다.
+    // 답변 중 거부 문구는 노이즈 관제 탭도 같은 것을 띄운다(plans/193 교정 M-1).
+    var CONVERSATION_BUSY_TEXT = "답변이 끝난 뒤 조사 대화를 열 수 있습니다.";
     function openInvestigationConversation(investigationId) {
-        if (!investigationId || !INVESTIGATION_ID_RE.test(String(investigationId))) return;
+        if (!investigationId || !INVESTIGATION_ID_RE.test(String(investigationId))) return false;
         if (isProcessing) {
-            showError("답변이 끝난 뒤 조사 대화를 열 수 있습니다.");
-            return;
+            showError(CONVERSATION_BUSY_TEXT);
+            return false;
         }
-        setActiveView("chat");
+        showInvestigationTab(true);
+        setActiveView("investigation");
         startNewChat();
         pendingInvestigationRef = String(investigationId);
         if (promptEl) promptEl.placeholder = INVESTIGATION_PROMPT_HINT;
         renderInvestigationPin(pendingInvestigationRef, { restored: false });
+        rememberInvestigationConversation(pendingInvestigationRef, null);
+        return true;
+    }
+
+    // ─── 조사 대화 탭 (plans/187 W16 · §5.6.1 1 개정) ───
+    // 질의응답·조사 대화 두 탭이 대화 화면 하나를 함께 쓴다. 화면에 올라 있지 않은 쪽 대화는 말풍선 노드와
+    // 대화 상태(thread · 범위 칩 · 고정 카드 패널)를 통째로 내려 두었다가 탭으로 돌아오면 다시 올린다.
+    // 떼어 낸 패널은 공용 렌더가 재조회를 멈추므로(isConnected) 다시 올릴 때 open()으로 새로 읽는다.
+    // 답변 스트리밍 중에는 바꿔 끼우지 않는다.
+    // 상태 변수 conversationSlot·parkedConversation은 위 「State」에 둔다(초기화 전에 setActiveView가 불릴 수 있다).
+
+    function captureConversation() {
+        var nodes = document.createDocumentFragment();
+        Array.prototype.filter.call(chatMessages.children, function (el) { return el.classList.contains("message"); })
+            .forEach(function (el) { nodes.appendChild(el); });
+        return {
+            nodes: nodes,
+            welcomeHidden: !!(chatWelcome && chatWelcome.classList.contains("hidden")),
+            messages: messages,
+            currentThreadId: currentThreadId,
+            lastUploadedFile: lastUploadedFile,
+            currentDbScope: currentDbScope,
+            pendingDbIds: pendingDbIds,
+            pendingReset: pendingReset,
+            currentApmScope: currentApmScope,
+            apmScopeInherited: apmScopeInherited,
+            pendingApmIds: pendingApmIds,
+            pendingApmReset: pendingApmReset,
+            pendingInvestigationRef: pendingInvestigationRef,
+            investigationPinPanel: investigationPinPanel,
+            chatInvestigationPanels: chatInvestigationPanels,
+            placeholder: promptEl ? promptEl.placeholder : "",
+            draft: promptEl ? promptEl.value : "",
+        };
+    }
+
+    function restoreConversation(saved) {
+        saved = saved || {
+            nodes: null, welcomeHidden: false, messages: [], currentThreadId: null, lastUploadedFile: null,
+            currentDbScope: null, pendingDbIds: null, pendingReset: false, currentApmScope: null,
+            apmScopeInherited: false, pendingApmIds: null, pendingApmReset: false, pendingInvestigationRef: null,
+            investigationPinPanel: null, chatInvestigationPanels: [], placeholder: PROMPT_PLACEHOLDER, draft: "",
+        };
+        if (saved.nodes) chatMessages.appendChild(saved.nodes);
+        if (chatWelcome) chatWelcome.classList.toggle("hidden", saved.welcomeHidden);
+        messages = saved.messages;
+        currentThreadId = saved.currentThreadId;
+        lastUploadedFile = saved.lastUploadedFile;
+        currentDbScope = saved.currentDbScope;
+        pendingDbIds = saved.pendingDbIds;
+        pendingReset = saved.pendingReset;
+        currentApmScope = saved.currentApmScope;
+        apmScopeInherited = saved.apmScopeInherited;
+        pendingApmIds = saved.pendingApmIds;
+        pendingApmReset = saved.pendingApmReset;
+        pendingInvestigationRef = saved.pendingInvestigationRef;
+        investigationPinPanel = saved.investigationPinPanel;
+        chatInvestigationPanels = saved.chatInvestigationPanels;
+        if (promptEl) {
+            promptEl.placeholder = saved.placeholder;
+            promptEl.value = saved.draft;
+        }
+        if (investigationPinPanel) investigationPinPanel.open();
+        chatInvestigationPanels.forEach(function (p) { p.open(); });
+    }
+
+    function swapConversation(slot) {
+        if (isProcessing) {
+            showError("답변이 끝난 뒤 탭을 옮길 수 있습니다.");
+            return false;
+        }
+        hideError();
+        hidePromptConfirm();
+        var current = captureConversation();
+        restoreConversation(parkedConversation);
+        parkedConversation = current;
+        conversationSlot = slot;
+        closeApmScopePopover();
+        updateDbScopeChip();
+        updateApmScopeChip();
+        showProgressEmpty();
+        stickToBottom = true;
+        renderHistoryList();
+        return true;
+    }
+
+    function showInvestigationTab(on) {
+        if (investigationTab) investigationTab.style.display = on ? "" : "none";
+        if (investigationTabClose) investigationTabClose.style.display = on ? "" : "none";
+    }
+
+    // × — 조사 대화 탭을 닫는다. 질의한 조사 대화는 이력에 남아 있다(질의 없이 닫으면 이력에 남지 않는다 — D-248 ④).
+    // 닫으면 새로고침 복원 저장값도 지운다(plans/192 W4).
+    function closeInvestigationTab() {
+        if (activeView === "investigation") {
+            if (!swapConversation("chat")) return;
+            setActiveView("chat");
+        } else if (conversationSlot === "investigation") {
+            if (!swapConversation("chat")) return;
+        }
+        // 이제 조사 대화는 내려 둔 쪽에 있다 — 재조회를 멈추고 버린다
+        var gone = parkedConversation;
+        parkedConversation = null;
+        if (gone) {
+            if (gone.investigationPinPanel) gone.investigationPinPanel.close();
+            gone.chatInvestigationPanels.forEach(function (p) { p.close(); });
+        }
+        showInvestigationTab(false);
+        forgetInvestigationConversation();
     }
 
     function renderInvestigationPin(investigationId, opts) {
@@ -4781,11 +5006,12 @@
         el.innerHTML =
             '<div class="message-content"><div class="message-bubble">' +
                 '<div class="investigation-pin-head">조사 대화 · 조사 브리핑</div>' +
+                '<dl class="investigation-pin-target" hidden></dl>' +
                 '<div class="investigation-pin-body"></div>' +
                 '<div class="investigation-pin-foot">' +
                     '<span>이 카드는 조사 기록을 보여 줄 뿐 질의의 맥락으로 쓰이지 않습니다. ' +
                         '「이 서버」 같은 지시어는 풀리지 않으니 대상 이름을 적어 질의하세요.</span>' +
-                    (opts && opts.restored ? "" : '<span>질의 없이 닫으면 이 대화는 남지 않습니다.</span>') +
+                    (opts && opts.restored ? "" : '<span>새로고침해도 이 탭에 다시 열립니다. 질의 없이 닫으면 질의 이력에 남지 않습니다.</span>') +
                     '<span class="investigation-pin-scope" hidden></span>' +
                 '</div>' +
             '</div></div>';
@@ -4794,6 +5020,10 @@
         var scoped = !!(opts && opts.restored);   // 복원한 대화는 저장된 범위를 따른다
         var path = "/api/v1/alarm/investigations/" + encodeURIComponent(investigationId);
         var pinAlarmId = investigationAlarmIds[investigationId] || null;
+        // (plans/187 W23) 어떤 알람·대상의 조사인지 — 첫 조회에만 알람 요약을 받아 머리 아래에 둔다
+        var targetBox = el.querySelector(".investigation-pin-target");
+        var targetShown = false;
+        var pinAlarm = null;
         investigationPinPanel = window.BriefingView.attach(el.querySelector(".investigation-pin-body"), {
             limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
             render: { mode: "detail" },
@@ -4817,13 +5047,23 @@
             // 「이 알람 분석」은 알람 id를 아는 조사(알람 카드·지난 알람에서 연 대화)에서만 — 새 조사는 새 대화로 연다
             analyze: pinAlarmId ? analyzeOptions(pinAlarmId, { follow: false, probe: true }) : null,
             onOpenConversation: openInvestigationConversation,
+            // plans/192 P8 — 「이전 분석」 행은 진단이 켜지면 진단 하위 탭으로(분석 칸 새 조사는 조사 대화 그대로)
+            onOpenPrevious: function (id) { openInvestigationEntry(id, pinAlarmId); },
+            openPreviousLabel: entryLabel,
             load: async function () {
-                var resp = await fetch(path, { headers: getAuthHeaders() });
+                var resp = await fetch(targetShown ? path : path + "?with_alarm=true", { headers: getAuthHeaders() });
                 if (!resp.ok) {
                     var detail = await resp.json().catch(function () { return {}; });
                     throw new Error(detail.detail || ("HTTP " + resp.status));
                 }
-                return resp.json();
+                var view = await resp.json();
+                if (!targetShown) {
+                    targetShown = true;
+                    pinAlarm = view.alarm || null;
+                }
+                // 플레이북 줄은 조사가 진행되며 생기므로 재조회마다 다시 그린다(알람 요약은 첫 조회 값)
+                renderPinTarget(targetBox, Object.assign({}, view, { alarm: pinAlarm }));
+                return view;
             },
             engineChoice: async function (choice) {
                 var resp = await fetch(path + "/engine-choice", {
@@ -4845,6 +5085,34 @@
             },
         });
         investigationPinPanel.open();
+    }
+
+    // 조사 대화 카드 머리 아래 「조사 · 알람 · 판정 사유 · 조건 · 함께 조사하는 알람 · 대상 · 플레이북」 줄
+    // (장애 진단 탭과 같은 문형 — 서버 텍스트는 textContent)
+    function renderPinTarget(box, view) {
+        if (!box || !view || !window.DiagnosisView) return;
+        var lines = window.DiagnosisView.conversationHeadLines(view);
+        box.textContent = "";
+        lines.forEach(function (line) {
+            var dt = document.createElement("dt");
+            dt.textContent = line.head;
+            var dd = document.createElement("dd");
+            if (line.items && line.items.length) {
+                // (W24) 조사 항목 — 단계마다 한 줄
+                var ol = document.createElement("ol");
+                line.items.forEach(function (item) {
+                    var li = document.createElement("li");
+                    li.textContent = item;
+                    ol.appendChild(li);
+                });
+                dd.appendChild(ol);
+            } else {
+                dd.textContent = line.text;
+            }
+            box.appendChild(dt);
+            box.appendChild(dd);
+        });
+        box.hidden = !lines.length;
     }
 
     // ─── plans/187 FE-2 공용 호출 ───
@@ -4916,19 +5184,25 @@
     // `/?investigation=<id>`(관제 드로어 새 탭 · workb 링크) — 열고 나면 쿼리를 지워 새로고침 = 새 대화(D-248 ⑧)
     // (plans/187 W15 · G-34) `/?diagnosis=<id>`(관제 드로어 새 탭)도 받는다. 장애 진단이 켜져 있으면 둘 다
     // 그 조사의 진단 하위 탭으로 열고, 꺼져 있으면 종전 조사 대화로 연다.
+    // (W16) `/?conversation=<id>`(구 노이즈 관제 폴백 — W19부터 관제는 `/?diagnosis=`만 쓴다)는 진단 여부와 무관하게 조사 대화 탭으로 연다.
+    // (plans/192 W4) 진입 쿼리를 처리했으면(형식 오류 안내 포함) true — 그때는 새로고침 복원을 하지 않는다.
     function openInvestigationFromQuery() {
         var params = new URLSearchParams(window.location.search);
         var id = params.get("investigation");
         var diag = params.get("diagnosis");
-        if (id === null && diag === null) return;
+        var conv = params.get("conversation");
+        if (id === null && diag === null && conv === null) return false;
         params.delete("investigation");
         params.delete("diagnosis");
+        params.delete("conversation");
         var rest = params.toString();
         history.replaceState(null, "", window.location.pathname + (rest ? "?" + rest : "") + window.location.hash);
         if (id === null) id = diag;
-        if (!INVESTIGATION_ID_RE.test(id)) { showError("조사 id 형식이 올바르지 않아 조사 대화를 열지 않았습니다."); return; }
-        if (window.DiagnosisView && window.DiagnosisView.openIfEnabled(id)) return;
+        if (id === null) id = conv;
+        if (!INVESTIGATION_ID_RE.test(id)) { showError("조사 id 형식이 올바르지 않아 조사 대화를 열지 않았습니다."); return true; }
+        if (conv === null && window.DiagnosisView && window.DiagnosisView.openIfEnabled(id)) return true;
         openInvestigationConversation(id);
+        return true;
     }
 
     // ─── 장애 진단 진입 (plans/187 W15 · §5.6.3 ⓓ · G-34) ───
@@ -4950,6 +5224,10 @@
                 var target = investigationAlarmIds[investigationId] || alarmId;
                 return target ? analyzeOptions(target, { follow: false, probe: true }) : null;
             },
+            // (plans/187 W18) 「이벤트 찾아 조사」 — 기존 「분석 요청」과 같은 접수 라우트(존 검사·상한·합류)
+            startInvestigation: function (alarmId) {
+                return bvRequest("/api/v1/alarm/" + encodeURIComponent(alarmId) + "/investigations", "POST");
+            },
         }).catch(function (err) {
             console.warn("[diagnosis] 장애 진단 초기화 실패:", err);
             return false;
@@ -4960,12 +5238,199 @@
         return !!(window.DiagnosisView && window.DiagnosisView.isEnabled());
     }
 
-    function openInvestigationEntry(investigationId, alarmId) {
-        if (window.DiagnosisView && window.DiagnosisView.openIfEnabled(investigationId, alarmId ? { alarmId: alarmId } : null)) return;
-        openInvestigationConversation(investigationId);
+    // plans/192 W2 — 포털 안 진입 버튼 문구 규칙: 장애 진단으로 가면 「장애 진단에서 보기」,
+    // 조사 대화로 가면 「조사 대화로 열기」(목적지는 openInvestigationEntry와 같은 판정).
+    function entryLabel() {
+        return diagnosisOn() ? window.DiagnosisView.TEXT.viewInDiagnosis : "조사 대화로 열기";
     }
 
-    // 공용 요약형의 「조사 대화로 열기」는 진단이 켜지면 감춘다 — 카드가 [진행 보기]를 따로 단다(G-34).
+    function openInvestigationEntry(investigationId, alarmId) {
+        if (window.DiagnosisView && window.DiagnosisView.openIfEnabled(investigationId, alarmId ? { alarmId: alarmId } : null)) return true;
+        return openInvestigationConversation(investigationId);
+    }
+
+    // ─── 노이즈 관제 탭 (plans/193 W2·W3 · K-1 B · K-2 A) ───
+    // 기능 조회 `noise_console_portal_tab`이 참일 때만 탭을 보이고 머리글의 새 탭 `/noise` 링크를 뺀다(포털 안
+    // `/noise` 링크 0). 거짓·조회 실패면 아무것도 바꾸지 않고 관제 자산도 싣지 않는다(종전과 비트 동일).
+    // 화면은 한 벌이다(D-245) — 첫 활성 때 독립 사용자 관제 페이지(/static/noise.html)를 받아 스크립트가 아닌
+    // 본문(관제 영역·스크림·서랍)을 이 뷰로 옮기고, 그 문서에 적힌 스타일시트·스크립트(버전 포함)를 차례로 실은
+    // 뒤 NoiseConsole.mount로 붙인다. 관리자도 읽기 전용 사용자 모드다(K-2 A — `/api/v1/noise/*`만 · 스트림 없음).
+    // 인증은 포털을 따른다(user_token · 401 → redirectToLogin). 서랍의 조사 진입은 같은 창의 장애 진단 탭
+    // (꺼져 있으면 조사 대화 탭)으로 간다(W3 — openInvestigationEntry · 문구는 diagnosisOn 판정과 같다).
+    // 탭이 숨으면 pause(주기 갱신 정지), 다시 보이면 resume. 대화 화면을 쓰지 않으므로 답변 중에도 오갈 수 있다.
+    var NOISE_PAGE = "/static/noise.html";
+    var noiseTabEnabled = false;
+    var noiseHandle = null;     // NoiseConsole.mount 핸들 {pause, resume, unmount}
+    var noiseLoading = null;    // 첫 활성의 조각 조회·자산 로드(실패하면 비워 다음 활성 때 다시 · mount 실패면 그대로)
+    var NOISE_FLASH_MS = 8000;  // 일시 안내(진입 거부 사유)가 떠 있는 시간 — 채팅 오류 칸과 같다
+    var noiseFlash = null;      // 떠 있는 일시 안내 {node, timer}
+
+    function applyNoiseTabCapability() {
+        noiseTabEnabled = !!(alarmCapabilities && alarmCapabilities.noise_console_portal_tab === true);
+        if (noiseTabEnabled) {
+            if (noiseTab) noiseTab.style.display = "";
+            var link = document.getElementById("noiseConsoleLink");
+            if (link) link.remove();
+        }
+        noiseEntry.capsKnown = true;
+        applyNoiseEntry();
+    }
+
+    function noiseEntrySettled() {
+        noiseEntry.settled = true;
+        applyNoiseEntry();
+    }
+
+    function applyNoiseEntry() {
+        if (noiseEntry.done || !noiseEntry.settled || !noiseEntry.capsKnown) return;
+        noiseEntry.done = true;
+        if (noiseEntry.wanted && noiseTabEnabled) setActiveView("noise");
+        else syncNoiseViewParam(activeView === "noise");   // 꺼져 있으면 파라미터만 지운다
+    }
+
+    // 관제 탭이 활성인 동안 주소에 `view=noise`를 둔다(다른 쿼리 보존) — 새로고침·401 로그인 복귀(next)가 돌아온다
+    function syncNoiseViewParam(on) {
+        var params = new URLSearchParams(window.location.search);
+        if ((params.get("view") === "noise") === on) return;
+        if (on) params.set("view", "noise");
+        else params.delete("view");
+        var rest = params.toString();
+        history.replaceState(null, "", window.location.pathname + (rest ? "?" + rest : "") + window.location.hash);
+    }
+
+    function noiseViewShown(on) {
+        syncNoiseViewParam(on);
+        if (!on) {
+            if (noiseHandle) noiseHandle.pause();
+            return;
+        }
+        if (noiseHandle) noiseHandle.resume();
+        else loadNoiseConsole();
+    }
+
+    function showNoiseNotice(text) {
+        if (!noiseView) return;
+        clearNoiseFlash();   // 오래 남는 안내(로드 실패·권한 없음)가 일시 안내를 대신한다
+        var note = noiseView.querySelector(".noise-view-notice");
+        if (!note) {
+            note = document.createElement("p");
+            note.className = "noise-view-notice";
+            note.setAttribute("role", "alert");
+            noiseView.insertBefore(note, noiseView.firstChild);
+        }
+        note.textContent = text;
+    }
+
+    // (plans/193 교정 M-1) 관제 탭에서 누른 진입이 거부된 사유 — 서랍·스크림 위에 떠서 지금 보는 자리에
+    // 보이고, NOISE_FLASH_MS 뒤 또는 다음 진입 성공 때 사라진다(채팅 오류 칸은 숨은 질의응답 뷰 안이다).
+    function flashNoiseNotice(text) {
+        if (!noiseView) return;
+        clearNoiseFlash();
+        var note = document.createElement("p");
+        note.className = "noise-view-notice noise-view-flash";
+        note.setAttribute("role", "alert");
+        note.textContent = text;
+        noiseView.insertBefore(note, noiseView.firstChild);
+        noiseFlash = { node: note, timer: setTimeout(clearNoiseFlash, NOISE_FLASH_MS) };
+    }
+
+    function clearNoiseFlash() {
+        if (!noiseFlash) return;
+        clearTimeout(noiseFlash.timer);
+        noiseFlash.node.remove();
+        noiseFlash = null;
+    }
+
+    function openNoiseInvestigation(id) {
+        if (openInvestigationEntry(id)) clearNoiseFlash();
+        else if (isProcessing) flashNoiseNotice(CONVERSATION_BUSY_TEXT);
+    }
+
+    // 문서에 적힌 자산 1개를 싣는다 — 포털이 이미 실은 파일(경로 기준 · 예: style.css·briefing-view.js)은 건너뛴다
+    function loadNoiseAsset(tag, url) {
+        var attr = tag === "link" ? "href" : "src";
+        var path = url.split("?")[0];
+        var loaded = Array.prototype.some.call(
+            document.querySelectorAll(tag === "link" ? 'link[rel="stylesheet"]' : "script[src]"),
+            function (node) { return (node.getAttribute(attr) || "").split("?")[0] === path; });
+        if (loaded) return Promise.resolve();
+        return new Promise(function (resolve, reject) {
+            var node = document.createElement(tag);
+            if (tag === "link") node.rel = "stylesheet";
+            else node.async = false;
+            node.onload = function () { resolve(); };
+            node.onerror = function () {
+                node.remove();   // 다음 활성 때 다시 싣도록 실패한 표지를 남기지 않는다
+                reject(new Error(path + " 로드 실패"));
+            };
+            node.setAttribute(attr, url);
+            (tag === "link" ? document.head : document.body).appendChild(node);
+        });
+    }
+
+    function loadNoiseConsole() {
+        if (noiseLoading || !noiseView) return;
+        noiseLoading = fetch(NOISE_PAGE, { cache: "no-cache" })
+            .then(function (res) {
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                return res.text();
+            })
+            .then(function (html) {
+                var doc = new DOMParser().parseFromString(html, "text/html");
+                var assets = [];
+                doc.querySelectorAll('head link[rel="stylesheet"]').forEach(function (n) {
+                    assets.push(["link", n.getAttribute("href")]);
+                });
+                doc.querySelectorAll("body script[src]").forEach(function (n) {
+                    assets.push(["script", n.getAttribute("src")]);
+                });
+                noiseView.textContent = "";
+                Array.prototype.slice.call(doc.body.children).forEach(function (node) {
+                    if (node.tagName !== "SCRIPT") noiseView.appendChild(document.adoptNode(node));
+                });
+                // 독립 페이지 전용 요소(「질의응답으로」 등)는 포털에서 뜻이 없다
+                noiseView.querySelectorAll("[data-noise-standalone]").forEach(function (n) { n.remove(); });
+                return assets.reduce(function (chain, a) {
+                    return chain.then(function () { return loadNoiseAsset(a[0], a[1]); });
+                }, Promise.resolve());
+            })
+            .then(function () {
+                if (!window.NoiseConsole) throw new Error("관제 모듈이 없습니다");
+                var handle = null;
+                var reason = "";
+                try {
+                    handle = window.NoiseConsole.mount(noiseView, {
+                        mode: "user",
+                        // 요청마다 읽는다 — 다른 탭에서 다시 로그인해 바뀐 토큰을 쓴다(m-4)
+                        token: function () { return localStorage.getItem("user_token") || ""; },
+                        onAuthFail: redirectToLogin,
+                        onForbidden: function () { showNoiseNotice("노이즈 관제를 볼 권한이 없습니다."); },
+                        onOpenInvestigation: openNoiseInvestigation,
+                        liveView: diagnosisOn,
+                    });
+                } catch (err) {
+                    reason = (err && err.message) || String(err);
+                }
+                if (!handle) {
+                    // mount는 한 페이지에 한 번만 붙는다(mountOnce) — 탭을 다시 열어도 붙지 않으므로 여기서 멈춘다.
+                    // noiseLoading을 비우지 않아 다음 활성에서 다시 받지 않고, 빈 마크업 대신 안내를 남긴다(m-1).
+                    noiseView.textContent = "";
+                    showNoiseNotice("노이즈 관제를 시작하지 못했습니다" + (reason ? "(" + reason + ")" : "") +
+                        ". 새로고침하면 다시 시도합니다.");
+                    return;
+                }
+                noiseHandle = handle;
+                // 받는 사이 다른 탭으로 옮겼으면 바로 멈춘다
+                if (activeView !== "noise") noiseHandle.pause();
+            })
+            .catch(function (err) {
+                noiseLoading = null;
+                noiseView.textContent = "";
+                showNoiseNotice("노이즈 관제를 불러오지 못했습니다(" + err.message + "). 탭을 다시 열면 다시 시도합니다.");
+            });
+    }
+
+    // 공용 요약형의 「조사 대화로 열기」는 진단이 켜지면 감춘다 — 카드가 [장애 진단에서 보기]를 따로 단다(G-34).
     // 렌더 옵션은 다시 그릴 때마다 읽히므로 게터로 둔다(꺼져 있으면 원래 값 그대로).
     function entryRender(render) {
         var out = {};
@@ -4977,7 +5442,8 @@
         return out;
     }
 
-    // 알람 카드 「조사 브리핑」의 [진행 보기] — 켜져 있고 조사가 있을 때만 만든다(꺼져 있으면 DOM 무변경)
+    // 알람 카드 「조사 브리핑」의 [장애 진단에서 보기] — 켜져 있고 조사가 있을 때만 만든다(꺼져 있으면 DOM 무변경)
+    // (plans/194 W5) 장애 진단으로 가는 버튼 문구는 「장애 진단에서 보기」(plans/192 W2 규칙)
     function bindDiagnosisButton(host, view, alarmId) {
         var btn = host.querySelector(".diagnosis-open");
         var id = view && view.investigation_id && view.status !== "none" && view.status !== "rejected"
@@ -4987,7 +5453,7 @@
             btn = document.createElement("button");
             btn.type = "button";
             btn.className = "diagnosis-open";
-            btn.textContent = "진행 보기";
+            btn.textContent = "장애 진단에서 보기";
             btn.addEventListener("click", function () {
                 openInvestigationEntry(btn.getAttribute("data-investigation-id"), alarmId);
             });
@@ -5060,9 +5526,9 @@
             bubble.appendChild(card);
             if (rejected) return;   // 거부 — 재조회 없음
             // 진행 중에도 열 수 있다(조사 대화의 고정 카드가 이어서 다시 묻는다) · 답변 중이면 openInvestigationConversation이 사유를 보인다
-            // (W15 · G-34) 장애 진단이 켜져 있으면 [진행 보기] → 진단 하위 탭
+            // (W15 · G-34) 장애 진단이 켜져 있으면 진단 하위 탭으로 — 문구는 목적지 규칙(plans/192 W2 · entryLabel)
             var openBtn = card.querySelector(".chat-inv-open");
-            if (diagnosisOn()) openBtn.textContent = "진행 보기";
+            openBtn.textContent = entryLabel();
             openBtn.addEventListener("click", function () { openInvestigationEntry(id); });
             var panel = window.BriefingView.attach(card.querySelector(".chat-inv-body"), {
                 limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
@@ -5209,7 +5675,13 @@
         if (historySearch) {
             historySearch.addEventListener("input", function () { renderHistoryList(); });
         }
-        if (newChatBtn) newChatBtn.addEventListener("click", startNewChat);
+        if (newChatBtn) {
+            newChatBtn.addEventListener("click", function () {
+                if (activeView === "investigation" && !isProcessing) setActiveView("chat");   // plans/187 W16
+                startNewChat();
+            });
+        }
+        if (investigationTabClose) investigationTabClose.addEventListener("click", closeInvestigationTab);
         updateAlarmViewState();
         setupHistoryPanel();
     }
@@ -5375,7 +5847,10 @@
 
         // plans/153 W3: 자동 조사 브리핑 — 조사 id가 실렸거나 조사 기능이 켜져 있을 때만 접힌 섹션을 둔다.
         // 펼칠 때만 조회한다(카드 렌더 시 자동 호출 금지 — 알람 폭주 때 호출이 같이 폭증하지 않게).
-        var briefingHtml = hasAlarmBriefing(data) ? renderAlarmBriefingSection() : "";
+        // plans/194 W5 · U1(D-347): 조사 기록이 없는 카드는 「조사」 칸을 펼친 채 둔다 — 「조사 안 됨」 +
+        // [조사 시작](누를 때만 접수 · 렌더 시 호출 없음). 구서버(capabilities에 수동 필드 없음)는 종전 섹션.
+        var startHtml = hasAlarmStart(data) ? renderAlarmStartSection() : "";
+        var briefingHtml = !startHtml && hasAlarmBriefing(data) ? renderAlarmBriefingSection() : "";
 
         // D-049: incident 확인(ack) 버튼 — incident_id가 있을 때만 표시(비-incident 알람 불변)
         var ackHtml = "";
@@ -5424,6 +5899,7 @@
                     processHtml +
                     patternHtml +
                     episodeHtml +
+                    startHtml +
                     briefingHtml +
                     ackHtml +
                     promptHtml +
@@ -5454,6 +5930,7 @@
 
         // plans/153 W3: 조사 브리핑 펼치기·접기(같은 closure 패턴)
         if (briefingHtml) bindAlarmBriefing(el, data);
+        if (startHtml) bindAlarmStart(el, data);
 
         // 보고 있지 않은 동안 도착한 알람만 미확인으로 센다(채팅 스크롤은 건드리지 않는다).
         if (activeView !== "alarm") {
@@ -5473,6 +5950,123 @@
         if (!window.BriefingView) return false;
         return !!(data.investigation_id ||
             (data.alarm_id && alarmCapabilities && alarmCapabilities.investigation_enabled));
+    }
+
+    // ─── plans/194 W5 · D-347: 카드 「조사」 칸 (U1 조사 시작 · U2 거부 사유 · U3 대기) ───
+    // 본문 마크업은 공용 렌더(briefing-view.js)에만 둔다 — 이 파일은 칸 골격과 배선만 한다.
+    var ALARM_QUEUE_NOTE = "앞 조사가 끝나면 자동으로 시작합니다(자리를 비워도 됩니다).";
+    var ALARM_QUEUE_RUNNING = "조사 대기 중입니다 — 15초마다 다시 확인합니다.";
+
+    // 조사 기록이 없는(카드에 조사 id 없음) 알람 · 조사 켜짐 · 수동 조사 모드일 때만. 자동 조사가 켜져 있으면
+    // 카드에 id가 없어도 조사가 있을 수 있어 「조사 안 됨」이라 단정하지 않는다 — 종전 지연 브리핑 섹션
+    function hasAlarmStart(data) {
+        if (!window.BriefingView || !window.DiagnosisView || !data.alarm_id || data.investigation_id) return false;
+        return !!(alarmCapabilities && alarmCapabilities.investigation_enabled && manualOnlyMode());
+    }
+
+    // 수동 조사 모드(수동 접수 켜짐 · 자동 조사 꺼짐) — 두 필드가 모두 실린 서버에서만 참(구서버 = 종전)
+    function manualOnlyMode() {
+        return !!alarmCapabilities && alarmCapabilities.investigation_manual_enabled === true &&
+            alarmCapabilities.investigation_auto_enabled === false;
+    }
+
+    function renderAlarmStartSection() {
+        return '<div class="alarm-section alarm-inv-section">' +
+                '<span class="alarm-section-label">조사</span>' +
+                '<div class="alarm-inv-body">' + window.BriefingView.startBlockHtml({ autoOff: true }) + '</div>' +
+            '</div>';
+    }
+
+    // [조사 시작] — 「분석 요청」과 같은 접수 라우트(존 검사·상한·합류). 접수·합류면 종전 「조사 브리핑」
+    // 섹션으로 바꿔 펼치고(대기·진행이 그 안에서 이어 보인다), 거부면 사유 한 줄 + 다음 행동을 단다.
+    function bindAlarmStart(el, data) {
+        var section = el.querySelector(".alarm-inv-section");
+        if (!section) return;
+        var DV = window.DiagnosisView;
+        var btn = section.querySelector(".inv-start-btn");
+        var msg = section.querySelector(".inv-start-msg");
+        btn.addEventListener("click", function () {
+            if (btn.disabled) return;
+            btn.disabled = true;
+            btn.textContent = DV.TEXT.starting;
+            msg.hidden = true;
+            msg.innerHTML = "";
+            bvRequest("/api/v1/alarm/" + encodeURIComponent(data.alarm_id) + "/investigations", "POST")
+                .then(function (res) { return DV.startOutcome(res, Date.now()); }, function (err) {
+                    return { kind: "failed", text: DV.TEXT.startFailed.replace("{reason}", (err && err.message) || String(err)) };
+                })
+                .then(function (r) {
+                    btn.disabled = false;
+                    btn.textContent = DV.TEXT.startBtn;
+                    if (r.kind === "accepted" || r.kind === "joined") {
+                        // 켜져 있으면 장애 진단의 그 조사 하위 탭을 연다([분석 요청] 접수 직후와 같다 · E6)
+                        DV.openIfEnabled(r.investigationId, { alarmId: data.alarm_id });
+                        swapToBriefing(el, section, data, r);
+                        return;
+                    }
+                    showAlarmStartOutcome(msg, btn, r);
+                });
+        });
+    }
+
+    // 결과 줄을 그리고 다음 행동 버튼(.inv-go)에 closure로 동작을 단다
+    function paintAlarmOutcome(host, text, go, warn, onGo) {
+        host.innerHTML = window.BriefingView.startMsgHtml(text, go, warn);
+        var b = host.querySelector(".inv-go");
+        if (b) b.addEventListener("click", onGo);
+        host.hidden = false;
+    }
+
+    // 거부 — ① 같은 서버 조사 중: 열 수 있는 기존 조사 id가 있을 때만 그 조사로 가는 버튼(문구 entryLabel · plans/192 W2)
+    // (없으면 사유만 — 진행 중 목록은 내 조사만 보여 남의·자동 조사는 없다) ② 대기열·서비스 포화: 문구에 「잠시 뒤 다시」
+    // ③ 시간당 상한: 다시 요청할 수 있는 시각을 문구에 넣고 그때까지 버튼을 잠근다
+    function showAlarmStartOutcome(msg, btn, r) {
+        var go = null;
+        var existing = "";
+        if (r.kind === "in_flight") {
+            existing = INVESTIGATION_ID_RE.test(r.existingId || "") ? r.existingId : "";
+            if (existing) go = { id: existing, label: entryLabel() };
+        } else if (r.kind === "retry_later") {
+            btn.disabled = true;
+            setTimeout(function () { btn.disabled = false; }, Math.max(0, r.retryAt - Date.now()));
+        }
+        paintAlarmOutcome(msg, r.text, go, true, function () { openInvestigationEntry(existing); });
+    }
+
+    // 접수·합류 뒤 — 「조사」 칸을 종전 「조사 브리핑」 섹션으로 바꿔 바로 펼친다(by-alarm 재조회).
+    // 합류면 「다른 사용자가 먼저 요청한 조사에 합류했습니다」 + 그 조사로 가는 버튼을 남긴다 — 합류한
+    // 사용자의 진행 중 목록에는 그 조사가 없으므로 이 버튼이 그 조사로 가는 길이다.
+    function swapToBriefing(el, section, data, r) {
+        var holder = document.createElement("div");
+        holder.innerHTML = renderAlarmBriefingSection();
+        var fresh = holder.firstChild;
+        section.parentNode.replaceChild(fresh, section);
+        if (r.kind === "joined") {
+            var note = document.createElement("div");
+            note.className = "alarm-inv-joined";
+            var id = r.investigationId;
+            var label = diagnosisOn() ? window.DiagnosisView.TEXT.viewInDiagnosis : "조사 대화로 열기";
+            paintAlarmOutcome(note, r.text, { id: id, label: label }, false, function () {
+                openInvestigationEntry(id, data.alarm_id);
+            });
+            fresh.insertBefore(note, fresh.querySelector(".alarm-briefing-body"));
+        }
+        bindAlarmBriefing(el, data);
+        fresh.querySelector(".alarm-briefing-toggle").click();
+    }
+
+    // (U3) 대기 중이면 공용 렌더가 칩을 「대기 중 · 순번 N」으로 바꾸고 머리 아래에 동시 조사 수와 자동 시작
+    // 안내를 단다(render.queue). 순번·부하 판정은 장애 진단 목록과 같은 함수(DiagnosisView.queueInfo).
+    function alarmQueueDisplay(view) {
+        var DV = window.DiagnosisView;
+        var q = DV ? DV.queueInfo(view, view && view.service_load) : null;
+        if (!q) return null;
+        var parts = DV.queueParts(q);
+        return {
+            chip: parts[0],
+            note: (parts[1] ? parts[1].replace(/^ \/ /, "") + " — " : "") + ALARM_QUEUE_NOTE,
+            runningText: ALARM_QUEUE_RUNNING,
+        };
     }
 
     function renderAlarmBriefingSection() {
@@ -5498,9 +6092,14 @@
         var panel = window.BriefingView.attach(body, {
             limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
             // plans/187 W5b: 플레이북 브리핑이면 요약형 + 「조사 대화로 열기」(없으면 종전 렌더)
-            // (W15) 장애 진단이 켜지면 요약형 버튼 대신 [진행 보기](bindDiagnosisButton)
-            render: entryRender({ mode: "summary", openConversation: true, busy: function () { return isProcessing; } }),
-            onOpenConversation: openInvestigationConversation,
+            // (W15) 장애 진단이 켜지면 요약형 버튼 대신 [장애 진단에서 보기](bindDiagnosisButton)
+            // (plans/194 W5 · U3) 대기 중이면 「대기 중 · 순번 N」 칩 + 동시 조사 수 · 자동 시작 안내
+            render: entryRender({ mode: "summary", openConversation: true, busy: function () { return isProcessing; },
+                queue: alarmQueueDisplay }),
+            // plans/192 P4: 남은 요약형 버튼도 클릭 시점의 진단 여부를 따른다 · P8: 「이전 분석」 행도 같은 진입
+            onOpenConversation: function (id) { openInvestigationEntry(id, data.alarm_id); },
+            onOpenPrevious: function (id) { openInvestigationEntry(id, data.alarm_id); },
+            openPreviousLabel: entryLabel,
             load: async function () {
                 var resp = await fetch(path, { headers: getAuthHeaders() });
                 if (!resp.ok) {
@@ -5511,9 +6110,23 @@
             },
             // plans/187 FE-2 — by-alarm 응답에 `previous`가 실릴 때(기능 켜짐)만 「분석 요청/다시 분석」이 보인다
             analyze: data.alarm_id ? analyzeOptions(data.alarm_id) : null,
+            // plans/194 W5(D-347) — 수동 조사 모드면 「조사 안 됨」·[조사 시작]·거부 사유와 다음 행동(관제 서랍과 같은 렌더)
+            manualMode: manualOnlyMode(),
+            onOpenInvestigation: function (id) {
+                if (INVESTIGATION_ID_RE.test(id || "")) openInvestigationEntry(id, data.alarm_id);
+            },
+            openInvestigationLabel: function () {
+                return diagnosisOn() ? window.DiagnosisView.TEXT.viewInDiagnosis : "조사 대화로 열기";
+            },
             onView: function (view) {
                 rememberAlarmOf(data.alarm_id, view);
                 bindDiagnosisButton(section, view, data.alarm_id);
+                // (plans/194 W5) 합류 안내 줄의 버튼과 같은 조사면 [장애 진단에서 보기]를 한 번만 보인다
+                var joined = section.querySelector(".alarm-inv-joined .inv-go");
+                var diag = section.querySelector(".diagnosis-open");
+                if (joined && diag && diag.getAttribute("data-investigation-id") === joined.getAttribute("data-investigation-id")) {
+                    diag.hidden = true;
+                }
             },
         });
         toggle.addEventListener("click", function () {
@@ -6028,7 +6641,10 @@
         var panel = window.BriefingView.attach(body, {
             limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
             render: entryRender({ mode: "summary", openConversation: true, busy: function () { return isProcessing; } }),
-            onOpenConversation: openInvestigationConversation,
+            // plans/192 P4·P8 — 요약형 버튼과 「이전 분석」 행은 클릭 시점의 진단 여부를 따른다
+            onOpenConversation: function (id) { openInvestigationEntry(id, item.alarm_id); },
+            onOpenPrevious: function (id) { openInvestigationEntry(id, item.alarm_id); },
+            openPreviousLabel: entryLabel,
             load: async function () {
                 var resp = await fetch(path, { headers: getAuthHeaders() });
                 if (!resp.ok) {
@@ -6041,9 +6657,9 @@
             onView: function (view) {
                 rememberAlarmOf(item.alarm_id, view);
                 // 플레이북 요약형은 자기 버튼이 있다 — 그 밖의 조사만 여기 버튼으로 연다.
-                // (W15) 장애 진단이 켜지면 요약형 버튼을 감추므로 모든 조사를 여기 [진행 보기]로 연다.
+                // (W15) 장애 진단이 켜지면 요약형 버튼을 감추므로 모든 조사를 여기 버튼으로 연다(문구는 entryLabel).
                 shownId = view && view.investigation_id && view.status !== "none" ? view.investigation_id : null;
-                if (diagnosisOn()) openBtn.textContent = "진행 보기";
+                openBtn.textContent = entryLabel();
                 openBtn.hidden = !shownId || (!diagnosisOn() && window.BriefingView.hasPlaybook(view));
             },
         });
@@ -6064,6 +6680,7 @@
         // (Plan 83) 게이트 상태를 먼저 받아야 레벨 선택지·피드백 버튼 노출을 정할 수 있다
         loadAlarmCapabilities().then(function () {
             setupAlarmLevelSelect(userInfo, authEnabled);
+            applyNoiseTabCapability();   // plans/193 W2 — 포털 「노이즈 관제」 탭(플래그)
         });
         if (alarmCanReceive && alarmReceiveEnabled) connectAlarmStream();
     }

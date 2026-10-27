@@ -49,6 +49,7 @@ STEP_ACTIONS: frozenset[str] = frozenset({
     # §4.1 보조 액션
     "apm.events_errors",          # was.error 오류 유형 상위
     "apm.active_services",        # was.active 장시간 실행 서비스
+    "apm.active_sql",             # host.cpu 실행 중 SQL(S3b · W20b)
     "host.resource_status",       # host.process·host.network 생존 상태
     "host.topology",              # host.network 같은 구간 여부
     "host.alarm_history",         # host.process·fallback 재발 확인
@@ -126,11 +127,16 @@ class WindowSpec(BaseModel):
 
 
 class NarrateSpec(BaseModel):
-    """단계 소견 지시 — LLM 서술의 초점과 문장 상한(§4.0 ≤ 4문장)."""
+    """단계 소견 지시 — LLM 서술의 초점과 문장 상한(§4.0 ≤ 4문장).
+
+    `why`(선택 · plans/187 W20 §5.6.4 ⓒ2): 조건 없는 단계의 「왜 이 단계를 보나」 작성자 한 문장
+    (결정적 — LLM 0). 없으면 「{focus}를 확인」으로 대신한다.
+    """
 
     model_config = _STRICT
 
     focus: _Text
+    why: _Text | None = None
     max_sentences: int = Field(default=MAX_NARRATE_SENTENCES, ge=1, le=MAX_NARRATE_SENTENCES)
 
 
@@ -140,9 +146,12 @@ class StepSpec(BaseModel):
     id:       S0~S9 + 선택 접미 소문자 1자(역방향 S0′ = `S0r` · 보조 스텝 = `S5a` 등).
     action:   `STEP_ACTIONS` 중 하나.
     args:     액션 인자(임계값 등 — 실행기가 해석).
-    for_each: `targets`면 S0이 확정한 대상마다 실행.
+    for_each: `targets`면 S0이 확정한 대상마다 실행 · `host_was`면 역방향 S0′이 찾은 이 호스트 WAS
+              전부(판정 난 것 · W20b).
     narrate:  단계 소견 지시(없으면 소견 없음).
     when:     실행 조건식(`playbook_expr` 문법). UNKNOWN 처리는 실행기가 정한다.
+    timeout_s: 이 스텝의 대기 상한(초 · 선택 — plans/187 W21 P3). 없으면 실행기 기본값이고, 어느
+              쪽이든 남은 예산보다 길지 않다.
     """
 
     model_config = _STRICT
@@ -150,9 +159,10 @@ class StepSpec(BaseModel):
     id: str = Field(pattern=STEP_ID_PATTERN.pattern)
     action: str
     args: dict[str, Any] = Field(default_factory=dict)
-    for_each: Literal["targets"] | None = None
+    for_each: Literal["targets", "host_was"] | None = None
     narrate: NarrateSpec | None = None
     when: str | None = None
+    timeout_s: float | None = Field(default=None, gt=0)
 
     _when_expr: Expr | None = PrivateAttr(default=None)
 

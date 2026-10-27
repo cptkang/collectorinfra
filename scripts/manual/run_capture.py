@@ -95,7 +95,7 @@ def _seed() -> None:
 def _serve_and_capture(profile: str, only: list[str] | None, keep: bool) -> int:
     """프로필 스냅샷으로 캡처 서버를 띄우고 그 서버 소속 장면을 찍는다. 자기가 띄운 PID 만 종료한다."""
     app = snapshot.build(profile)
-    if profile == "capture":
+    if profile in ("capture", "capture-diag"):
         n = alarms.seed_decisions(app)
         b = alarms.seed_briefing(app)
         print(f"스냅샷 {app} · 결정 기록 {n}건 · 조사 브리핑 예시 {b}건")
@@ -157,7 +157,7 @@ def main() -> None:
                 f"포트 {PORT} 이 이미 쓰이고 있다 — 이전 캡처 서버(--keep)나 녹화 서버를 먼저 내린다"
             )
     snapshot.reset_capture_db()
-    profiles = ("capture", "capture-zones", "capture-viz")
+    profiles = ("capture", "capture-zones", "capture-viz", "capture-diag")
     rc = 0
     for i, profile in enumerate(profiles):
         rc |= _serve_and_capture(profile, a.only, keep=a.keep and i == len(profiles) - 1)

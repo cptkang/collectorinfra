@@ -240,8 +240,8 @@ def test_acceptance1_latency_sql_sections_in_order_with_table_source_opinion_too
         assert "verdict_source" in s
         if s["verdict"] is not None:
             assert s["verdict_source"], s["step"]
-    # 단계 소견 ≤ 7(S0~S8) + 종합 서술 1(S9)
-    assert sum(1 for s in pb["sections"][:9] if OPINION in s["opinion"]) == 7
+    # 단계 소견 = ok인 수집 스텝 전부(S0~S7 · 호출 상한 없음 — plans/187 v2.8) + 종합 서술 1(S9)
+    assert sum(1 for s in pb["sections"][:9] if OPINION in s["opinion"]) == 8
     assert pb["sections"][8]["status"] == "skipped" and pb["sections"][8]["reason"]
     s9 = pb["sections"][9]
     assert s9["action"] == "synthesize" and s9["status"] == "ok" and s9["table"]["rows"]
@@ -262,8 +262,8 @@ def test_acceptance1_latency_sql_sections_in_order_with_table_source_opinion_too
     assert any(DEEP_SKIP_MODE_OFF in line for line in b["limitations"])
     assert b["engine_agreement"]["result"] == "not_comparable"
     assert deep.jobs == []
-    # 플레이북 LLM 호출 ≤ 8(단계 7 + 종합 1)
-    assert llm.calls <= 8 and pb["timings"]["llm_calls"] == llm.calls
+    # 플레이북 LLM 호출 = 소견 대상 단계 전부 + 종합 1(호출 상한 없음 — plans/187 v2.8)
+    assert llm.calls == 9 and pb["timings"]["llm_calls"] == llm.calls  # 단계 8 + 종합 1
     # 사전수집 생략 — 상관은 S4·S5로 다시 계산한 값
     assert job.correlation is not None and job.correlation == job.summary()["correlation"]
     json.dumps(job.summary(), ensure_ascii=False)

@@ -152,8 +152,10 @@ def test_stuck_active_job_finalized_by_watchdog(tmp_path):
     """
     now = [1000.0]
     audit = tmp_path / "audit.jsonl"
+    # 조사 타임아웃 300s 고정 — 임계 = max(600, 300×2) = 600s(최소값 경로 · 기본 600s면 1200s · W22)
     store = JobStore(
-        make_settings(), executor=_hang_executor, audit_path=audit, clock=lambda: now[0]
+        make_settings(investigation_timeout_seconds=300), executor=_hang_executor,
+        audit_path=audit, clock=lambda: now[0],
     )
     jid = store.submit(valid_payload(fingerprint="stuck"))["investigation_id"]
     assert store.get(jid)["status"] == "running"

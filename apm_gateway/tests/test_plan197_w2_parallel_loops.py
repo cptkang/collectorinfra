@@ -1,5 +1,5 @@
 """가벼운 도메인 루프 병렬화 — 실시간 순위 · 인스턴스 명단 적재 · 대상 실시간 · 시 단위 통계
-(plans/192 W2 · D-296 ⑤).
+(plans/197 W2 · D-296 ⑤).
 
 - 소스 동시 요청 상한 4에서 동시 in-flight > 1이고, 결과·`limits`·실패 순서가 상한 1(종전 직렬)과
   같다(일부 도메인 실패를 섞는다 · 소스 2개).
@@ -95,7 +95,7 @@ def _tools(fake: SlowFleet, tmp_path, cap: int, rate: float = 0.0) -> ApmTools:
     cfg = load_config(
         fake.env(
             APM_SPOOL_DIR=str(tmp_path / "spool"),
-            JENNIFER_MAX_IN_FLIGHT=str(cap),
+            JENNIFER_MAX_INFLIGHT_PER_SOURCE=str(cap),
             JENNIFER_RATE_LIMIT_PER_SEC=str(rate),
         )
     )
@@ -286,6 +286,6 @@ async def test_untargeted_ranking_parallel_is_faster(tmp_path):
         started = time.monotonic()
         await FleetTools(tools).ranking(full=True)
         elapsed[cap] = time.monotonic() - started
-    print(f"\n[plans/192 W2 성능] 직렬 {elapsed[1]:.3f}초 · 병렬(상한 4) {elapsed[4]:.3f}초")
+    print(f"\n[plans/197 W2 성능] 직렬 {elapsed[1]:.3f}초 · 병렬(상한 4) {elapsed[4]:.3f}초")
     assert elapsed[1] >= 35 * 0.033 * 0.95
     assert elapsed[4] < elapsed[1] * 0.8

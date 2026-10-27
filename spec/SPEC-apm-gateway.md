@@ -46,10 +46,10 @@ apm_gateway/                   자체 pyproject · 자체 cwd · 루트 venv 공
 | `JENNIFER_API_URL` · `JENNIFER_API_TOKEN` | 빈 값 | **단일 설정** — Open API 주소 · AIOps 전용 토큰. `JENNIFER_SOURCES`가 비고 URL이 있으면 소스 `default` 1개(v4 동작). 둘 다 비면 소스 0개 → 도구는 `not_configured` |
 | `JENNIFER_SOURCES` | 빈 값 | **다중 설정**(J8) — 소스 id JSON 배열(예 `["b0","cm_prd","cm_stg"]` — 운영 확정 D-329 · 선언 순서 = 조회·표시 순서). id = 소문자 슬러그 `[a-z][a-z0-9_]{0,15}` · 예약어 `default`·`api` · 중복 금지. 루트 레지스트리 `solutions[apm].sources[].id`와 같게 둔다 |
 | `JENNIFER_<ID>_API_URL` · `JENNIFER_<ID>_API_TOKEN` | — | 소스별 필수(`<ID>` = id 대문자 — `cm_prd` → `JENNIFER_CM_PRD_API_URL`) · 토큰은 소스별 AIOps 전용 토큰 |
-| `JENNIFER_<ID>_DOMAIN_IDS` · `_API_TIMEOUT_SECONDS` · `_RATE_LIMIT_PER_SEC` · `_MAX_RESPONSE_BYTES` · `_MAX_IN_FLIGHT` | 전역 값 | 소스별 선택 — 비면 아래 전역 `JENNIFER_*` 값 |
+| `JENNIFER_<ID>_DOMAIN_IDS` · `_API_TIMEOUT_SECONDS` · `_RATE_LIMIT_PER_SEC` · `_MAX_RESPONSE_BYTES` · `_MAX_INFLIGHT_PER_SOURCE` | 전역 값 | 소스별 선택 — 비면 아래 전역 `JENNIFER_*` 값 |
 | `JENNIFER_DOMAIN_IDS` | `[]` | 조회 도메인 제한(비면 `/api/domain` 전체) — 좁히기만 |
 | `JENNIFER_API_TIMEOUT_SECONDS` · `JENNIFER_RATE_LIMIT_PER_SEC` · `JENNIFER_MAX_RESPONSE_BYTES` | 10 · 5 · 4194304 | 호출별 timeout(서버 강제) · 초당 상한(폴러·동기 호출·백그라운드 작업이 나눈다 — 대기열은 우선순위 순 · §3.3) · **응답 본문 메모리 임계**(넘으면 `APM_SPOOL_DIR/tmp`의 임시 파일로 받아 점진 파싱 — 오류로 끊지 않는다 · 134 W0-B에서 「응답 크기 상한」에서 의미 변경 · D-296 ④) — 소스 클라이언트마다 따로 |
-| `JENNIFER_MAX_IN_FLIGHT` | 4 | **[192 · D-346]** 소스별 동시 요청 상한(폴러·동기 호출·작업 공용 · 소스 클라이언트마다 따로). 도메인마다 1회 묻는 가벼운 조회(실시간 순위·인스턴스 명단 적재 등)를 이 폭으로 겹쳐 부른다 — X-View 1분 조각 등 무거운 루프는 직렬 유지. 속도 상한(호출 시작 간격)은 그대로라 초당 호출 수는 늘지 않는다. `1` = 종전 직렬 동작 · 0 이하·정수 아님은 경고 후 4. 「신규 설정 기본 off」의 예외(근거 D-346) |
+| `JENNIFER_MAX_INFLIGHT_PER_SOURCE` | 8 | 소스별 동시 호출 상한(D-347 · 우선순위·에이징 자리 · 자리 대기는 API timeout까지). **[197 · D-348]** 도메인마다 1회 묻는 가벼운 조회(실시간 순위·인스턴스 명단 적재 등)도 이 폭으로 겹쳐 부른다 — X-View 1분 조각 등 무거운 루프는 직렬 유지. 속도 상한(호출 시작 간격)은 그대로라 초당 호출 수는 늘지 않는다. `1` = 종전 직렬 동작 |
 | `APM_GATEWAY_HOST` · `APM_GATEWAY_PORT` · `APM_GATEWAY_LOG_LEVEL` | 127.0.0.1 · 9096 · INFO | MCP 서버 |
 | `APM_GATEWAY_BEARER_TOKEN` | 빈 값 | 전송 인증(D-125) — 호출 주체 `default`. 이것과 아래가 모두 비면 무인증(주체 `anonymous` · 운영 필수) |
 | `APM_GATEWAY_BEARER_TOKENS` | 빈 값 | 소비자별 토큰(134 W0-B) — JSON 객체 `{"<주체>": "<토큰>"}`(예 `chat`·`investigation`·`alarm`). 주체 = 소문자 슬러그 `[a-z][a-z0-9_-]{0,31}` · 예약어 `anonymous`. 요청 토큰으로 주체를 정한다(§3.3) |

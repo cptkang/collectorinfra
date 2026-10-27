@@ -492,14 +492,32 @@ class AlarmCapabilitiesResponse(BaseModel):
     investigation_enabled: bool = Field(
         default=False,
         description=(
-            "자동 조사 브리핑 조회 가용 = 게이트 AND 조사 트리거 AND 조사 서비스 URL 설정 "
-            "(plans/153 W2 · 기본 off)"
+            "조사 섹션 가용 = 게이트 AND (자동 조사 트리거 OR 이 알람 분석) AND 조사 서비스 URL "
+            "설정 (plans/153 W2 · plans/194 W1 · D-347)"
+        ),
+    )
+    investigation_auto_enabled: bool = Field(
+        default=False,
+        description="자동 조사 가용 = 게이트 AND 조사 트리거 (plans/194 W1 · D-347 운영 기본 off)",
+    )
+    investigation_manual_enabled: bool = Field(
+        default=False,
+        description=(
+            "「이 알람 분석」(사용자 요청 조사) 가용 = 게이트 AND 수동 조사 플래그 "
+            "(plans/194 W1 · D-347 기본 on)"
         ),
     )
     investigation_followup_timeout_seconds: float = Field(
-        default=300.0,
+        default=1200.0,
         description=(
             "조사 후속 조회 전체 타임아웃(초) — 웹이 진행 중 조사를 다시 조회하는 상한 "
             "(NOISE_INVESTIGATION_FOLLOWUP_TIMEOUT_SECONDS · plans/153 W2)"
+        ),
+    )
+    noise_console_portal_tab: bool = Field(
+        default=False,
+        description=(
+            "포털 「노이즈 관제」 뷰 탭 표시 — 켜지면 머리글 새 탭 링크 대신 같은 창 탭 "
+            "(NOISE_CONSOLE_PORTAL_TAB_ENABLED · plans/193 W2 · 기본 off)"
         ),
     )

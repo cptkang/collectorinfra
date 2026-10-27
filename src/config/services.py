@@ -48,6 +48,10 @@ class ServerConfig(BaseSettings):
     # **마스킹한 뒤** 나간다. **기본 10** — 사용자 결정(2026-09-22, 부분 결과 즉시 노출을 행
     # 미리보기까지)으로 plans/80 §5.4-③의 명시 예외다. sse_progress_events가 off면 함께 꺼진다.
     sse_group_preview_rows: int = 10
+    # D-346: uvicorn 코드 변경 자동 재시작(개발용). **기본 off** — 종전엔 `reload=True`가 하드코딩돼
+    # 운영에서도 감시 프로세스가 작업 디렉터리의 .py 전부를 0.25초마다 stat 해 코어 하나를 쓰고
+    # (내부망 실측 37% · 로컬 39,217개 82%), 앱은 spawn 자식으로 떴다. 개발 맥에서만 true로 둔다.
+    reload: bool = False
 
     model_config = {"env_prefix": "API_", "env_file": ".env", "extra": "ignore"}
 

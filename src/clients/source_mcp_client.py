@@ -112,7 +112,24 @@ async def open_source_session(
             raise
         raise SourceMcpError(f"{label} 세션이 중단됐습니다") from None
     except Exception as e:  # noqa: BLE001 — 통신 실패를 사유로 드러낸다(침묵 금지)
-        raise SourceMcpError(f"{label} 연결·호출 실패: {type(e).__name__}") from e
+        # MCP SSE(anyio 태스크 그룹)는 연결 실패도, 본문에서 난 `SourceMcpError`(도구 시간 초과
+        # 등)도 ExceptionGroup 으로 감싸 올린다 — 사유가 「ExceptionGroup」 한 단어로 뭉개지지
+        # 않게 말단 예외를 꺼낸다. 원문(상태 코드·연결 거부 등)은 서버 로그에만 남긴다.
+        leaves = _leaf_exceptions(e)
+        inner = next((x for x in leaves if isinstance(x, SourceMcpError)), None)
+        if inner is not None:
+            raise inner from e
+        logger.warning(
+            "%s 연결·호출 실패 (%s): %s", label, url,
+            "; ".join(f"{type(x).__name__}: {x}" for x in leaves)[:500],
+        )
+        raise SourceMcpError(f"{label} 연결·호출 실패: {type(leaves[0]).__name__}") from e
+
+
+def _leaf_exceptions(e: BaseException) -> list[BaseException]:
+    if isinstance(e, BaseExceptionGroup):
+        return [leaf for sub in e.exceptions for leaf in _leaf_exceptions(sub)]
+    return [e]
 
 
 def _result_text(raw: Any) -> str:
