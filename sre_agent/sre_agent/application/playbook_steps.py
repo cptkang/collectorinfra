@@ -265,9 +265,12 @@ class StepResult:
     #: 축별 상태 `{축: 상태}`를 그대로 쓸 값(재조회 재사용 섹션이 부모 값을 옮긴다 — plans/196 D7).
     #: None이면 직렬화가 액션·`data["axes"]`로 계산한다(`section_axis_status`).
     axis_status: dict[str, str] | None = None
+    #: 단계별 조회 `[{tool, phrase}]`(plans/195 W4 — `step_queries` · 인자 원문은 싣지 않는다).
+    #: 비면 직렬화에 키를 싣지 않는다(가산 키).
+    queries: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self, *, include_data: bool = True) -> dict[str, Any]:
-        out = {
+        out: dict[str, Any] = {
             "step": self.step,
             "action": self.action,
             "title": self.title,
@@ -285,6 +288,8 @@ class StepResult:
             out["reason_detail"] = self.reason_detail
         if self.reused_from is not None:
             out["reused_from"] = self.reused_from
+        if self.queries:
+            out["queries"] = [dict(q) for q in self.queries]
         axis_status = (
             self.axis_status
             if self.axis_status is not None
@@ -527,6 +532,24 @@ class StepContext:
 
 
 StepFn = Callable[[StepContext], StepResult]
+
+
+def step_queries(calls: Sequence[tuple[str, Mapping[str, Any]]]) -> list[dict[str, str]]:
+    """스텝의 도구 호출들 → 섹션 `queries`(plans/195 W4 · 결정적).
+
+    조회 문장은 `tool_phrase`로 만든다 — 인자 원문(`tool_label`·args JSON)은 싣지 않는다(실행 중
+    SQL 문 같은 값이 브리핑에 섞이지 않게). 문장이 없는 도구(사전 밖·문장화 실패)는 `{tool}`만
+    싣는다(무엇을 불렀는지는 남긴다). 같은 (도구, 문장)은 첫 1건만(호출 순서 보존).
+    """
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str | None]] = set()
+    for tool, args in calls:
+        phrase = tool_phrase(tool, args)
+        if (tool, phrase) in seen:
+            continue
+        seen.add((tool, phrase))
+        out.append({"tool": tool, "phrase": phrase} if phrase else {"tool": tool})
+    return out
 
 
 def _mask_sql_values(value: Any, key: str = "") -> Any:
@@ -2403,6 +2426,7 @@ __all__ = [
     "SCOPE_ACTIONS",
     "scope_polestar_reason",
     "section_axis_status",
+    "step_queries",
     "STEP_ABORTED",
     "STEP_LIBRARY",
     "StepContext",

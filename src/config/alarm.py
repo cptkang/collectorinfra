@@ -543,6 +543,10 @@ class NoiseGateConfig(BaseSettings):
     # 확정 연결 저장(Redis `hostlink:*`)·조사 페이로드 `meta.hints.polestar_link`. 자동 결합은 확정
     # 연결만(LLM 0). 기본 off = 페이로드·조사 응답 비트 동일 · 후보·연결 라우트 404. 기동 시 1회 해석.
     host_link_enabled: bool = False
+    # (plans/195 W2 · D-341 ⑪) 조사 id 조회 응답에 「질의응답에서 확인할 질의」(`requery`)를 가산 —
+    # 가린 사용자 뷰 플레이북에서 결정적 템플릿으로 만든다(LLM 0 · 운영자도 같은 가린 산출). 범위 밖
+    # 질의는 `disabled_reason`. 기본 off = 조사 응답 비트 동일(D-162). 기동 시 1회 해석.
+    investigation_requery_enabled: bool = False
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
 

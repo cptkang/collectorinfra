@@ -1081,6 +1081,19 @@
         return null;
     }
 
+    // (plans/195 W3) 조사 조회 응답 `requery`(서버 플래그가 켜졌을 때만 있는 키) → 단계별 항목. 키가 없으면 null
+    function requeryByStep(view) {
+        var bv = root.BriefingView;
+        var items = bv && bv.requeryItems ? bv.requeryItems(view) : null;
+        if (!items) return null;
+        var by = {};
+        items.forEach(function (it) {
+            var step = String(it.step || "");
+            if (step) (by[step] = by[step] || []).push(it);
+        });
+        return by;
+    }
+
     // ─── 컨트롤러 ───────────────────────────────────────────────────────
 
     /**
@@ -1091,8 +1104,11 @@
      *   onOpenConversation(id) — 종결 화면 [조사 대화로 열기](기존 조사 대화 진입 함수)
      *   analyzeFor(id, view) — 공용 렌더 analyze 옵션(기존 [다시 분석]) 또는 null
      *   startInvestigation(alarmId) — (W18) 「이벤트 찾아 조사」 접수 → Promise<{ok,status,body}>(없으면 칸 숨김)
+     *   stagePrompt(investigationId, prompt) — (plans/195 W3) 「질의응답에서 확인」 [조사 대화에서 조회] — 그 조사의 조사 대화를
+     *     열고 입력창에 채운 뒤 확인 바를 띄운다(app.js `stageInvestigationPrompt` · 자동 전송 없음 · 없으면 버튼 숨김)
+     *   busy() — 참이면 [조사 대화에서 조회]를 막는다(답변 중 중복 과금 방지)
      *   linkHost(investigationId, body) — (plans/196) 폴스타 서버 선택 저장(본체 host-link 접수 — 쓰기 경로는 app.js가 주입) → Promise<{ok,status,body}>(없으면 선택 UI 숨김)
-     *   deps: {fetch, EventSource, setTimeout, clearTimeout, now, storage, document} — 시험용 주입
+     *   deps: {fetch, EventSource, setTimeout, clearTimeout, now, storage, document, clipboard} — 시험용 주입
      */
     function create(opts) {
         var deps = opts.deps || {};
@@ -1744,7 +1760,22 @@
             return div;
         }
 
-        function cardNode(tab, m, host) {
+        // (plans/195 W3 · P1) 「질의응답에서 확인」 — 공용 노드(BriefingView.requeryList). 조회는 app.js가 주입한
+        // 인계(`opts.stagePrompt`)만 부른다(이 화면은 GET만 — 전송·접수 함수는 주입 · D-003). 없으면 복사만 남는다.
+        function requeryNode(tab, items) {
+            var bv = root.BriefingView;
+            if (!bv || !bv.requeryList || !items || !items.length) return null;
+            var box = el("div", "dv-requery");
+            box.appendChild(el("div", "dv-label dv-requery-head", bv.RQ_TEXT.head));
+            box.appendChild(bv.requeryList(doc, items, {
+                stage: opts.stagePrompt ? function (prompt) { opts.stagePrompt(tab.id, prompt); } : null,
+                busy: opts.busy || null,
+                clipboard: deps.clipboard,
+            }));
+            return box;
+        }
+
+        function cardNode(tab, m, host, rq) {
             var li = el("li", "dv-card" + (m.skipped ? " dv-card--skip" : "") + (m.running ? " dv-card--running" : "") +
                 (m.warn ? " dv-card--warn" : ""));
             li.setAttribute("data-step", m.step);
@@ -1802,6 +1833,9 @@
                 line(dl, TEXT.cardOpinion, op);
             }
             if (dl.children.length) li.appendChild(dl);
+            // 196 후보 블록(선택 대기 단계 — `host`)이 붙는 카드에는 그리지 않는다
+            var rqBox = host ? null : requeryNode(tab, rq);
+            if (rqBox) li.appendChild(rqBox);
             cautionNode(tab, "note:" + m.step, m.notes, li);
             detailNode(tab, m, li);
             return li;
@@ -2009,6 +2043,7 @@
                 ai.appendChild(el("span", "dv-sofar-ai-text", model.sofarAi));
             }
             var host = tab.done ? hostLinkState(model.cards, src.scope) : null;
+            var rq = requeryByStep(tab.view);
             var body = tab.dom.flowBody;
             body.textContent = "";
             if (host && host.mode === "linked") {
@@ -2018,7 +2053,8 @@
             var groups = [];
             if (model.cards.length) {
                 groups.push(["playbook", model.cards.map(function (m) {
-                    return cardNode(tab, m, host && host.step && host.step === m.step ? host : null);
+                    return cardNode(tab, m, host && host.step && host.step === m.step ? host : null,
+                        rq ? rq[String(m.step)] : null);
                 })]);
             }
             if (model.holmes.length) groups.push(["holmes", model.holmes.map(function (r) { return roundNode(tab, r); })]);
@@ -2621,6 +2657,7 @@
         flowModel: flowModel,
         opinionOf: opinionOf,
         hostLinkState: hostLinkState,
+        requeryByStep: requeryByStep,
         statusWords: statusWords,
         conflictsWithSynthesis: conflictsWithSynthesis,
         watchParam: watchParam,
