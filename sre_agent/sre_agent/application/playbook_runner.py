@@ -55,6 +55,7 @@ from sre_agent.application.playbook_steps import (
     StepFn,
     StepResult,
     scope_polestar_reason,
+    step_queries,
 )
 from sre_agent.domain.activity_log import ActivityLog, safe_append
 from sre_agent.domain.correlation import correlate
@@ -868,6 +869,7 @@ def _reused_section(
         reason=prior.get("reason"),
         reason_detail=prior.get("reason_detail"),
         reused_from=parent,
+        queries=_prior_queries(prior.get("queries")),
         axis_status=(
             {str(k): str(v) for k, v in axis.items()} if isinstance(axis, Mapping) else None
         ),
@@ -883,6 +885,20 @@ def _reused_section(
         guard=[str(g) for g in prior.get("opinion_guard") or []],
     )
     return res
+
+
+def _prior_queries(raw: Any) -> list[dict[str, str]]:
+    """부모 섹션의 `queries`를 그대로 옮긴다(plans/195 W4 — 구버전 부모·형식 밖 원소는 버린다)."""
+    out: list[dict[str, str]] = []
+    for q in raw if isinstance(raw, list) else []:
+        if not isinstance(q, Mapping) or not isinstance(q.get("tool"), str):
+            continue
+        phrase = q.get("phrase")
+        out.append(
+            {"tool": q["tool"], "phrase": phrase} if isinstance(phrase, str) and phrase
+            else {"tool": q["tool"]}
+        )
+    return out
 
 
 #: S0 사유에서 폴스타 토막이 시작하는 표지(`scope_polestar_reason` 문장 · 맨 끝 토막).
@@ -1172,6 +1188,7 @@ def _retry_step(
         ctx.abort(reason)
         res = _placeholder(step, "missing", reason)
         res.tools = list(ctx.tools)
+        res.queries = step_queries(ctx.calls)
         res.elapsed_ms = int(limit * 1000)
         return res
     return _retry_step_result(step, res, first)
@@ -1233,6 +1250,7 @@ def _timed_out(
     ctx.abort(reason)
     res = _placeholder(step, "missing", reason)
     res.tools = list(ctx.tools)
+    res.queries = step_queries(ctx.calls)
     res.elapsed_ms = int(limit * 1000)
     return res
 
@@ -1347,6 +1365,7 @@ def _exec_step(
     res.action = step.action
     res.title = ACTION_TITLES.get(step.action, step.action)
     res.tools = list(ctx.tools)
+    res.queries = step_queries(ctx.calls)
     res.elapsed_ms = int((clock() - t0) * 1000)
     return res
 

@@ -186,9 +186,10 @@ def _clip_section_rows(section: dict[str, Any]) -> dict[str, Any]:
 def _playbook_candidates(pb: dict[str, Any]) -> list[dict[str, Any]]:
     """플레이북을 저장 상한에 맞추는 결정적 축소 후보(덜 줄인 것부터). `synthesis`는 끝까지 둔다.
 
-    ① 섹션 표 앞 N행 · `readings_detail`·`timings` 제거 ② 섹션의 표·소견 제거(머리·배지·사유·도구만)
-    ③ `id`·`version`·`matched_by`·`scope`·`readings`·`synthesis`·`notes` + 섹션 머리만
-    ④ ③에서 `scope`·`readings` 제거.
+    ① 섹션 표 앞 N행 · `readings_detail`·`timings` 제거 ② 섹션의 표·소견 제거(머리·배지·사유·도구·
+    조회 `queries`만) ③ `id`·`version`·`matched_by`·`scope`·`readings`·`synthesis`·`notes` + 섹션
+    머리만 ④ ③에서 `scope`·`readings` 제거.
+    (plans/195 W4) 섹션 `queries`는 도구 목록과 같은 높이다 — 표·소견보다 오래 남고 ③에서 빠진다.
     """
     sections = [s for s in pb.get("sections") or [] if isinstance(s, dict)]
     lvl1 = {k: v for k, v in pb.items() if k not in ("readings_detail", "timings")}

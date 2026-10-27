@@ -2299,3 +2299,13 @@
 - **실수**: `sre_agent/config/playbooks/`에 `was.sql`·`was.fallback`을 더한 뒤 본체 `tests/test_plan187_w12_symptom_router.py`의 사본 동등성 단언 2건이 실패 상태로 남았다. 계획 끝 `regress.py --files`는 YAML·sre_agent 파일만 받아 본체의 그 테스트를 고르지 않아 「실패 0」으로 보고됐다.
 - **원인**: 사본 동등성 테스트는 sre_agent 파일을 import 없이 읽는다 — 회귀 선택기의 import·파일 참조 규칙에 걸리지 않는다. `src/domain/symptom_router.py` 사본(`PLAYBOOK_SURFACE_TERMS`·`VIRTUAL_EVENTS`)도 갱신하지 않았다.
 - **방지책**: 플레이북 YAML을 더하거나 바꾸면 `src/domain/symptom_router.py` 사본을 같이 고치고 `tests/test_plan187_w12_symptom_router.py`·`sre_agent/tests/test_plan187_w12_virtual.py`를 직접 돌린다(회귀 `--files`에 `src/domain/symptom_router.py`를 넣으면 선택된다).
+
+### 2026-10-27 · 가림 표지를 설정값 하나로만 판정 — 테스트 config가 운영 기본값과 달라 결함이 가려짐 (plans/195)
+- **실수**: 조사 질의 생성(`src/domain/investigation_requery.py` `_usable`)이 「가림 표시 섞인 대상 생략」을 `config.security.mask_pattern`(운영 기본 `***MASKED***`)만으로 판정했다. 사용자 뷰 `mask_secrets`는 부분 가림을 `log_masking.MASK="***"`로 해 `was02 Bearer ***` 같은 대상이 질의 문장에 그대로 들어갔다. W2 라우트 테스트 config가 `mask_pattern="***"`라 두 표지가 같아져 통과했다.
+- **원인**: 가림 함수가 쓰는 표지를 실측하지 않고 설정 필드 하나를 표지의 단일 출처로 가정했다. 테스트 config가 검증 대상 필드를 운영 기본값과 다른 값으로 둬 결함을 숨겼다.
+- **방지책**: 가림 여부 판정은 실제 가림 함수가 낼 수 있는 표지 전부(설정 패턴 + 부분 가림 상수)를 대조한다. 마스킹 관련 테스트는 운영 기본 `mask_pattern`으로 도는 케이스를 반드시 하나 둔다.
+
+### 2026-10-27 · DOM 덧붙이기를 querySelectorAll 순번으로 매칭 — 같은 클래스의 다른 요소(런북)가 앞에 있어 한 칸씩 밀림 (plans/195 W3)
+- **실수**: 고정 카드 `decorate`가 `details.bv-step`의 i번째에 섹션 i의 「조회한 것」 줄을 붙였는데, 런북도 `details.bv-step bv-runbook`이라 런북이 있는 조사에서 전부 한 단계씩 밀렸다. 테스트 하네스는 `querySelectorAll`을 단계 수만큼의 가짜 노드로 대체해 실제 마크업 순서를 보지 않았다.
+- **원인**: 렌더가 이미 단 식별 속성(`data-bv-step`) 대신 순번에 의존했고, 스텁이 실 마크업 형태를 재현하지 않았다(mock 통과 ≠ 실 렌더).
+- **방지책**: 렌더 뒤 DOM 덧붙이기는 식별 속성으로 매칭한다. D-190 방식 테스트도 실제 렌더 문자열(런북·선택 블록 등 같은 클래스 요소 포함)로 순서를 확인한다.

@@ -146,6 +146,8 @@ async def test_admin_role_payload_without_repo_is_not_trusted(site):
         _admin_token(secret=AUTH_SECRET),  # 종류 불일치(type=admin)
         "not-a-jwt",
     ],
+    # (plans/195) 토큰 문자열에 `exp`(지금+1h)가 들어가 xdist 워커마다 id가 달라졌다 — 고정 id
+    ids=["bad_signature", "admin_type", "not_jwt"],
 )
 async def test_invalid_token_without_repo_stays_401(site, token):
     with pytest.raises(HTTPException) as ei:

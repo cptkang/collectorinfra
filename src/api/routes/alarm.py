@@ -1301,6 +1301,7 @@ async def _investigation_response(
     rec: dict[str, Any] | None,
     activity_since: int | None = None,
     with_alarm: bool = False,
+    with_requery: bool = False,
 ) -> dict[str, Any]:
     """조사 레코드 → 응답(지연 poll · 사용자 마스킹/운영자 원문). 존 검사는 호출부가 먼저 한다.
 
@@ -1308,6 +1309,8 @@ async def _investigation_response(
     (`activity`·`phase`·`queue_position`·`elapsed_s`)을 더하고 ② 허브 폴러가 도는 조사는 sre_agent를
     따로 묻지 않고 허브 진척을 싣는다(종전 `POLL_LIVE` 자리). 꺼져 있으면 `activity_since`를
     무시한다(종전 응답 · 종전 지연 poll).
+    (plans/195 W2) `with_requery`(조사 id 조회만 넘긴다)면 지연 poll로 갱신한 레코드로
+    `requery`를 가산한다 — 플래그가 꺼져 있으면 종전 응답과 같다(`_attach_requery`).
     """
     from noise_gate.infrastructure.investigation_store import (
         ACTIVE_STATUSES,
@@ -1359,7 +1362,75 @@ async def _investigation_response(
     if (operator and _kb_enabled(config) and isinstance(view.get("briefing"), dict)
             and rec.get("status") == "done"):
         view["briefing"] = await _kb_briefing_extras(config, current_user, view["briefing"])
+    if with_requery:
+        _attach_requery(view, rec, config, current_user)
     return view
+
+
+#: (plans/195 W2) 질의 비활성 사유 — 화면이 버튼을 막고 그대로 보인다(사용자 문장).
+_REQUERY_DB_DENIED = (
+    "이 질의가 조회하는 DB에 대한 질의 권한이 없습니다. 관리자에게 권한을 요청하세요."
+)
+_REQUERY_DB_UNKNOWN = "이 질의가 조회할 DB를 확인하지 못해 보낼 수 없습니다."
+_REQUERY_APM_DENIED = "제니퍼 APM 조회 권한이 없습니다. 관리자에게 권한을 요청하세요."
+
+
+def _requery_enabled(config: Any) -> bool:
+    """조사 질의 가산 플래그(기동 시 설정값)."""
+    return bool(getattr(config.noise_gate, "investigation_requery_enabled", False))
+
+
+def _attach_requery(
+    view: dict[str, Any], rec: dict[str, Any], config: Any, current_user: dict[str, Any]
+) -> None:
+    """「질의응답에서 확인할 질의」(`requery`)를 응답에 싣는다(plans/195 W2 · 플래그 off면 무동작).
+
+    입력은 운영자·사용자 구분 없이 **가린 사용자 뷰**의 플레이북이다(D-325 ③ `mask_fn` ·
+    원문 미사용). 질의 권한은 질의응답과 같은 기준으로 대조한다 — 폴스타 축은
+    `polestar_source`가 활성 DB ∩ 사용자 `allowed_db_ids`(`authorized_db_ids` — None·관리자 =
+    전체)에 없거나 비었으면, 제니퍼 축은 관측 소스 `apm` 권한(`is_source_allowed`)이 없으면 항목에
+    `disabled_reason`을 싣는다. 질의응답 쪽 범위 검사가 최종 방어선이다. 생성이 실패해도 조사
+    응답은 깨지 않는다(빈 목록 · 경고 로그).
+    """
+    if not _requery_enabled(config):
+        return
+    from noise_gate.infrastructure.investigation_store import playbook_user_view
+    from src.domain.investigation_requery import build_requery
+    from src.routing.db_authz import authorized_db_ids, is_source_allowed
+    from src.utils.log_masking import MASK as PARTIAL_MASK
+
+    items: list[dict[str, Any]] = []
+    try:
+        user_view = playbook_user_view(rec.get("briefing"), _investigation_mask_fn(config))
+        # 사용자 뷰 마스킹은 값 전체를 `mask_pattern`으로, 섞인 비밀값은 `mask_secrets` 표지로
+        # 가린다 — 둘 다 넘겨 하나라도 섞인 대상은 생략한다
+        items = build_requery(
+            (user_view or {}).get("playbook"),
+            mask_marker=(str(config.security.mask_pattern), PARTIAL_MASK),
+        )
+        role = current_user.get("role")
+        allowed_dbs: list[str] | None = None
+        for item in items:
+            if item.get("axis") == "polestar":
+                if allowed_dbs is None:
+                    allowed_dbs = authorized_db_ids(
+                        list(config.multi_db.get_active_db_ids()),
+                        current_user.get("allowed_db_ids"), role,
+                    )
+                db_id = item.get("polestar_source")
+                if not isinstance(db_id, str) or not db_id.strip():
+                    item["disabled_reason"] = _REQUERY_DB_UNKNOWN
+                elif db_id.strip() not in allowed_dbs:
+                    item["disabled_reason"] = _REQUERY_DB_DENIED
+            elif not is_source_allowed("apm", current_user.get("allowed_sources"), role):
+                item["disabled_reason"] = _REQUERY_APM_DENIED
+    except Exception as exc:  # noqa: BLE001 — 질의 생성 실패가 조사 응답을 깨지 않는다
+        logger.warning(
+            "조사 질의 생성 실패(빈 목록): investigation_id=%s err=%s",
+            rec.get("investigation_id"), type(exc).__name__, exc_info=True,
+        )
+        items = []
+    view["requery"] = items
 
 
 #: 채팅 증상 질의 조사(plans/187 W12)의 저장 레코드 `origin`.
@@ -1679,7 +1750,9 @@ async def get_alarm_investigation(
         "조사 id의 최신 상태·브리핑을 반환합니다(없으면 status=none).<br/>"
         "존 권한은 조사에 걸린 알람 전부로 검사합니다 — 존 제한 사용자는 하나라도 타 존이거나 "
         "db_id를 확인할 수 없으면 403입니다. 알람이 걸리지 않은 사용자 요청 조사(채팅 조사 등)는 "
-        "요청자 본인 또는 관리자만 엽니다."
+        "요청자 본인 또는 관리자만 엽니다.<br/>"
+        "(NOISE_INVESTIGATION_REQUERY_ENABLED 켜짐) `requery`에 질의응답에서 확인할 질의를 "
+        "싣습니다 — 가린 조사 내용에서 만들고, 조회 범위 밖이면 `disabled_reason`을 붙입니다."
     ),
     tags=["alarm"],
 )
@@ -1704,7 +1777,9 @@ async def get_investigation(
     store = _investigation_store(config)
     rec = store.get_by_investigation(investigation_id) if store is not None else None
     _assert_investigation_access(request, current_user, rec)
-    view = await _investigation_response(request, current_user, rec, activity_since, with_alarm)
+    view = await _investigation_response(
+        request, current_user, rec, activity_since, with_alarm, with_requery=True
+    )
     if rec is not None and _followup_enabled(config) and _is_diagnosis(rec):
         return _with_notice(view)
     return view

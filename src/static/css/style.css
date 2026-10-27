@@ -1138,6 +1138,35 @@ body:has(.chat-layout.history-collapsed) {
 .dv-host-why { flex-basis: 100%; margin-left: 22px; font-size: 0.75rem; color: var(--text-secondary); }
 .dv-host-field { display: flex; gap: 6px; align-items: baseline; }
 .dv-host-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+/* (plans/195 W3) 「질의응답에서 확인」 — 장애 진단 단계 카드(.dv-requery) · 조사 대화 고정 카드(.bv-requery) 공용 항목(.rq-*) */
+.dv-requery { margin: 6px 0 0 22px; display: flex; flex-direction: column; gap: 4px; }
+.rq-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rq-item { display: flex; flex-direction: column; gap: 3px; font-size: 0.8rem; }
+.rq-step { display: flex; gap: 6px; align-items: baseline; font-size: 0.75rem; color: var(--text-secondary); }
+.rq-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.rq-text { color: var(--text); overflow-wrap: anywhere; }
+.rq-live {
+    font-size: 0.6875rem;
+    padding: 0 5px;
+    border-radius: 4px;
+    border: 1px solid var(--tone-amber);
+    color: var(--tone-amber);
+}
+.rq-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.rq-copy,
+.rq-run {
+    font-size: 0.72rem;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    background: var(--surface);
+}
+.rq-run { border-color: var(--accent-dim); color: var(--accent); background: var(--accent-glow); }
+.rq-run:disabled { cursor: not-allowed; opacity: 0.5; }
+.rq-msg { font-size: 0.72rem; color: var(--text-muted); }
+.rq-why { font-size: 0.75rem; color: var(--warning); overflow-wrap: anywhere; }
 
 /* 알람 카드 [장애 진단에서 보기] · 관제 드로어 「장애 진단에서 보기」(공용 렌더 밖 진입 버튼) */
 .diagnosis-open,

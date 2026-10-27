@@ -1410,6 +1410,104 @@
         };
     }
 
+    // ─── (plans/195 W3) 「질의응답에서 확인」 · 「조회한 것」(장애 진단 단계 카드 · 조사 대화 고정 카드 공용) ───
+    // 서버 텍스트(prompt·title·phrase·disabled_reason)는 `createElement` + `textContent`로만 넣는다 — 속성
+    // (`data-*`·title)·마크업 문자열에 싣지 않고, 질의 문장은 클릭 처리기 클로저로 넘긴다(D-192 — escapeHtml은
+    // 따옴표를 이스케이프하지 않는다). 조회 버튼은 인계 함수(`stage` — app.js `stageInvestigationPrompt`)만
+    // 부른다 — 입력창에 채우고 확인 바를 띄울 뿐 자동 전송은 없다.
+    var RQ_TEXT = {
+        head: "질의응답에서 확인",
+        note: "조사 단계에서 본 것을 질의응답으로 다시 확인하는 문장입니다(단계 번호는 위 단계와 같습니다). " +
+            "[조사 대화에서 조회]는 입력창에 채우기만 하고, [이대로 조회]를 눌러야 보냅니다.",
+        live: "지금 값 — 조사 당시와 다를 수 있음",
+        copy: "복사",
+        run: "조사 대화에서 조회",
+        busy: "답변이 끝난 뒤 조회할 수 있습니다",
+        queried: "조회한 것",
+    };
+
+    // 응답 `requery`(서버 플래그가 켜졌을 때만 있는 키) → 그릴 항목. 키가 없거나 배열이 아니면 null(아무것도 그리지 않는다)
+    function requeryItems(view) {
+        if (!isObj(view) || !Array.isArray(view.requery)) return null;
+        return view.requery.filter(function (it) {
+            return isObj(it) && typeof it.prompt === "string" && it.prompt.trim() !== "";
+        });
+    }
+
+    // 섹션 `queries`(plans/195 W4 가산 키) → 「조회한 것」 문구 — phrase가 없으면 도구 이름. 키가 없으면(구버전 브리핑) 빈 목록
+    function queriedPhrases(sec) {
+        return asList(isObj(sec) ? sec.queries : null).filter(isObj).map(function (q) {
+            return String(q.phrase || q.tool || "").trim();
+        }).filter(Boolean);
+    }
+
+    function rqNode(doc, tag, cls, text) {
+        var node = doc.createElement(tag);
+        if (cls) node.className = cls;
+        if (text !== undefined && text !== null) node.textContent = String(text);
+        return node;
+    }
+
+    function copyText(text, msgEl, clip) {
+        clip = clip || (typeof navigator !== "undefined" && navigator.clipboard);
+        Promise.resolve()
+            .then(function () {
+                if (!clip || !clip.writeText) throw new Error("clipboard");
+                return clip.writeText(text);
+            })
+            .then(function () { msgEl.textContent = PB_TEXT.copied; }, function () { msgEl.textContent = PB_TEXT.copyFailed; });
+    }
+
+    /**
+     * 질의 항목 목록 노드(`ul.rq-list`). 항목마다 문장 · 「지금 값」 표지(`realtime` — 단계 상태 라벨과 별도 칸) ·
+     * [복사] · [조사 대화에서 조회](`o.stage`가 있을 때만). `disabled_reason`이 있으면 조회 버튼을 막고 사유를
+     * 보인다 — 복사는 허용한다(문장은 이미 화면에 보이고, 질의응답 쪽 범위 검사가 최종 방어선이다).
+     *
+     * o: stage(prompt) · busy()(참이면 조회 버튼 비활성 — 답변 중 중복 과금 방지) · showStep(단계 번호·제목 줄) ·
+     *    clipboard(시험 주입 — 기본 navigator.clipboard)
+     */
+    function requeryList(doc, items, o) {
+        o = o || {};
+        var list = rqNode(doc, "ul", "rq-list");
+        asList(items).filter(isObj).forEach(function (it) {
+            var prompt = String(it.prompt || "");
+            var li = rqNode(doc, "li", "rq-item");
+            if (o.showStep) {
+                var head = rqNode(doc, "div", "rq-step");
+                head.appendChild(rqNode(doc, "span", "bv-mono rq-step-no", it.step || "?"));
+                if (it.title) head.appendChild(rqNode(doc, "span", "rq-title", it.title));
+                li.appendChild(head);
+            }
+            var row = rqNode(doc, "div", "rq-row");
+            row.appendChild(rqNode(doc, "span", "rq-text", prompt));
+            if (it.realtime) row.appendChild(rqNode(doc, "span", "rq-live", RQ_TEXT.live));
+            li.appendChild(row);
+            var blocked = typeof it.disabled_reason === "string" && it.disabled_reason.trim() !== "";
+            var actions = rqNode(doc, "div", "rq-actions");
+            var msg = rqNode(doc, "span", "rq-msg");
+            var copy = rqNode(doc, "button", "rq-copy", RQ_TEXT.copy);
+            copy.type = "button";
+            copy.addEventListener("click", function () { copyText(prompt, msg, o.clipboard); });
+            actions.appendChild(copy);
+            if (o.stage) {
+                var run = rqNode(doc, "button", "rq-run" + (blocked ? " rq-run--blocked" : ""), RQ_TEXT.run);
+                run.type = "button";
+                run.disabled = blocked || !!(o.busy && o.busy());
+                if (run.disabled && !blocked) run.title = RQ_TEXT.busy;
+                run.addEventListener("click", function () {
+                    if (run.disabled || blocked || (o.busy && o.busy())) return;
+                    o.stage(prompt);
+                });
+                actions.appendChild(run);
+            }
+            actions.appendChild(msg);
+            li.appendChild(actions);
+            if (blocked) li.appendChild(rqNode(doc, "div", "rq-why", it.disabled_reason));
+            list.appendChild(li);
+        });
+        return list;
+    }
+
     /**
      * 컨테이너에 붙는 지연 로드 패널(카드·드로어 공용). open()에서만 호출이 나가고 close()가 타이머를
      * 정리한다. 컨테이너가 문서에서 빠지면(카드 목록 비우기 등) 다음 응답에서 스스로 멈춘다.
@@ -1434,6 +1532,9 @@
      *   (plans/192 P8 · 선택 키 — 없으면 종전과 같다)
      *   onOpenPrevious(id): 「이전 분석」 각 행의 버튼 — 렌더 모드와 무관하게 그리고 행의 「조사 대화로 열기」를 대체
      *   openPreviousLabel: 그 버튼 문구(문자열 또는 함수 · 기본 「조사 대화로 열기」)
+     *   (plans/195 W3 · 선택 키 — 없으면 종전과 같다 · 조사 대화 고정 카드만 넘긴다)
+     *   requery: `{stage(prompt), busy()}` — 상세형 단계 섹션에 「조회한 것」 줄(섹션 `queries`)을, 카드 아래에
+     *     「질의응답에서 확인」 묶음(응답 `requery` — 키가 없으면 그리지 않는다)을 DOM으로 덧붙인다
      */
     function attach(container, opts) {
         var limitS = Number(opts.limitSeconds) > 0 ? Number(opts.limitSeconds) : DEFAULT_LIMIT_S;
@@ -1757,9 +1858,44 @@
             setTimeout(function () { URL.revokeObjectURL(url); }, 0);
         }
 
+        // (plans/195 W3) 그린 뒤 덧붙인다 — 단계 섹션(<details class="bv-step">)은 stepSections 순서와 같다
+        function decorate(view) {
+            if (!opts.requery || !container.querySelectorAll) return;
+            var doc = container.ownerDocument || root.document;
+            var ctx = playbookContext(view);
+            if (ctx && (opts.render || {}).mode === "detail") {
+                // 단계 섹션은 `data-bv-step`으로 찾는다 — 런북(<details class="bv-step bv-runbook">)처럼 속성 없는 요소는 건너뛴다
+                var nodes = Array.prototype.filter.call(container.querySelectorAll("details.bv-step"), function (d) {
+                    return d.getAttribute && d.getAttribute("data-bv-step") !== null;
+                });
+                stepSections(ctx.pb).forEach(function (sec) {
+                    var words = queriedPhrases(sec);
+                    var step = String(sec.step || "");
+                    var hit = null;
+                    for (var k = 0; k < nodes.length; k++) {
+                        if (nodes[k].getAttribute("data-bv-step") === step) { hit = nodes.splice(k, 1)[0]; break; }
+                    }
+                    var body = hit && hit.querySelector ? hit.querySelector(".bv-step-body") : null;
+                    if (!words.length || !body) return;
+                    var line = rqNode(doc, "div", "bv-meta bv-queried");
+                    line.appendChild(rqNode(doc, "span", "bv-queried-head", RQ_TEXT.queried + ": "));
+                    line.appendChild(rqNode(doc, "span", "bv-mono", words.join(" · ")));
+                    body.appendChild(line);
+                });
+            }
+            var items = requeryItems(view);
+            if (!items || !items.length) return;
+            var box = rqNode(doc, "div", "bv-pb-block bv-requery");
+            box.appendChild(rqNode(doc, "div", "bv-label", RQ_TEXT.head));
+            box.appendChild(rqNode(doc, "div", "bv-meta", RQ_TEXT.note));
+            box.appendChild(requeryList(doc, items, { stage: opts.requery.stage, busy: opts.requery.busy, showStep: true }));
+            container.appendChild(box);
+        }
+
         function repaint() {
             if (!last || container.isConnected === false) return;
             keepOpenState(function () { container.innerHTML = renderBody(last.view, extraFor(last.info)); });
+            decorate(last.view);
         }
 
         if ((opts.render || opts.engineChoice || opts.onOpenConversation || fe2) && container.addEventListener) {
@@ -1828,6 +1964,7 @@
                 keepOpenState(function () {
                     container.innerHTML = renderBody(view, extraFor(info));
                 });
+                decorate(view);
                 if (opts.followup && !fuListed) loadFollowups();
                 if (opts.onView) opts.onView(view);
             },
@@ -1859,6 +1996,13 @@
             if (busy) btn.title = PB_TEXT.openBusy;
             else btn.removeAttribute("title");
         });
+        // (plans/195 W3) [조사 대화에서 조회]도 답변 중에는 막는다(중복 과금 방지) — 범위 밖(`rq-run--blocked`)은 그대로 막아 둔다
+        Array.prototype.forEach.call(rootEl.querySelectorAll(".rq-run"), function (btn) {
+            if (/(^|\s)rq-run--blocked(\s|$)/.test(String(btn.className || ""))) return;
+            btn.disabled = !!busy;
+            if (busy) btn.title = RQ_TEXT.busy;
+            else btn.removeAttribute("title");
+        });
     }
 
     var api = {
@@ -1880,6 +2024,11 @@
             return ctx && isObj(ctx.pb.scope) ? ctx.pb.scope : null;
         },
         setBusy: setBusy,
+        // (plans/195 W3) 「질의응답에서 확인」 — 장애 진단 단계 카드도 같은 노드를 쓴다
+        RQ_TEXT: RQ_TEXT,
+        requeryItems: requeryItems,
+        queriedPhrases: queriedPhrases,
+        requeryList: requeryList,
         responseOf: responseOf,
         isFlagOff: isFlagOff,
         reasonOf: reasonOf,

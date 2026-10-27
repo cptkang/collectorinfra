@@ -89,6 +89,7 @@ from sre_agent.application.playbook_steps import (
     StepContext,
     StepFn,
     StepResult,
+    step_queries,
 )
 from sre_agent.domain.activity_log import ActivityLog, safe_append
 from sre_agent.domain.answer_markup import (
@@ -511,6 +512,12 @@ class PlaybookWiring:
     narrator_limits: NarratorLimits = field(default_factory=NarratorLimits)
     known_errors: tuple[KnownError, ...] = ()
     rejected_files: tuple[str, ...] = ()
+
+
+def _queries_entry(ctx: StepContext) -> dict[str, Any]:
+    """부분 브리핑 섹션의 `queries` 키(plans/195 W4 — 최종 섹션과 같은 규칙 · 비면 키 없음)."""
+    queries = step_queries(ctx.calls)
+    return {"queries": queries} if queries else {}
 
 
 @dataclass
@@ -1417,6 +1424,7 @@ class InvestigationDispatcher:
                             "step": sid, "action": action,
                             "title": ACTION_TITLES.get(action, action), "status": "missing",
                             "reason": reason, "tools": list(ctx.tools),
+                            **_queries_entry(ctx),
                         }
                         done[sid] = add_flow(sid, entry, finding, "missing")
                         publish(sid)
@@ -1455,6 +1463,7 @@ class InvestigationDispatcher:
                             "reason": reason if retry_of is None
                             else retry_reason(action, "missing", retry_of, reason),
                             "tools": list(ctx.tools),
+                            **_queries_entry(ctx),
                         }
                         done[sid] = add_flow(sid, entry, finding, "missing")
                         publish(sid)
@@ -1467,6 +1476,7 @@ class InvestigationDispatcher:
                     entry = {
                         **res.to_dict(include_data=False), "step": sid, "action": action,
                         "title": ACTION_TITLES.get(action, action), "tools": list(ctx.tools),
+                        **_queries_entry(ctx),
                     }
                     if retry_of is not None:  # 재시도 결과 — 최종 섹션과 같은 사유(W22)
                         entry["reason"] = retry_reason(action, str(res.status), retry_of,

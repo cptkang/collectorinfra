@@ -1060,3 +1060,24 @@ settings:
     stability: 실시간 화면이 켜져 있을 때만 쓰인다.
     recommendation: 기본 5 유지.
     related: [NOISE_INVESTIGATION_LIVE_VIEW_ENABLED]
+
+  NOISE_INVESTIGATION_REQUERY_ENABLED:
+    example: >-
+      켜면 「장애 진단」 화면과 조사 대화 카드가 받는 조사 응답에 「WAS01 2026년 10월 26일 오후 7시 10분부터
+      오후 7시 40분까지 느린 거래 보여줘」 같은 질의 목록이 함께 온다. 꺼 두면 조사 응답은 지금과 같다.
+    summary: 조사 결과에 「질의응답에서 확인할 질의」 목록을 함께 실을지.
+    behavior: >-
+      조사 id 조회 응답에 단계별 질의 목록(requery)을 더한다. 질의는 가림 처리한 조사 내용에서
+      코드 템플릿으로 만든다(AI 호출 없음) — 관리자에게도 같은 가린 질의를 준다. 사용자 조회 범위
+      밖의 DB·관측 소스를 묻는 질의에는 막힌 사유를 함께 싣는다. 질의를 실제로 보내는 것은 사용자가
+      확인한 뒤이며, 그때도 질의응답 쪽 권한 검사를 그대로 거친다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 조사 응답에 질의 목록을 싣지 않는다. 기존 동작과 같다.
+      - value: "true"
+        effect: 조사 응답에 질의 목록이 붙고, 화면이 이를 「질의응답에서 확인」 줄로 보여 준다.
+    performance: 조회마다 조사 내용을 한 번 더 가림 처리하고 템플릿을 채운다 — 외부 호출은 없다.
+    stability: 질의 생성이 실패하면 질의 목록만 비우고 경고 로그를 남긴다. 조사 응답은 깨지지 않는다.
+    recommendation: 장애 진단 화면을 쓰는 환경에서 켠다.
+    related: [NOISE_INVESTIGATION_LIVE_VIEW_ENABLED]
