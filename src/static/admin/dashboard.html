@@ -120,6 +120,7 @@
                 <button class="tab" data-tab="sourcememory">소스 선택 기억</button>
                 <button class="tab" data-tab="apmsources">제니퍼 소스</button>
                 <button class="tab" data-tab="incidentkb">조사 지식</button>
+                <button class="tab" data-tab="hostlinks">호스트 연결</button>
             </div>
 
             <!-- 환경변수 설정 탭 -->
@@ -741,6 +742,44 @@
                 </div>
             </div>
 
+            <!-- 호스트 연결 탭 (plans/196 §1.1 ③ · §5.5) — 제니퍼 대상 ↔ 폴스타 서버 연결 승인·삭제 -->
+            <div class="tab-content" id="tab-hostlinks">
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>호스트 연결</h2>
+                        <button class="btn btn-secondary" id="refreshHostLinksBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        장애 진단 화면에서 사람이 고른 <strong>제니퍼 대상 → 폴스타 서버</strong> 연결입니다.
+                        <strong>확정</strong> 연결은 다음 알람부터 자동으로 쓰이고, 일반 사용자가 고른 <strong>승인 대기</strong> 연결은 승인해야 확정됩니다.
+                        <strong>부정</strong>(해당 서버 없음) 연결은 30일 뒤 만료됩니다. 유사 패턴은 후보 순위·사유에만 쓰이며 자동 연결하지 않습니다.
+                        이 탭은 <code>NOISE_HOST_LINK_ENABLED</code>가 켜진 채 <strong>본체를 기동</strong>했을 때만 동작합니다.
+                    </p>
+                    <div id="hostLinksNotice" class="incident-kb-notice" style="display: none;"></div>
+                    <table class="settings-table" id="hostLinksTable">
+                        <thead>
+                            <tr>
+                                <th>상태</th>
+                                <th>제니퍼 소스 · 대상</th>
+                                <th>폴스타 서버</th>
+                                <th>등급</th>
+                                <th>선택자 · 시각</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="hostLinksBody"></tbody>
+                    </table>
+                </div>
+
+                <div class="card" style="margin-top: 18px;">
+                    <div class="toolbar"><h2>유사 패턴</h2></div>
+                    <table class="settings-table" id="hostLinksPatternTable">
+                        <thead><tr><th>종류</th><th>변환</th><th>적용 건수</th></tr></thead>
+                        <tbody id="hostLinksPatternBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
             <!-- 문서 검색 시험 탭 (plans/126 W4 · T-3) -->
             <div class="tab-content" id="tab-ragdocs">
                 <div class="card">
@@ -820,5 +859,6 @@
     <script src="/static/js/admin-db-structure.js?v=1"></script>
     <script src="/static/js/admin-rag-docs.js?v=3"></script>
     <script src="/static/js/admin-incident-kb.js?v=1"></script>
+    <script src="/static/js/admin-host-links.js?v=1"></script>
 </body>
 </html>

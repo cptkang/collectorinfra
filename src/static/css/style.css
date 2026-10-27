@@ -1109,6 +1109,35 @@ body:has(.chat-layout.history-collapsed) {
 .dv-card > .dv-flow-toggle { margin-left: 18px; }
 .dv-caution { margin: 2px 0 0 22px; padding-left: 16px; font-size: 0.75rem; color: var(--text-secondary); }
 .dv-flow-engine { margin-top: 8px; }
+/* (plans/196) 운영자 상세 · 판정 없음 때 HolmesGPT 요약 · 폴스타 서버 선택 */
+.dv-detail[hidden],
+.dv-sofar-ai[hidden] { display: none; }
+.dv-detail { margin: 2px 0 0 22px; font-size: 0.75rem; color: var(--text-secondary); overflow-wrap: anywhere; }
+.dv-sofar-ai { display: inline-flex; gap: 6px; align-items: baseline; }
+.dv-host {
+    margin: 6px 0 0 22px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.dv-flow-body > .dv-host { margin: 6px 0; }
+.dv-host-cand { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; cursor: pointer; }
+.dv-host-grade {
+    font-size: 0.6875rem;
+    padding: 0 5px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+.dv-host-name { font-weight: 700; overflow-wrap: anywhere; }
+.dv-host-why { flex-basis: 100%; margin-left: 22px; font-size: 0.75rem; color: var(--text-secondary); }
+.dv-host-field { display: flex; gap: 6px; align-items: baseline; }
+.dv-host-actions { display: flex; flex-wrap: wrap; gap: 6px; }
 
 /* 알람 카드 [장애 진단에서 보기] · 관제 드로어 「장애 진단에서 보기」(공용 렌더 밖 진입 버튼) */
 .diagnosis-open,

@@ -5228,6 +5228,10 @@
             startInvestigation: function (alarmId) {
                 return bvRequest("/api/v1/alarm/" + encodeURIComponent(alarmId) + "/investigations", "POST");
             },
+            // (plans/196 §5.5) 폴스타 서버 선택 저장 — 조사 화면 자체는 GET만 쓴다(쓰기 경로는 여기서 주입)
+            linkHost: function (investigationId, body) {
+                return bvRequest("/api/v1/alarm/investigations/" + encodeURIComponent(investigationId) + "/host-link", "POST", body);
+            },
         }).catch(function (err) {
             console.warn("[diagnosis] 장애 진단 초기화 실패:", err);
             return false;

@@ -30,6 +30,7 @@ name ≠ hostname 이므로(Known Mistakes 2026-06-10) 서버명을 그대로 ho
 from __future__ import annotations
 
 import logging
+import re
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Any, Optional
@@ -178,6 +179,99 @@ def build_host_probe_sql(
         "  AND r.dtime IS NULL\n"
         f"  AND ({' OR '.join(conditions)})"
     )
+
+
+#: 토큰 넓힘 조회의 소스당 상한 행(plans/196 §1.1 ① d).
+HOST_TOKEN_ROW_LIMIT = 50
+#: 토큰 넓힘에 쓸 수 있는 토큰 모양 — 영소문자·숫자만.
+_SAFE_TOKEN = re.compile(r"[a-z0-9]+")
+
+
+def build_host_token_sql(
+    db_id: str,
+    tokens: list[str],
+    *,
+    db_engine: str = "postgresql",
+    limit: int = HOST_TOKEN_ROW_LIMIT,
+) -> str:
+    """이름 토큰 LIKE 넓힘용 고정 SELECT (plans/196 §1.1 ① d — 읽기 전용 단일문).
+
+    `build_host_probe_sql`(정확·FQDN·IP)과 **별도 함수**다 — 그 규약은 그대로 두고, 워크로드 이름
+    토큰(`kbland`·`price` 등)이 hostname·name에 들어 있는 서버를 넓게 고른다. 점수·등급은 호출부
+    (`noise_gate.domain.host_link`)가 매긴다 — SQL은 좁히기만 한다. 결과는 `limit`행에서 자른다
+    (DB2는 `FETCH FIRST n ROWS ONLY` · D-051).
+
+    Args:
+        db_id: 조회 대상 인스턴스
+        tokens: 영소문자·숫자 토큰(그 밖의 문자가 섞인 토큰은 버린다 — LIKE 와일드카드 차단)
+        db_engine: 대상 DB 엔진
+        limit: 상한 행
+
+    Raises:
+        ValueError: 쓸 수 있는 토큰이 없을 때(조건 없는 전수 조회를 만들지 않는다)
+    """
+    safe = [t for t in dict.fromkeys(tokens) if t and _SAFE_TOKEN.fullmatch(t)]
+    if not safe:
+        raise ValueError("토큰 넓힘 후보가 비었습니다")
+    conditions: list[str] = []
+    for token in safe:
+        pattern = _sql_literal(f"%{token}%")
+        conditions.append(f"LOWER(r.hostname) LIKE {pattern}")
+        conditions.append(f"LOWER(r.name) LIKE {pattern}")
+    rows = max(1, int(limit))
+    row_limit = f"FETCH FIRST {rows} ROWS ONLY" if db_engine == "db2" else f"LIMIT {rows}"
+    t_resource = _table(db_id, "cmm_resource", db_engine)
+    return (
+        "SELECT r.hostname AS hostname, r.name AS name, r.ipaddress AS ipaddress\n"
+        f"FROM {t_resource} r\n"
+        "WHERE r.resource_type = 'server.Server'\n"
+        "  AND r.dtime IS NULL\n"
+        f"  AND ({' OR '.join(conditions)})\n"
+        "ORDER BY r.name\n"
+        f"{row_limit}"
+    )
+
+
+async def probe_host_tokens(
+    app_config: Any,  # AppConfig
+    db_id: str,
+    tokens: list[str],
+) -> list[dict[str, Any]]:
+    """인스턴스 1개에서 이름 토큰에 걸리는 서버 행을 **1쿼리**로 읽는다 (plans/196 §1.1 ① d).
+
+    `probe_hosts`와 같이 fail-open이 아니다 — 실패는 예외로 올려 호출부가 「확인하지 못함」으로
+    남긴다(「후보 없음」과 합치지 않는다).
+
+    Returns:
+        `[{"hostname", "name", "ipaddress"}]`
+    """
+    from src.routing.db_registry import DBRegistry
+
+    registry = DBRegistry(app_config)
+    if not registry.is_registered(db_id):
+        raise LookupError(f"활성 DB가 아닙니다: {db_id}")
+    domain = get_domain_by_id(db_id)
+    db_engine = domain.db_engine if domain else "postgresql"
+    sql = build_host_token_sql(db_id, tokens, db_engine=db_engine)
+    try:
+        async with registry.get_client(db_id) as client:
+            result = await client.execute_sql(sql)
+    except Exception as exc:
+        logger.warning(
+            "토큰 넓힘 조회 실패: db_id=%s engine=%s err=%s sql=%s", db_id, db_engine, exc, sql,
+        )
+        raise
+    rows = [
+        {
+            "hostname": _row_value(row, "hostname"),
+            "name": _row_value(row, "name"),
+            "ipaddress": _row_value(row, "ipaddress"),
+        }
+        for row in result.rows
+        if isinstance(row, dict)
+    ]
+    logger.info("토큰 넓힘 조회: db_id=%s 토큰=%d 행=%d", db_id, len(tokens), len(rows))
+    return rows
 
 
 async def probe_hosts(

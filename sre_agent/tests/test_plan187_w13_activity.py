@@ -453,7 +453,7 @@ def test_parallel_deep_dive_gets_activity_and_records_deep_events() -> None:
     events = job.activity.since(0)["events"]
     deep_start = next(e for e in events if e["kind"] == "deep_start")
     deep_end = next(e for e in events if e["kind"] == "deep_end")
-    assert deep_start["label"] == "심층 조사(HolmesGPT) 시작 — parallel"
+    assert deep_start["label"] == "심층 조사(HolmesGPT) 시작 — 병렬"  # plans/196 D6
     assert deep_end["status"] == "done" and deep_start["seq"] < deep_end["seq"]
     assert any(e["engine"] == "holmes" for e in events)
     assert events[-1]["kind"] == "finalize"

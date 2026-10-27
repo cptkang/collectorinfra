@@ -295,6 +295,10 @@ def _mask_lines(text: str, mask_fn: Callable[[str], str]) -> str:
     return "\n".join(mask_fn(line) for line in text.split("\n"))
 
 
+#: (plans/196 §5.3) 섹션의 개발자 사유 키 — 운영자 뷰에만 남는다.
+SECTION_DEV_REASON_KEY = "reason_detail"
+#: (plans/196 §5.3) `scope`의 개발자 사유 키 — 섹션 사유와 같이 운영자 뷰에만 남는다.
+SCOPE_DEV_REASON_KEYS: frozenset[str] = frozenset({"polestar_reason_detail"})
 #: (plans/187 W5a) 플레이북 브리핑 사용자 뷰에 싣는 키 — 6요소 원문은 싣지 않는다(D-325 ③).
 PLAYBOOK_VIEW_KEYS: tuple[str, ...] = ("partial", "playbook", "deep_dive", "engine_agreement")
 #: 마스킹하지 않는 구조 값의 키 — 식별자·enum(판독 맵 `readings` 포함). 그 외 문자열은 전부 가린다.
@@ -327,14 +331,29 @@ def playbook_user_view(
     `playbook` 키가 있을 때만 `PLAYBOOK_VIEW_KEYS`의 사본을 돌려준다. 섹션 표 셀·소견·종합 서술·
     가설 제목·대응 문장·`scope`·`notes`·런북·알려진 오류·심층 결과의 문자열을 `mask_fn`으로 가리고,
     구조 키·enum·수치는 그대로 둔다. 플레이북이 없으면 None(종전 사용자 뷰와 비트 동일).
+    (plans/196 §5.3 · D-325 ③) 섹션의 개발자 사유 `reason_detail`과 `scope`의
+    `SCOPE_DEV_REASON_KEYS`는 사용자 뷰에서 뺀다 — 운영자 뷰는 원 브리핑을 그대로 싣는다.
     """
     if not isinstance(briefing, Mapping) or not isinstance(briefing.get("playbook"), dict):
         return None
-    return {
+    view = {
         key: _mask_playbook_value(briefing[key], mask_fn)
         for key in PLAYBOOK_VIEW_KEYS
         if key in briefing
     }
+    sections = view["playbook"].get("sections")
+    if isinstance(sections, list):
+        view["playbook"]["sections"] = [
+            {k: v for k, v in sec.items() if k != SECTION_DEV_REASON_KEY}
+            if isinstance(sec, dict) else sec
+            for sec in sections
+        ]
+    scope = view["playbook"].get("scope")
+    if isinstance(scope, dict):
+        view["playbook"]["scope"] = {
+            k: v for k, v in scope.items() if k not in SCOPE_DEV_REASON_KEYS
+        }
+    return view
 
 
 def investigation_view(
