@@ -18,9 +18,10 @@ name ≠ hostname 이므로(Known Mistakes 2026-06-10) 서버명을 그대로 ho
     - 미등록 db_id / 조회 실패 / 0건 / 빈 hostname → None (호출부에서 원시 값 폴백).
 
 가용성 사전 판정 (Plan 81 / D-175):
-    같은 `cmm_resource` 행에 `avail_status`·`is_maintenance`가 있으므로 **해소 SELECT에
-    두 컬럼을 더해** 판정 근거를 함께 가져온다 — 프로세스 조회 경로의 **DB 왕복이 늘지 않는다**
-    (`resolve_with_status`). 다대상 경로는 `lookup_many`가 IN 절 **1쿼리**로 처리한다.
+    `avail_status`(자원 행)·`is_maintenance`(PostgreSQL은 유지보수 테이블 LEFT JOIN —
+    plans/197 F2)를 **해소 SELECT에 더해** 판정 근거를 함께 가져온다 — 프로세스 조회 경로의
+    **DB 왕복이 늘지 않는다** (`resolve_with_status`).
+    다대상 경로는 `lookup_many`가 IN 절 **1쿼리**로 처리한다.
     판정 자체는 `src.domain.host_availability`(순수)가 하고 여기서는 조회만 한다.
 
 계층: infrastructure (`polestar_history.py`와 동일 — DBHub 읽기 전용 SELECT 재사용).
@@ -75,6 +76,25 @@ def _table(db_id: str, name: str, db_engine: str = "postgresql") -> str:
     return f"{schema}.{name}"
 
 
+def _maintenance_select(db_id: str, db_engine: str) -> tuple[str, str]:
+    """유지보수 칼럼 SELECT 식과 JOIN 절을 엔진별로 돌려준다 (plans/197 F2).
+
+    PostgreSQL(gp/yd/로컬)은 자원 테이블에 유지보수 칼럼이 없고 별도 유지보수 테이블에 있다
+    (운영 스키마 실측) — 자원 ID별 MAX 집계 서브쿼리를 LEFT JOIN해 행 중복을 막는다. 행이
+    없으면 NULL(= 점검 아님/미상). DB2(b0)는 W0 실측 전 현행 유지 · plans/197 — 종전 직접
+    참조(비트 동일).
+    """
+    if db_engine == "db2":
+        return "r.is_maintenance AS is_maintenance", ""
+    t_maintenance = _table(db_id, "cmm_resource_maintenance", db_engine)
+    join = (
+        "LEFT JOIN (SELECT resource_id, MAX(is_maintenance) AS is_maintenance\n"
+        f"           FROM {t_maintenance} GROUP BY resource_id) m\n"
+        "       ON m.resource_id = r.id\n"
+    )
+    return "m.is_maintenance AS is_maintenance", join
+
+
 def build_hostname_sql(db_id: str, value: str, db_engine: str = "postgresql") -> str:
     """서버명/호스트명 → 정규 hostname 해소용 고정 SELECT를 조립한다 (읽기 전용 단일문).
 
@@ -87,11 +107,13 @@ def build_hostname_sql(db_id: str, value: str, db_engine: str = "postgresql") ->
     lit = _sql_literal(value)
     t_resource = _table(db_id, "cmm_resource", db_engine)
     row_limit = "FETCH FIRST 1 ROWS ONLY" if db_engine == "db2" else "LIMIT 1"
+    maint_col, maint_join = _maintenance_select(db_id, db_engine)
     return (
         # 가용성 판정 컬럼 2개를 함께 가져온다(Plan 81) — 별도 쿼리를 두면 왕복이 배가된다.
         "SELECT r.hostname AS hostname, r.name AS name,\n"
-        "       r.avail_status AS avail_status, r.is_maintenance AS is_maintenance\n"
+        f"       r.avail_status AS avail_status, {maint_col}\n"
         f"FROM {t_resource} r\n"
+        f"{maint_join}"
         "WHERE r.resource_type = 'server.Server'\n"
         "  AND r.dtime IS NULL\n"
         f"  AND (r.name = {lit} OR r.hostname = {lit})\n"
@@ -121,10 +143,12 @@ def build_host_status_sql(
     """
     t_resource = _table(db_id, "cmm_resource", db_engine)
     literals = ", ".join(_sql_literal(v) for v in values)
+    maint_col, maint_join = _maintenance_select(db_id, db_engine)
     return (
         "SELECT r.hostname AS hostname, r.name AS name,\n"
-        "       r.avail_status AS avail_status, r.is_maintenance AS is_maintenance\n"
+        f"       r.avail_status AS avail_status, {maint_col}\n"
         f"FROM {t_resource} r\n"
+        f"{maint_join}"
         "WHERE r.resource_type = 'server.Server'\n"
         "  AND r.dtime IS NULL\n"
         f"  AND (r.name IN ({literals}) OR r.hostname IN ({literals}))"

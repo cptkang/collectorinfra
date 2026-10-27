@@ -44,7 +44,6 @@ CREATE TABLE polestar.cmm_resource (
     location                    VARCHAR(255),
     longpollinginterval         INTEGER,
     mtime                       BIGINT,
-    is_maintenance              SMALLINT,
     manager_zone                VARCHAR(255),
     mesurementpollinginterval   INTEGER,
     modifiedby                  VARCHAR(255),

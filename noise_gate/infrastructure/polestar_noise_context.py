@@ -6,7 +6,8 @@
 
 Phase E1 수집 범위 (Plan 52 §10):
     1. **자산 중요도** — `cmm_resource.IMPORTANCE_ID` (원값 그대로, 매핑은 정책 계층 책임)
-    2. **유지보수 상태** — `cmm_resource.IS_MAINTENANCE` (불리언)
+    2. **유지보수 상태** — PostgreSQL은 `cmm_resource_maintenance.IS_MAINTENANCE`(LEFT JOIN),
+       DB2(b0)는 `cmm_resource.IS_MAINTENANCE` (불리언 · plans/197 F2)
     3. **폴스타 알림정책** — `cmm_alarm_def_noti` 통보대상 존재 여부 (보수적 판정)
 
 Phase E2 수집 범위 (Plan 52 §3.6 — `collect_dependency=True` 게이팅, 기본 off):
@@ -77,7 +78,9 @@ def _sql_literal(value: str) -> str:
     return f"'{cleaned}'"
 
 
-def build_resource_signal_sql(db_id: str, server_name: str) -> str:
+def build_resource_signal_sql(
+    db_id: str, server_name: str, *, db_engine: str = "postgresql"
+) -> str:
     """서버 본체(server.Server)의 중요도/유지보수 신호 조회 SQL을 조립한다.
 
     읽기 전용 SELECT 단일문. server.Server 행을 NAME(서버명)으로 직접 식별한다
@@ -86,17 +89,33 @@ def build_resource_signal_sql(db_id: str, server_name: str) -> str:
     - RESOURCE_CONF_ID JOIN 미포함 (D-022)
     - LIMIT 1 — 단일 서버행만 필요
     - SVR.ID(resource_id) — Plan 60 E4 노드 식별용(다홉 조상 BFS 시작점). 동일 쿼리·하위호환.
+    - 유지보수(plans/197 F2): PostgreSQL은 자원 테이블에 유지보수 칼럼이 없고 별도 유지보수
+      테이블에 있다(운영 스키마 실측) — 자원 ID별 MAX 집계 서브쿼리를 LEFT JOIN해 행 중복을 막는다.
+      행이 없으면 NULL(= 점검 아님/미상). DB2(b0)는 W0 실측 전 현행 유지 · plans/197 —
+      `db_engine == "db2"`일 때만 종전 직접 참조 문자열(비트 동일).
     """
     server_match = _SERVER_MATCH_BY_DB_ID.get(db_id, _DEFAULT_SERVER_MATCH).format(
         server_name=_sql_literal(server_name),
     )
     t_resource = _table(db_id, "cmm_resource")
+    if db_engine == "db2":
+        maintenance_col = "SVR.IS_MAINTENANCE AS maintenance"
+        maintenance_join = ""
+    else:
+        t_maintenance = _table(db_id, "cmm_resource_maintenance")
+        maintenance_col = "M.IS_MAINTENANCE AS maintenance"
+        maintenance_join = (
+            "LEFT JOIN (SELECT RESOURCE_ID, MAX(IS_MAINTENANCE) AS IS_MAINTENANCE\n"
+            f"           FROM {t_maintenance} GROUP BY RESOURCE_ID) M\n"
+            "       ON M.RESOURCE_ID = SVR.ID\n"
+        )
     return (
         "SELECT\n"
         "    SVR.ID AS resource_id,\n"
         "    SVR.IMPORTANCE_ID AS importance_id,\n"
-        "    SVR.IS_MAINTENANCE AS maintenance\n"
+        f"    {maintenance_col}\n"
         f"FROM {t_resource} SVR\n"
+        f"{maintenance_join}"
         "WHERE SVR.DTIME IS NULL\n"
         "  AND SVR.RESOURCE_TYPE = 'server.Server'\n"
         f"  AND {server_match}\n"
@@ -332,6 +351,21 @@ def _is_postgres_dialect(db_id: str) -> bool:
         return False
 
 
+def _is_db2_dialect(db_id: str) -> bool:
+    """db_id의 엔진이 DB2로 **확정**되는지 판정한다 (plans/197 F2 — 유지보수 SQL 분기).
+
+    domain_config의 db_engine을 단일 출처로 사용한다(D-057 계승). 미등록 db_id·판정 실패는
+    False(PostgreSQL 조인형)로 처리한다 — 종전 직접 참조 문자열은 DB2가 확실할 때만 쓴다.
+    """
+    try:
+        from src.routing.domain_config import get_domain_by_id
+
+        domain = get_domain_by_id(db_id)
+        return bool(domain is not None and domain.db_engine == "db2")
+    except Exception:  # noqa: BLE001 — 판정 실패는 False(조인형)
+        return False
+
+
 class PolestarNoiseContextRepository:
     """폴스타 DB에서 알람 노이즈 컨텍스트(중요도/유지보수/알림정책)를 고정 SQL로 조회한다."""
 
@@ -507,7 +541,11 @@ class PolestarNoiseContextRepository:
             )
             return unavailable_noise_ctx()
 
-        resource_sql = build_resource_signal_sql(event.db_id, event.server_name)
+        resource_sql = build_resource_signal_sql(
+            event.db_id,
+            event.server_name,
+            db_engine="db2" if _is_db2_dialect(event.db_id) else "postgresql",
+        )
         noti_sql = build_noti_policy_sql(event.db_id, event.alarm_name)
         try:
             async with self._registry.get_client(event.db_id) as client:

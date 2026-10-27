@@ -251,8 +251,24 @@ def build_resource_status_sql(is_db2: bool, server_name: str, limit: int) -> str
 
     server.Server(SVR, NAME 매칭)와 그 하위 리소스(PLATFORM_RESOURCE_ID COALESCE) 각각의
     AVAIL_STATUS/IMPORTANCE_ID/IS_MAINTENANCE를 반환한다. RESOURCE_CONF_ID JOIN 미포함(D-022).
+
+    유지보수(plans/197 F2): PostgreSQL은 자원 테이블에 유지보수 칼럼이 없고 별도 유지보수
+    테이블에 있다(운영 스키마 실측) — 자원 ID별 MAX 집계 서브쿼리를 LEFT JOIN해 행 중복을 막는다.
+    행이 없으면 NULL(= 점검 아님/미상). DB2(b0)는 W0 실측 전 현행 유지 · plans/197 — 종전
+    직접 참조(비트 동일).
     """
     t_res = _q(is_db2, "cmm_resource")
+    if is_db2:
+        maintenance_col = "CR.IS_MAINTENANCE AS is_maintenance"
+        maintenance_join = ""
+    else:
+        t_maint = _q(is_db2, "cmm_resource_maintenance")
+        maintenance_col = "M.IS_MAINTENANCE AS is_maintenance"
+        maintenance_join = (
+            "LEFT JOIN (SELECT RESOURCE_ID, MAX(IS_MAINTENANCE) AS IS_MAINTENANCE\n"
+            f"           FROM {t_maint} GROUP BY RESOURCE_ID) M\n"
+            "       ON M.RESOURCE_ID = CR.ID\n"
+        )
     return (
         "SELECT\n"
         "    CR.ID AS resource_id,\n"
@@ -260,11 +276,12 @@ def build_resource_status_sql(is_db2: bool, server_name: str, limit: int) -> str
         "    CR.RESOURCE_TYPE AS resource_type,\n"
         "    CR.AVAIL_STATUS AS avail_status,\n"
         "    CR.IMPORTANCE_ID AS importance_id,\n"
-        "    CR.IS_MAINTENANCE AS is_maintenance\n"
+        f"    {maintenance_col}\n"
         f"FROM {t_res} CR\n"
         f"JOIN {t_res} SVR ON SVR.ID = COALESCE(CR.PLATFORM_RESOURCE_ID, CR.ID)\n"
         "                     AND SVR.RESOURCE_TYPE = 'server.Server'\n"
         "                     AND SVR.DTIME IS NULL\n"
+        f"{maintenance_join}"
         "WHERE CR.DTIME IS NULL\n"
         f"  AND SVR.NAME = {_sql_literal(server_name)}\n"
         "ORDER BY CR.RESOURCE_TYPE\n"

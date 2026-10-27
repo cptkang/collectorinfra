@@ -21,6 +21,7 @@ from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timezone
 from typing import Any
 
+from noise_gate.domain.alarm import is_apm_source
 from noise_gate.domain.cross_source import ACTION_DEMOTE, MODE_ENFORCE
 from noise_gate.domain.silence import match_rules
 
@@ -493,6 +494,8 @@ class GateInputs:
     llm_actionability: Any
     apm_alarm_key: str | None
     cross_source_cap: bool
+    # (plans/197 W3) 제니퍼 군집 대표 외를 SUPPRESS 대신 DASHBOARD 상한으로(기본 False = 현행).
+    apm_correlation_domain_scope: bool = False
     # (plans/162 R4) 수집 실패 표지 — 규칙 표 「표지」 열이 True인 행·매트릭스가 받는 보기에서만
     # `collection_failed and effective_severity >= 1`이다(그 밖은 False).
     mark_collection_failed: bool = False
@@ -582,6 +585,10 @@ def _gate_inputs(
     )
     # (plans/162 W5 · D-336) 옵트인 — 기본 off면 제니퍼 정책 경로 심각도3도 단락 PAGE(비트 동일).
     apm_sev3_policy_enabled = bool(getattr(config, "apm_sev3_policy_enabled", False))
+    # (plans/197 W3) 옵트인 — 기본 off면 제니퍼 군집 대표 외도 step 7.5 SUPPRESS(비트 동일).
+    apm_correlation_domain_scope = bool(
+        getattr(config, "apm_correlation_domain_scope_enabled", False)
+    )
 
     # ── step 1: 실효 심각도 (E3 — AI 메시지 심각도 상향 전용 보강) ──
     severity, ai_severity, effective_severity = _effective_severity(event, analysis, config)
@@ -661,6 +668,7 @@ def _gate_inputs(
         llm_actionability=llm_actionability,
         apm_alarm_key=apm_alarm_key,
         cross_source_cap=cross_source_cap,
+        apm_correlation_domain_scope=apm_correlation_domain_scope,
     )
 
 
@@ -1007,12 +1015,36 @@ def _rule_correlation(g: GateInputs) -> NotificationDecision | None:
     cross_host_correlation_enabled=False(기본)면 평가하지 않아 회귀 0. 심각도3은 step3에서
     이미 단락되어 이 단계에 도달하지 않는다(군집돼도 각각 PAGE, 불변). storm(동일 서버 다발)과
     사유를 구분한다 — storm 경로 재사용 시 "동일 서버 다발" 사유가 감사를 오도하기 때문.
+    (plans/197 W3) apm_correlation_domain_scope_enabled면 제니퍼 이벤트는 억제 대신 DASHBOARD
+    상한이다 — 7.6과 같이 매트릭스가 DASHBOARD보다 높을 때만 낮추고 이하면 통과(None).
     """
     if g.cross_host_correlation_enabled and g.correlated:
+        if g.apm_correlation_domain_scope and _is_apm_event(g.event):
+            # (plans/197 W3 · D-317 원칙) 제니퍼 군집 대표 외는 억제하지 않고 DASHBOARD 상한 —
+            # 매트릭스가 DASHBOARD보다 높을 때만 낮추고, 이하면 통과(티어를 올리지 않음·7.6 패턴).
+            matrix_tier = _matrix_decision(g).tier
+            if _TIER_RANK[matrix_tier] > _TIER_RANK[TIER_DASHBOARD]:
+                return _decision(
+                    g,
+                    TIER_DASHBOARD,
+                    "크로스-호스트 상관 — 제니퍼 군집 대표 외 대시보드 강등"
+                    f"(매트릭스 {matrix_tier})",
+                    STAGE_CORRELATION,
+                    {"capped_from": matrix_tier},
+                )
+            return None
         return _decision(
             g, TIER_SUPPRESS, "크로스-호스트 상관 — 클러스터 대표 외 억제", STAGE_CORRELATION
         )
     return None
+
+
+def _is_apm_event(event: Any) -> bool:
+    """제니퍼(APM) 이벤트인지 — 필드가 없는 테스트 더블은 제니퍼가 아닌 것으로 본다."""
+    try:
+        return is_apm_source(event)
+    except AttributeError:
+        return False
 
 
 def _rule_cross_source_cap(g: GateInputs) -> NotificationDecision | None:
@@ -1299,6 +1331,8 @@ def decide_notification(
         - correlated(인자)는 워커가 온라인 그리디 군집(correlation.py)으로 산출해 전달한다.
           cross_host_correlation_enabled + correlated → SUPPRESS(사유 "크로스-호스트 상관 —
           클러스터 대표 외 억제"). storm(동일 서버)과 사유·경로를 구분한다(감사 오도 방지).
+          (plans/197) apm_correlation_domain_scope_enabled면 제니퍼 이벤트는 SUPPRESS 대신
+          DASHBOARD 상한(매트릭스 > DASHBOARD일 때만 — 티어를 올리지 않음).
         - step7(스톰) 다음·step8(매트릭스) 이전에 위치하므로 심각도3은 step3에서 이미 단락되어
           도달하지 않는다(군집돼도 각각 PAGE, 불변). 이 모듈은 correlation.py를 import하지 않는다.
 

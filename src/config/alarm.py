@@ -199,6 +199,13 @@ class NoiseGateConfig(BaseSettings):
     # 그래프를 로드해 인접 클러스터에 보너스 주입(존 내 매칭 정밀화). correlation.py는 topology 미의존.
     correlation_topology_weight_enabled: bool = False  # (E2) 위상 가중 on/off
     correlation_topology_weight: float = 0.2  # (E2) 인접 토폴로지 노드 유사도 보너스 크기
+    # ── plans/197 W3: 제니퍼 알람 상관 도메인 스코프 — 옵트인 하위 플래그 ──
+    # cross_host_correlation_enabled의 하위 정밀화. 켜면 제니퍼 알람(dbId jennifer·jennifer_<소스>)은
+    # 같은 domain_id(업무 앱)끼리만 군집하고, 군집 대표 외는 SUPPRESS가 아니라 DASHBOARD 상한
+    # (매트릭스가 DASHBOARD보다 높을 때만 낮춤 — 티어를 올리지 않음 · D-317 원칙). domain_id가 없는
+    # 제니퍼 알람은 현행 존 스코프. 폴스타 알람·심각도3 단락은 불변. off(기본)면 스코프·판정 모두
+    # 현행과 비트 동일. 기동 시 1회 해석.
+    apm_correlation_domain_scope_enabled: bool = False  # (plans/197) 제니퍼 상관 도메인 스코프
     business_hours_csv: str = ""              # (E3) 업무시간 (시간대 강등용)
     repeat_interval_seconds: int = 14400      # 재발생 재통보 간격 (4h, E1 dedup TTL)
     sev3_repeat_interval_seconds: int = 14400  # (§6.1) 심각도3 재통보 간격(기본=공통, 운영서 단축)

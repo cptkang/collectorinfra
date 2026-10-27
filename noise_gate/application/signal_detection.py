@@ -27,7 +27,11 @@ from noise_gate.domain.correlation import (
 from noise_gate.domain.flapping import MAX_STATES, flap_percent, update_flap_state
 from noise_gate.domain.notification_policy import compute_fingerprint
 from noise_gate.domain.severity_signatures import scan_signature_severity
-from noise_gate.infrastructure.apm_noise_context import ApmNoiseContext, correlation_extra
+from noise_gate.infrastructure.apm_noise_context import (
+    ApmNoiseContext,
+    correlation_domain,
+    correlation_extra,
+)
 
 if TYPE_CHECKING:
     from noise_gate.domain.topology import DependencyGraph
@@ -390,6 +394,8 @@ class SignalDetector:
 
         절차:
             - 해소(is_clear) 이벤트는 군집/카운트에서 제외한다(detect_storm 동일).
+            - (plans/197) apm_correlation_domain_scope_enabled면 제니퍼 이벤트의 스코프를
+              `db_id|domain_id`로 나눈다(도메인 없으면 db_id 그대로).
             - ① 만료 sweep: last_ts가 correlation_window_seconds 밖인 클러스터를 전 스코프에서
               제거하고 빈 스코프 키를 삭제한다(§10 — 키 만료 sweep 의무).
             - ② 버퍼 상한: 스코프의 활성 클러스터가 correlation_buffer_max 이상이면 oldest
@@ -428,6 +434,15 @@ class SignalDetector:
         self.sweep_correlation_clusters(now, window_sec)
 
         scope = event.db_id  # db_id(존) 스코프 — 존 경계는 넘지 않는다(§8 B-6).
+        # (plans/197 W3) 옵트인 — 제니퍼 이벤트는 같은 도메인(업무 앱)끼리만 묶는다. 흔한 유형은
+        # 도메인 토큰 1개 차이로도 Jaccard 임계를 넘어 다른 앱 장애가 한 군집이 되기 때문이다.
+        # 도메인 없음·폴스타·off(기본)면 현행 db_id 스코프(비트 동일).
+        if getattr(cfg, "apm_correlation_domain_scope_enabled", False) and is_apm_source(
+            event
+        ):
+            domain = correlation_domain(event)
+            if domain:
+                scope = f"{event.db_id}|{domain}"
         clusters = self._host.correlation_clusters.get(scope)
         if clusters is None:
             clusters = []
