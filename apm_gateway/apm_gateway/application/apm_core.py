@@ -30,6 +30,7 @@ from apm_gateway.application.resolver import Resolution
 from apm_gateway.application.sources import (
     JenniferSource,
     SourceSet,
+    gather_per_source,
 )
 from apm_gateway.application.tool_common import (
     HEALTH_DEFAULT_LOOKBACK,
@@ -223,18 +224,27 @@ class ApmCore:
     async def realtime(
         self, resolution: Resolution, limits: Limits
     ) -> dict[InstKey, dict[str, Any]]:
-        """해소 인스턴스의 실시간 스냅샷((소스, 도메인)당 1호출 · 대상 인스턴스만 묻는다)."""
+        """해소 인스턴스의 실시간 스냅샷((소스, 도메인)당 1호출 · 대상 인스턴스만 묻는다 · 호출은
+        소스 동시 요청 상한 폭으로 겹치고 결과는 묶음 순서대로 처리한다 — plans/192 W2)."""
         wanted = {inst_key(i) for i in resolution.instances}
         out: dict[InstKey, dict[str, Any]] = {}
         groups = group_by_domain(resolution)
         expect_calls(len(groups))
-        for (sid, domain_id), ids in groups.items():
-            try:
-                for rec in tag_records(await self.api(sid).realtime(domain_id, ids), sid):
-                    if inst_key(rec) in wanted:
-                        out[inst_key(rec)] = rec
-            except ApmError as e:
-                limits.fail(limit_notice(e, "실시간", f"({self.sources.where(sid, domain_id)})"))
+        items = list(groups.items())
+        results = await gather_per_source(
+            items,
+            lambda it: self.sources.get(it[0][0]),
+            lambda it: self.api(it[0][0]).realtime(it[0][1], it[1]),
+        )
+        for ((sid, domain_id), _ids), got in zip(items, results, strict=True):
+            if isinstance(got, ApmError):
+                limits.fail(
+                    limit_notice(got, "실시간", f"({self.sources.where(sid, domain_id)})")
+                )
+                continue
+            for rec in tag_records(got, sid):
+                if inst_key(rec) in wanted:
+                    out[inst_key(rec)] = rec
         missing = wanted - set(out)
         if missing:
             limits.append(f"[한계] 실시간 데이터 없는 인스턴스: {self.ids_text(missing)}")
@@ -294,22 +304,25 @@ class ApmCore:
         self, resolution: Resolution, window: Window, limits: Limits
     ) -> dict[str, Any] | None:
         """시 단위 애플리케이션 통계(창이 길 때 맥락) — 시 경계로 내림·올림. 합계는 받은 **전**
-        애플리케이션 행으로 낸다(종전 `max_row=20` 합계 누락 교정 · plans/134 W1 N-2)."""
+        애플리케이션 행으로 낸다(종전 `max_row=20` 합계 누락 교정 · plans/134 W1 N-2). 호출은 소스
+        동시 요청 상한 폭으로 겹치고 결과는 묶음 순서대로 처리한다(plans/192 W2)."""
         start, end = hour_floor(window.start_ms), hour_ceil(window.end_ms)
         rows: list[dict[str, Any]] = []
         groups = group_by_domain(resolution)
         expect_calls(len(groups))
-        for (sid, domain_id), ids in groups.items():
-            try:
-                rows.extend(
-                    tag_records(
-                        await self.api(sid).application_status(domain_id, ids, start, end), sid
-                    )
-                )
-            except ApmError as e:
+        items = list(groups.items())
+        results = await gather_per_source(
+            items,
+            lambda it: self.sources.get(it[0][0]),
+            lambda it: self.api(it[0][0]).application_status(it[0][1], it[1], start, end),
+        )
+        for ((sid, domain_id), _ids), got in zip(items, results, strict=True):
+            if isinstance(got, ApmError):
                 limits.fail(
-                    limit_notice(e, "시 단위 통계", f"({self.sources.where(sid, domain_id)})")
+                    limit_notice(got, "시 단위 통계", f"({self.sources.where(sid, domain_id)})")
                 )
+                continue
+            rows.extend(tag_records(got, sid))
         if not rows:
             return None
         calls = sum(r["calls"] for r in rows)

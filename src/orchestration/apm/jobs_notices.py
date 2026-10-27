@@ -103,7 +103,10 @@ async def _await_first_hop(session: Any, call: _Call, scope: _JobScope) -> None:
     """대상 선정용 인스턴스 목록이 작업으로 승격됐다 — 마감까지 기다리고, 못 끝나면 취소한다."""
     handle = jobs.job_handle(call.envelope) or {}
     job_id = str(handle.get("job_id"))
-    status = await jobs.poll_job(session, job_id, scope.owner, until=scope.poll_until)
+    # 조기 접수(plans/192 W3)는 끈다 — 첫 홉은 「마감을 넘기면 취소」 규칙 그대로(SPEC §3.8)
+    status = await jobs.poll_job(
+        session, job_id, scope.owner, until=scope.poll_until, early_accept=False
+    )
     if status is not None and status.get("error"):
         call.error = _envelope_error(status)
         return

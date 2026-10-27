@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-20 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-23 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -234,6 +234,7 @@
 | 189 | [`189-WIP-prometheus-operational-label-anchor.md`](./189-WIP-prometheus-operational-label-anchor.md) | 189. 운영 Prometheus 라벨 앵커 — 폴스타 hostname·IP ↔ `hostname`·`node_ip` 결정적 조립 | **WIP** · W1~W7 구현 완료 · 커밋 전(2026-10-20 · D-119 부기) · 기본 `nodename` 바이트 동일 · 회귀 신규 실패 0(모듈 단위) · 검증 Critical 0·교정 8 · 잔여: 폐쇄망 표본 왕복 · Docker IT · ruff/mypy · `_deep_section` 필터 · L-4 *(상세: 계획서 머리)* | 2026-10-20 |
 | 190 | [`190-apm-investigation-latency.md`](./190-apm-investigation-latency.md) | 190. SRE 조사 APM 호출 지연 교정 — 해소 소스 한정 · X-View 사전 확인 · APM 전용 타임아웃 | 완료 · 커밋 전(2026-10-20 · W0~W5 · D-344) · 플레이북 APM `source_ids` 한정 · app_health `xview_confirm_over`=10 + 시 단위 대체·판정 불가 · `APM_TOOL_TIMEOUT_SECONDS` · 폐쇄망 재측정 대기 |
 | 191 | [`191-WIP-component-settings-webui.md`](./191-WIP-component-settings-webui.md) | 191. 분리 컴포넌트 설정 웹UI — sre_agent·apm_gateway·mcp_server·alarm_server·fabrix_proxy 설정을 관리자 화면에서 조회·저장 | **WIP** · W0~W7 완료(2026-10-21 · `82b2a7ae`) · 관리 주소 기존 서비스 URL 파생(10-22) · 5종 `/admin/config` + 본체 프록시·UI · D-345 · 회귀 rc=0(모듈 단위) · 검증·감사 지적 교정 완료 · 잔여: 매뉴얼 캡처 · CLAUDE.md 경계 표 1줄 *(상세: 계획서 머리)* | 2026-10-21 |
+| 192 | [`192-TODO-apm-untargeted-latency.md`](./192-TODO-apm-untargeted-latency.md) | 192. 서버 미지정 APM 조회 지연 교정 — 끝나기 어려운 작업 조기 접수(B) · 도메인 단위 병렬 호출(C) | **TODO** · 작성 2026-10-23 · D-346 예약 · 본체 `poll_job` 조기 접수 · 게이트웨이 가벼운 도메인 루프 병렬(`JENNIFER_MAX_IN_FLIGHT` 기본 4) · `wait_slot` 경합 교정 | 2026-10-23 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |

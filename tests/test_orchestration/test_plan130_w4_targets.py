@@ -319,13 +319,17 @@ async def test_search_promoted_to_a_job_is_awaited_or_fails_closed(gateway, monk
     job = {"job_id": "a" * 32, "state": "running"}
     gw, _ = gateway(fixed={("query", "abc"): _env("apm_instance_map", [], job=job)})
 
-    async def poll_job(session, job_id, owner, *, until, interval=None):
+    early: list[bool] = []
+
+    async def poll_job(session, job_id, owner, *, until, interval=None, early_accept=True):
+        early.append(early_accept)
         if poll == "raises":
             raise RuntimeError("poll broke")
         return {"job": {**job, "state": "completed"}, "rows": [_inst(1, "abc-was01", "h1")]}
 
     monkeypatch.setattr(aq.jobs, "poll_job", poll_job)
     res = await _run(["apm.app_health"], [{"text": "abc", "kind": "instance"}])
+    assert early == [False], "대상 해석 작업은 조기 접수하지 않는다(plans/192 W3)"
     calls = gw.named("apm_app_health")
     if poll == "raises":
         assert calls == [], "작업 핸들뿐인 검색을 0건으로 읽어 다른 대상을 부르지 않는다"

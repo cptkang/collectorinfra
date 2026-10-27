@@ -13,8 +13,10 @@
 도메인 조회 불가 인벤토리는 짧게(30초) 캐시한다 — 라이선스 적용·에이전트 접속 뒤 최대 10분 동안
 "도메인 0건"을 돌려주지 않게 한다(F-3). 빈 결과를 "정상 · 0건"으로 단정하지 않는다(§0.10 #18).
 
-적재는 도메인마다 순차 호출이라 도메인이 수백 개면 수십 초~수 분이 걸린다(운영 실측 2026-09-30 —
-도메인 약 350개 · 호출 상한 5회/초 → 적재 1회 ≈ 70초, 겹친 적재 2회 ≈ 140~160초). 그래서
+적재는 도메인마다 1호출이라 도메인이 수백 개면 수십 초~수 분이 걸린다(운영 실측 2026-09-30 —
+도메인 약 350개 · 호출 상한 5회/초 → 적재 1회 ≈ 70초, 겹친 적재 2회 ≈ 140~160초). 도메인 호출은
+소스 동시 요청 상한(`max_in_flight`) 폭으로 겹쳐 부르고 결과는 도메인 순서대로 담는다(plans/192 W2 ·
+상한 1 = 종전 순차). 그래서
 - **적재는 한 번에 하나**다 — 진행 중이면 새 요청은 그 적재를 함께 기다린다(중복 적재가 호출 상한을
   나눠 쓰며 서로를 두 배로 늦췄다).
 - 기다리던 요청이 취소돼도 적재는 끝까지 간다 — 결과가 캐시에 남아야 다음 요청이 빈 캐시를 만나지 않는다.
@@ -37,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from apm_gateway.adapters.jennifer.api import JenniferApi
+from apm_gateway.application.parallel import gather_bounded
 from apm_gateway.domain.call_context import SharedLoadScope, current_scope, set_scope
 from apm_gateway.domain.errors import SOURCE_UNAVAILABLE, ApmError
 from apm_gateway.domain.sources import DEFAULT_SOURCE_ID
@@ -150,8 +153,11 @@ class InstanceResolver:
         domain_filter: tuple[int, ...] = (),
         cache_seconds: int = 600,
         clock: Callable[[], float] = time.monotonic,
+        max_in_flight: int = 1,
     ) -> None:
         self._api = api
+        # 적재의 도메인 호출 동시 폭(소스 동시 요청 상한 — 1이면 종전 순차)
+        self._max_in_flight = max_in_flight
         self.source_id = source_id
         self._overrides = [
             ov
@@ -250,11 +256,15 @@ class InstanceResolver:
         if self._domain_filter:
             domains = [d for d in domains if d["domain_id"] in self._domain_filter]
         inv = Inventory(domains=domains, fetched_at=started)
-        for d in domains:
-            try:
-                found = await self._api.instances(d["domain_id"], d["domain_name"])
-            except ApmError as e:
-                inv.unavailable[d["domain_id"]] = f"{e.code}: {e.reason}"
+        # 호출은 겹쳐서, 결과는 도메인 순서대로(공유 적재 맥락을 자식 호출이 물려받는다)
+        results = await gather_bounded(
+            domains,
+            lambda d: self._api.instances(d["domain_id"], d["domain_name"]),
+            self._max_in_flight,
+        )
+        for d, found in zip(domains, results, strict=True):
+            if isinstance(found, ApmError):
+                inv.unavailable[d["domain_id"]] = f"{found.code}: {found.reason}"
                 continue
             inv.instances.extend({**inst, "source_id": self.source_id} for inst in found)
         logger.info(
