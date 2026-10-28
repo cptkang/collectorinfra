@@ -28,9 +28,10 @@ import하므로, 여기서 ImportError가 나면 관제 대시보드 API가 500�
 from __future__ import annotations
 
 import logging
+from typing import Any
 
 try:
-    from prometheus_client import Counter
+    from prometheus_client import REGISTRY, Counter
 except ImportError:  # pragma: no cover - 설치 환경에서는 타지 않는다
     Counter = None  # type: ignore[assignment,misc]
 
@@ -82,4 +83,37 @@ def record_decision(*, stage: str, reason: str, tier: str) -> None:
     NOISE_GATE_DECISIONS_TOTAL.labels(
         stage=resolved if resolved in _KNOWN_STAGES else OTHER_LABEL,
         decision=tier if tier in _KNOWN_DECISIONS else OTHER_LABEL,
+    ).inc()
+
+
+#: (plans/198 I-11) 사건 단위 조사 카운터의 결과 라벨 — 합류로 아낀 발주 · 증상 선착 보완 발주.
+INCIDENT_OUTCOMES: frozenset[str] = frozenset({"joined", "symptom_first"})
+
+# 처음 셀 때 만든다 — 플래그 off면 등록 자체가 없어 `/metrics` 출력이 종전과 같다(비트 동일).
+_incident_counter: Any = None
+
+
+def record_incident_investigation(outcome: str) -> None:
+    """사건 단위 조사(plans/198 I-11) 1건을 센다 — `noise_gate_incident_investigations{outcome}`.
+
+    Args:
+        outcome: `INCIDENT_OUTCOMES` 중 하나(밖의 값은 `other`)
+    """
+    global _incident_counter
+    if Counter is None:
+        return
+    if _incident_counter is None:
+        try:
+            _incident_counter = Counter(
+                "noise_gate_incident_investigations",
+                "사건 단위 조사 수(joined=같은 사건 진행 중 조사에 합류해 아낀 발주 · "
+                "symptom_first=증상 선착 사건 종합 조사 보완 발주).",
+                ("outcome",),
+            )
+        except ValueError:  # 모듈 재적재 — 이미 등록된 수집기를 쓴다
+            _incident_counter = REGISTRY._names_to_collectors[
+                "noise_gate_incident_investigations"
+            ]
+    _incident_counter.labels(
+        outcome=outcome if outcome in INCIDENT_OUTCOMES else OTHER_LABEL
     ).inc()

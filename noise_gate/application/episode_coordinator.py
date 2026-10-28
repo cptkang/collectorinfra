@@ -33,6 +33,8 @@ from noise_gate.domain.cross_source import (
 )
 from noise_gate.domain.notification_policy import STAGE_MATRIX, TIER_DASHBOARD, TIER_TICKET
 from noise_gate.infrastructure.cross_source_rules import episode_alarm
+from noise_gate.infrastructure.investigation_store import ACTIVE_STATUSES
+from noise_gate.infrastructure.metrics import record_incident_investigation
 
 # 이동 전과 같은 로거 이름 — 운영 로그 `%(name)s`와 테스트 caplog 로거 필터를 보존한다.
 logger = logging.getLogger("noise_gate.application.alarm_worker")
@@ -204,14 +206,89 @@ class EpisodeCoordinator:
         제출)으로 돌아간다. 종합 조사는 플래그 on에서만 생기므로 off면 종전과 같다.
         """
         if not is_apm_source(event):
-            return None
+            return self.incident_join(cross_source)
         ep = self.episode_of(cross_source)
         if ep is None:
             return None
         inv = self.usable_episode_investigation(ep) or ep.apm_investigation_id
         if not inv:
-            return None
+            return self.incident_join(cross_source)
         return {"episode_id": ep.id, "investigation_id": inv}
+
+    def incident_on(self) -> bool:
+        """사건 단위 조사 활성 — 플래그 AND 조사 트리거 AND 추적기(plans/198 I-11).
+
+        조사 트리거가 꺼진 수동 전용(D-347)에서는 False — 자동 발주가 없으니 합류·보완도 없다.
+        """
+        gate = self._host.config.noise_gate
+        return (
+            self._host.episodes is not None
+            and bool(getattr(gate, "investigation_incident_unit_enabled", False))
+            and bool(getattr(gate, "investigation_trigger_enabled", False))
+        )
+
+    def incident_join(self, cross_source: dict[str, Any] | None) -> dict[str, Any] | None:
+        """같은 사건에 진행 중인 조사가 있으면 합류 대상(plans/198 I-11 · 194 R8).
+
+        후보는 사건 종합 조사 → 멤버가 마지막으로 낸 단독 조사 순이다. 조사 저장소상 상태가 진행
+        중(`ACTIVE_STATUSES`)일 때만 합류한다 — 끝난 조사에 묶으면 새 알람의 현재 상태가 조사되지
+        않는다. 저장소가 없으면 진행 여부를 알 수 없어 합류하지 않는다(종전처럼 따로 제출).
+        플래그 off면 None(비트 동일).
+
+        이 알람 처리에서 증상 선착 종합 조사가 곧 나갈 사건이면 `count=False`를 싣는다 — 합류로
+        아낀 발주를 종합 조사 1건이 되쓰므로 「아낀 발주」(`joined`)로 세지 않는다(plans/198 교정).
+        """
+        if not self.incident_on():
+            return None
+        ep = self.episode_of(cross_source)
+        store = self._host.investigation_store
+        if ep is None or store is None:
+            return None
+        count = not (
+            self.symptom_first(ep, cross_source or {})
+            and episode_investigation_due(ep, cause_confirmed=True)
+        )
+        for inv in (ep.episode_investigation_id, ep.incident_investigation_id):
+            if not inv:
+                continue
+            try:
+                rec = store.get_by_investigation(inv)
+            except Exception:  # noqa: BLE001 — 조회 실패는 합류하지 않고 따로 제출한다
+                logger.warning("사건 조사 상태 조회 실패(합류 안 함): inv=%s", inv, exc_info=True)
+                return None
+            if str((rec or {}).get("status") or "") in ACTIVE_STATUSES:
+                join: dict[str, Any] = {
+                    "episode_id": ep.id, "investigation_id": inv, "joined": True,
+                }
+                if not count:
+                    join["count"] = False
+                return join
+        return None
+
+    def symptom_first(self, ep: Episode, cross_source: dict[str, Any]) -> bool:
+        """증상 선착 — 원인 알람이 통보된 연관 증상을 얻은 시점을 사건 확정으로 본다.
+
+        (plans/198 I-11)
+        """
+        return (
+            not ep.links
+            and bool(cross_source.get("related_effects"))
+            and self.incident_on()
+        )
+
+    def record_incident_investigation(
+        self, cross_source: dict[str, Any], result: Any
+    ) -> None:
+        """멤버 알람이 새로 낸 단독 조사 id를 사건에 기록한다 — 합류 기준(plans/198 I-11)."""
+        if not self.incident_on() or not isinstance(result, dict):
+            return
+        pending = result.get("investigation_pending")
+        inv = result.get("investigation_id") or (
+            pending.get("investigation_id") if isinstance(pending, dict) else None
+        )
+        ep = self.episode_of(cross_source)
+        if inv and ep is not None:
+            ep.incident_investigation_id = str(inv)
 
     def usable_episode_investigation(self, ep: Episode) -> str:
         """연결해도 되는 사건 종합 조사 id — 제출 성공(id 있음)이고 저장소상 종결 실패가 아닐 때만.
@@ -288,7 +365,10 @@ class EpisodeCoordinator:
         않는다.
         """
         ep = self.episode_of(cross_source)
-        if ep is None or not episode_investigation_due(ep):
+        # (plans/198 I-11) 증상 선착 — 원인 알람이 통보된 연관 증상을 얻은 시점을 사건 확정으로
+        # 본다.
+        symptom_first = ep is not None and self.symptom_first(ep, cross_source)
+        if ep is None or not episode_investigation_due(ep, cause_confirmed=symptom_first):
             return
         client = self._host.sre_agent_client
         if client is None or self._host.episodes is None:
@@ -314,6 +394,12 @@ class EpisodeCoordinator:
         ep.episode_investigation_status = str(outcome.get("status") or "attempted")
         if outcome.get("investigation_id") and outcome.get("status") == "submitted":
             ep.episode_investigation_id = str(outcome["investigation_id"])
+        if symptom_first:
+            record_incident_investigation("symptom_first")
+            logger.info(
+                "증상 선착 사건 종합 조사 보완 발주: episode=%s 대표=%s status=%s",
+                ep.id, rep_id, ep.episode_investigation_status,
+            )
         for alarm_id in [k for k, v in self._host.episode_ctx.items() if v[0] == ep.id]:
             del self._host.episode_ctx[alarm_id]
         pending = outcome.get("pending")
@@ -470,6 +556,7 @@ class EpisodeCoordinator:
         """
         try:
             self.record_apm_investigation(cross_source, event, result)
+            self.record_incident_investigation(cross_source, result)
         except Exception:  # noqa: BLE001
             logger.warning("사건 조사 id 기록 실패: alarm_id=%s", event.alarm_id, exc_info=True)
         # (plans/153 W4 §4.5) 사건 종합 조사 — 플래그 off면 진입하지 않는다(비트 동일).

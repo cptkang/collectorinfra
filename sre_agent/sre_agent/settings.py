@@ -200,6 +200,28 @@ class AgentSettings(BaseSettings):
     # **제시 전용**: 실행 코드 경로는 어느 배치에도 존재하지 않는다(D-003·테스트 고정).
     # severity_judge가 off면 매칭 시그니처가 없어 권고도 비어 있다(근거 없는 권고 금지).
     remediation_recommender_enabled: bool = False
+    # 값 대조 인용 검증(plans/198 I-4 · 154 H-4 · 결정적 · LLM 0). 기본 off = 브리핑 비트 동일.
+    # 켜면 잡마다 증거 원장(도구 호출 1건 = 1행 + 사전수집 상관·알람 페이로드)을 만들고, 조사 서술의
+    # 수치·시각·호스트명을 원장과 대조한다 — 원장에 없는 값이 있는 단정은 가설로 강등하고 한계에
+    # 「원장에 없는 값: …」을 싣는다. `citations_verified`는 마커가 아니라 대조 결과로 정한다.
+    # 브리핑에 `citation_check`·`evidence_ledger`(ev_id·도구·인자 요약) 키가 더해진다.
+    citation_value_check_enabled: bool = False
+    # 실패 모드 가드(plans/198 I-10 · 154 H-5 · 결정적 · LLM 0). 셋 다 기본 off = 브리핑·감사·
+    # 잡 결과 비트 동일. HolmesGPT 조사 경로에만 걸린다.
+    # ① 부분 브리핑: 미완주(step 상한·정체 중단)·전체 타임아웃이면 stub·미완주 문구 대신 그때까지
+    #   회수한 도구 결과(증거 원장 행)로 결정적 부분 브리핑을 만든다
+    #   (가산 키 `partial`·`evidence_ledger`).
+    partial_briefing_on_incomplete: bool = False
+    # ② 정체 가드: 같은 도구·정규화 인자 `stall_repeat_threshold`회 또는 새 근거
+    #   (처음 보는 성공 조회) 없는 연속 도구 step `stall_idle_steps`회면 조사를 협조적으로 멈추고
+    #   미완주(정체)로 끝낸다 —
+    #   holmes 0.36.0은 실행 중 대화에 지시를 넣는 통로가 없어 「결론 지시 주입」 대신 중단한다.
+    stall_stop_enabled: bool = False
+    stall_repeat_threshold: int = Field(default=3, ge=2)
+    stall_idle_steps: int = Field(default=4, ge=1)
+    # ③ 미조회 소스 표기: 알람 kind별 기대 소스(`config/expected_sources.yaml`) 중 호출 0인 것을
+    #   한계에 「확인하지 않은 소스: …」로 싣는다.
+    unchecked_source_limitation_enabled: bool = False
     # 조사 지침 추가 문구(plans/50 G5 · D-197). 기본 None — 운영자가 .env로 넣는 자유 지침이며
     # Plan 51 §6 플레이북의 편입점이다. `investigation_guidance.build_guidance`가 말미에 덧붙인다.
     investigation_guidance_extra: str | None = None
@@ -251,6 +273,17 @@ class AgentSettings(BaseSettings):
     # plans/91 1-3(C′-1): 페이로드 meta.root_resource_name(E4 root 서버)을 연관 서버로 소비해 알람 1건씩 추가 수집.
     # 상한(대수). 0 = off(비트 동일). U-I 확정 기본 상한 3은 on 전환 시 값. **만료일 2027-03-10**(D-161 C1).
     evidence_correlation_related_hosts: int = 0
+    # 토폴로지 1홉 이웃(plans/198 I-7 · D-350 ④ · 결정적 · LLM 0). 기본 off = 사전수집 배치·
+    # 브리핑·조사 지침 비트 동일. 켜면(사전수집 `evidence_correlation_enabled`도 켜져 있어야 한다)
+    # 첫 배치 말미에 `polestar_topology`(1홉) 1건을 더하고, 확정 연결만(폴스타 토폴로지 · D-348
+    # 이전 확정 연결 — 추정·선택 대기 연결 제외)으로 이웃을 최대 `evidence_topology_neighbors_max`대
+    # 골라 이웃 알람을 배치 1회로 부른다(이웃당 1건 · 기존 배치 콜러블·동시 상한 안). 이웃 첫 알람이
+    # 대상보다 앞서면 외부 원인 후보(선행 순)로 세워 브리핑 가산 키 `neighbors`·
+    # `external_cause_candidates`(도구 호출 수 포함)에 싣고, 조사 지침에 이웃 목록·선행 판정·
+    # 이웃 밖 호스트 탐색 금지를 넣는다. 가설 순위는 그대로다.
+    # 플레이북 모드(사전수집 생략)에는 걸리지 않는다.
+    evidence_topology_neighbors_enabled: bool = False
+    evidence_topology_neighbors_max: int = Field(default=5, ge=1)
     # baseline 기간 수(granularity 단위 — 시간 지표면 24 = 직전 24시간).
     evidence_baseline_periods: int = 24
     # 사전수집 MCP 배치 타임아웃(초) — SSE 연결·호출 단위에 같이 적용. 플레이북 스텝의 도구 1건
@@ -299,6 +332,23 @@ class AgentSettings(BaseSettings):
     # 재시도가 다시 부르지 않는다 — 재시도가 살리는 것은 스텝 상한에 걸려 아직 못 낸·기다리던
     # 호출이다.
     sre_playbook_retry_timed_out_steps: bool = True
+    # 판별 조회 1회 루프(plans/198 I-2 · D-350 ① · 결정적 · LLM 0). 기본 off = 비트 동일.
+    # 켜면 수집(·결손 스텝 재시도) 뒤 남은 수집 예산 안에서, 1차 평가의 상위 판단 보류 가설
+    # `sre_playbook_discriminator_top_n`개에 대해 가설 규칙표의 판별 스텝(플레이북에 없는 단계만)을
+    # 1회 돌리고 그 가설의 조건만 다시 판정한다. 결과는 `hypotheses[].verification`에 싣는다.
+    # 심층(HolmesGPT) 결과는 가설 상태를 바꾸지 않는다(D-341 ⑮ 그대로).
+    sre_playbook_discriminator_enabled: bool = False
+    sre_playbook_discriminator_top_n: int = Field(default=2, ge=1)
+    # SOP 앵커(plans/198 I-9 · D-341 ⑮ · 결정적 문구). 기본 off = 심층 지시 문자열 비트 동일.
+    # 켜면 플레이북 모드 심층 조사(HolmesGPT) 지시에 그 플레이북의 스텝 순서(서술 초점 · 액션 ID ·
+    # 조건부 표시)를 조사 계획 앵커로 넣는다 — 정적 지시만이며 실행 결과·판정은 넣지 않는다.
+    sop_anchor_enabled: bool = False
+    # kind별 툴셋 좁히기(plans/198 I-9 · 결정적). 기본 off = 조사 도구 목록·지침 비트 동일.
+    # 켜면 알람 조사 잡(크로스소스 사건 제외)의 HolmesGPT 도구를 `config/expected_sources.yaml`
+    # `allowed`(kind → 허용 소스 · host = polestar·prometheus, was = apm·polestar)로 그 잡만 좁히고,
+    # 지침에 「추가 조사 필요: <소스> — <이유>」를 쓰라는 범위 노트를 넣는다(실행하지 않는다).
+    # 허용 키가 없는 kind·YAML 적재 실패면 종전 툴셋 그대로다.
+    kind_toolset_narrowing_enabled: bool = False
     # 배치 콜러블이 한 MCP 세션 안에서 동시에 내는 도구 호출 상한
     # (plans/187 W21 P1 · D-341 부기 12). 1 = 종전 순차.
     # **기본 4는 사용자 확정 예외(D-161 기본 off 원칙의 예외)** — 근거: was.latency S0가

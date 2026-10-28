@@ -521,3 +521,17 @@ class AlarmCapabilitiesResponse(BaseModel):
             "(NOISE_CONSOLE_PORTAL_TAB_ENABLED · plans/193 W2 · 기본 off)"
         ),
     )
+    investigation_label_enabled: bool = Field(
+        default=False,
+        description=(
+            "완료 조사 「실제 원인」 입력 — 거짓이면 웹이 라벨 조회를 보내지 않는다 "
+            "(NOISE_INVESTIGATION_LABEL_ENABLED · plans/198 W0 · 기본 off)"
+        ),
+    )
+    investigation_memory_enabled: bool = Field(
+        default=False,
+        description=(
+            "완료 조사 「비슷한 과거 조사」 — 거짓이면 웹이 유사 조사 조회를 보내지 않는다 "
+            "(NOISE_INVESTIGATION_MEMORY_ENABLED · plans/198 W7 · 기본 off)"
+        ),
+    )

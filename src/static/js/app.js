@@ -5232,6 +5232,18 @@
             linkHost: function (investigationId, body) {
                 return bvRequest("/api/v1/alarm/investigations/" + encodeURIComponent(investigationId) + "/host-link", "POST", body);
             },
+            // (plans/198 W0 I-1) 「실제 원인」 라벨 저장 — 조회 404(기능 꺼짐)면 화면이 이 경로를 부르지 않는다
+            saveCauseLabel: function (investigationId, body) {
+                return bvRequest("/api/v1/alarm/investigations/" + encodeURIComponent(investigationId) + "/cause-label", "POST", body);
+            },
+            // (plans/198 교정) 기능 조회가 켜짐을 알릴 때만 조회한다 — 꺼져 있으면 완료 조사마다 404 GET이 나가지 않는다
+            causeLabel: function () {
+                return !!(alarmCapabilities && alarmCapabilities.investigation_label_enabled === true);
+            },
+            // (plans/198 W7 I-8) 비슷한 과거 조사 조회 — 기능 조회 `investigation_memory_enabled`가 참일 때만
+            similar: function () {
+                return !!(alarmCapabilities && alarmCapabilities.investigation_memory_enabled === true);
+            },
         }).catch(function (err) {
             console.warn("[diagnosis] 장애 진단 초기화 실패:", err);
             return false;

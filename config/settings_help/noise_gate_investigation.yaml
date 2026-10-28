@@ -262,6 +262,33 @@ settings:
     recommendation: 사건 상관을 shadow 이상으로 켜고 조사 서비스의 크로스소스 조사(CROSS_SOURCE_INVESTIGATION_ENABLED)와 함께 켠다.
     related: [NOISE_INVESTIGATION_TRIGGER_ENABLED, NOISE_CROSS_SOURCE_MODE, NOISE_INVESTIGATION_FOLLOWUP_ENABLED]
 
+  NOISE_INVESTIGATION_INCIDENT_UNIT_ENABLED:
+    example: >-
+      xsapp01에 CPU PAGE 조사가 진행 중일 때 1분 뒤 같은 서버 메모리 PAGE가 오면, 켜 두면 새 조사를 내지 않고 진행 중인 CPU 조사에 합류해 그 알람 카드에서도 같은 조사가 보인다. 또 제니퍼 큐잉이 먼저 오고 폴스타 CPU가 나중에 와도 CPU가 도착한 순간 사건 종합 조사가 한 번 나간다.
+    summary: 같은 서버 알람을 진행 중 조사에 합류시키고, 증상이 먼저 온 사건에도 종합 조사를 낼지.
+    behavior: >-
+      켜면 같은 사건(사건 상관이 묶은 같은 존·같은 서버 · 사건 창 안)에 진행 중인 자동 조사가 있을 때
+      새 알람은 별도 조사를 내지 않고 그 조사에 합류한다(조사 기록에 알람이 연결되고 감사에
+      incident_joined로 남는다). 이미 끝난 조사에는 합류하지 않는다. 합류는 조사 후속 처리
+      (NOISE_INVESTIGATION_FOLLOWUP_ENABLED)가 켜져 있을 때만 일어난다 — 꺼져 있으면 워커가 조사가
+      끝날 때까지 기다린 뒤 다음 알람을 처리하므로 합류할 진행 중 조사가 남아 있지 않다. 사건 맥락
+      (NOISE_INVESTIGATION_EPISODE_CONTEXT_ENABLED)도 켜져 있으면, 제니퍼 증상이 폴스타 원인보다 먼저
+      와서 결합 링크가 없던 사건도 원인이 도착해 사건이 확정되는 시점에 종합 조사를 한 번 낸다(사건당
+      1회). 자동 조사 트리거가 꺼진 수동 전용 운영이거나 사건 상관(NOISE_CROSS_SOURCE_MODE)이 off면
+      아무 일도 하지 않는다. 판정·티어·통보 문구는 바뀌지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 같은 서버 알람도 각자 조사를 내고, 증상이 먼저 온 사건에는 종합 조사가 없다(종전).
+      - value: "true"
+        effect: 같은 서버의 겹치는 조사가 하나로 합쳐지고, 증상 선착 사건에도 종합 조사가 한 번 나간다.
+    performance: 같은 서버 알람 폭주 시 조사 발주 수가 줄어 조사 서비스·조회 대상 부하가 낮아진다. 증상 선착 사건마다 종합 조사가 한 건 더 나갈 수 있다.
+    stability: >-
+      합류 여부는 조사 기록의 진행 상태로 정한다 — 조사 기록이 없거나 조회가 실패하면 합류하지 않고
+      종전처럼 따로 조사한다. 사건 상태는 워커 메모리에만 있어 재기동하면 진행 중 조사와의 연결을 잊는다.
+    recommendation: 자동 조사 트리거와 조사 후속 처리(NOISE_INVESTIGATION_FOLLOWUP_ENABLED)를 켜 운영할 때 사건 상관(shadow 이상)과 함께 켠다. 수동 전용(D-347) 운영에서는 효과가 없다.
+    related: [NOISE_INVESTIGATION_TRIGGER_ENABLED, NOISE_INVESTIGATION_FOLLOWUP_ENABLED, NOISE_INVESTIGATION_EPISODE_CONTEXT_ENABLED, NOISE_CROSS_SOURCE_MODE]
+
   NOISE_FAULT_ESCALATION_ENABLED:
     example: >-
       조사 결과가 '생각보다 심각하다'고 판단하면 통보에 상향 안내가 붙는다. 게이트가 내린 티어를 소급해 바꾸지는 않으며, 자동 조사 트리거가 꺼져 있으면 조사 결과 자체가
@@ -1020,6 +1047,70 @@ settings:
     stability: 자동으로 전환하지 않는다 — 관리자가 보는 참고 지표다.
     recommendation: 기본 0.8 유지.
     related: [NOISE_INVESTIGATION_KB_ENGINE_MIN_SAMPLES, NOISE_INVESTIGATION_KB_ENABLED]
+
+  NOISE_INVESTIGATION_LABEL_ENABLED:
+    example: >-
+      켜면 완료된 조사 화면 하단에 「실제 원인」 입력 줄(1순위 맞음 / k순위 맞음 / 목록에 없음 / 판단 불가)이 나오고, 관리자 화면에 「조사 정확도」 탭이 생긴다. 꺼 두면 관련 주소가 404이고 화면은 지금과 같다.
+    summary: 조사 「실제 원인」 라벨 입력과 관리자 조사 정확도 주간 표를 켤지.
+    behavior: >-
+      조사를 요청한 사용자 또는 관리자가 완료된 조사의 실제 원인을 고르면 기존 알람 피드백 파일에
+      한 줄로 남긴다. 관리자 화면은 그 라벨과 조사 기록으로 후보 재현율, 1·3순위 적중률, 엔진별·종류별
+      지표, 미완주·조사 불가 비율, 입력률을 주 단위로 계산한다(규칙 기반, AI 호출 없음).
+      라벨 없는 조사와 「판단 불가」는 정확도 계산에서 뺀다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 입력 줄·관리자 탭·관련 주소가 없다. 기존 동작과 같다.
+      - value: "true"
+        effect: 라벨을 입력·집계한다. 기록은 알람 피드백 파일에 쌓인다.
+    performance: 라벨 입력 때 파일 한 줄 기록, 관리자 집계 때 조사 저장소 끝부분을 읽는다.
+    stability: >-
+      판정·통보·가설 순위는 바뀌지 않는다. 끄면 기존 동작과 같다. 라벨은 알람 피드백과 같은 파일에
+      쌓여 그 파일의 회전 상한(NOISE_FEEDBACK_STORE_MAX_LINES)을 넘으면 오래된 라벨부터 집계에서 빠진다.
+    recommendation: 조사 결과를 확인할 담당자가 있을 때 켠다.
+    related: [NOISE_FEEDBACK_STORE_PATH, NOISE_FEEDBACK_STORE_MAX_LINES, NOISE_INVESTIGATION_KB_SCAN_MAX_LINES]
+
+  NOISE_INVESTIGATION_MEMORY_ENABLED:
+    example: >-
+      켜면 완료된 조사 화면에 「비슷한 과거 조사」 3건(날짜 · 결론 · 실제 원인 라벨)이 나온다. 실제 원인이 입력된 조사만 결론을 보이고, 입력 전이면 「확정 전」으로 보인다. 같은 유형에서 같은 실제 원인이 3번 확정되면 조사 지식 탭에 KB 초안(wip)이 하나 생긴다.
+    summary: 비슷한 과거 조사 표시와 반복 원인의 KB 초안 자동 생성을 켤지.
+    behavior: >-
+      조사마다 조사 종류 · 플레이북 · 판독 값 · 지지 가설 · 서버군/대상 인스턴스군으로 지문을 만들고,
+      지문이 많이 겹치는 완료 조사 3건을 보인다(규칙 기반, AI 호출 없음). 조사 종류 말고 겹치는 항목이
+      없으면 비슷하다고 보지 않는다(플레이북 없는 조사는 목록이 빈다). 결론은 「실제 원인」 라벨이 붙은
+      조사에서만 보인다. 라벨 입력(NOISE_INVESTIGATION_LABEL_ENABLED)과 조사 지식
+      (NOISE_INVESTIGATION_KB_ENABLED)도 켜져 있으면, 관리자가 라벨을 저장할 때 같은 지문 + 같은 실제
+      원인의 관리자 라벨이 NOISE_INVESTIGATION_KEDB_MIN_COUNT회 쌓였는지 보고 KB 초안을 wip 상태로 1건
+      만든다(같은 묶음은 한 번만 · 조사를 요청한 사용자의 라벨은 초안을 만들지도, 횟수에 들지도 않는다). 초안을 알려진 오류로 올리는 것은 지금처럼 관리자가 한다. 조사 판정·가설 순위·통보는
+      바뀌지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 비슷한 과거 조사가 보이지 않고 초안도 자동으로 생기지 않는다. 기존 동작과 같다.
+      - value: "true"
+        effect: 조사 화면에 비슷한 과거 조사 3건이 보이고, 반복 확정 원인은 KB 초안이 된다.
+    performance: 조사 화면을 열 때와 라벨을 저장할 때 조사 저장소 끝부분(NOISE_INVESTIGATION_KB_SCAN_MAX_LINES줄)을 읽는다.
+    stability: 지문이 같아도 실제 원인 라벨이 없으면 결론을 보이지 않아 조사 결론이 확정 원인처럼 되풀이되지 않는다. 초안 생성이 실패해도 라벨 저장은 그대로 된다.
+    recommendation: 실제 원인 라벨이 쌓이기 시작한 뒤 켠다.
+    related: [NOISE_INVESTIGATION_LABEL_ENABLED, NOISE_INVESTIGATION_KB_ENABLED, NOISE_INVESTIGATION_KEDB_MIN_COUNT, NOISE_INVESTIGATION_KB_SCAN_MAX_LINES]
+
+  NOISE_INVESTIGATION_KEDB_MIN_COUNT:
+    example: >-
+      3이면 같은 지문의 조사에서 같은 실제 원인이 3번 확정된 순간 KB 초안이 하나 생긴다. 2번째까지는 생기지 않는다.
+    summary: 같은 원인이 몇 번 확정되면 KB 초안을 자동으로 만들지.
+    behavior: >-
+      비슷한 과거 조사(NOISE_INVESTIGATION_MEMORY_ENABLED)가 켜져 있을 때만 쓴다. 같은 지문 + 같은 실제
+      원인의 관리자 라벨이 붙은 완료 조사가 이 건수에 이르면 초안(wip)을 만든다(조사를 요청한 사용자의
+      라벨은 세지 않는다). 기본값은 제안 값이다.
+    options:
+      - value: "3"
+        label: 기본
+        effect: 같은 원인이 3번 확정되면 초안이 생긴다.
+      - value: "1"
+        effect: 한 번만 확정돼도 초안이 생겨 검토할 초안이 많아진다.
+    stability: 초안은 wip 상태로만 생기고 알람 판정에는 영향이 없다.
+    recommendation: 기본 3 유지.
+    related: [NOISE_INVESTIGATION_MEMORY_ENABLED]
 
   NOISE_INVESTIGATION_LIVE_VIEW_ENABLED:
     example: >-
