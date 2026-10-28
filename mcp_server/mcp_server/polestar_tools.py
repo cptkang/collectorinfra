@@ -900,16 +900,19 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         hostname: str,
         top_n: int = 10,
         sort: str = "cpu",
+        source: str | None = None,
         ctx: Context | None = None,
     ) -> str:
         """폴스타 실시간 프로세스 API로 상위 자원 점유 프로세스를 조회한다(실시간 단면).
 
         args/커맨드라인의 비밀번호·키·토큰은 서버가 마스킹한 값만 반환한다(§6-3).
+        프로세스 API는 폴스타(소스)마다 따로다 — 그 서버가 등록된 소스를 `source`로 넘긴다.
 
         Args:
             hostname: OS 호스트명(cmm_resource.hostname).
             top_n: 상위 프로세스 수. 기본 10.
             sort: cpu(p100cpu→pcpu) | mem(pmem). 기본 cpu.
+            source: 데이터소스(db_id). 소스별 프로세스 API가 설정돼 있으면 그 주소로 조회한다.
             ctx: MCP 컨텍스트.
 
         Returns:
@@ -920,11 +923,9 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         if not hostname or not hostname.strip():
             return _err("hostname이 비어 있음")
 
-        base_url = _config(ctx).server.process_api_base_url
-        if not base_url:
-            return _err(
-                "PROCESS_API_BASE_URL 미설정 — 프로세스 스냅샷 조회 불가"
-            )
+        base_url, problem = _config(ctx).server.process_api_url_for(source)
+        if problem:
+            return _err(problem)
 
         url = f"{base_url.rstrip('/')}{_PROCESS_PATH}?hostname={quote(hostname, safe='')}"
         try:
