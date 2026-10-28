@@ -19,6 +19,14 @@
  *   - 중간 결과는 `briefing-view.js` 상세형 렌더를 그대로 쓴다(새 렌더 0). 종결되면 조사를 다시 읽어
  *     상세형 전체 + [조사 대화로 열기] + 기존 [다시 분석](공용 렌더의 analyze 옵션)을 그린다.
  *
+ *   - (plans/198 W0 I-1) 완료 조사 하단 「실제 원인」 1줄 — 쓰기 경로(`saveCauseLabel`)는 app.js가 주입하고,
+ *     `causeLabel` 옵션(기능 조회 값)이 거짓이면 조회하지 않으며, 조회 404·403이면 그리지 않는다
+ *     (`NOISE_INVESTIGATION_LABEL_ENABLED` 기본 off = 종전 화면).
+ *   - (plans/198 W7 I-8) 완료 조사 하단 「비슷한 과거 조사」 최대 3건(날짜 · 결론 · 실제 원인 라벨) —
+ *     app.js의 `similar` 옵션(기능 조회 값)이 참일 때만 조회하고, 조회 404·403이면 그리지 않는다
+ *     (`NOISE_INVESTIGATION_MEMORY_ENABLED` 기본 off = 종전 화면). 결론은 라벨 붙은 조사만(서버 판정).
+ *     두 상자는 응답이 다 온 뒤 「실제 원인」 → 「비슷한 과거 조사」 순으로 붙는다.
+ *
  * 보안: 화면은 읽기만 한다 — 조사 취소·명령 실행 버튼이 없다(D-003). 한 줄·발췌·AI 메모는 서버
  * 텍스트라 `textContent`로만 넣는다. `innerHTML`은 공용 렌더(`BriefingView.renderBody` — 자체
  * 이스케이프) 출력에만 쓴다.
@@ -220,6 +228,30 @@
             },
             linkedHead: "폴스타 서버 연결",
             change: "연결 변경",
+        },
+        // (plans/198 W0 I-1) 완료 조사 하단 「실제 원인」 1줄 — 조사 요청자·관리자만(서버가 판정)
+        cause: {
+            head: "실제 원인",
+            hint: "조사 결과가 맞았는지 남기면 조사 정확도 집계에만 쓰입니다 — 판정·가설 순위는 바뀌지 않습니다.",
+            choose: "선택",
+            verdicts: { top1: "1순위 가설 맞음", ranked: "k순위 가설 맞음", not_listed: "목록에 없음", undeterminable: "판단 불가" },
+            rank: "{n}순위",
+            notePlaceholder: "실제 원인(선택)",
+            save: "저장",
+            sending: "저장하는 중…",
+            pick: "실제 원인을 고르세요.",
+            current: "입력됨 — {text}",
+            saved: "저장했습니다 — {text}",
+            failed: "저장하지 못했습니다 — {reason}",
+        },
+        // (plans/198 W7 I-8) 비슷한 과거 조사 — 결론은 실제 원인이 입력된 조사만(서버가 판정)
+        similar: {
+            head: "비슷한 과거 조사",
+            empty: "비슷한 완료 조사가 없습니다.",
+            unconfirmed: "확정 전",
+            conclusion: "결론 {text}",
+            label: "실제 원인 {text}",
+            notice: "실제 원인이 입력된 조사만 결론을 보입니다 — 입력 전 조사는 「확정 전」입니다.",
         },
         engineGroups: { playbook: "플레이북", holmes: "HolmesGPT" },
         // ⓖ C1~C8 — 해당하는 문구만 카드 ⓘ에 펼친다
@@ -1067,6 +1099,33 @@
     var HOST_WAIT_RE = /폴스타 서버 (선택 대기|미확정)/;
     var HOST_ABSENT_RE = /폴스타 미등록\(사용자 확인/;
     var HOST_LINKED_RE = /^(이전 확정 연결|사용자 선택으로 연결)/;
+    // (plans/198 W0 I-1) 라벨 한 줄 표기 — `{verdict, rank, note}` → 「2순위 가설 맞음」 등
+    function causeLabelText(label) {
+        if (!isObj(label)) return "";
+        var V = TEXT.cause.verdicts;
+        var text = label.verdict === "ranked" && label.rank
+            ? fill(TEXT.cause.rank, { n: label.rank }) + " 가설 맞음"
+            : (V[label.verdict] || String(label.verdict || ""));
+        return label.note ? text + " · " + String(label.note) : text;
+    }
+
+    // (plans/198 W7 I-8) 비슷한 과거 조사 한 줄 — `{ts, labeled, verdict, rank, conclusion}` →
+    // 「2026-10-20 · 결론 … · 실제 원인 1순위 가설 맞음」 · 라벨 없으면 「날짜 · 확정 전」
+    function similarText(item) {
+        if (!isObj(item)) return "";
+        var T = TEXT.similar;
+        var parts = [];
+        var stamp = fmtStamp(item.ts);
+        if (stamp) parts.push(stamp.slice(0, 10));
+        if (!item.labeled) {
+            parts.push(T.unconfirmed);
+        } else {
+            if (item.conclusion) parts.push(fill(T.conclusion, { text: String(item.conclusion) }));
+            parts.push(fill(T.label, { text: causeLabelText({ verdict: item.verdict, rank: item.rank }) }));
+        }
+        return parts.join(" · ");
+    }
+
     function hostLinkState(cards, scope) {
         var list = asList(cards);
         for (var i = 0; i < list.length; i++) {
@@ -2218,6 +2277,126 @@
                 analyze: opts.analyzeFor ? opts.analyzeFor(tab.id, view, tab.alarmId) : null,
             });
             tab.finalPanel.open();
+            if (view.status === "done") loadFinalExtras(tab);
+        }
+
+        // (plans/198 교정) 옵션 값 — 함수면 호출 시점의 값(app.js가 기능 조회 결과를 늦게 받는다)
+        function optOn(value) {
+            return typeof value === "function" ? !!value() : !!value;
+        }
+
+        // 완료 조사 하단 두 상자 — 응답이 다 온 뒤 「실제 원인」 → 「비슷한 과거 조사」 순으로 붙인다
+        // (응답 도착 순서와 무관하게 순서 고정).
+        function loadFinalExtras(tab) {
+            Promise.all([loadCauseLabel(tab), loadSimilar(tab)]).then(function (renders) {
+                if (!tabs[tab.id] || !tab.dom) return;
+                renders.forEach(function (render) { if (render) render(); });
+            });
+        }
+
+        // ── (plans/198 W7 I-8) 「비슷한 과거 조사」 ──
+        // `similar` 옵션이 켜져 있을 때만 조회한다(app.js는 기능 조회 `investigation_memory_enabled`를
+        // 넘긴다 — 꺼져 있으면 요청 0). 404(기능 꺼짐)·403이면 아무것도 그리지 않는다.
+        // 그리기 함수를 돌려주고 붙이는 순서는 `loadFinalExtras`가 정한다.
+        function loadSimilar(tab) {
+            if (!optOn(opts.similar) || tab.similarLoaded) return null;
+            tab.similarLoaded = true;
+            return getJSON(API + "/" + encodeURIComponent(tab.id) + "/similar").then(function (res) {
+                if (!res.ok) return null;
+                return function () { renderSimilar(tab, res.body); };
+            }, function () { return null; });
+        }
+
+        function renderSimilar(tab, data) {
+            var T = TEXT.similar;
+            var box = el("div", "dv-similar");
+            box.appendChild(el("span", "dv-label", T.head));
+            var items = asList(data.items).filter(isObj);
+            if (!items.length) box.appendChild(el("div", "dv-note", T.empty));
+            var list = el("ul", "dv-similar-list");
+            items.forEach(function (item) {
+                var row = el("li", item.labeled ? "dv-similar-item" : "dv-similar-item dv-similar-open", similarText(item));
+                row.title = String(item.investigation_id || "");
+                list.appendChild(row);
+            });
+            if (items.length) box.appendChild(list);
+            box.appendChild(el("div", "dv-note", T.notice));
+            tab.dom.finalBox.appendChild(box);
+            tab.dom.similar = box;
+        }
+
+        // ── (plans/198 W0 I-1) 「실제 원인」 1줄 ──
+        // 쓰기 경로(`saveCauseLabel`)가 주입되고 `causeLabel` 옵션이 켜져 있을 때만 조회한다(옵션 미지정은
+        // 켜짐 — app.js는 기능 조회 `investigation_label_enabled`를 넘긴다). 404(기능 꺼짐)·403(조회 권한
+        // 없음)·labelable=false(요청자·관리자 아님 또는 완료 아님)면 아무것도 그리지 않는다 — 꺼져 있으면
+        // 화면이 종전과 같다. 그리기 함수를 돌려주고 붙이는 순서는 `loadFinalExtras`가 정한다.
+        function loadCauseLabel(tab) {
+            if (!opts.saveCauseLabel || tab.causeLoaded) return null;
+            if (opts.causeLabel !== undefined && !optOn(opts.causeLabel)) return null;
+            tab.causeLoaded = true;
+            return getJSON(API + "/" + encodeURIComponent(tab.id) + "/cause-label").then(function (res) {
+                if (!res.ok || !res.body.labelable) return null;
+                return function () { renderCauseLabel(tab, res.body); };
+            }, function () { return null; });
+        }
+
+        function renderCauseLabel(tab, data) {
+            var T = TEXT.cause;
+            var ranks = asList(data.hypothesis_ranks).map(Number).filter(function (n) { return n >= 1; });
+            var box = el("div", "dv-cause");
+            box.appendChild(el("span", "dv-label", T.head));
+            var verdict = el("select", "dv-cause-verdict");
+            [["", T.choose]].concat(asList(data.verdicts).filter(function (v) {
+                if (v === "top1") return ranks.indexOf(1) >= 0;
+                if (v === "ranked") return ranks.some(function (n) { return n >= 2; });
+                return !!T.verdicts[v];
+            }).map(function (v) { return [v, T.verdicts[v]]; })).forEach(function (o) {
+                var opt = el("option", null, o[1]);
+                opt.value = o[0];
+                verdict.appendChild(opt);
+            });
+            var rank = el("select", "dv-cause-rank");
+            ranks.filter(function (n) { return n >= 2; }).forEach(function (n) {
+                var opt = el("option", null, fill(T.rank, { n: n }));
+                opt.value = String(n);
+                rank.appendChild(opt);
+            });
+            var note = el("input", "dv-cause-note");
+            note.type = "text";
+            note.placeholder = T.notePlaceholder;
+            // 서버 자유 서술 상한(note_max_chars — 추가 조사 보충 한 줄과 같은 설정값)과 같은 길이 제한
+            var noteMax = Number(data.note_max_chars);
+            if (noteMax >= 1) note.maxLength = noteMax;
+            var save = el("button", "dv-cause-save", T.save);
+            save.type = "button";
+            var msg = el("span", "dv-cause-msg");
+            function sync() {
+                rank.hidden = verdict.value !== "ranked";
+                note.hidden = verdict.value !== "not_listed";
+            }
+            verdict.addEventListener("change", sync);
+            save.addEventListener("click", function () {
+                if (!verdict.value) { msg.textContent = T.pick; return; }
+                var body = { verdict: verdict.value };
+                if (verdict.value === "ranked") body.rank = Number(rank.value);
+                if (verdict.value === "not_listed" && String(note.value || "").trim()) body.note = String(note.value);
+                save.disabled = true;
+                msg.textContent = T.sending;
+                Promise.resolve().then(function () { return opts.saveCauseLabel(tab.id, body); }).then(function (res) {
+                    res = res || {};
+                    res.body = isObj(res.body) ? res.body : {};
+                    msg.textContent = res.ok ? fill(T.saved, { text: causeLabelText(res.body) })
+                        : fill(T.failed, { reason: reasonOf(res) });
+                }, function (err) {
+                    msg.textContent = fill(T.failed, { reason: (err && err.message) || String(err || "") });
+                }).then(function () { save.disabled = false; });
+            });
+            if (isObj(data.label)) msg.textContent = fill(T.current, { text: causeLabelText(data.label) });
+            [verdict, rank, note, save, msg].forEach(function (n) { box.appendChild(n); });
+            box.appendChild(el("div", "dv-note", T.hint));
+            sync();
+            tab.dom.finalBox.appendChild(box);
+            tab.dom.cause = box;
         }
 
         function select(id) {
@@ -2658,6 +2837,8 @@
         opinionOf: opinionOf,
         hostLinkState: hostLinkState,
         requeryByStep: requeryByStep,
+        causeLabelText: causeLabelText,
+        similarText: similarText,
         statusWords: statusWords,
         conflictsWithSynthesis: conflictsWithSynthesis,
         watchParam: watchParam,

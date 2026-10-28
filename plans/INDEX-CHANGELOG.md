@@ -3,7 +3,14 @@
 > `plans/INDEX.md` 머리의 갱신 이력과, 2026-10-06(D-304) 축약 전의 긴 「상태」 칸 원문을 보존한다. **새 갱신 이력은 아래 「갱신 이력」 목록 맨 위에 한 줄씩 추가한다.** INDEX 머리에는 최종 갱신 날짜만 둔다.
 
 ## 갱신 이력
-- 2026-10-27 — 195 TODO→WIP: W1 결정적 질의 템플릿(제니퍼 벤치 출처) · W2 `requery` 응답 가산(`NOISE_INVESTIGATION_REQUERY_ENABLED` 기본 off) · W3 장애 진단 단계 카드·조사 대화 고정 카드 「질의응답에서 확인」 · W4 섹션 `queries` 저장 · W5 매뉴얼 · D-341 부기 21·D-192 부기 · 잔여 폴스타 골드·MLX·캡처
+- 2026-10-27 — 195 TODO→WIP: W1 결정적 질의 템플릿(제니퍼 벤치 출처) · W2 `requery` 응답 가산(`NOISE_INVESTIGATION_REQUERY_ENABLED` 기본 off) · W3 장애 진단 단계 카드·조사 대화 고정 카드 「질의응답에서 확인」 · W4 섹션 `queries` 저장 · W5 매뉴얼 · D-341 부기 22·D-192 부기 · 잔여 폴스타 골드·MLX·캡처
+- 2026-10-28 — 198 미결 6건 사용자 확정(D-350 부기 2 · 권고대로) · 독립 재검토 뒤 커밋·main 머지
+- 2026-10-28 — 198 TODO→WIP(파일명 변경): W0~W3·W5~W8 구현(플래그 기본 off) · 모듈 단위 회귀 통과 · verifier Critical 0·Major 6 교정 · 잔여 W4·I-4 화면·I-12·I-6 · 채택은 154 W6 뒤
+- 2026-10-28 — 198 v1.1 부기(인터뷰): Q1 HolmesGPT 결과로 가설 판정 불변 · Q2 조사를 연 운영자 선택 입력 · Q7 측정부터 확정 · 154 W6 1회차 2주 안 · Q4~Q6만 권고 적용(확인 전)
+- 2026-10-28 — 198 v1.1: 변경 이력 데이터 없음(ITSM 연동 시 확보) → I-6 보류 · 핵심 문헌 25편 저장소 밖 `AIOps/article/rca-investigation/` 보관(git 미저장) · 문서 오류 2건 I-0 편입(docs/26 타임아웃 300→600 · sre-agent/02 상태) · D-035 오기 지적 철회 · Q6 이관 링크(153·194) · 나머지 권고 적용
+- 2026-10-28 — 198 신설(TODO · 코드 0): 장애 조사·RCA 계획서·코드 현황 분석 + 상용 제품 19종(2025~2026 AI SRE) + 문헌(동료심사·preprint·산업 3층 · 핵심 12건 arXiv 재대조) → 공백 G1~G9 · 개선안 I-1~I-12 · W0~W9 · Q1~Q9 대기
+- 2026-10-27 — 197 WIP(TODO→WIP · 파일명 변경): W1 제니퍼 알람 폴스타 이력·신호 조회 명시 생략(판정 불변) · W2 PostgreSQL 점검 칼럼 4곳 `cmm_resource_maintenance` LEFT JOIN·샌드박스 01·06 운영 모양(DB2는 W0 전 현행) · W3 `NOISE_APM_CORRELATION_DOMAIN_SCOPE_ENABLED`(기본 off · D-349) · D-109·D-317·D-175 부기 · 회귀 모듈 단위 rc=0 · Q1·Q2 권고 적용(사용자 확인 전)
+- 2026-10-27 — 197 신설(TODO · 코드 0): 내부망 본체 로그 판독 — F1 제니퍼 알람의 폴스타 이력·Advisory Enricher 조회 경고 · F2 공동존 `cmm_resource.is_maintenance` 부재(덤프 실측 · 별도 `cmm_resource_maintenance` · 영향 4곳) · F3 제니퍼 크로스호스트 SUPPRESS(도메인 넘는 군집 위험) · W0·Q1~Q3 대기
 - 2026-10-27 — 196 WIP 잔여 라운드: 사건 종합 조사 `polestar_link` 부착 · `was.sql` 채팅 증상 진입 · D7 축별 「판정 근거 부족」(`axis_status`) · 연결 저장 WATCH 원자화·호출 상한 Redis 공유 · 재조회 제니퍼 재호출 유지 확정(D-348 부기 1) · 매뉴얼 원천 갱신(캡처 2장 미촬영 — 로컬 컨테이너 정지) · 잔여 W0(§5.7)
 - 2026-10-27 — 196 WIP(TODO→WIP · 파일명 변경): W1·W2a~c·W3·W4 구현 — 호스트 연결 학습 D-348(후보 a~e · 확정 연결만 자동 · 플래그 `NOISE_HOST_LINK_ENABLED` 기본 off) · D5·D6·D7·D2(`was.sql`·`was.fallback`)·D4 · D3 차이 문장만 · Q2~Q7 권고 적용 · 잔여 W0 대기 · 165 F3 범위 정리(F3는 165 · 정규화 함수는 196 소유 · 의존 196→165)
 - 2026-10-27 — 195 v1.2(TODO · 코드 0): 196 기준 정리 — 화면 문구 「다시 조회」→「질의응답에서 확인」(196 [이 서버로 다시 조회]와 충돌) · 폴스타 질의 대상은 `polestar_server`(196 확정 연결)만 · `skipped`·`missing`·`polestar_link` absent/unresolved 단계 질의 생략 · `queries`는 196 가산 키 방식 · W2·W3·W4는 196 W1·W2b 뒤 · §1.4 신설

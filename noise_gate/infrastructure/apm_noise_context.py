@@ -189,11 +189,20 @@ def correlation_extra(event: AlarmEvent) -> str:
         - {""}
     )
     tokens = [f"apmkind{k}" for k in kinds]
-    domain = apm.get("domain_id")
-    domain_token = "" if isinstance(domain, bool) else _atomic_token(domain)
+    domain_token = correlation_domain(event)
     if domain_token:
         tokens.append(f"apmdomain{domain_token}")
     return " ".join(tokens)
+
+
+def correlation_domain(event: AlarmEvent) -> str:
+    """`raw.apm.domain_id`를 한 토큰으로 정규화한 값 — 크로스호스트 상관 스코프·토큰 공용.
+
+    plans/197 W3: 도메인 스코프 플래그가 켜지면 같은 값으로 상관 스코프를 나눈다
+    (`correlation_extra`의 `apmdomain` 토큰과 같은 정규화). bool·None·빈 값은 빈 문자열.
+    """
+    domain = apm_payload(event).get("domain_id")
+    return "" if isinstance(domain, bool) else _atomic_token(domain)
 
 
 def was_signal_kinds(event: AlarmEvent) -> tuple[str, ...]:

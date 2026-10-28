@@ -890,6 +890,18 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     application.include_router(admin_components.router, prefix="/api/v1", tags=["admin"])
     # (plans/194 W5 · C5) 관리자 조사 설정 요약 — 읽기 전용(모드·상한·조사 서비스 부하)
     application.include_router(admin_investigation.router, prefix="/api/v1", tags=["admin"])
+    # (plans/198 W0 I-1) 조사 「실제 원인」 라벨 · 관리자 조사 정확도
+    # — NOISE_INVESTIGATION_LABEL_ENABLED 켰을 때만 등록(기동 시 1회).
+    if config.noise_gate.investigation_label_enabled:
+        from src.api.routes import investigation_label
+
+        application.include_router(investigation_label.router, prefix="/api/v1")
+    # (plans/198 W7 I-8) 비슷한 과거 조사
+    # — NOISE_INVESTIGATION_MEMORY_ENABLED 켰을 때만 등록(기동 시 1회).
+    if config.noise_gate.investigation_memory_enabled:
+        from src.api.routes import investigation_label as _investigation_memory
+
+        application.include_router(_investigation_memory.memory_router, prefix="/api/v1")
     # (plans/196) 관리자 「호스트 연결」 — NOISE_HOST_LINK_ENABLED 켰을 때만 등록(기동 시 1회).
     if config.noise_gate.host_link_enabled:
         from src.api.routes import admin_host_links

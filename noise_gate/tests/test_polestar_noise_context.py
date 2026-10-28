@@ -153,6 +153,86 @@ class TestBuildResourceSignalSql:
         assert "svr''; DROP TABLE x--" in sql
 
 
+class TestResourceSignalMaintenanceJoin:
+    """plans/197 F2 — PostgreSQL은 자원 테이블에 유지보수 칼럼이 없다(운영 스키마 실측)."""
+
+    _DB2_LEGACY = (
+        "SELECT\n"
+        "    SVR.ID AS resource_id,\n"
+        "    SVR.IMPORTANCE_ID AS importance_id,\n"
+        "    SVR.IS_MAINTENANCE AS maintenance\n"
+        "FROM polestar.cmm_resource SVR\n"
+        "WHERE SVR.DTIME IS NULL\n"
+        "  AND SVR.RESOURCE_TYPE = 'server.Server'\n"
+        "  AND SVR.NAME = 'svr-x'\n"
+        "LIMIT 1"
+    )
+
+    def test_postgresql_joins_maintenance_table(self):
+        sql = build_resource_signal_sql("polestar_cm_yd", "svr-x")
+        assert "SVR.IS_MAINTENANCE" not in sql
+        assert "LEFT JOIN (SELECT RESOURCE_ID, MAX(IS_MAINTENANCE) AS IS_MAINTENANCE" in sql
+        assert "FROM polestar.cmm_resource_maintenance GROUP BY RESOURCE_ID) M" in sql
+        assert "ON M.RESOURCE_ID = SVR.ID" in sql
+        assert "M.IS_MAINTENANCE AS maintenance" in sql  # 출력 alias 불변
+        assert "LIMIT 1" in sql
+
+    def test_db2_keeps_legacy_string(self):
+        # W0 실측 전 현행 유지 — 종전 문자열과 비트 동일
+        sql = build_resource_signal_sql("polestar_cm_yd", "svr-x", db_engine="db2")
+        assert sql == self._DB2_LEGACY
+
+    def test_generated_sql_passes_sql_guard(self):
+        from src.security.sql_guard import SQLGuard
+
+        guard = SQLGuard()
+        for engine in ("postgresql", "db2"):
+            sql = build_resource_signal_sql("polestar_cm_gp", "svr-x", db_engine=engine)
+            ok, reason = guard.is_safe_select(sql)
+            assert ok, reason
+
+    async def test_fetch_uses_join_for_postgresql_db(self):
+        client = FakeClient(resource_rows=[], noti_rows=[])
+        repo = PolestarNoiseContextRepository(FakeRegistry(client), make_alarm_cfg())
+        await repo.fetch(make_event(db_id="polestar_cm_yd"))
+        resource_sql = client.executed_sqls[0]
+        assert "cmm_resource_maintenance" in resource_sql
+        assert "SVR.IS_MAINTENANCE" not in resource_sql
+
+    async def test_fetch_keeps_legacy_for_db2(self):
+        client = FakeClient(resource_rows=[], noti_rows=[])
+        repo = PolestarNoiseContextRepository(FakeRegistry(client), make_alarm_cfg())
+        await repo.fetch(make_event(db_id="polestar_b0"))
+        resource_sql = client.executed_sqls[0]
+        assert "SVR.IS_MAINTENANCE AS maintenance" in resource_sql
+        assert "cmm_resource_maintenance" not in resource_sql
+
+    async def test_fetch_unknown_engine_uses_join(self):
+        # 엔진 판정 불가(domain_config 미등록) → DB2로 확정되지 않으므로 조인형
+        client = FakeClient(resource_rows=[], noti_rows=[])
+        repo = PolestarNoiseContextRepository(FakeRegistry(client), make_alarm_cfg())
+        await repo.fetch(make_event(db_id="no-such-db"))
+        assert "cmm_resource_maintenance" in client.executed_sqls[0]
+
+    async def test_join_row_absent_is_none_and_maint_row_is_true(self):
+        # LEFT JOIN 행 없음 → maintenance NULL → None(점검 아님/미상)
+        client = FakeClient(
+            resource_rows=[{"resource_id": 1, "importance_id": 3, "maintenance": None}],
+            noti_rows=[],
+        )
+        repo = PolestarNoiseContextRepository(FakeRegistry(client), make_alarm_cfg())
+        ctx = await repo.fetch(make_event(db_id="polestar_cm_yd"))
+        assert ctx["maintenance"] is None
+        # 점검 행 1 → True
+        client = FakeClient(
+            resource_rows=[{"resource_id": 1, "importance_id": 3, "maintenance": 1}],
+            noti_rows=[],
+        )
+        repo = PolestarNoiseContextRepository(FakeRegistry(client), make_alarm_cfg())
+        ctx = await repo.fetch(make_event(db_id="polestar_cm_yd"))
+        assert ctx["maintenance"] is True
+
+
 class TestBuildNotiPolicySql:
     def test_basic_structure(self):
         sql = build_noti_policy_sql("polestar_cm_gp", "CPU 사용률 임계 초과")

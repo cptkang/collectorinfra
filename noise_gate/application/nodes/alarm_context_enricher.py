@@ -458,6 +458,14 @@ async def _collect_history(
     if event.is_clear:
         logger.debug("해소 알람 — 이력 조회 건너뜀: alarm_id=%s", event.alarm_id)
         return None
+    if is_apm_source(event):
+        # plans/197 F1 — 제니퍼 알람은 폴스타 이력 대상이 아니다(plans/144 §3 「명시 생략」).
+        logger.debug(
+            "제니퍼 알람 — 폴스타 이력 조회 생략: alarm_id=%s db_id=%s",
+            event.alarm_id,
+            event.db_id,
+        )
+        return None
     if not repo.is_db_registered(event.db_id):
         logger.warning(
             "알람 이력 조회 건너뜀 — 미등록 db_id: %s (alarm_id=%s)",

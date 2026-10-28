@@ -184,7 +184,7 @@
 | R5 | 채팅 조사 접수에서 조사 id 없이 거부가 오면 문구가 코드 원문 | **해소**(검증 교정 ① — `reject_display_text`) |
 | R6 | mcp_server 헬스체크(DB2·MariaDB)는 세마포어 밖 · MariaDB `acquire`는 timeout 인자 없음(세마포어로 막힘) · DB2 취소 시 스레드 안 쿼리는 쿼리 timeout으로만 멈춤 | 내부망 확인 |
 | R7 | apm_gateway 최악 지연 = 자리 대기(30s) + 스로틀 + HTTP(30s) > sre 도구 1건 상한(60s) 가능 · 자리 대기 시간초과도 작업 `api_calls`에 1건 | 관측 후 |
-| R8 | 잡 사이 조회 결과 캐시(T4) · 같은 서버 알람 묶음 조사 | 수동 전용에서 동기 약함 — 후속 판단 |
+| R8 | 잡 사이 조회 결과 캐시(T4) · 같은 서버 알람 묶음 조사 | 수동 전용에서 동기 약함 — 후속 판단 · **같은 서버 알람 묶음 조사는 `plans/198` I-11로 이관**(2026-10-28 · Q6 (a) 권고 적용 · 사용자 확인 전) · 잡 사이 캐시(T4)는 여기 잔류 |
 | R9 | sre 신규 상한의 None(종전 동작)은 `.env`로 줄 수 없음(빈 값·null 검증 실패) | 의도 — 상한 해제는 큰 값으로 |
 | R10 | 매뉴얼(D-255) — 관리자 매뉴얼 `admin.md`의 `NOISE_INVESTIGATION_MANUAL_ENABLED` 기본 표기(false) · 새 상한 키 · 사용자 매뉴얼(조사 시작 동선) | W6(UI 확정 뒤 한 번에) |
 | R11 | 기준선 실패 `tests/test_api/test_settings_help.py::test_t2_curated_groups_have_full_coverage`(`API_RELOAD` 큐레이션 누락 — D-346 커밋분 · 이 계획 무관) | 별건 |

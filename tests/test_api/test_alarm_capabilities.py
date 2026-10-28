@@ -78,6 +78,8 @@ def test_capabilities_expose_no_paths_or_secrets():
         "investigation_auto_enabled",    # plans/194 W1 — 불리언(자동 조사 가용)
         "investigation_manual_enabled",  # plans/194 W1 — 불리언(이 알람 분석 가용)
         "noise_console_portal_tab",      # plans/193 W2 — 불리언(포털 노이즈 관제 탭)
+        "investigation_label_enabled",   # plans/198 교정 — 불리언(실제 원인 입력)
+        "investigation_memory_enabled",  # plans/198 교정 — 불리언(비슷한 과거 조사)
     }
     for value in body.values():
         assert isinstance(value, (bool, int, float)), value
@@ -121,3 +123,15 @@ def test_noise_console_portal_tab_config_default_and_env(monkeypatch):
     assert NoiseGateConfig.model_fields["console_portal_tab_enabled"].default is False
     monkeypatch.setenv("NOISE_CONSOLE_PORTAL_TAB_ENABLED", "true")
     assert NoiseGateConfig(_env_file=None).console_portal_tab_enabled is True
+
+
+def test_investigation_label_and_memory_follow_flags():
+    """(plans/198 교정) 라우트 등록 조건과 같은 플래그 — 기본 거짓 · 켜면 참(웹이 GET을 보낼지)."""
+    body = _client().get("/api/v1/alarm/capabilities").json()
+    assert body["investigation_label_enabled"] is False
+    assert body["investigation_memory_enabled"] is False
+    body = _client(
+        investigation_label_enabled=True, investigation_memory_enabled=True
+    ).get("/api/v1/alarm/capabilities").json()
+    assert body["investigation_label_enabled"] is True
+    assert body["investigation_memory_enabled"] is True

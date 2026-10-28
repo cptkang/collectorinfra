@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-27 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-28 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -237,8 +237,10 @@
 | 192 | [`192-sre-investigation-navigation.md`](./192-sre-investigation-navigation.md) | 192. SRE 조사 화면 진입 동선 정리 — 조사 대화·장애 진단 진입점 일관성 · 진행 중 목록이 비는 문제 | **완료(2026-10-26 · 커밋 전)** · W1 로그인 next 복귀·safeNext 보안 보강·break-glass 관제 버튼 숨김 · W2 포털 진입 문구 규칙 · W3 진행 중 목록 범위 · W4 조사 대화 새로고침 복원 · D-341 부기 17·18 · D-248 ⑧ 부기 · 잔여·관제 진입은 193 | 2026-10-26 |
 | 193 | [`193-noise-console-portal-tab.md`](./193-noise-console-portal-tab.md) | 193. 노이즈 관제를 포털 안 뷰 탭으로 이식 — 관제 → 조사 진입을 같은 창 탭 전환으로 | **완료(2026-10-26 · 커밋 전)** · W1 noise.js mount 모듈(동작 불변) · W2·W3 포털 「노이즈 관제」 뷰 탭(플래그 `NOISE_CONSOLE_PORTAL_TAB_ENABLED` 기본 off)·서랍 진입 같은 창 · W4 독립 페이지 「(새 탭)」 표지·매뉴얼 · D-341 부기 19 · 플래그 켜는 시점 사용자 확인 | 2026-10-26 |
 | 194 | [`194-WIP-investigation-manual-only-load-limits.md`](./194-WIP-investigation-manual-only-load-limits.md) | 194. 알람 조사 수동 전용(선별 실행) 전환 · 조사로 인한 행 대책 | **WIP** · W0~W6 완료(커밋 전 · D-347) · 수동 전용 기본 · 저장소 증분 tail · sre 대기열·좀비·전역 상한 · mcp·apm 동시 상한 · U1~U6 UI·매뉴얼 · 검증 Critical 0 · 회귀 귀속 0 · 잔여 내부망 확인(S7·DB2·RSS) | 2026-10-26 |
-| 195 | [`195-WIP-investigation-content-requery-prompt.md`](./195-WIP-investigation-content-requery-prompt.md) | 195. 조사 화면에 「조사 내용」과 「질의응답에서 확인할 질의」 보여 주기 — 검토안 | **WIP** · W1~W5 구현(커밋 없음) · 결정적 템플릿 질의 · 제니퍼 축만(폴스타 0건) · 섹션 `queries` 저장 · 기본 off · D-341 부기 21·D-192 부기 · 잔여 폴스타 골드·MLX·캡처 2장 | 2026-10-27 |
+| 195 | [`195-WIP-investigation-content-requery-prompt.md`](./195-WIP-investigation-content-requery-prompt.md) | 195. 조사 화면에 「조사 내용」과 「질의응답에서 확인할 질의」 보여 주기 — 검토안 | **WIP** · W1~W5 구현(커밋 없음) · 결정적 템플릿 질의 · 제니퍼 축만(폴스타 0건) · 섹션 `queries` 저장 · 기본 off · D-341 부기 22·D-192 부기 · 잔여 폴스타 골드·MLX·캡처 2장 | 2026-10-27 |
 | 196 | [`196-WIP-investigation-screen-defects.md`](./196-WIP-investigation-screen-defects.md) | 196. 장애 진단 조사 화면 결함 정리 — 폴스타 브리지 미구현 외 | **WIP** · W1~W4 + 잔여 라운드 구현(D-348 부기 1 · 플래그 기본 off · 커밋 없음) · Q2~Q7 권고 적용·사용자 확인 전 · 잔여 W0(D3 원인·SQL errorType·파드 노드·D8·Redis 영속) · 매뉴얼 캡처 2장(로컬 컨테이너 정지) | 2026-10-27 |
+| 197 | [`197-WIP-noise-gate-jennifer-and-maintenance-defects.md`](./197-WIP-noise-gate-jennifer-and-maintenance-defects.md) | 197. 노이즈 게이트 결함 정리 — 제니퍼 알람의 폴스타 경로 진입 · 여의도 `is_maintenance` 칼럼 없음 · 제니퍼 크로스호스트 억제 | **WIP** · W1 제니퍼 폴스타 조회 생략 · W2 PG 점검 → `cmm_resource_maintenance` JOIN(DB2 W0 대기) · W3 도메인 스코프+DASHBOARD 상한(D-349 · 기본 off) · Q1·Q2 권고 적용 · 잔여 W0·b0·PG 재생성 | 2026-10-27 |
+| 198 | [`198-WIP-investigation-rca-improvement.md`](./198-WIP-investigation-rca-improvement.md) | 198. 장애 조사·진단(RCA) 개선 — 현행 분석 · 상용 제품 조사 · 문헌 조사 · 개선 계획 | **WIP** · W0~W3·W5~W8 구현(플래그 전부 기본 off) · 모듈 회귀 통과 · verifier Critical 0 · 잔여 W4(195 선행)·I-4 화면·I-12·I-6(ITSM) · 채택은 154 W6 뒤 A/B · Q4~Q6·KEDB 운영자 한정 사용자 확정(D-350 부기 2) *(상세: 계획서 머리)* | 2026-10-28 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |

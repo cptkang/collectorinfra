@@ -14,6 +14,7 @@ HolmesGPT의 서술(`answer`)과 severity_judge 판정(`ImportanceVerdict`)을 *
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Any, NamedTuple
 
 from sre_agent.domain.cross_source_episode import (
@@ -27,6 +28,7 @@ from sre_agent.domain.cross_source_episode import (
     episode_timeline,
 )
 from sre_agent.domain.engine_agreement import DIFFERENT_LAYER, LAYER_UNKNOWN, playbook_layer
+from sre_agent.domain.evidence_ledger import EvidenceLedger, check_claim, ledger_summary
 from sre_agent.domain.severity_signatures import ImportanceVerdict
 
 # 브리핑 6요소(§7). 중요도([중요도])는 severity_judge 판정에서 오므로 별도 헤더로 조립하고,
@@ -59,6 +61,12 @@ UNRESOLVED_PREFIX = "[미결] "
 
 # 관측 도구 연결 실패로 LLM 조사를 생략한 브리핑의 원인 고정 문구(plans/188 C2 · Q1 A안).
 SKIPPED_CAUSE = "판단 불가(조사 생략)"
+
+# 값 대조 인용 검증(plans/198 I-4) — 원장에 없는 값 한계 문구와 실을 값 개수 상한.
+UNMATCHED_VALUES_LIMIT = "원장에 없는 값: {values}"
+UNMATCHED_VALUES_MAX = 10
+# `citation_check.unmatched`에 싣는 값 개수 상한(브리핑 저장 상한 32KB 대비).
+CITATION_CHECK_UNMATCHED_MAX = 20
 
 # 상관 ≠ 인과 — 결정적 상관에서 도출한 가설의 신뢰도 한계(plans/50 §6.3).
 CORRELATION_NOT_CAUSATION_NOTE = "상관 ≠ 인과 — 가설 신뢰도는 선행성·지속성(결정적 상관)에서 도출한 것이며 인과 확정이 아님"
@@ -157,6 +165,21 @@ def root_cause_hypotheses(correlation: dict | None, llm_cause: str, citations_ve
             "reasoning": "조사 서술의 인용 원인" + ("" if citations_verified else " — 도구 출력 인용 결여로 가설 강등"),
         })
     return out
+
+
+def neighbor_keys(correlation: dict | None) -> dict[str, Any]:
+    """상관 결과의 `neighbors`(plans/198 I-7)를 브리핑 가산 키로 — `neighbors`(이웃·도구 호출 수 ·
+    상한·노트)와 `external_cause_candidates`(선행 순). 키가 없으면(플래그 off) 빈 dict(비트 동일).
+
+    가설 순위(`root_cause_hypotheses`)는 바꾸지 않는다(D-341 ④ · D-197 가산만).
+    """
+    block = (correlation or {}).get("neighbors")
+    if not isinstance(block, dict):
+        return {}
+    return {
+        "neighbors": {k: v for k, v in block.items() if k != "external_cause_candidates"},
+        "external_cause_candidates": list(block.get("external_cause_candidates") or []),
+    }
 
 
 def _llm_hypothesis(rank: int, llm_cause: str, citations_verified: bool) -> dict:
@@ -282,6 +305,50 @@ class _CitationState(NamedTuple):
     cited: list[str]
     uncited: list[str]
     verified: bool  # 도구 출력이 하나라도 있고 인용된 단정이 존재해야 "검증됨"
+    check: dict[str, Any] | None = None  # 값 대조(plans/198 I-4) 결과 — 원장이 있을 때만
+
+
+def _judge_values(answer: str, tool_names: list[str], ledger: EvidenceLedger) -> _CitationState:
+    """값 대조 인용 판정(plans/198 I-4) — 마커가 아니라 원장 대조로 인용을 가른다.
+
+    단정마다 호스트·수치·시각 토큰을 원장과 맞댄다. 원장에 없는 값이 하나라도 있으면 비인용(가설
+    강등), 값이 있고 모두 맞으면 인용이다. 값이 없는 단정은 종전 마커 판정을 따른다.
+    `verified`는 도구 출력이 있고 값이 모두 맞은 단정이 하나 이상일 때만 참이다(마커는 세지 않는다).
+    도구 출력이 0건이면 종전처럼 아무것도 인용이 아니다.
+    """
+    claims = _claim_lines(answer)
+    cited: list[str] = []
+    uncited: list[str] = []
+    unmatched: list[str] = []
+    checked = demoted = 0
+    value_verified = False
+    for c in claims:
+        chk = check_claim(c, ledger)
+        checked += chk.checked
+        unmatched.extend(chk.unmatched)
+        if chk.unmatched:
+            ok = False
+            demoted += 1
+        elif chk.checked:
+            ok = bool(tool_names)
+            value_verified = value_verified or ok
+        else:
+            ok = _is_cited(c, tool_names)
+        (cited if ok else uncited).append(c)
+    check = {
+        "checked": checked,
+        "unmatched": list(dict.fromkeys(unmatched)),
+        "demoted": demoted,
+        "ledger_size": len(ledger.rows),
+    }
+    return _CitationState(claims, cited, uncited, bool(tool_names) and value_verified, check)
+
+
+def _unmatched_limitation(unmatched: list[str]) -> str:
+    """「원장에 없는 값: …」 한계 1줄(상한 `UNMATCHED_VALUES_MAX` · 넘으면 「외 N개」)."""
+    shown = ", ".join(unmatched[:UNMATCHED_VALUES_MAX])
+    rest = len(unmatched) - UNMATCHED_VALUES_MAX
+    return UNMATCHED_VALUES_LIMIT.format(values=shown + (f" 외 {rest}개" if rest > 0 else ""))
 
 
 def _judge_citations(answer: str, tool_names: list[str]) -> _CitationState:
@@ -292,10 +359,19 @@ def _judge_citations(answer: str, tool_names: list[str]) -> _CitationState:
     return _CitationState(claims, cited, uncited, bool(tool_names) and bool(cited))
 
 
-def _render_summary(claims: list[str], tool_names: list[str], unresolved: bool) -> str:
-    """요약: 첫 단정. 검증 불가(인용 결여)면 가설 강등 표기, 미결이면 `[미결] ` 접두."""
+def _render_summary(
+    claims: list[str], tool_names: list[str], unresolved: bool, cited: list[str] | None = None
+) -> str:
+    """요약: 첫 단정. 검증 불가(인용 결여)면 가설 강등 표기, 미결이면 `[미결] ` 접두.
+
+    `cited`(값 대조 판정 결과)를 주면 첫 단정이 그 안에 있을 때만 인용으로 본다.
+    """
     head = claims[0] if claims else "조사 서술 없음"
-    summary = head if _is_cited(head, tool_names) and tool_names else HYPOTHESIS_PREFIX + head
+    if cited is not None:
+        head_cited = bool(claims) and head in cited
+    else:
+        head_cited = _is_cited(head, tool_names) and bool(tool_names)
+    summary = head if head_cited else HYPOTHESIS_PREFIX + head
     if unresolved:
         summary = UNRESOLVED_PREFIX + summary
     return summary
@@ -443,6 +519,8 @@ def build_briefing(
     apm_tools_connected: bool = False,
     investigation_skipped: bool = False,
     skipped_cause: str = SKIPPED_CAUSE,
+    evidence_ledger: EvidenceLedger | None = None,
+    ledger_masker: Callable[[str], str] | None = None,
 ) -> dict:
     """6요소 브리핑 dict를 결정적으로 조립한다.
 
@@ -470,14 +548,25 @@ def build_briefing(
     생략 사유는 호출자가 `limitations`에 싣는다. 기본 False — 종전과 같다.
     `skipped_cause`(plans/188 C7): 생략 브리핑의 원인 문구 — 조사 LLM 답변 형식 불일치 종결은
     dispatcher가 고정 요약을 `answer`로, 전용 원인 문구를 여기로 넘긴다(원문은 넘기지 않는다).
+
+    `evidence_ledger`(plans/198 I-4 — `citation_value_check_enabled`): 인용을 마커가 아니라 원장 값
+    대조로 판정한다(`_judge_values`). 원장에 없는 값이 있는 단정은 가설로 강등하고 한계에
+    「원장에 없는 값: …」을 싣는다. 가설 순위는 바꾸지 않는다. 가산 키 `citation_check`
+    (`checked`·`unmatched`·`demoted`·`ledger_size`)와 `evidence_ledger`(`ledger_summary` —
+    `ev_id`·도구·인자 요약 — 인자는 `ledger_masker`로 가린다)를 더한다. None이면 종전과 같다.
+    조사 생략 브리핑에는 쓰지 않는다.
     """
     if investigation_skipped:
         return _skipped_briefing(answer, verdict, gate_tier, remediation, limitations,
                                  correlation, source_labels, cross_source, apm_tools_connected,
                                  skipped_cause)
     tool_names = tool_names or []
-    st = _judge_citations(answer, tool_names)
-    summary = _render_summary(st.claims, tool_names, unresolved)
+    if evidence_ledger is None:
+        st = _judge_citations(answer, tool_names)
+        summary = _render_summary(st.claims, tool_names, unresolved)
+    else:
+        st = _judge_values(answer, tool_names, evidence_ledger)
+        summary = _render_summary(st.claims, tool_names, unresolved, st.cited)
     llm_cause = _render_llm_cause(st.claims, st.cited)
     corr_lines, timeline = _render_timeline(
         _corr_pairs(correlation, cross_source), st.cited, tool_names, correlation, source_labels
@@ -494,6 +583,11 @@ def build_briefing(
             hypotheses_ranked, cross_source, corr_lines, supported, st.cited, llm_cause, st.verified
         )
 
+    limits = _render_limitations(
+        limitations, verdict, st.verified, correlation, cross_source, apm_tools_connected
+    )
+    if st.check is not None and st.check["unmatched"]:
+        limits.append(_unmatched_limitation(st.check["unmatched"]))
     briefing = {
         "severity": _render_severity(verdict, gate_tier),
         "summary": summary,
@@ -502,9 +596,7 @@ def build_briefing(
         "cause": cause,
         "root_cause_hypotheses": hypotheses_ranked,
         "recommendation": _render_recommendation(remediation),
-        "limitations": _render_limitations(
-            limitations, verdict, st.verified, correlation, cross_source, apm_tools_connected
-        ),
+        "limitations": limits,
         "citations_verified": st.verified,
         "hypotheses": st.uncited,
     }
@@ -512,6 +604,14 @@ def build_briefing(
         briefing["cross_source"] = _cross_source_block(
             cross_source, list(cross_source.valid_links), supported, tool_names, apm_tools_connected
         )
+    if evidence_ledger is not None and st.check is not None:
+        briefing["citation_check"] = {
+            **st.check, "unmatched": st.check["unmatched"][:CITATION_CHECK_UNMATCHED_MAX]
+        }
+        briefing["evidence_ledger"] = ledger_summary(
+            evidence_ledger, masker=ledger_masker or (lambda text: text)
+        )
+    briefing.update(neighbor_keys(correlation))
     return briefing
 
 
@@ -749,7 +849,98 @@ def _skipped_briefing(
         briefing["cross_source"] = _cross_source_block(
             cross_source, list(cross_source.valid_links), None, [], apm_tools_connected
         )
+    briefing.update(neighbor_keys(correlation))
     return briefing
+
+
+#: 부분 브리핑 사유 어휘(plans/198 I-10) → 사람이 읽는 한 마디.
+PARTIAL_REASONS: dict[str, str] = {
+    "incomplete": "step 상한 도달",
+    "stalled": "조사 정체로 중단",
+    "timeout": "전체 시간 상한 초과",
+}
+PARTIAL_CAUSE = HYPOTHESIS_PREFIX + "원인 미확정(조사 미완주 — 결론 서술 없음)"
+PARTIAL_LIMIT = (
+    "조사 미완주({why}) — LLM 결론 서술 없이 회수한 도구 결과 {n}건만 정리함"
+    "(근거 목록은 결론이 아님)"
+)
+PARTIAL_NO_EVIDENCE = "회수한 도구 결과 없음"
+
+
+def build_partial_briefing(
+    *,
+    reason: str,
+    verdict: ImportanceVerdict,
+    ledger: EvidenceLedger,
+    gate_tier: str | None = None,
+    remediation: list[str] | None = None,
+    limitations: list[str] | None = None,
+    correlation: dict | None = None,
+    steps: int | None = None,
+    ledger_masker: Callable[[str], str] | None = None,
+    cross_source: EpisodeContext | None = None,
+    apm_tools_connected: bool = False,
+    source_labels: bool = False,
+) -> dict:
+    """미완주·정체·타임아웃 조사의 결정적 부분 브리핑(plans/198 I-10 · 154 H-5).
+
+    LLM 서술을 쓰지 않는다 — 회수한 도구 결과(증거 원장 행)를 근거 목록으로 타임라인에 싣고
+    (원시 출력 없이 `ev_id`·도구·인자 요약), 원인은 결정적 상관 가설이 있으면 그것, 없으면
+    「원인 미확정」이다.
+    요약은 `[미결] `로 시작한다. 6요소 키에 가산 키 `partial`(`reason`·`evidence_rows`·`steps`)과
+    `evidence_ledger`(`ledger_summary`)를 더한다. `reason`은 `PARTIAL_REASONS`의 키다.
+
+    `cross_source`·`apm_tools_connected`·`source_labels`는 `build_briefing`과 같은 뜻이다(재검토
+    Minor7 — 부분 브리핑에서도 사건 멤버 타임라인·소스 라벨·크로스소스 한계·`cross_source` 키를
+    싣는다). 인용 서술이 없으므로 규칙 가설의 도구 뒷받침은 「도구 인용 없음」이다.
+    기본값이면 종전과 같다.
+    """
+    why = PARTIAL_REASONS.get(reason, reason)
+    rows = ledger_summary(ledger, masker=ledger_masker or (lambda text: text))
+    n = len(ledger.rows)
+    evidence_lines = [f"[{r['ev_id']}] {r['tool']} {r['args']}".rstrip() for r in rows]
+    corr_lines = correlation_timeline(correlation) if correlation else []
+    tool_names = [r.tool for r in ledger.rows]
+    if cross_source is not None or source_labels:
+        corr_lines, _ = _render_timeline(
+            _corr_pairs(correlation, cross_source), [], tool_names, correlation, source_labels
+        )
+        if source_labels:
+            evidence_lines = [
+                f"[{evidence_source_label(ln, tool_names)}] {ln}" for ln in evidence_lines
+            ]
+    timeline = corr_lines + evidence_lines or [f"타임라인 근거 없음({PARTIAL_NO_EVIDENCE})"]
+    hypotheses_ranked = root_cause_hypotheses(correlation, PARTIAL_CAUSE, False)
+    cause = hypotheses_ranked[0]["cause"] if correlation and hypotheses_ranked else PARTIAL_CAUSE
+    if cross_source is not None and cross_source.valid_links:
+        hypotheses_ranked = _merge_rule_hypotheses(
+            hypotheses_ranked, cross_source, corr_lines, None, [], PARTIAL_CAUSE, False
+        )
+    limits = _render_limitations(
+        [*(limitations or []), PARTIAL_LIMIT.format(why=why, n=n)],
+        verdict, False, correlation, cross_source, apm_tools_connected, skipped=True,
+    )
+    extra: dict[str, Any] = {}
+    if cross_source is not None:
+        extra["cross_source"] = _cross_source_block(
+            cross_source, list(cross_source.valid_links), None, tool_names, apm_tools_connected
+        )
+    return {
+        "severity": _render_severity(verdict, gate_tier),
+        "summary": f"{UNRESOLVED_PREFIX}조사 미완주({why}) — 회수한 도구 결과 {n}건으로 부분 정리",
+        "timeline": timeline,
+        "bottleneck": _render_bottleneck(verdict),
+        "cause": cause,
+        "root_cause_hypotheses": hypotheses_ranked,
+        "recommendation": _render_recommendation(remediation),
+        "limitations": limits,
+        "citations_verified": False,
+        "hypotheses": [],
+        "partial": {"reason": reason, "evidence_rows": n, "steps": steps},
+        "evidence_ledger": rows,
+        **extra,
+        **neighbor_keys(correlation),
+    }
 
 
 def stub_briefing(message: str) -> dict:
@@ -762,9 +953,11 @@ __all__ = [
     "CORRELATION_NOT_CAUSATION_NOTE",
     "correlation_timeline",
     "root_cause_hypotheses",
+    "neighbor_keys",
     "cross_source_hypotheses",
     "CROSS_SOURCE_HYPOTHESIS_CONFIDENCE",
     "CITATION_MARKERS",
+    "UNMATCHED_VALUES_LIMIT",
     "HYPOTHESIS_PREFIX",
     "HUMAN_GATED_NOTE",
     "APM_SOURCE_LABEL",
@@ -773,5 +966,7 @@ __all__ = [
     "evidence_source_label",
     "build_briefing",
     "build_playbook_briefing",
+    "build_partial_briefing",
+    "PARTIAL_REASONS",
     "stub_briefing",
 ]

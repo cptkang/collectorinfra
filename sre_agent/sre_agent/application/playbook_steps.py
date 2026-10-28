@@ -93,6 +93,12 @@ VERDICT_SOURCE_GATEWAY = "apm_gateway"
 VERDICT_SOURCE_RULE = "playbook_rule"
 #: 역방향 대상 확정(`scope.host_to_was`)에서 이 호스트에 WAS가 없다는 판정(W4 후속 ③).
 NO_WAS_VERDICT = "no_was"
+#: 게이트웨이 `apm_instance_map(hostname=…)`의 「일치 인스턴스 없음」 오류 코드와, 그 문장에서
+#: 대조가 불완전했음을 알리는 표지(`apm_gateway/application/sources.py` `resolve` 문구 사본 ·
+#: D-274 ③). 표지가 없으면 전 소스·도메인을 대조하고 없었다는 확인된 사실이다.
+APM_INSTANCE_UNRESOLVED = "instance_unresolved"
+APM_PARTIAL_MARKERS = ("일부 도메인 조회 불가", "일부 소스 조회 불가")
+_COMPARED_RE = re.compile(r"인스턴스 (\d+)건 대조")
 #: [제안] p95가 기준선(전일·전주 평균)의 이 배수 이상이면 degraded — 스텝 인자 `p95_ratio`로 바꾼다.
 DEFAULT_P95_RATIO = 2.0
 #: 정합 신뢰도 중 「대상 확정 실패」로 보는 값(게이트웨이 어휘 high·medium·none + 방어적 low).
@@ -1277,7 +1283,20 @@ def host_to_was(ctx: StepContext) -> StepResult:
         _apm_args(ctx, APM_INSTANCE_MAP, None, discovery=True, hostname=host),
     )
     if not m.ok:
-        return _missing([APM_INSTANCE_MAP], f"{APM_INSTANCE_MAP}: {m.error}")
+        err = str(m.error or "")
+        complete = not any(k in err for k in APM_PARTIAL_MARKERS)
+        if err.startswith(APM_INSTANCE_UNRESOLVED) and complete:
+            # 전 소스·도메인을 대조하고 일치가 없었다 — 조회 실패가 아니라 「WAS 아님」이라는 사실
+            compared = _COMPARED_RE.search(err)
+            basis = f"제니퍼 인스턴스 {compared.group(1)}건 대조" if compared else "제니퍼 인스턴스 대조"
+            return StepResult(
+                status="ok",
+                verdict=NO_WAS_VERDICT,
+                verdict_source=VERDICT_SOURCE_RULE,
+                reason=f"이 호스트에 WAS 인스턴스 없음 — {basis} · 호스트 '{host}' 일치 없음",
+                data={"host": host, "instances": []},
+            )
+        return _missing([APM_INSTANCE_MAP], f"WAS 여부 미확인 — {APM_INSTANCE_MAP}: {err}")
     # (인스턴스, 소스) — 같은 이름이라도 소스가 다르면 행을 나눈다(plans/190 W1).
     entries = list(
         dict.fromkeys((str(r["instance_name"]), _row_source(r)) for r in _instance_rows(m))
@@ -1940,7 +1959,11 @@ def related_alarms(ctx: StepContext) -> StepResult:
 
 
 def process_top(ctx: StepContext) -> StepResult:
-    """S6 — 폴스타 프로세스 상위(실시간 단면 — `captured_at` 배지 · 판정 없음)."""
+    """S6 — 폴스타 프로세스 상위(실시간 단면 — `captured_at` 배지 · 판정 없음).
+
+    `source`로 조사 대상의 폴스타를 넘긴다 — 프로세스 API는 폴스타마다 따로라 소스 없이 부르면
+    서버 설정 하나(다른 존일 수 있음)로 간다. 0건은 「목록 없음」이 아니라 수집 결손이다.
+    """
     blocked = _polestar_reason(ctx)
     if blocked:
         return _polestar_blocked(ctx, [POLESTAR_PROCESS], blocked)
@@ -1951,6 +1974,7 @@ def process_top(ctx: StepContext) -> StepResult:
             "hostname": ctx.scope.polestar_server,
             "top_n": int(ctx.args.get("top_n", 10)),
             "sort": str(ctx.args.get("sort", "cpu")),
+            "source": ctx.scope.polestar_source,
         },
     )
     if not resp.ok:
@@ -1965,6 +1989,18 @@ def process_top(ctx: StepContext) -> StepResult:
     badge = realtime_badge(
         data.get("captured_at") or data.get("queried_at"), ctx.windows.alarm_time, ctx.now
     )
+    if not rows:
+        # 기동 중인 호스트에 프로세스가 0개일 수는 없다 — 다른 폴스타로 갔거나 호스트명 불일치
+        res = _missing(
+            [POLESTAR_PROCESS],
+            f"{POLESTAR_PROCESS}: 0건 — 프로세스 API가 호스트 '{ctx.scope.polestar_server}'의"
+            f" 프로세스를 돌려주지 않음(소스 {ctx.scope.polestar_source} · 존별 프로세스 API 설정"
+            " 또는 호스트명 불일치 확인)",
+        )
+        res.data = {"rows": [], "total_processes": data.get("total_processes"),
+                    "captured_at": data.get("captured_at")}
+        res.badges.append(badge)
+        return res
     return StepResult(
         status="ok",
         table={"columns": list(cols), "rows": [[r.get(c) for c in cols] for r in rows]},

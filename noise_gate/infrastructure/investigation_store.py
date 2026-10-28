@@ -155,6 +155,9 @@ PLAYBOOK_CLIPPED_NOTE = "저장 상한(32KB)으로 플레이북 일부 생략 �
 _SECTION_HEAD_KEYS: tuple[str, ...] = (
     "step", "action", "title", "status", "verdict", "verdict_source",
 )
+#: `deep_dive.narrative`(심층 답변 원문)를 줄일 때 남기는 앞부분 글자 수와 표지.
+DEEP_NARRATIVE_CLIP_CHARS = 2000
+DEEP_NARRATIVE_CLIPPED_NOTE = "\n…(저장 상한 32KB로 이하 생략)"
 #: `deep_dive`를 줄일 때 남기는 키(앞쪽이 상태 · 뒤쪽이 우선 보존 서술).
 _DEEP_DIVE_KEEP_KEYS: tuple[tuple[str, ...], ...] = (
     ("status", "mode", "reason", "label", "summary", "cause"),
@@ -213,7 +216,14 @@ def _dict_candidates(key: str, value: dict[str, Any]) -> list[dict[str, Any]]:
     if key == "playbook":
         return _playbook_candidates(value)
     if key == "deep_dive":
-        return [{k: value[k] for k in keys if k in value} for keys in _DEEP_DIVE_KEEP_KEYS]
+        # 답변 원문(`narrative` — [서술 보기])부터 줄인다: 앞부분만 → 원문 없이 → 종전 단계.
+        narr = value.get("narrative")
+        lead: list[dict[str, Any]] = []
+        if isinstance(narr, str) and len(narr) > DEEP_NARRATIVE_CLIP_CHARS:
+            lead.append({**value, "narrative": narr[:DEEP_NARRATIVE_CLIP_CHARS] + DEEP_NARRATIVE_CLIPPED_NOTE})
+        if "narrative" in value:
+            lead.append({k: v for k, v in value.items() if k != "narrative"})
+        return lead + [{k: value[k] for k in keys if k in value} for keys in _DEEP_DIVE_KEEP_KEYS]
     return []
 
 

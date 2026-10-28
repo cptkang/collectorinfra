@@ -232,6 +232,13 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_INVESTIGATION_KB_INCORRECT_STREAK": "자동 장애 조사",
     "NOISE_INVESTIGATION_KB_ENGINE_MIN_SAMPLES": "자동 장애 조사",
     "NOISE_INVESTIGATION_KB_ENGINE_SWITCH_RATIO": "자동 장애 조사",
+    # (plans/198 W0 I-1) 조사 「실제 원인」 라벨 · 관리자 조사 정확도 주간 표
+    "NOISE_INVESTIGATION_LABEL_ENABLED": "자동 장애 조사",
+    # (plans/198 W7 I-8) 사건 기억 — 유사 과거 조사 · KEDB 부트스트랩
+    "NOISE_INVESTIGATION_MEMORY_ENABLED": "자동 장애 조사",
+    "NOISE_INVESTIGATION_KEDB_MIN_COUNT": "자동 장애 조사",
+    # (plans/198 W8 I-11) 사건 단위 조사 — 같은 서버 알람 묶음 · 증상 선착 보완
+    "NOISE_INVESTIGATION_INCIDENT_UNIT_ENABLED": "자동 장애 조사",
     # (plans/187 W14) 조사 진행 실시간 화면(SSE 허브)
     "NOISE_INVESTIGATION_LIVE_VIEW_ENABLED": "자동 장애 조사",
     "NOISE_INVESTIGATION_LIVE_POLL_SECONDS": "자동 장애 조사",

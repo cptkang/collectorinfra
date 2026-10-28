@@ -1020,6 +1020,31 @@ body:has(.chat-layout.history-collapsed) {
     margin-top: 8px;
 }
 
+/* (plans/198 W0 I-1) 완료 조사 하단 「실제 원인」 1줄 */
+.dv-cause {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 0.8125rem;
+}
+.dv-cause [hidden] { display: none; }
+.dv-cause-note { flex: 1 1 220px; min-width: 160px; }
+.dv-cause .dv-note { flex-basis: 100%; }
+
+/* (plans/198 W7 I-8) 완료 조사 하단 「비슷한 과거 조사」 */
+.dv-similar {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 0.8125rem;
+}
+.dv-similar-list { margin: 4px 0; padding-left: 18px; }
+.dv-similar-open { color: var(--text-muted); }
+
 /* (plans/187 W20 · G-50) 「조사 흐름」·「실행 기록」 전환 · 단계 카드 */
 .dv-modes { display: flex; gap: 2px; margin: 6px 0 8px; border-bottom: 1px solid var(--border); }
 .dv-mode {
@@ -3702,6 +3727,8 @@ body.auth-pending .auth-splash {
 .bv-badge--live { border-color: var(--info); color: var(--info); background: var(--info-bg); }
 .bv-badge--hypo { border-color: var(--secondary); color: var(--secondary); background: transparent; }
 .bv-opinion { font-size: 0.75rem; color: var(--text-secondary); overflow-wrap: anywhere; }
+/* [서술 보기] — 심층 답변 원문은 여러 줄 마크다운 평문이라 줄바꿈을 살리고 길면 안에서 스크롤 */
+.bv-engine-narr .bv-opinion { white-space: pre-wrap; max-height: 360px; overflow: auto; }
 .bv-pb-actions { display: flex; justify-content: flex-end; }
 .bv-open-conv, .bv-choice {
     font-size: 0.72rem; padding: 3px 10px; border-radius: var(--radius-sm); cursor: pointer;
@@ -3754,10 +3781,15 @@ body.auth-pending .auth-splash {
 .bv-ke-feedback { margin-top: 4px; }
 .bv-fu-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .bv-input {
-    font-size: 0.74rem; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm);
-    background: var(--surface); color: var(--text); max-width: 100%;
+    /* background 단축 속성을 쓰면 전역 select 캐럿 이미지가 지워진다 — background-color로 */
+    font-size: 0.74rem; padding: 0 6px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background-color: var(--surface); color: var(--text); max-width: 100%;
 }
 input.bv-input { min-width: 16em; }
+input.bv-input[type="text"] { width: auto; padding: 0 6px; font-size: 0.74rem; border-radius: var(--radius-sm); }
+select.bv-input { width: auto; padding-right: 22px; background-position: right 6px center; }
+/* 추가 조사 요청 한 줄 — 초점 select · 보충 입력 · 요청 버튼 높이를 맞춘다 */
+.bv-fu-form .bv-input, .bv-fu-form .bv-open-conv { height: 28px; box-sizing: border-box; line-height: 1; }
 .bv-fu-item { padding: 4px 6px; border-left: 2px solid var(--accent-dim); }
 
 /* 조사 대화 첫 고정 카드(app.js) — 브리핑 본문은 위 공용 스타일 */
@@ -6708,10 +6740,14 @@ select:focus {
 
 .db-scope-chip {
     position: relative;
-    display: flex;
+    /* DB·제니퍼 두 칩이 한 줄에 나란히 — 폭이 모자라면 다음 줄로 넘어간다 */
+    display: inline-flex;
+    vertical-align: middle;
+    max-width: 100%;
     align-items: center;
     flex-wrap: wrap;
     gap: 6px;
+    margin-right: 12px;
     margin-bottom: 8px;
     font-size: 0.78rem;
     color: var(--text-secondary);

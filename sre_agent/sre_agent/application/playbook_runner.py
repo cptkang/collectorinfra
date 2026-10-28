@@ -78,12 +78,15 @@ from sre_agent.domain.playbook_expr import READING_NAMES, Tri
 from sre_agent.domain.playbook_hypotheses import (
     REFUTED,
     Action,
+    Discriminator,
     Hypothesis,
     build_followups,
+    discriminator_targets,
     hypothesis_context,
     is_top_inconclusive,
     pin_hypotheses,
     rank_hypotheses,
+    reverify_hypotheses,
     select_actions,
 )
 from sre_agent.domain.playbook_readings import (
@@ -590,6 +593,24 @@ def _apply_prior_readings(
 
 
 @dataclass
+class Discrimination:
+    """판별 조회 결과(plans/198 I-2 · D-350 ①) — 실행기가 채우고 실행 후 처리가 재판정에 쓴다.
+
+    targets:  (가설 규칙 ID, 그 가설의 판별 스텝) — 1차 평가의 상위 판단 보류 가설 순위 순서.
+    specs:    실제로 돈 판별 스텝(판독 계산 때 플레이북 스텝 뒤에 붙인다 · 실행 순서).
+    results:  스텝 ID → 결과(돈 것만).
+    skipped:  스텝 ID → 돌지 않은 사유(이미 있는 단계 · 예산 소진).
+    contexts: 스텝 ID → 실행 문맥(도구 원문·호출 기록 재료).
+    """
+
+    targets: list[tuple[str, tuple[Discriminator, ...]]]
+    specs: list[StepSpec] = field(default_factory=list)
+    results: dict[str, StepResult] = field(default_factory=dict)
+    skipped: dict[str, str] = field(default_factory=dict)
+    contexts: dict[str, StepContext] = field(default_factory=dict, repr=False)
+
+
+@dataclass
 class PlaybookRun:
     """플레이북 실행 결과.
 
@@ -603,6 +624,8 @@ class PlaybookRun:
     synthesis:    종합(가설 순위·대응·추가 확인·서술) — 실행 후 처리 전에는 None.
     runbook:      브리핑 `playbook.runbook`(W8 · §5.7.2) — 실행 후 처리 전에는 None.
     known_errors: 브리핑 `playbook.known_errors[]`(W8 · §5.7.6 — 표시 상태 · 불일치 제외).
+    discrimination: 판별 조회(plans/198 I-2) — 켜졌을 때만 실행기가 채운다(직렬화하지 않는다 —
+                  실행 후 처리가 `hypotheses[].verification`으로 싣는다).
     """
 
     playbook_id: str
@@ -621,6 +644,7 @@ class PlaybookRun:
     synthesis: dict[str, Any] | None = None
     runbook: dict[str, Any] | None = None
     known_errors: list[dict[str, Any]] = field(default_factory=list)
+    discrimination: Discrimination | None = None
 
     def section(self, step_id: str) -> StepResult | None:
         return next((s for s in self.sections if s.step == step_id), None)
@@ -719,6 +743,7 @@ def run_playbook(
     activity: ActivityLog | None = None,
     on_skip: Callable[[StepResult, str], None] | None = None,
     retry_timed_out: bool = False,
+    discriminate_top_n: int = 0,
 ) -> PlaybookRun:
     """플레이북을 실행한다. 예외를 내지 않는다 — 실패는 섹션의 상태·사유로 남긴다.
 
@@ -750,6 +775,10 @@ def run_playbook(
     retry_timed_out: 참이면 수집 단계 뒤 남은 예산 안에서 「스텝 타임아웃」 결손 스텝만 YAML 순서로
                      1회씩 다시 돈다(plans/187 W22 · `retry_timed_out_steps`).
                      기본 거짓 = 종전 동일.
+    discriminate_top_n: 1 이상이면 수집(·재시도) 뒤 남은 예산 안에서 1차 평가의 상위 판단
+                     보류 가설 이 수만큼 판별 스텝을 1회 돌린다(plans/198 I-2 ·
+                     `Discrimination`). 재판정은 실행 후 처리가 한다. 재조회(plans/196)에서는
+                     돌지 않는다. 기본 0 = 종전 동일.
     """
     started = clock()
     library = STEP_LIBRARY if steps is None else steps
@@ -777,6 +806,7 @@ def run_playbook(
             activity=activity,
             on_skip=on_skip,
             retry_timed_out=retry_timed_out,
+            discriminate_top_n=discriminate_top_n,
         )
     finally:
         if own_cache:
@@ -950,6 +980,7 @@ def _run(
     activity: ActivityLog | None = None,
     on_skip: Callable[[StepResult, str], None] | None = None,
     retry_timed_out: bool = False,
+    discriminate_top_n: int = 0,
 ) -> PlaybookRun:
     notes: list[str] = []
     source, source_reason = resolve_polestar_source(payload, polestar_source)
@@ -1121,14 +1152,125 @@ def _run(
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
 
+    disc: Discrimination | None = None
+    if discriminate_top_n > 0 and rerun is None:
+        disc = _discriminate(
+            playbook, results, discriminate_top_n, payload=payload, windows=windows, scope=scope,
+            polestar=polestar, apm=apm, now=now, library=library, clock=clock, started=started,
+            budget_s=budget_s, step_timeout_s=step_timeout_s, for_each_max=for_each_max,
+            xview_confirm_over=xview_confirm_over, activity=activity, on_skip=on_skip,
+        )
+
     for step in playbook.steps:
         if step.action == _SYNTHESIZE:
             results[step.id] = _placeholder(
                 step, "pending_synthesis", "종합은 단계 소견기·종합기(W3) 담당"
             )
-    return _finish(
+    run = _finish(
         playbook, matched_by, scope, windows, results, contexts, notes, clock, started, budget_s
     )
+    if disc is not None:
+        run.discrimination = disc
+        for sid, dctx in disc.contexts.items():
+            run.tool_outputs.extend(dctx.outputs)
+            run.tool_calls.extend({"step": sid, "tool": t, "args": a} for t, a in dctx.calls)
+            run.notes.extend(n for n in list(dctx.limits) if n not in run.notes)
+    return run
+
+
+#: 판별 조회 사유(plans/198 I-2 · 결정적).
+DISCRIMINATOR_PRESENT = "플레이북에 이미 있는 단계 — 판별 조회는 재수집하지 않음"
+DISCRIMINATOR_BUDGET = "budget — 남은 예산 없음(예산 {budget:.0f}s 소진) — 판별 조회 생략"
+DISCRIMINATOR_NONE = "판별 스텝 없음 — 결손 조건을 가르는 추가 조회가 규칙표에 없음"
+
+
+def _discriminate(
+    playbook: Playbook,
+    results: Mapping[str, StepResult],
+    top_n: int,
+    *,
+    payload: Mapping[str, Any],
+    windows: RunWindows,
+    scope: RunScope,
+    polestar: BatchCaller | None,
+    apm: BatchCaller | None,
+    now: Callable[[], datetime],
+    library: Mapping[str, StepFn],
+    clock: Callable[[], float],
+    started: float,
+    budget_s: float,
+    step_timeout_s: float,
+    for_each_max: int | None,
+    xview_confirm_over: int | None,
+    activity: ActivityLog | None = None,
+    on_skip: Callable[[StepResult, str], None] | None = None,
+) -> Discrimination:
+    """판별 조회 1회(plans/198 I-2 · 결정적 · LLM 0) — 수집 결과로 가설을 1차 평가해 상위 `top_n`개
+    판단 보류 가설의 판별 스텝을 순위 순서대로 하나씩 돈다.
+
+    같은 스텝은 한 번만 돈다(여러 가설이 공유). 플레이북에 이미 있는 스텝 ID·액션은 돌지 않는다
+    (재수집은 W22 재시도 담당 — 중복 실행 금지). 남은 예산이 없으면 건너뛰고 사유를 남긴다. 루프는
+    이 1회뿐이다 — 판별 결과로 다시 판별 대상을 고르지 않는다.
+
+    실행 기록은 플레이북 스텝과 같은 경로다(재검토 Minor6): 문맥에 판별 스텝 ID를 달아 두면 실행기
+    래퍼가 그 ID로 단계 시작·끝·도구 호출을 기록하고, 예산 소진 건너뜀은 `_notify_skip`으로 알린다.
+    이미 있는 단계라 건너뛴 것은 그 단계가 이미 기록돼 있으므로 다시 알리지 않는다.
+    """
+    ctx = hypothesis_context(
+        _readings_of(playbook, results), {sid: r.verdict for sid, r in results.items()}
+    )
+    hyps = rank_hypotheses(ctx, present_steps=list(results))
+    disc = Discrimination(
+        targets=[(h.rule_id, ds) for h, ds in discriminator_targets(hyps, top_n)]
+    )
+    present_ids = {st.id for st in playbook.steps} | set(results)
+    present_actions = {st.action for st in playbook.steps}
+    for _, discs in disc.targets:
+        for d in discs:
+            if d.step in disc.results or d.step in disc.skipped:
+                continue
+            if d.step in present_ids or d.action in present_actions:
+                disc.skipped[d.step] = DISCRIMINATOR_PRESENT
+                continue
+            spec = StepSpec(id=d.step, action=d.action, args=dict(d.args), for_each=d.for_each)
+            remaining = budget_s - (clock() - started)
+            if remaining <= 0:
+                disc.skipped[d.step] = DISCRIMINATOR_BUDGET.format(budget=budget_s)
+                if activity is not None or on_skip is not None:
+                    _notify_skip(_placeholder(spec, "skipped", disc.skipped[d.step]),
+                                 BUDGET_SKIP, activity, on_skip)
+                continue
+            picked = _step_targets(spec, scope, for_each_max)
+            sctx = StepContext(
+                payload=payload, windows=windows, scope=scope, args=spec.args,
+                targets=[name for name, _ in picked],
+                target_sources=[src for _, src in picked],
+                polestar=polestar, apm=apm, now=now, prior={**results, **disc.results},
+                xview_confirm_over=xview_confirm_over,
+            )
+            sctx.step_id = d.step   # 실행 기록의 스텝 ID(래퍼가 액션 이름 대신 이 ID로 기록)
+            limit = step_wait_s(spec, step_timeout_s, remaining)
+            executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="playbook-discriminator"
+            )
+            try:
+                fut = executor.submit(_exec_step, spec, sctx, library, clock)
+                deadline = time.monotonic() + limit
+                sctx.started.wait(max(0.0, deadline - time.monotonic()))
+                end = (
+                    deadline if sctx.started_at is None
+                    else min(sctx.started_at + limit, deadline)
+                )
+                try:
+                    res = fut.result(timeout=max(0.0, end - time.monotonic()))
+                except FutureTimeout:
+                    res = _timed_out(spec, fut, sctx, limit)
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+            disc.specs.append(spec)
+            disc.results[d.step] = res
+            disc.contexts[d.step] = sctx
+    return disc
 
 
 def _step_targets(
@@ -1581,6 +1723,60 @@ def _known_error_actions(
     return out
 
 
+def _reverify(
+    disc: Discrimination,
+    playbook: Playbook,
+    collected: Mapping[str, StepResult],
+    hyps: Sequence[Hypothesis],
+) -> tuple[list[Hypothesis], dict[str, dict[str, Any]]]:
+    """판별 조회 결과로 대상 가설만 다시 판정한다(plans/198 I-2 · 규칙만 · 심층 결과 무관 —
+    D-350 ①) → (재정렬한 가설, 규칙 ID → `verification`).
+
+    재판정 문맥 = 플레이북 스텝 + 판별 스텝으로 다시 계산한 판독·판정. 판별 스텝을 하나도 못 돈
+    가설은 1차 상태 그대로다. 브리핑 판독(`readings`)·대응 `when` 문맥은 1차 값을 쓴다.
+    """
+    before = {h.rule_id: h.status for h in hyps}
+    ran = {
+        rid for rid, discs in disc.targets if any(d.step in disc.results for d in discs)
+    }
+    if ran:
+        merged = {**collected, **disc.results}
+        augmented = playbook.model_copy(update={"steps": [*playbook.steps, *disc.specs]})
+        ctx = hypothesis_context(
+            _readings_of(augmented, merged), {sid: s.verdict for sid, s in merged.items()}
+        )
+        hyps = reverify_hypotheses(hyps, ctx, ran)
+    after = {h.rule_id: h.status for h in hyps}
+    out: dict[str, dict[str, Any]] = {}
+    for rid, discs in disc.targets:
+        if rid not in before:
+            continue
+        steps: list[dict[str, Any]] = []
+        for d in discs:
+            res = disc.results.get(d.step)
+            steps.append({
+                "step": d.step,
+                "action": d.action,
+                "title": ACTION_TITLES.get(d.action, d.action),
+                "condition": d.condition,
+                "status": res.status if res is not None else "skipped",
+                "verdict": res.verdict if res is not None else None,
+                "reason": res.reason if res is not None else disc.skipped.get(d.step),
+            })
+        skip_reasons = list(dict.fromkeys(
+            disc.skipped[d.step] for d in discs if d.step in disc.skipped
+        ))
+        out[rid] = {
+            "ran": rid in ran,
+            "steps": steps,
+            "before": before[rid],
+            "after": after[rid],
+            "reason": None if rid in ran
+            else (" · ".join(skip_reasons) if skip_reasons else DISCRIMINATOR_NONE),
+        }
+    return list(hyps), out
+
+
 def finalize_playbook_run(
     run: PlaybookRun,
     playbook: Playbook,
@@ -1616,6 +1812,9 @@ def finalize_playbook_run(
     verdicts = {sid: s.verdict for sid, s in collected.items()}
     ctx = hypothesis_context(readings, verdicts)
     hyps = rank_hypotheses(ctx, present_steps=list(collected))
+    verifications: dict[str, dict[str, Any]] = {}
+    if run.discrimination is not None:
+        hyps, verifications = _reverify(run.discrimination, playbook, collected, hyps)
 
     # 알려진 오류(W8) — 평가 문맥 = 가설 문맥 + 1위 느린 거래 수치(`S3.top1`)
     ke_ctx: dict[str, Any] = dict(ctx)
@@ -1698,6 +1897,9 @@ def finalize_playbook_run(
         opinions.update(narrator.narrate_steps(requests))
 
     hyp_dicts = [h.to_dict() for h in hyps]
+    for d in hyp_dicts:
+        if d["rule_id"] in verifications:
+            d["verification"] = verifications[d["rule_id"]]
     action_dicts = [a.to_dict() for a in actions]
     top_title = hyps[0].title if hyps else None
     if narrator is None:
@@ -1740,7 +1942,11 @@ def finalize_playbook_run(
         "hypotheses": [
             {
                 k: d[k]
-                for k in ("rank", "title", "status", "status_label", "evidence_steps", "rule_id")
+                for k in (
+                    "rank", "title", "status", "status_label", "evidence_steps", "rule_id",
+                    "verification",
+                )
+                if k in d
             }
             for d in hyp_dicts
         ],
@@ -1760,6 +1966,10 @@ __all__ = [
     "DEFAULT_BUDGET_S",
     "DEFAULT_MAX_WORKERS",
     "DEFAULT_STEP_TIMEOUT_S",
+    "DISCRIMINATOR_BUDGET",
+    "DISCRIMINATOR_NONE",
+    "DISCRIMINATOR_PRESENT",
+    "Discrimination",
     "GATEWAY_EVENT_SIGNAL_KINDS",
     "LATENCY_EVENT_TYPES",
     "POLESTAR_BRIDGE_MISSING",

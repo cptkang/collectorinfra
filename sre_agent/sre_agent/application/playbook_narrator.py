@@ -14,7 +14,8 @@ sre_agent의 기존 LLM(holmes `DefaultLLM.completion(messages, …)` → litell
      (「판정과 불일치 — 소견 생략」). 종합은 1순위 가설이 지지(supported)일 때 degraded와 같은
      검사를 건다(「모든 지표 정상」 종합 → 「1순위 가설(지지)과 불일치 — 종합 소견 생략」).
   ② 환각 수치: 문장의 수치가 사용자 메시지(단계 표·판정·판독 근거)의 어떤 값과도 맞지 않으면
-     그 문장 제거.
+     그 문장 제거. 규칙 구현은 공용 `domain/value_guard`
+     (HolmesGPT 브리핑 값 대조와 공유 · plans/198 I-4).
      허용: 같은 값을 그 수치의 소수 자릿수로 반올림한 값 · 천 단위 쉼표 · 부호 무시 ·
      「건·개·곳·대·위·순위·번째」가 붙은 10 이하 정수(개수·순위) · 식별자 일부(`p95`·`S3`)는
      수치로 보지 않는다. 단위 환산은 근거가 있는 칸에만 — `*_ms`(÷1000 ms→초) · `*_s`(×1000) ·
@@ -32,7 +33,6 @@ sre_agent의 기존 LLM(holmes `DefaultLLM.completion(messages, …)` → litell
 from __future__ import annotations
 
 import functools
-import json
 import logging
 import re
 import threading
@@ -48,6 +48,13 @@ from sre_agent.application.playbook_prompts import (
     render_synthesis_messages,
 )
 from sre_agent.domain.activity_log import ActivityLog, safe_append
+from sre_agent.domain.value_guard import (
+    AllowedItem,
+    SourceNumber,
+    number_allowed,
+    source_numbers,
+    unknown_numbers,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -91,11 +98,7 @@ _NEGATION_WINDOW = 14
 #: 「N배 이상」「80% 이상」처럼 비교 뜻의 「이상」 앞 글자.
 _COMPARATIVE_PREFIX = re.compile(r"[\d%배건개분초]\s*$")
 
-#: 허용 집합 쪽 수치 — 넓게 잡는다(`T07:20`의 07 등).
-_NUMBER = re.compile(r"\d+(?:,\d{3})*(?:\.\d+)?")
-#: 소견 문장 쪽 수치 토큰 — 식별자 일부(`p95`·`S3`)는 수치가 아니다.
-_CLAIM_NUMBER = re.compile(r"(?<![A-Za-z_\d.])\d+(?:,\d{3})*(?:\.\d+)?")
-_COUNT_SUFFIX = re.compile(r"\s*(건|개|곳|대|위|순위|번째)")
+#: 문장 분리 · 목록 머리표(환각 수치 가드 ②는 `domain/value_guard`로 옮겼다 — plans/198 I-4).
 _SENTENCE_SPLIT = re.compile(r"(?<=[.!?。])\s+|\n+")
 _BULLET = re.compile(r"^\s*(?:[-*•·]|\d+[.)])\s+")
 #: 순위·확정 진술 어휘(결정적 목록) — 종합은 코드 1순위 제목을 함께 담아야 하고 단계 소견은 금지.
@@ -114,15 +117,6 @@ RANK_CLAIM_TERMS = (
     "근본원인은",
     "원인으로 확정",
     "확실한 원인",
-)
-#: 날짜·시각 문자열(허용 집합 쪽 — 각 자리 숫자로 분해하지 않는다).
-_DATE = re.compile(r"\d{4}-\d{2}-\d{2}")
-_TIME = re.compile(r"(?<![\d:])(\d{1,2}):(\d{2})(?::(\d{2}))?(?![\d:])")
-#: 소견 문장 쪽 시각(`07:20` · `07시 20분`).
-_CLAIM_TIME = re.compile(r"(?<![\d:])(\d{1,2})(?::|시\s*)(\d{2})(?::\d{2}|분)?(?![\d:])")
-#: `이름 값`·`"이름":값` 꼴의 앞 이름(단위 환산 근거).
-_LABELED_NUMBER = re.compile(
-    r"([A-Za-z_][A-Za-z0-9_]*)\"?\s*[:=]?\s*(-?\d+(?:,\d{3})*(?:\.\d+)?)(?![\d.])"
 )
 
 
@@ -203,144 +197,6 @@ def polarity_conflict(text: str, verdict: str | None) -> bool:
     return False
 
 
-@dataclass(frozen=True)
-class SourceNumber:
-    """허용 수치 1개 — 단위 환산 근거가 있는 칸이면 `factors`(값에 곱해 허용할 배수)."""
-
-    value: float
-    factors: tuple[float, ...] = ()
-
-
-#: 허용 집합 원소 — 수(정확 일치만) · `SourceNumber`(근거 있는 환산 포함) · 날짜·시각 문자열.
-AllowedItem = float | SourceNumber | str
-
-
-def _unit_factors(labels: Sequence[str]) -> tuple[float, ...]:
-    """칸 이름들 → 허용 환산 배수(ms↔s · 비율↔%). 근거 없으면 빈 튜플."""
-    out: set[float] = set()
-    for raw in labels:
-        label = raw.lower()
-        if label == "ms" or label.endswith("_ms"):
-            out.add(1 / 1000)
-        if label.endswith(("_s", "_sec", "_seconds")):
-            out.add(1000.0)
-        if "ratio" in label or label == "share" or label.endswith("_share"):
-            out.add(100.0)
-        if label == "pct" or label.endswith("_pct") or "percent" in label:
-            out.add(1 / 100)
-    return tuple(sorted(out))
-
-
-def _walk_json(value: Any, path: tuple[str, ...], out: list[AllowedItem]) -> None:
-    """JSON 값의 수에 키 경로(표는 열 이름 + 같은 행의 문자열 칸)로 환산 근거를 붙인다."""
-    if isinstance(value, Mapping):
-        cols, rows = value.get("columns"), value.get("rows")
-        if isinstance(cols, list) and isinstance(rows, list):
-            for row in rows:
-                if not isinstance(row, list):
-                    continue
-                names = [c for c in row if isinstance(c, str)]
-                for col, cell in zip(cols, row):
-                    _walk_json(cell, (*path, str(col), *names), out)
-        for k, v in value.items():
-            if k not in ("columns", "rows"):
-                _walk_json(v, (*path, str(k)), out)
-    elif isinstance(value, list):
-        for v in value:
-            _walk_json(v, path, out)
-    elif isinstance(value, (int, float)) and not isinstance(value, bool):
-        factors = _unit_factors(path)
-        if factors:
-            out.append(SourceNumber(float(value), factors))
-
-
-def _norm_time(h: str, m: str) -> str:
-    return f"{int(h):02d}:{int(m):02d}"
-
-
-def source_numbers(text: str) -> list[AllowedItem]:
-    """허용 수치 집합 — 입력 텍스트의 모든 수(쉼표 제거) + 근거 있는 칸의 환산 + 날짜·시각 문자열.
-
-    날짜·시각은 문자열 전체로만 싣고 그 자리 숫자는 수로 넣지 않는다(검증 지적 7).
-    """
-    raw = text or ""
-    out: list[AllowedItem] = []
-    blanked = raw
-    for m in _DATE.finditer(raw):
-        out.append(m.group())
-        blanked = blanked[: m.start()] + " " * len(m.group()) + blanked[m.end() :]
-    for m in _TIME.finditer(blanked):
-        out.append(_norm_time(m.group(1), m.group(2)))
-        blanked = blanked[: m.start()] + " " * len(m.group()) + blanked[m.end() :]
-    out.extend(float(m.group().replace(",", "")) for m in _NUMBER.finditer(blanked))
-    for m in _LABELED_NUMBER.finditer(blanked):
-        factors = _unit_factors([m.group(1)])
-        if factors:
-            out.append(SourceNumber(float(m.group(2).replace(",", "")), factors))
-    decoder = json.JSONDecoder()
-    pos = raw.find("{")
-    while pos != -1:
-        try:
-            obj, end = decoder.raw_decode(raw, pos)
-        except ValueError:
-            pos = raw.find("{", pos + 1)
-            continue
-        _walk_json(obj, (), out)
-        pos = raw.find("{", end)
-    return out
-
-
-def _decimals(token: str) -> int:
-    return len(token.split(".")[1]) if "." in token else 0
-
-
-def number_allowed(token: str, allowed: Sequence[AllowedItem]) -> bool:
-    """수치 토큰 1개가 허용 집합의 값(반올림 · 근거 있는 칸의 단위 환산 포함)과 맞는가."""
-    x = float(token.replace(",", ""))
-    d = _decimals(token)
-    tol = 0.5 * 10 ** (-d) + 1e-9
-    for item in allowed:
-        if isinstance(item, str):
-            continue
-        if isinstance(item, SourceNumber):
-            cands: tuple[float, ...] = (item.value, *(item.value * f for f in item.factors))
-        else:
-            cands = (float(item),)
-        if any(abs(abs(c) - x) <= tol for c in cands):
-            return True
-    return False
-
-
-def _mask_known_times(sentence: str, allowed: Sequence[AllowedItem]) -> str:
-    """허용 집합에 문자열 전체로 있는 날짜·시각은 수치 검사에서 뺀다(공백으로 가림)."""
-    texts = {a for a in allowed if isinstance(a, str)}
-    if not texts:
-        return sentence
-    out = sentence
-    for m in _DATE.finditer(sentence):
-        if m.group() in texts:
-            out = out[: m.start()] + " " * len(m.group()) + out[m.end() :]
-    for m in _CLAIM_TIME.finditer(out):
-        if _norm_time(m.group(1), m.group(2)) in texts:
-            out = out[: m.start()] + " " * len(m.group()) + out[m.end() :]
-    return out
-
-
-def unknown_numbers(sentence: str, allowed: Sequence[AllowedItem]) -> list[str]:
-    """문장에서 허용 집합에 없는 수치 토큰(개수·순위 접미의 10 이하 정수는 제외)."""
-    bad: list[str] = []
-    sentence = _mask_known_times(sentence, allowed)
-    for m in _CLAIM_NUMBER.finditer(sentence):
-        token = m.group()
-        if (
-            "." not in token
-            and float(token.replace(",", "")) <= 10
-            and _COUNT_SUFFIX.match(sentence, m.end())
-        ):
-            continue
-        if not number_allowed(token, allowed):
-            bad.append(token)
-    return bad
 
 
 def _cap(sentences: list[str], max_sentences: int, max_chars: int, notes: list[str]) -> list[str]:

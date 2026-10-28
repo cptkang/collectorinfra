@@ -54,12 +54,12 @@ import re
 import threading
 import time
 from collections import deque
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from sre_agent.application.briefing_builder import build_playbook_briefing
+from sre_agent.application.briefing_builder import build_partial_briefing, build_playbook_briefing
 from sre_agent.application.investigation_guidance import PROM_ANCHOR_REASONS, deep_dive_note
 from sre_agent.application.playbook_narrator import (
     NOT_CONFIGURED,
@@ -113,6 +113,14 @@ from sre_agent.domain.investigation_limits import (
     stall_limitation,
 )
 from sre_agent.domain.engine_agreement import compare_engines
+from sre_agent.domain.evidence_ledger import build_ledger
+from sre_agent.domain.failure_guards import (
+    ExpectedSources,
+    activity_tool_events,
+    ledger_from_activity,
+    unchecked_sources,
+    unchecked_sources_limitation,
+)
 from sre_agent.domain.job_watchdog import STUCK_WATCHDOG_REASON, stuck_after_seconds
 from sre_agent.domain.known_error import KnownError
 from sre_agent.domain.playbook import APM_FALLBACK_ID, Playbook, select_playbook
@@ -128,6 +136,7 @@ from sre_agent.domain.severity_signatures import (
     was_signals_from_outputs,
 )
 from sre_agent.infrastructure.activity_masking import mask_activity_text
+from sre_agent.infrastructure.expected_sources_loader import load_expected_sources
 from sre_agent.infrastructure.tool_result_cache import (
     BatchCaller,
     CacheClosedError,
@@ -224,6 +233,15 @@ def _deep_skip_reason(result: Any) -> str | None:
     if has_tool_call_markup(getattr(result, "answer", None)):
         return MALFORMED_ANSWER_LIMITATION
     return None
+
+
+def _clip_narrative(answer: str) -> str:
+    """심층 답변 원문을 `DEEP_NARRATIVE_MAX_CHARS`로 자른다(잘랐으면 생략 표지를 붙인다)."""
+    text = answer.strip()
+    if len(text) <= DEEP_NARRATIVE_MAX_CHARS:
+        return text
+    return text[:DEEP_NARRATIVE_MAX_CHARS] + DEEP_NARRATIVE_CLIPPED.format(
+        n=len(text), keep=DEEP_NARRATIVE_MAX_CHARS)
 
 
 def _add_limitations(briefing_kwargs: dict[str, Any], lines: list[str]) -> None:
@@ -430,6 +448,9 @@ PREFETCH_TIMEBOX_FLOOR_SECONDS: float = 60.0
 
 #: 심층 조사 결과 키의 표시 라벨(§5.0 — 가설 표기).
 DEEP_DIVE_LABEL = "심층 조사(HolmesGPT · 가설)"
+#: 심층 답변 원문(`deep_dive.narrative` — 화면 [서술 보기]) 상한(글자). 넘으면 앞부분 + 생략 표지.
+DEEP_NARRATIVE_MAX_CHARS = 8000
+DEEP_NARRATIVE_CLIPPED = "\n…(이하 생략 — 원문 {n}자 중 앞 {keep}자)"
 #: 심층 생략·강등 사유(침묵 생략 금지 — 브리핑 `deep_dive.reason`·한계에 그대로 싣는다).
 DEEP_SKIP_MODE_OFF = "심층 모드 off — 플레이북만 실행"
 DEEP_SKIP_NOT_TRIGGERED = (
@@ -575,8 +596,13 @@ class InvestigationDispatcher:
         clock: Callable[[], float] = time.monotonic,
         wall_clock: Callable[[], float] = time.time,
         playbook: PlaybookWiring | None = None,
+        loaded_tools_fn: Callable[[], Iterable[str] | None] | None = None,
     ) -> None:
         self._settings = settings
+        # 조사 에이전트에 로드된 도구(plans/198 재검토 Minor5) — 미연결 소스를
+        # 「확인하지 않은 소스」에서 뺀다. None(미주입·agent 미생성)이면 종전대로
+        # 기대 소스 전부를 본다.
+        self._loaded_tools_fn = loaded_tools_fn
         # 플레이북 배선(plans/187 W4) — None이면 플레이북 설정을 읽지 않는다(종전 동작).
         self._playbook = playbook
         self._diagnose_fn = diagnose_fn
@@ -621,6 +647,9 @@ class InvestigationDispatcher:
         # 버려진 뒤 아직 안 끝난 스레드의 종료 신호(게이지 `abandoned_threads` — 끝난 것은
         # 조회 때 정리).
         self._abandoned: list[threading.Event] = []
+        # kind별 기대 소스(plans/198 I-10) — 미조회 소스 표기가 켜졌을 때 처음 쓸 때 1회 읽는다.
+        self._expected: ExpectedSources | None = None
+        self._expected_loaded = False
 
     # ── executor 진입점 ────────────────────────────────────────
 
@@ -1102,6 +1131,15 @@ class InvestigationDispatcher:
             job.reason = "investigation_timeout"
             job.verdict = f"조사 타임아웃(미완주) — investigation_timeout_seconds({self._timeout}s) 초과"
             job.briefing = {"stub": True, "message": job.verdict, "elements": None}
+            timeout_extra: dict[str, Any] = {}
+            if self._settings.partial_briefing_on_incomplete:
+                # plans/198 I-10 — stub 대신 실행 기록이 이미 모은 도구 결과로 부분 브리핑.
+                # best-effort — 실패하면 stub을 두고 경고만(타임아웃 확정·감사는 그대로).
+                try:
+                    job.briefing = self._timeout_partial_briefing(job, log)
+                    timeout_extra["partial_briefing"] = "timeout"
+                except Exception as exc:  # noqa: BLE001 — 부분 브리핑 실패가 timeout을 failed로 바꾸지 않게
+                    logger.warning("타임아웃 부분 브리핑 조립 실패 — stub 유지: %s", exc)
             job.tool_calls_summary, job.tokens, job.cost = [], 0, 0.0
             # 조사 스레드는 버려져 부분 토큰·도구 기록은 얻을 수 없다
             # — 얻을 수 있는 키만 싣는다(plans/154 W1).
@@ -1109,7 +1147,7 @@ class InvestigationDispatcher:
             job.updated_at = self._wall_clock()
             self._audit({"event": "timeout", "investigation_id": job.investigation_id,
                          "timeout_s": self._timeout, **job.instrumentation,
-                         **self._episode_audit(job)})
+                         **self._episode_audit(job), **timeout_extra})
             return
 
         incomplete = bool(getattr(result, "incomplete", False))
@@ -1152,11 +1190,27 @@ class InvestigationDispatcher:
             briefing_kwargs["source_labels"] = True
             briefing_kwargs["unresolved"] = bool(stalls)
         _add_limitations(briefing_kwargs, extra_limits)
+        # plans/198 I-10 — 정체 중단(가드 on일 때만 값) · 미완주 부분 브리핑 · 미조회 소스.
+        stalled = getattr(result, "stalled", None)
+        if stalled:
+            # 사유는 diagnosis가 가림 콜백으로 조립한다 — 한계·감사로 내보내기 전에 한 번 더(멱등).
+            stalled = mask_activity_text(stalled)
+            _add_limitations(briefing_kwargs, [stalled])
+            briefing_kwargs["unresolved"] = True
+        partial_mode = (self._settings.partial_briefing_on_incomplete and incomplete
+                        and not tools_unavailable and not malformed)
+        # 부분 브리핑은 미완주의 회수 기록을 근거로 쓴다(판정 입력 `basis`는 불변).
+        evidence = result.tool_outputs if partial_mode else basis.tool_outputs
+        unchecked: list[str] = []
+        if not (tools_unavailable or malformed):
+            unchecked = self._unchecked_sources(job, [to.tool_name for to in result.tool_outputs])
+            line = unchecked_sources_limitation(unchecked)
+            _add_limitations(briefing_kwargs, [line] if line else [])
         # plans/188 C3 — 실패 호출은 인용 근거에서 빼고 한계 1줄로 알린다(판정 입력 `basis`는 불변).
-        failed_line = failed_tool_limitation(basis.tool_outputs)
+        failed_line = failed_tool_limitation(evidence)
         _add_limitations(briefing_kwargs, [failed_line] if failed_line else [])
         # plans/189 W5 — reason 달린 prom_* 0건(성공 응답)도 인용 근거에서 빼고 한계 1줄로 알린다.
-        prom_empty_line = prom_empty_limitation(basis.tool_outputs)
+        prom_empty_line = prom_empty_limitation(evidence)
         _add_limitations(briefing_kwargs, [prom_empty_line] if prom_empty_line else [])
         if tools_unavailable:
             # A안 브리핑: 요약 `[미결] 조사 불가 …` · 원인 고정 문구 · 사유는 한계 1줄에만.
@@ -1174,16 +1228,44 @@ class InvestigationDispatcher:
             # off·한쪽 소스면 인자를 넘기지 않는다(종전 호출 동일).
             briefing_kwargs["cross_source"] = xs
             briefing_kwargs["apm_tools_connected"] = bool(self._settings.apm_mcp_url)
-        briefing = self._briefing_fn(
-            answer=MALFORMED_ANSWER_SUMMARY if malformed else result.answer,
-            verdict=verdict,
-            tool_names=[to.tool_name for to in basis.tool_outputs
-                        if _tool_status(to) in _CITABLE_TOOL_STATUSES
-                        and prom_empty_reason(to) is None],
-            gate_tier=gate_tier,
-            remediation=self._recommend_remediation(verdict),
-            **briefing_kwargs,
-        )
+        citable = [to for to in evidence
+                   if _tool_status(to) in _CITABLE_TOOL_STATUSES and prom_empty_reason(to) is None]
+        if self._settings.citation_value_check_enabled and not briefing_kwargs.get(
+                "investigation_skipped"):
+            # plans/198 I-4 — 인용 근거와 같은 호출만 원장 행으로. 사전수집 상관·알람 페이로드는
+            # 서술이 인용할 수 있는 결정적 입력이라 함께 싣는다.
+            # off면 인자를 넘기지 않는다(종전 호출 동일).
+            extra: list[tuple[str, Any]] = (
+                [("alarm.payload", job.payload)] if getattr(job, "payload", None) else [])
+            if getattr(job, "correlation", None):
+                extra.append(("prefetch.correlation", job.correlation))
+            briefing_kwargs["evidence_ledger"] = build_ledger(citable, extra=extra)
+            briefing_kwargs["ledger_masker"] = mask_activity_text
+        if partial_mode:
+            briefing = build_partial_briefing(
+                reason="stalled" if stalled else "incomplete",
+                verdict=verdict,
+                ledger=build_ledger(citable),
+                gate_tier=gate_tier,
+                remediation=self._recommend_remediation(verdict),
+                limitations=briefing_kwargs.get("limitations"),
+                correlation=briefing_kwargs.get("correlation"),
+                steps=getattr(result, "steps", None),
+                ledger_masker=mask_activity_text,
+                # 재검토 Minor7 — 크로스소스 블록·소스 라벨도 본 브리핑과 같이 싣는다.
+                cross_source=briefing_kwargs.get("cross_source"),
+                apm_tools_connected=bool(briefing_kwargs.get("apm_tools_connected")),
+                source_labels=bool(briefing_kwargs.get("source_labels")),
+            )
+        else:
+            briefing = self._briefing_fn(
+                answer=MALFORMED_ANSWER_SUMMARY if malformed else result.answer,
+                verdict=verdict,
+                tool_names=[to.tool_name for to in citable],
+                gate_tier=gate_tier,
+                remediation=self._recommend_remediation(verdict),
+                **briefing_kwargs,
+            )
 
         self._log_finalize(job, started, "done")
         job.status = "done"
@@ -1210,9 +1292,73 @@ class InvestigationDispatcher:
             record["tools_unavailable"] = tools_unavailable   # A안만 추가 키(plans/188)
         if malformed:
             record["answer_malformed"] = ANSWER_MALFORMED_TOOL_CALL   # C7만 추가 키(plans/188)
+        # plans/198 I-10 — 값이 있을 때만 추가 키(플래그 off면 늘 없다).
+        if stalled:
+            record["stalled"] = stalled
+        if partial_mode:
+            record["partial_briefing"] = "stalled" if stalled else "incomplete"
+        if unchecked:
+            record["unchecked_sources"] = unchecked
         record.update(job.instrumentation)
         record.update(self._episode_audit(job))
         self._audit(record)
+
+    # ── 실패 모드 가드(plans/198 I-10) ────────────────────────────────────────
+
+    def _unchecked_sources(self, job: JobLike, tool_names: Sequence[object]) -> list[str]:
+        """kind별 기대 소스 중 호출 0인 소스 — 플래그 off·kind 없음·기대 소스 미적재면 빈 목록.
+
+        kind는 알람 잡만 정한다 — APM 사건(`is_apm_trigger`)이면 `was`, 그 밖은 `host`.
+        로드된 도구를 알면 연결되지 않은 소스(도구 0개)는 빼고 본다 — 「조회 안 함」만 남긴다.
+        """
+        if not self._settings.unchecked_source_limitation_enabled or job.kind != "alarm":
+            return []
+        if not self._expected_loaded:
+            # 적재가 끝난 뒤에 플래그를 세운다 — 동시 첫 잡은 각자 적재한다(멱등 · 1회성 중복).
+            # 먼저 세우면 적재 중인 동안 다른 잡이 미적재(None)로 보고 표기를 놓친다.
+            try:
+                self._expected = load_expected_sources()
+            except Exception as exc:  # noqa: BLE001 — 파일·형식·YAML 구문 오류(표기만 생략 · 조사 무영향)
+                logger.warning("기대 소스 YAML 적재 실패 — 미조회 소스 표기 생략: %s", exc)
+            self._expected_loaded = True
+        if self._expected is None:
+            return []
+        kind = "was" if is_apm_trigger(job.payload) else "host"
+        loaded: Iterable[str] | None = None
+        if self._loaded_tools_fn is not None:
+            try:
+                loaded = self._loaded_tools_fn()
+            except Exception as exc:  # noqa: BLE001 — 표기만 종전으로(조사 무영향)
+                logger.warning("로드된 도구 조회 실패 — 기대 소스 전부로 판정: %s", exc)
+        names = [str(n or "") for n in tool_names]
+        return unchecked_sources(kind, names, self._expected, loaded=loaded)
+
+    def _timeout_partial_briefing(self, job: JobLike, log: ActivityLog | None) -> dict:
+        """타임아웃 잡의 부분 브리핑 — 실행 기록의 HolmesGPT 도구 결과(가림·발췌 상한분)로 원장.
+
+        조사 스레드는 버려져 결과가 돌아오지 않는다. 기록이 없으면 원장 0행이다. 판정은 답변·도구
+        기록 없는 입력(게이트 승계)이다 — 부분 기록은 상향 근거로 쓰지 않는다(§12-④와 같다).
+        """
+        events = log.since(0)["events"] if log is not None else []
+        gate_severity, gate_tier = self._gate_context(job)
+        verdict = self._run_severity_judge(gate_severity, _AnswerOnly(""))
+        line = unchecked_sources_limitation(self._unchecked_sources(
+            job, [e.get("tool") for e in activity_tool_events(events)]))
+        xs = active_episode(job.payload, self._settings.cross_source_investigation_enabled,
+                            getattr(job, "reference_time", None))
+        return build_partial_briefing(
+            reason="timeout",
+            verdict=verdict,
+            ledger=ledger_from_activity(events),
+            gate_tier=gate_tier,
+            remediation=self._recommend_remediation(verdict),
+            limitations=[line] if line else [],
+            correlation=getattr(job, "correlation", None),
+            # 재검토 Minor7 — 본 브리핑과 같은 조건(사건·apm_guidance_enabled)으로 싣는다.
+            cross_source=xs,
+            apm_tools_connected=xs is not None and bool(self._settings.apm_mcp_url),
+            source_labels=bool(self._settings.apm_guidance_enabled),
+        )
 
     # ── 플레이북 모드(plans/187 W4 · §5.0.1) ──────────────────────────────────
 
@@ -1254,10 +1400,16 @@ class InvestigationDispatcher:
         self._track(job, deep.finished)
         return deep
 
+    def _sop_anchor(self) -> bool:
+        """SOP 앵커 플래그(plans/198 I-9) — 설정 대역에 필드가 없으면 off(종전 그대로)."""
+        return bool(getattr(self._settings, "sop_anchor_enabled", False))
+
     @staticmethod
     def _deep_job(job: JobLike, pb: Playbook, prior_findings: dict | None,
-                  cache: ToolResultCache) -> JobLike:
+                  cache: ToolResultCache, *, sop_anchor: bool = False) -> JobLike:
         """심층 조사 입력 — 잡 사본에 정적 지시(+ conditional이면 판정 요약)만 싣는다.
+
+        `sop_anchor`(plans/198 I-9)면 플레이북 스텝 순서를 조사 계획 앵커로 더한다(정적 지시만).
 
         `correlation`은 비운다 — 플레이북 결과(S4·S5 상관)는 `prior_findings` 요약으로만 넘기고,
         `parallel`이면 아무 결과도 넘기지 않는다(독립된 두 번째 의견 · §5.0.1 2번).
@@ -1272,6 +1424,7 @@ class InvestigationDispatcher:
             impact=pb.runbook.impact,
             focus=pb.deep_dive.focus,
             prior_findings=prior_findings,
+            sop_steps=pb.steps if sop_anchor else None,
         )
         return deep_job
 
@@ -1359,7 +1512,9 @@ class InvestigationDispatcher:
 
         def publish(current: str | None) -> None:
             last["current"] = current
-            job.progress = {"done": len(done), "total": total, "current_step": current}
+            # 판별 스텝(플레이북 밖 ID)은 진척 분자에 넣지 않는다 — 분모가 플레이북 스텝 수다.
+            job.progress = {"done": sum(1 for sid in order if sid in done), "total": total,
+                            "current_step": current}
             job.partial_briefing = {
                 "partial": True,
                 "playbook": {
@@ -1378,8 +1533,11 @@ class InvestigationDispatcher:
                     return StepResult(status="missing", reason=STEP_STOPPED_REASON)
                 retry_of = getattr(ctx, "retry_of", None)
                 with lock:
-                    if retry_of is not None and ctx.step_id:
-                        sid = ctx.step_id  # 재시도(W22) — 실행기가 단 스텝 ID(sid 재배정 없음)
+                    preset = getattr(ctx, "step_id", None)
+                    if preset:
+                        # 재시도(W22)·판별 스텝(plans/198 재검토 Minor6) — 실행기가 단 스텝 ID
+                        # (sid 재배정 없음 · 판별 스텝은 플레이북 밖 ID — 액션 이름으로 뭉개지 않게)
+                        sid = preset
                     else:
                         ids = pending.get(action) or [action]
                         sid = ids.pop(0) if len(ids) > 1 else ids[0]
@@ -1631,6 +1789,11 @@ class InvestigationDispatcher:
             activity=flow_log, on_skip=hooks.on_skip if hooks is not None else None,
             polestar_source=mapped, polestar_source_basis=basis,
             retry_timed_out=bool(self._settings.sre_playbook_retry_timed_out_steps),
+            discriminate_top_n=(  # plans/198 I-2 — off면 0(종전 동일)
+                int(self._settings.sre_playbook_discriminator_top_n)
+                if self._settings.sre_playbook_discriminator_enabled
+                else 0
+            ),
         )
         stream = hooks.stream if hooks is not None else None
         if wiring.rejected_files:
@@ -1689,6 +1852,8 @@ class InvestigationDispatcher:
             remediation=None,
         )
         out.update({k: v for k, v in (brief or {}).items() if k != "severity"})
+        # summary는 답변 첫 줄뿐이라(마크다운 제목이면 제목 한 줄) [서술 보기]용 원문을 따로 싣는다.
+        out["narrative"] = _clip_narrative(str(result.answer or ""))
         out["tool_calls"] = list(result.tool_calls)
         out["incomplete"] = incomplete
         return out
@@ -1737,7 +1902,8 @@ class InvestigationDispatcher:
         # 기다리지 않는다).
         cache = ToolResultCache(wait_timeout_s=self._timeout)
         if mode == "parallel":
-            deep = self._start_deep(job, self._deep_job(job, pb, None, cache), mode)
+            deep = self._start_deep(job, self._deep_job(
+                job, pb, None, cache, sop_anchor=self._sop_anchor()), mode)
             deep_state["status"] = "running"
         stop = threading.Event()
         hooks = self._flow_hooks(job, deadline)
@@ -1813,7 +1979,8 @@ class InvestigationDispatcher:
                                                floor=DEEP_MIN_REMAINING_S)
             else:
                 deep = self._start_deep(
-                    job, self._deep_job(job, pb, self._prior_findings(run, block), cache), mode
+                    job, self._deep_job(job, pb, self._prior_findings(run, block), cache,
+                                        sop_anchor=self._sop_anchor()), mode
                 )
                 status = "running"
         if deep is not None and status == "running":
