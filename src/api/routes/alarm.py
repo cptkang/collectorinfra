@@ -1250,16 +1250,37 @@ def assert_alarm_investigation_access(
     기록(`db_cache`가 있으면 요청 단위 메모)이다.
 
     Returns:
-        소유자 열람이면 True(존 검사를 건너뛰었다 — 호출부가 다른 조사 목록을 붙이지 않는다).
+        소유자 열람이면 True(존 검사를 건너뛰었다 — 호출부는 `_owner_zone_permits`를 통과할 때만
+        다른 조사 목록을 붙인다).
 
     Raises:
         HTTPException: 권한 없음(403).
     """
-    config = request.app.state.config
-    if _request_owner_view(config, current_user, rec):
+    if _request_owner_view(request.app.state.config, current_user, rec):
         return True
+    _assert_alarm_zone_access(
+        request, current_user, alarm_id, rec, known_db_ids=known_db_ids, db_cache=db_cache
+    )
+    return False
+
+
+def _assert_alarm_zone_access(
+    request: Request,
+    current_user: dict[str, Any],
+    alarm_id: str,
+    rec: dict[str, Any] | None,
+    *,
+    known_db_ids: dict[str, str] | None = None,
+    db_cache: dict[str, str | None] | None = None,
+) -> None:
+    """`assert_alarm_investigation_access`의 소유자 단락 뒤 검사(알람 수신 권한 · 알람 없는 요청 조사 ·
+    전 멤버 알람 존). by-alarm이 소유자 열람에서도 `previous`를 붙일지 정할 때 따로 부른다.
+
+    Raises:
+        HTTPException: 권한 없음(403).
+    """
     _alarm_zone_scope(request, current_user)
-    _assert_unbound_request_owner(config, current_user, rec)
+    _assert_unbound_request_owner(request.app.state.config, current_user, rec)
     members = [a for a in (rec or {}).get("alarm_ids") or [] if a != alarm_id]
     known = dict(known_db_ids or {})
     if isinstance((rec or {}).get("alarm_db_ids"), dict):
@@ -1267,7 +1288,18 @@ def assert_alarm_investigation_access(
     _assert_investigation_zone(
         request, current_user, [alarm_id, *members], known, db_cache=db_cache
     )
-    return False
+
+
+def _owner_zone_permits(
+    request: Request, current_user: dict[str, Any], alarm_id: str, rec: dict[str, Any] | None
+) -> bool:
+    """소유자 열람(존 검사 생략)이어도 비소유자와 같은 존 검사를 통과하는가 — 통과해야 다시 분석을
+    접수할 수 있다(접수 라우트도 존을 본다)."""
+    try:
+        _assert_alarm_zone_access(request, current_user, alarm_id, rec)
+    except HTTPException:
+        return False
+    return True
 
 
 def _attach_live_progress(
@@ -1666,12 +1698,14 @@ async def get_alarm_investigation(
     manual = _manual_enabled(config)
     rec = store.get_by_alarm(alarm_id, include_manual=manual) if store is not None else None
     # (plans/187 W12) 고른 레코드가 내 사용자 요청 조사면 존 검사 없이 연다(`_request_owner_view`).
-    # 그때는 이 알람의 다른 조사 목록(`previous`)을 붙이지 않는다 — 존 검사를 거치지 않았으므로.
+    # 그때는 존 검사를 따로 통과할 때만 다른 조사 목록(`previous`)을 붙인다(D-347 부기) — 화면은
+    # `previous`를 다시 분석 켜짐 신호로 쓰므로, 자동 조사가 꺼져 대표가 늘 내 수동 조사이면 종전엔
+    # 버튼이 사라졌다. 존 밖 소유자는 접수도 403이라 종전처럼 붙이지 않는다.
     # 알람 수신 권한이 없는 사용자는 403. 레코드가 없어도 이 알람의 존을 먼저 본다 — 권한 없는
     # (또는 존을 모르는) 알람은 존재 여부와 무관하게 403이다(plans/194 W5: 판정 목록과 같은 함수).
     owner_view = assert_alarm_investigation_access(request, current_user, alarm_id, rec)
     view = await _investigation_response(request, current_user, rec, activity_since)
-    if manual and not owner_view:
+    if manual and (not owner_view or _owner_zone_permits(request, current_user, alarm_id, rec)):
         view["previous"] = _previous_investigations(
             request, current_user, store, alarm_id, (rec or {}).get("investigation_id")
         )
