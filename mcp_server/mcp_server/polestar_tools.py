@@ -664,6 +664,43 @@ async def resolve_polestar_anchor(
     return AnchorResolution(ANCHOR_NOT_FOUND)
 
 
+async def resolve_process_hostname(
+    pool: Any, value: str, source: Optional[str]
+) -> tuple[Optional[str], Optional[str]]:
+    """프로세스 API 조회 키(OS 호스트명)를 정한다 — ``(조회할 호스트명 | None, 노트)``.
+
+    프로세스 API는 OS 호스트명으로 찾는데 호출자(sre_agent S6 · HolmesGPT)는 폴스타 등록명을
+    넘기기도 한다(공동존은 NAME ≠ HOSTNAME → 그대로 보내면 0건). ``source``가 있으면 그
+    폴스타에서 ``resolve_polestar_anchor``로 바꾼다. 받은 값이 이미 호스트명이면 그대로다.
+
+    - 1행 → 그 행의 호스트명(다르면 노트에 「등록명 → 호스트명」)
+    - 여러 행 → 받은 값과 같은 호스트명이 있거나 호스트명이 하나로 모이면 그 값, 아니면
+      ``None``(엉뚱한 서버를 조회하지 않는다 · 노트에 후보)
+    - 0행·조회 오류·``source`` 없음 → 받은 값 그대로(노트에 사유 · 침묵 폴백 금지)
+    """
+    if not source:
+        return value, None
+    try:
+        res = await resolve_polestar_anchor(pool, value, source=source)
+    except ValueError as e:
+        return value, f"호스트명 해소 생략({e}) — 받은 값으로 조회"
+    if res.status == ANCHOR_RESOLVED and res.anchor:
+        host = res.anchor.get("hostname") or value
+        note = None if host == value else f"폴스타 등록명 '{value}' → 호스트명 '{host}'로 조회"
+        return host, note
+    if res.status == ANCHOR_AMBIGUOUS:
+        hosts = sorted({c.get("hostname") or "" for c in res.candidates} - {""})
+        if value in hosts:
+            return value, None
+        if len(hosts) == 1:
+            return hosts[0], f"폴스타 등록명 '{value}' → 호스트명 '{hosts[0]}'로 조회"
+        return None, (f"호스트명 모호 — '{value}'에 맞는 서버 {len(res.candidates)}건"
+                      f"(호스트명 {', '.join(hosts) or '없음'}) · 조회하지 않음")
+    if res.status == ANCHOR_LOOKUP_ERROR:
+        return value, f"호스트명 해소 실패({res.warning or '조회 오류'}) — 받은 값으로 조회"
+    return value, f"폴스타 {source}에 '{value}'와 같은 등록명·호스트명 없음 — 받은 값으로 조회"
+
+
 # =====================================================================
 # 도구 등록
 # =====================================================================
@@ -909,14 +946,16 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         프로세스 API는 폴스타(소스)마다 따로다 — 그 서버가 등록된 소스를 `source`로 넘긴다.
 
         Args:
-            hostname: OS 호스트명(cmm_resource.hostname).
+            hostname: OS 호스트명(cmm_resource.hostname). `source`가 있으면 폴스타 등록명도
+                받는다 — 그 폴스타에서 OS 호스트명으로 바꿔 조회한다.
             top_n: 상위 프로세스 수. 기본 10.
             sort: cpu(p100cpu→pcpu) | mem(pmem). 기본 cpu.
             source: 데이터소스(db_id). 소스별 프로세스 API가 설정돼 있으면 그 주소로 조회한다.
             ctx: MCP 컨텍스트.
 
         Returns:
-            JSON 문자열 {rows, row_count, captured_at, queried_at, source_kind} 또는 {error}.
+            JSON 문자열 {rows, row_count, captured_at, queried_at, source_kind, hostname,
+            hostname_note?} 또는 {error}. `hostname`은 실제 조회한 호스트명이다.
         """
         if sort not in ("cpu", "mem"):
             return _err(f"지원하지 않는 sort: {sort} (허용: cpu, mem)")
@@ -927,7 +966,14 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         if problem:
             return _err(problem)
 
-        url = f"{base_url.rstrip('/')}{_PROCESS_PATH}?hostname={quote(hostname, safe='')}"
+        # 등록명으로 와도 OS 호스트명으로 바꿔 조회한다(공동존 NAME ≠ HOSTNAME)
+        host, resolve_note = await resolve_process_hostname(_pool(ctx), hostname.strip(), source)
+        if host is None:
+            return _err(resolve_note or "호스트명 모호")
+        if resolve_note:
+            logger.info("polestar_process_snapshot 호스트명 해소 (%s): %s", source, log_safe(resolve_note, 300))
+
+        url = f"{base_url.rstrip('/')}{_PROCESS_PATH}?hostname={quote(host, safe='')}"
         try:
             async with httpx.AsyncClient(timeout=10.0) as client:
                 resp = await client.get(url)
@@ -953,6 +999,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
                 "queried_at": _now_iso(),
                 "source_kind": "polestar_process_realtime",
                 "note": "실시간 단면 — 조회 시점의 프로세스 상태(과거 이력 아님)",
+                "hostname": host,
+                **({"hostname_note": resolve_note} if resolve_note else {}),
             },
             ensure_ascii=False,
             default=str,
