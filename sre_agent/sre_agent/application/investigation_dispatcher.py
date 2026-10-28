@@ -234,6 +234,15 @@ def _deep_skip_reason(result: Any) -> str | None:
     return None
 
 
+def _clip_narrative(answer: str) -> str:
+    """심층 답변 원문을 `DEEP_NARRATIVE_MAX_CHARS`로 자른다(잘랐으면 생략 표지를 붙인다)."""
+    text = answer.strip()
+    if len(text) <= DEEP_NARRATIVE_MAX_CHARS:
+        return text
+    return text[:DEEP_NARRATIVE_MAX_CHARS] + DEEP_NARRATIVE_CLIPPED.format(
+        n=len(text), keep=DEEP_NARRATIVE_MAX_CHARS)
+
+
 def _add_limitations(briefing_kwargs: dict[str, Any], lines: list[str]) -> None:
     """브리핑 `limitations` 인자에 줄을 합친다.
 
@@ -438,6 +447,9 @@ PREFETCH_TIMEBOX_FLOOR_SECONDS: float = 60.0
 
 #: 심층 조사 결과 키의 표시 라벨(§5.0 — 가설 표기).
 DEEP_DIVE_LABEL = "심층 조사(HolmesGPT · 가설)"
+#: 심층 답변 원문(`deep_dive.narrative` — 화면 [서술 보기]) 상한(글자). 넘으면 앞부분 + 생략 표지.
+DEEP_NARRATIVE_MAX_CHARS = 8000
+DEEP_NARRATIVE_CLIPPED = "\n…(이하 생략 — 원문 {n}자 중 앞 {keep}자)"
 #: 심층 생략·강등 사유(침묵 생략 금지 — 브리핑 `deep_dive.reason`·한계에 그대로 싣는다).
 DEEP_SKIP_MODE_OFF = "심층 모드 off — 플레이북만 실행"
 DEEP_SKIP_NOT_TRIGGERED = (
@@ -1830,6 +1842,8 @@ class InvestigationDispatcher:
             remediation=None,
         )
         out.update({k: v for k, v in (brief or {}).items() if k != "severity"})
+        # summary는 답변 첫 줄뿐이라(마크다운 제목이면 제목 한 줄) [서술 보기]용 원문을 따로 싣는다.
+        out["narrative"] = _clip_narrative(str(result.answer or ""))
         out["tool_calls"] = list(result.tool_calls)
         out["incomplete"] = incomplete
         return out

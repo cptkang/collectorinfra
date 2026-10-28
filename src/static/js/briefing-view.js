@@ -1157,7 +1157,8 @@
                 action: listCell(asList(rec.items).slice(0, 3).map(textOf)),
                 open: listCell(Array.isArray(dd.limitations) ? dd.limitations.map(textOf) : [textOf(dd.limitations)]),
             };
-            hgCol = engineColumn(dd.label || PB_TEXT.engineHolmes, hcol, dd.summary, true);
+            // narrative = 심층 답변 원문(D-325 부기) · 옛 레코드는 첫 줄 summary만 있다
+            hgCol = engineColumn(dd.label || PB_TEXT.engineHolmes, hcol, textOf(dd.narrative) || dd.summary, true);
         }
         var head = '<div class="bv-engine-head"><span class="bv-label">' + escapeHtml(PB_TEXT.engineHead) + '</span>';
         if (AGREEMENT[ea.result]) head += chipHtml(AGREEMENT[ea.result][0], ea.label || AGREEMENT[ea.result][1]);
