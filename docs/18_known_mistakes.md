@@ -2304,3 +2304,18 @@
 - **실수**: 노이즈 컨텍스트·hostname 해소·MCP 자원 상태 SQL이 `cmm_resource.is_maintenance`를 직접 참조했다. 로컬 `testdata/pg/init/01_create_tables.sql`이 그 칼럼을 갖고 있어 테스트는 통과했지만, 운영 공동존 PostgreSQL에는 칼럼이 없고 별도 테이블 `cmm_resource_maintenance`에 있어 `polestar_cm_yd` 조회가 실패했다(중요도까지 잃음). D-175 G-4의 「b0도 보유」 근거도 같은 샌드박스 DDL이었다(plans/197 F2).
 - **원인**: 손으로 쓴 샌드박스 DDL(01)을 운영 덤프(`sample/cleaned_tables.json` → `04_create_all_tables.sql`)와 대조하지 않았고, 04의 `CREATE TABLE IF NOT EXISTS`가 01에 가려 차이가 드러나지 않았다. 샌드박스 DDL을 「실측」 근거로 인용했다.
 - **방지책**: 고정 SQL이 새 칼럼을 참조하면 `sample/cleaned_tables.json`(운영 덤프)에서 그 테이블·칼럼 존재를 먼저 grep한다. 샌드박스 DDL은 운영 스키마 근거로 인용하지 않는다(결정 근거에는 덤프 또는 내부망 실측을 쓴다). DB2(b0)는 덤프가 없으므로 W0 실측 전에는 「미확정」으로 적는다.
+
+### 2026-10-28 · 결정 색인 제목만 보고 코드 주석의 D-번호 인용을 「오기」로 보고
+- **실수**: `plans/198` 작성 중 `engine_agreement.py`·`playbook_hypotheses.py`의 「D-035」 인용을 색인 제목(「알람 이력 기반 패턴 분석」)만 보고 오기라고 사용자에게 보고했다. D-035 본문 결정문에 「통계·1차 분류는 Python 결정적, LLM은 해석만」이 있고, 저장소 전역 수십 곳이 이 원칙의 출처로 D-035를 인용한다.
+- **원인**: 결정 본문(`docs/decisions/D-NNN.md`)을 열지 않고 색인 한 줄과 직관으로 판정했다. 인용 분포를 grep하지 않았다.
+- **방지책**: D-번호 인용을 오기로 판정하기 전에 ① 결정 본문을 읽고 ② `grep -rn 'D-NNN'`으로 저장소 전역 인용 분포를 확인한다. 둘 다 하기 전에는 「확인 필요」로만 보고한다.
+
+### 2026-10-28 · 이미 실패하던 전역 가드 테스트가 새 위반을 「원래 실패」로 가림 (plans/198 W8)
+- **실수**: W8이 새 NOISE 키(`NOISE_INVESTIGATION_INCIDENT_UNIT_ENABLED`)를 `settings_catalog.SECTION_BY_KEY`에 등재하지 않았다. `test_every_noise_key_has_section`이 196·197 키 때문에 기준선에서 이미 실패 중이라 `regress.py`가 이 실패를 [원래 실패]로 귀속했고, W7 implementer 보고에서 미분류 키 목록을 읽고서야 드러났다.
+- **원인**: 실패 귀속은 테스트 ID 단위다. 같은 테스트가 기준선에서 실패하면 실패 메시지(위반 목록)가 늘어도 「원래 실패」로 분류된다.
+- **방지책**: [원래 실패]로 분류된 전역 가드·목록 단언 테스트(구획·큐레이션·카운트)는 실패 메시지의 항목 목록을 기준선과 대조해 자기 키가 섞였는지 확인한다. 새 설정 키를 추가하면 `SECTION_BY_KEY`·`config/settings_help/` 등재를 같은 Wave에서 grep으로 확인한다.
+
+### 2026-10-28 · 공용 색인에 문자열 일괄 치환을 돌려 다른 계획·결정 행까지 바꿈
+- **실수**: plans/198 커밋 전 「커밋 없음」 표기를 지우려고 `plans/INDEX.md`·`docs/02_decision.md` 전체에 `str.replace`를 돌려 무관한 D-310·D-313 등 16행·계획 12행의 상태 칸까지 고쳤다(diff로 발견해 HEAD 원문으로 행 단위 복원).
+- **원인**: 대상 행(198·D-350)을 한정하지 않고 파일 전체에 치환했다.
+- **방지책**: 공용 색인·INDEX는 대상 행(`| D-NNN |`·`| NNN |`)을 찾아 그 행만 고친다. 일괄 치환 뒤에는 `git diff -U0 <파일> | grep '^[-+]|'`로 바뀐 행이 대상뿐인지 확인한다.

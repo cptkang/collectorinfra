@@ -42,6 +42,8 @@ TIMELINE_STEP = "S5"
 #: 원인 기본값 출처(초안 레코드 `cause_source`).
 CAUSE_FROM_PLAYBOOK = "playbook"
 CAUSE_FROM_HOLMESGPT = "holmesgpt"
+#: (plans/198 W7 I-8) KEDB 부트스트랩 — 운영 라벨이 확정한 원인.
+CAUSE_FROM_LABEL = "label"
 CAUSE_EMPTY = "empty"
 
 # ── 엔진 선택 (§5.0.1 7번 · G-27) ────────────────────────────────────────────
@@ -800,6 +802,7 @@ def with_kb_extras(
 __all__ = [
     "CAUSE_EMPTY",
     "CAUSE_FROM_HOLMESGPT",
+    "CAUSE_FROM_LABEL",
     "CAUSE_FROM_PLAYBOOK",
     "DRAFT_STATE",
     "ENGINE_CHOICES",

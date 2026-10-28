@@ -415,6 +415,16 @@ class NoiseGateConfig(BaseSettings):
     # (관측·조사 입력만). 조사 트리거(investigation_trigger_enabled)가 꺼져 있으면 아무것도
     # 하지 않는다. 기본 off = 비트 동일.
     investigation_episode_context_enabled: bool = False
+    # ── plans/198 W8 I-11: 사건 단위 조사 — 같은 서버 알람 묶음 · 증상 선착 보완 ──
+    # 켜면 같은 사건(cross_source 사건 추적기의 존·정규화 호스트 키 묶음 · 사건 창)에 진행 중인
+    # 단독·종합 조사가 있을 때 새 알람은 별도 조사를 내지 않고 그 조사에 합류한다(조사 저장소 연결
+    # 행 · 감사 `incident_joined`). 사건 맥락(investigation_episode_context_enabled)도 켜져 있으면
+    # 증상이 원인보다 먼저 온 사건도 원인 도착 시점에 종합 조사를 1회 낸다(사건당 1회 가드 재사용).
+    # 조사 트리거(investigation_trigger_enabled)·사건 추적기가 꺼져 있으면 아무것도 하지 않는다
+    # (수동 전용 D-347에서 비트 동일). 합류는 후속 모드(investigation_followup_enabled)에서만 일어난다 —
+    # inline 모드는 노드가 조사 종결까지 poll한 뒤 워커가 다음 알람을 처리하므로 진행 중 조사가 없다.
+    # 기본 off = 비트 동일.
+    investigation_incident_unit_enabled: bool = False
     # ── Plan 64 CW-B: pull 위임 (deepagents/시멘틱 라우팅 fault_diagnosis 의도 → sre_diagnose) ──
     # 사용자가 "○○ 서버 원인 분석해줘"류로 장애 진단을 요청하면(pull), 시멘틱 라우터가
     # fault_diagnosis 의도로 분류하고 신규 노드가 sre_agent에 sre_diagnose(question, server?, host?,
@@ -465,6 +475,22 @@ class NoiseGateConfig(BaseSettings):
     investigation_kb_incorrect_streak: int = 3              # (W9 · §5.7.5 3) 「아님」 연속 N회 → 재검토 대상 [제안 값]
     investigation_kb_engine_min_samples: int = 30           # (G-27 · ⑳) 유형별 선택 표본 하한 [제안 값]
     investigation_kb_engine_switch_ratio: float = 0.8       # (G-27 · ⑳) 「플레이북」+「둘 다」 비율 하한 [제안 값]
+    # ── plans/198 W0 I-1 · D-350 ②: 조사 「실제 원인」 라벨 · 관리자 조사 정확도 주간 표 ──
+    # 완료 조사 화면 하단 1줄(1순위 맞음 / k순위 맞음 / 목록에 없음 + 자유 서술 / 판단 불가)을 기존 피드백
+    # 저장소(feedback_store_path)에 investigation_id로 붙이고(조사 소유자 또는 관리자만), 관리자 화면에
+    # 결정적 집계(LLM 0 · 후보 재현율 · RC@1·RC@3 · 엔진별·kind별 · 미완주·조사 불가율 · 라벨률)와
+    # 154 세계 후보 내보내기(메타만)를 둔다. 집계 범위는 investigation_kb_scan_max_lines를 같이 쓴다.
+    # 기본 off면 라우터 미등록(404) · 조사 화면·응답 비트 동일.
+    investigation_label_enabled: bool = False               # (198 I-1) 실제 원인 라벨·정확도 표 옵트인
+    # ── plans/198 W7 I-8 · D-350 ⑤: 사건 기억 — 결정적 지문 유사 조사 · KEDB 부트스트랩 ──
+    # 켜면 조사 화면에 「비슷한 과거 조사」 3건(지문 Jaccard · 임베딩·LLM 0)을 보인다 — 「실제 원인」
+    # 라벨이 붙은 조사만 결론을 보이고, 없으면 「확정 전」. 라벨 입력(investigation_label_enabled)과
+    # KB(investigation_kb_enabled)도 켜져 있으면, 운영자(관리자) 라벨 저장 시 같은 지문 + 같은 확정 원인의
+    # 운영자 라벨이 investigation_kedb_min_count회 쌓인 시점에 KB 초안(wip) 1건을 만든다(승격은 사람 ·
+    # 소유자 라벨은 트리거·계수 모두 제외 — 기존 KB 초안 라우트가 운영자 전용). 스캔 범위는
+    # investigation_kb_scan_max_lines를 같이 쓴다. 기본 off면 라우트 404 · 조사 화면·응답 비트 동일.
+    investigation_memory_enabled: bool = False              # (198 I-8) 유사 과거 조사·KEDB 부트스트랩 옵트인
+    investigation_kedb_min_count: int = 3                   # (198 I-8) 같은 지문+같은 확정 원인 N회 → 초안 [제안 값]
     # ── plans/187 W14 · D-341 ㉙㉚㉛ (G-39·G-41·G-42): 조사 진행 실시간 허브·SSE ──
     # 본체 in-process 허브(`alarm_bus`와 같은 단일 프로세스 전제)가 미종결 조사마다 폴러 1개로 sre_agent에
     # `sre_get_investigation(activity_since)`를 묻고(보는 사람 수와 무관) 실행 기록을 SSE

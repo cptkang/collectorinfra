@@ -12,6 +12,7 @@
 결정적 문구) ⑤ OpenMetrics 서술 노트(settings.openmetrics_guidance_enabled일 때만 ·
 plans/92 O3 · R-12) ⑤′ Prometheus 호스트 앵커 노트(settings.prometheus_anchor_guidance_enabled일
 때만 · plans/189 W5) ⑥ APM 노트(settings.apm_guidance_enabled일 때만 · plans/87 J3)
+⑥′ 툴셋 범위 노트(kind별 툴셋 좁히기가 걸린 잡만 · plans/198 I-9)
 ⑦ settings.investigation_guidance_extra(운영자 자유 지침).
 부하 가드(LOAD_GUARD_NOTE)는 `ask()`가 항상 덧붙이므로 여기서 넣지 않는다.
 
@@ -22,7 +23,7 @@ from __future__ import annotations
 
 import json
 import re
-from collections.abc import Collection
+from collections.abc import Collection, Sequence
 from datetime import datetime
 
 from sre_agent.domain.correlation import format_offset, offset_minutes
@@ -40,6 +41,7 @@ from sre_agent.domain.investigation_limits import (
     is_apm_resource_type,
     is_apm_trigger,
 )
+from sre_agent.domain.playbook import StepSpec
 from sre_agent.toolset_profiles import REMOTE_VM_SHELL_NOTE
 
 # 앵커 인자를 받는 mcp_server 도구(incident-window-tools).
@@ -135,6 +137,46 @@ def correlation_note(correlation: dict | None) -> str | None:
             lines.append(f"  {_fmt_offset(t.get('t_offset_min'))} {t.get('kind')} {t.get('detail')}")
     for n in correlation.get("notes") or []:
         lines.append(f"- 한계: {n}")
+    return "\n".join(lines)
+
+
+#: 토폴로지 1홉 이웃 블록(plans/198 I-7) — 이웃 밖 호스트 탐색 금지 문장(PRAXIS식 탐색 경계).
+NEIGHBOR_NOTE_HEADER = (
+    "토폴로지 1홉 이웃(코드가 확정 연결만으로 모아 이웃 알람을 이미 조회함 — "
+    "아래 선행 판정을 그대로 인용하고 재계산하지 말 것):"
+)
+NEIGHBOR_SCOPE_RULE = (
+    "조사 범위는 대상 서버와 위 이웃뿐이다 — 이 목록 밖의 다른 호스트는 조회하지 말 것."
+)
+_NEIGHBOR_ORIGINS = {"confirmed_link": "확정 연결", "topology": "폴스타 토폴로지"}
+
+
+def neighbor_note(correlation: dict | None) -> str | None:
+    """상관 결과의 `neighbors`(plans/198 I-7)를 지침 한 단락으로 — 이웃 목록·선행 판정·탐색 경계.
+
+    이웃이 없으면 None(경계 문장도 넣지 않는다 — 이웃을 못 찾았을 때 탐색을 막지 않는다).
+    """
+    block = (correlation or {}).get("neighbors")
+    hosts = block.get("hosts") if isinstance(block, dict) else None
+    if not hosts:
+        return None
+    lines = [NEIGHBOR_NOTE_HEADER]
+    for h in hosts:
+        if not isinstance(h, dict):
+            continue
+        origin = _NEIGHBOR_ORIGINS.get(str(h.get("origin")), str(h.get("origin")))
+        if h.get("error"):
+            state = "알람 조회 결손(선행 판정 불가)"
+        elif not h.get("alarm_count"):
+            state = "구간 알람 0건"
+        else:
+            first = _fmt_offset(h.get("first_alarm_offset_min"))
+            state = f"첫 알람 {first} · {'대상보다 선행' if h.get('leads') else '선행 아님'}"
+        lines.append(f"- {h.get('name')} ({origin}) · {state}")
+    for c in block.get("external_cause_candidates") or []:
+        if isinstance(c, dict):
+            lines.append(f"- 외부 원인 후보 {c.get('rank')}: {c.get('basis')}")
+    lines.append(NEIGHBOR_SCOPE_RULE)
     return "\n".join(lines)
 
 
@@ -791,6 +833,34 @@ DEEP_DIVE_HEADER = (
 )
 
 
+# ---------------------------------------------------------------------
+# SOP 앵커 — 플레이북 스텝 순서를 조사 계획으로 (plans/198 I-9 · SOP_ANCHOR_ENABLED · D-341 ⑮)
+#
+# 심층 지시에 플레이북의 **스텝 순서**(액션 ID · 서술 초점)만 싣는다 — 정적 지시이며
+# 실행 결과·판정은 넣지 않는다(parallel 「독립된 두 번째 의견」 규칙 안). 액션 ID는 도구 이름이
+# 아니다(`host.usage_trend` — 도구 이름 꼴 `polestar_*`에 걸리지 않아 도구 이름 필터와 무관).
+# 종합 단계(`synthesize`)는 뺀다.
+# ---------------------------------------------------------------------
+
+SOP_ANCHOR_HEADER = (
+    "- 조사 계획 앵커(플레이북 스텝 순서 — 정적 지시이며 실행 결과가 아니다. 이 순서로 확인하되 "
+    "판단은 도구 출력으로 독립적으로 내린다 · (조건부)는 앞 단계에서 해당할 때만 본다):"
+)
+_SOP_SKIP_ACTIONS: frozenset[str] = frozenset({"synthesize"})
+
+
+def sop_anchor_note(steps: Sequence[StepSpec]) -> str | None:
+    """플레이북 스텝 순서 블록(번호 · 서술 초점 · 액션 ID · 조건부 표시) — 남는 스텝 없으면 None."""
+    lines: list[str] = []
+    for step in steps:
+        if step.action in _SOP_SKIP_ACTIONS:
+            continue
+        focus = step.narrate.focus.strip() if step.narrate is not None else step.action
+        cond = " (조건부)" if step.when else ""
+        lines.append(f"  {len(lines) + 1}. {focus} (`{step.action}`){cond}")
+    return "\n".join([SOP_ANCHOR_HEADER, *lines]) if lines else None
+
+
 def deep_dive_note(
     playbook_id: str,
     *,
@@ -798,8 +868,13 @@ def deep_dive_note(
     impact: str | None = None,
     focus: str | None = None,
     prior_findings: object = None,
+    sop_steps: Sequence[StepSpec] | None = None,
 ) -> str:
-    """심층 조사 지시 노트. `prior_findings`가 있으면 ③″ 노트를 뒤에 붙인다(다시 거른 값만)."""
+    """심층 조사 지시 노트. `prior_findings`가 있으면 ③″ 노트를 뒤에 붙인다(다시 거른 값만).
+
+    `sop_steps`(plans/198 I-9 · 선택)를 주면 심층 초점 뒤에 SOP 앵커 블록을 넣는다. None이면 종전과
+    비트 동일하다.
+    """
     lines = [DEEP_DIVE_HEADER.format(playbook_id=playbook_id)]
     if meaning:
         lines.append(f"- 알람 의미: {meaning.strip()}")
@@ -807,22 +882,68 @@ def deep_dive_note(
         lines.append(f"- 영향: {impact.strip()}")
     if focus:
         lines.append(f"- 심층 초점: {focus.strip()}")
+    anchor = sop_anchor_note(sop_steps) if sop_steps is not None else None
+    if anchor:
+        lines.append(anchor)
     prior = prior_findings_note(prior_findings) if prior_findings is not None else None
     if prior:
         lines.append(prior)
     return "\n".join(lines)
 
 
+# ---------------------------------------------------------------------
+# 툴셋 범위 — 알람 kind별 허용 소스 (plans/198 I-9 · KIND_TOOLSET_NARROWING_ENABLED)
+#
+# 좁힌 밖 소스가 필요하면 시도하지 말고 「추가 조사 필요: …」로 적게 한다 — 실행은
+# 사람(추가 조사)에게 넘긴다. kind는 미조회 소스 표기(plans/198 I-10)와 같은 규칙이다
+# (APM 사건 = was · 그 밖 알람 = host).
+# ---------------------------------------------------------------------
+
+ADDITIONAL_INVESTIGATION_PREFIX = "추가 조사 필요:"
+TOOLSET_SCOPE_NOTE_TEMPLATE = (
+    "조사 도구 범위(알람 유형 {kind}): 이 조사에는 {sources} 소스 도구만 주어진다. 그 밖의 소스가 "
+    "필요하다고 판단되면 직접 시도하지 말고 결론 끝에 「" + ADDITIONAL_INVESTIGATION_PREFIX
+    + " <소스> — <이유>」 한 줄로 적어라(실행하지 않는다 — 운영자가 추가 조사로 이어 간다)."
+)
+_SCOPE_SOURCE_NAMES: dict[str, str] = {
+    "polestar": "폴스타", "prometheus": "프로메테우스", "apm": "제니퍼 APM",
+}
+
+
+def toolset_kind(settings, job) -> str | None:  # noqa: ANN001 — AgentSettings · JobLike
+    """툴셋 좁히기 kind — 알람 잡만(`was` = APM 사건 · 그 밖 `host`).
+
+    크로스소스 사건(두 소스를 함께 봐야 한다)이거나 알람 잡이 아니면 None(좁히지 않음).
+    """
+    if getattr(job, "kind", None) != "alarm":
+        return None
+    payload = getattr(job, "payload", None)
+    if active_episode(payload, bool(getattr(settings, "cross_source_investigation_enabled", False)),
+                      getattr(job, "reference_time", None)) is not None:
+        return None
+    return "was" if is_apm_trigger(payload) else "host"
+
+
+def toolset_scope_note(kind: str, sources: Sequence[str]) -> str:
+    """툴셋 범위 노트(허용 소스 · 「추가 조사 필요」 지시)."""
+    shown = " · ".join(_SCOPE_SOURCE_NAMES.get(s, s) for s in sources)
+    return TOOLSET_SCOPE_NOTE_TEMPLATE.format(kind=kind, sources=shown)
+
+
 def build_guidance(  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
-    settings, job, *, remote: bool = True, available_tools: Collection[str] | None = None
+    settings, job, *, remote: bool = True, available_tools: Collection[str] | None = None,
+    toolset_scope: tuple[str, Sequence[str]] | None = None,
 ) -> str | None:
     """조사 지침을 조립한다. 넣을 것이 없으면 None(`ask()`는 부하 가드만 붙인다).
 
-    순서: ① 원격 셸 ② 사건 구간 ③ 상관 결과 [③″ 이미 수집된 판정 — 진단 잡 `prior_findings`]
+    순서: ① 원격 셸 ② 사건 구간 ③ 상관 결과
+    [③‴ 토폴로지 1홉 이웃 — `evidence_topology_neighbors_enabled`일 때만 · plans/198 I-7]
+    [③″ 이미 수집된 판정 — 진단 잡 `prior_findings`]
     ④ **kind별 플레이북**(plans/91 1-5)
     ⑤ **OpenMetrics 서술 노트**(`openmetrics_guidance_enabled`일 때만 · plans/92 O3)
     ⑤′ **Prometheus 호스트 앵커 노트**(`prometheus_anchor_guidance_enabled`일 때만 · plans/189 W5)
-    ⑥ **APM 노트**(`apm_guidance_enabled`일 때만 · plans/87 J3) ⑦ 운영자 자유 지침.
+    ⑥ **APM 노트**(`apm_guidance_enabled`일 때만 · plans/87 J3)
+    [⑥′ 툴셋 범위 — `toolset_scope`가 있을 때만 · plans/198 I-9] ⑦ 운영자 자유 지침.
 
     `apm_guidance_enabled`면 ②에 apm_* 구간 도구를 더하고, ④는 apm 사건(kind `apm` 또는 트리거
     `meta.hints.solution == "apm"`)이면 OS 플레이북 대신 APM 플레이북 하나만 싣는다.
@@ -837,7 +958,13 @@ def build_guidance(  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
     `available_tools`(plans/188 C2 — 조사 LLM에 실제 로드된 도구 이름)를 받으면 ①~⑥의 도구 이름을
     그 목록으로 거른다(`filter_tool_mentions` — ⑦ 운영자 지침은 손대지 않는다). apm_* 도구가 하나도
     없으면 APM 노트는 폴백·미로드 사유로 바뀐다. None이면 종전과 비트 동일하다.
+
+    `toolset_scope`(plans/198 I-9 — `(kind, 허용 소스)`)를 받으면 허용 밖 소스의 노트
+    (⑤′ 프로메테우스 앵커 · ⑥ APM — 도구를 뺀 것이지 연결 실패가 아니다)를 싣지 않고
+    ⑦ 앞에 툴셋 범위 노트를 넣는다.
+    None이면 종전과 비트 동일하다.
     """
+    scoped = None if toolset_scope is None else set(toolset_scope[1])
     apm_on = bool(getattr(settings, "apm_guidance_enabled", False))
     apm_loaded = (None if available_tools is None
                   else any(name.startswith("apm_") for name in available_tools))
@@ -857,6 +984,10 @@ def build_guidance(  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
     corr = correlation_note(getattr(job, "correlation", None))
     if corr:
         parts.append(corr)
+    if getattr(settings, "evidence_topology_neighbors_enabled", False):
+        neighbors = neighbor_note(getattr(job, "correlation", None))
+        if neighbors:
+            parts.append(neighbors)
     if getattr(job, "kind", None) == "diagnosis":
         prior = prior_findings_note((getattr(job, "payload", None) or {}).get("prior_findings"))
         if prior:
@@ -886,12 +1017,15 @@ def build_guidance(  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
             parts.append(playbook)
     if getattr(settings, "openmetrics_guidance_enabled", False):
         parts.append(OPENMETRICS_NOTE)
-    if getattr(settings, "prometheus_anchor_guidance_enabled", False):
+    if getattr(settings, "prometheus_anchor_guidance_enabled", False) and (
+            scoped is None or "prometheus" in scoped):
         parts.append(prometheus_anchor_note(job))
-    if apm_on:
+    if apm_on and (scoped is None or "apm" in scoped):
         parts.extend(apm_notes(settings, job, apm_loaded=apm_loaded))
     if available_tools is not None:
         parts = [kept for p in parts if (kept := filter_tool_mentions(p, available_tools)).strip()]
+    if toolset_scope is not None:
+        parts.append(toolset_scope_note(*toolset_scope))
     extra = (getattr(settings, "investigation_guidance_extra", None) or "").strip()
     if extra:
         parts.append(extra)
@@ -904,9 +1038,12 @@ __all__ = ["ANCHORED_TOOLS", "APM_ANCHORED_TOOLS", "INCIDENT_SCOPE_NOTE_TEMPLATE
            "APM_FALLBACK_NOTE", "APM_NOT_CONFIGURED_NOTE", "APM_TOOLS_UNLOADED_NOTE",
            "APM_PLAYBOOK_NOTE",
            "TOOL_NAME_RE", "filter_tool_mentions",
-           "incident_scope_note", "correlation_note", "classify_alarm_kind", "alarm_kind_from_job",
+           "incident_scope_note", "correlation_note", "classify_alarm_kind",
+           "NEIGHBOR_NOTE_HEADER", "NEIGHBOR_SCOPE_RULE", "neighbor_note", "alarm_kind_from_job",
            "trigger_hints", "playbook_note", "apm_playbook_note", "apm_notes",
            "CROSS_SOURCE_NOTE_HEADER", "cross_source_note", "cross_source_playbooks",
            "PRIOR_FINDINGS_HEADER", "PRIOR_FINDINGS_TOOLS_NOTE", "PRIOR_FINDINGS_MAX_BYTES",
            "clean_prior_findings", "prior_findings_note", "build_guidance",
-           "DEEP_DIVE_HEADER", "deep_dive_note"]
+           "DEEP_DIVE_HEADER", "deep_dive_note",
+           "SOP_ANCHOR_HEADER", "sop_anchor_note", "ADDITIONAL_INVESTIGATION_PREFIX",
+           "TOOLSET_SCOPE_NOTE_TEMPLATE", "toolset_kind", "toolset_scope_note"]

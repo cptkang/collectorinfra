@@ -12,7 +12,7 @@ import logging
 import re
 import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from typing import Any
 
@@ -32,6 +32,8 @@ from holmes.utils.colors import AI_COLOR
 from holmes.utils.stream import StreamEvents
 
 from sre_agent.domain.activity_log import ActivityLog, safe_append
+from sre_agent.domain.failure_guards import StallTracker
+from sre_agent.infrastructure.activity_masking import mask_activity_text
 from sre_agent.infrastructure.bash_write_guard import install_bash_write_guard
 from sre_agent.infrastructure.llm_message_guard import install_system_message_guard
 from sre_agent.infrastructure.tool_call_markup_guard import install_tool_call_markup_guard
@@ -146,6 +148,18 @@ class DiagnosisResult:
     # 값이 있으면 dispatcher가 요약을 `[미결] `로 표기하고 한계에 이 줄을 싣는다.
     # None이면 종전과 같다.
     tools_unavailable: str | None = None
+    # 정체 가드(plans/198 I-10 · `stall_stop_enabled`)로 조사를 멈춘 사유 1줄. 값이 있으면
+    # `incomplete=True`다. None이면 종전과 같다(플래그 off면 늘 None).
+    stalled: str | None = None
+
+
+class InvestigationStalledError(Exception):
+    """정체 가드가 조사를 멈췄다(plans/198 I-10) — `_StreamDrain.run`이 도구 step 경계에서 낸다."""
+
+    def __init__(self, reason: str, steps: int) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.steps = steps
 
 
 def tools_unavailable_result(errors: dict[str, str]) -> DiagnosisResult:
@@ -251,6 +265,36 @@ def _with_tool_cache(llm: ToolCallingLLM, cache: ToolResultCache
     return clone, invoke
 
 
+def _with_tool_allowlist(llm: ToolCallingLLM, names: Collection[str]) -> ToolCallingLLM:
+    """`ask` 1회용 사본 — 도구 목록만 `names`로 좁힌다(plans/198 I-9 · 원본·다른 잡은 그대로).
+
+    holmes `ToolExecutor._clone_base()`(요청별 프런트 도구 주입과 같은 얕은 사본 — 툴셋 공유 ·
+    도구 등록부만 독립)에서 빠질 이름을 지운다. LLM에 보이는 도구(`_get_tools`)와 실행 조회
+    (`get_tool_by_name` → 없으면 holmes 「Failed to find tool」 오류 결과)가 같은 등록부를 읽으므로
+    좁힌 밖 도구는 노출도 실행도 되지 않는다.
+
+    시스템 프롬프트의 툴셋 지침(holmes `build_initial_ask_messages` → `tool_executor.toolsets`)도
+    좁힌다 — 도구가 하나도 남지 않은 툴셋을 사본의 `toolsets`·`enabled_toolsets`에서 뺀다(새
+    목록 · 공유 목록은 그대로). 원래 등록부에 도구가 없던 툴셋(비활성 등)은 건드리지 않는다.
+    """
+    executor = llm.tool_executor._clone_base()
+    emptied: list[object] = []
+    for name in [n for n in executor.tools_by_name if n not in names]:
+        del executor.tools_by_name[name]
+        ts = executor._tool_to_toolset.pop(name, None)
+        if ts is not None:
+            emptied.append(ts)
+    remaining = {id(ts) for ts in executor._tool_to_toolset.values()}
+    dropped = {id(ts) for ts in emptied} - remaining
+    if dropped:
+        executor.toolsets = [ts for ts in executor.toolsets if id(ts) not in dropped]
+        executor.enabled_toolsets = [
+            ts for ts in executor.enabled_toolsets if id(ts) not in dropped]
+    clone = copy.copy(llm)
+    clone.tool_executor = executor
+    return clone
+
+
 class _StreamDrain:
     """holmes `ToolCallingLLM.call_stream`을 직접 소비하는 `call()` 대체 (plans/154 W1 · M-2).
 
@@ -275,14 +319,23 @@ class _StreamDrain:
     `LLMInterruptedError`), 스트림 이벤트마다 여기서도 확인해 같은 예외로 멈춘다. 진행 중인 LLM 요청
     1건(`completion` — holmes가 `LLM_REQUEST_TIMEOUT` 고정)과 이미 시작한 도구 호출은 끊지 못한다.
     없으면 종전 호출 그대로(인자 자체를 넘기지 않는다).
+
+    `stall`(plans/198 I-10 · `stall_stop_enabled`)이 있으면 도구 결과마다 넣고, 도구 묶음이 끝난
+    경계(다음 판단 회차 시작 직전)에서 정체면 `InvestigationStalledError`로 멈춘다.
+    holmes 0.36.0 실측: `call_stream`은 시작할 때 `msgs`를 복사하고(1091) 진행 중 이벤트
+    (`TOOL_RESULT`·`TOKEN_COUNT`)에 대화가 실리지 않아 실행 중 대화에 결론 지시를 넣을 공개
+    통로가 없다 — 그래서 주입 대신 협조적으로 멈추고, 결론은
+    dispatcher의 부분 브리핑(원장 기반 · 결정적)이 낸다. 없으면 판정 0(종전 그대로).
     """
 
     def __init__(self, llm: ToolCallingLLM, activity: ActivityLog | None = None,
                  cache_hit: Callable[[str], bool] | None = None,
-                 cancel_event: threading.Event | None = None) -> None:
+                 cancel_event: threading.Event | None = None,
+                 stall: StallTracker | None = None) -> None:
         self._llm = llm
         self._cache_hit = cache_hit
         self._cancel = cancel_event
+        self._stall = stall
         self.tool_calls: list[dict] = []
         self.num_llm_calls = 0
         # 끝난 스트림 라운드의 누적(`call()`의 accumulated_stats)
@@ -375,6 +428,7 @@ class _StreamDrain:
             terminal_event = None
             start_tool_count = 0
             saw_tool_results = False
+            stream_steps = 0  # 이 스트림에서 끝난 도구 묶음 수(정체 중단 시 step 수)
             self._judge_start()
             for event in stream:
                 self._check_cancelled()
@@ -382,6 +436,8 @@ class _StreamDrain:
                 if saw_tool_results and event.event != StreamEvents.TOOL_RESULT:
                     display_logger.info("")
                     saw_tool_results = False
+                    stream_steps += 1
+                    self._check_stalled(self.num_llm_calls + stream_steps)
                     self._judge_start()  # 도구 묶음이 끝났다 — 다음 판단 회차
                 self._record(event)
                 if event.event == StreamEvents.START_TOOL:
@@ -390,6 +446,7 @@ class _StreamDrain:
                     tool_number_offset += 1
                     saw_tool_results = True
                     self.tool_calls.append(event.data)
+                    self._observe_stall(event.data)
                     if start_tool_count > 0:
                         display_logger.info(
                             f"The AI requested [bold]{start_tool_count}[/bold] tool call(s)."
@@ -456,6 +513,23 @@ class _StreamDrain:
                 finish_reason=(terminal_data.get("metadata") or {}).get("finish_reason"),
                 **self._stats.model_dump(),
             )
+
+    def _observe_stall(self, data: object) -> None:
+        if self._stall is None or not isinstance(data, dict):
+            return
+        result = data.get("result") if isinstance(data.get("result"), dict) else {}
+        status = result.get("status")
+        self._stall.observe(str(data.get("tool_name") or data.get("name") or ""),
+                            result.get("params"), str(data.get("description") or ""),
+                            str(getattr(status, "value", status) or "unknown"))
+
+    def _check_stalled(self, steps: int) -> None:
+        """도구 묶음 경계의 정체 판정 — 정체면 `InvestigationStalledError`(가드 없으면 무동작)."""
+        if self._stall is None:
+            return
+        reason = self._stall.end_step()
+        if reason is not None:
+            raise InvestigationStalledError(reason, steps)
 
     def _check_cancelled(self) -> None:
         """협조적 중단 확인 — 신호가 섰으면 holmes와 같은 `LLMInterruptedError`로 멈춘다."""
@@ -613,7 +687,8 @@ class DiagnosisAgent:
     def ask(self, question: str, system_prompt_additions: str | None = None,
             activity: ActivityLog | None = None,
             tool_cache: ToolResultCache | None = None,
-            cancel_event: threading.Event | None = None) -> DiagnosisResult:
+            cancel_event: threading.Event | None = None,
+            tool_allowlist: Collection[str] | None = None) -> DiagnosisResult:
         """자연어 질문으로 장애 진단을 수행한다.
 
         holmes는 max_steps 상한 도달 시 전용 클래스 없이 plain `Exception("Too many LLM
@@ -631,22 +706,53 @@ class DiagnosisAgent:
 
         `cancel_event`(plans/194 W3 · 선택)는 dispatcher의 협조적 중단 신호다 — 서면 다음 확인
         지점에서 `LLMInterruptedError`로 멈춘다(`_StreamDrain`). 결과는 버려진 잡이라 쓰이지 않는다.
+
+        `stall_stop_enabled`(plans/198 I-10)면 정체(같은 도구·정규화 인자 반복 · 새 근거 없는 연속
+        step)에서 멈추고 그때까지의 기록으로 미완주 결과(`stalled` = 사유)를 돌려준다.
+
+        `tool_allowlist`(plans/198 I-9 · 선택)를 주면 이 조사에만 도구를 그 이름들로 좁힌다
+        (`_with_tool_allowlist`). None이면 종전 호출 그대로.
         """
+        base = (self.llm if tool_allowlist is None
+                else _with_tool_allowlist(self.llm, tool_allowlist))
         messages = build_initial_ask_messages(
             initial_user_prompt=question,
             file_paths=None,
-            tool_executor=self.llm.tool_executor,
+            tool_executor=base.tool_executor,
             system_prompt_additions=_with_load_guard_note(system_prompt_additions),
         )
         # 협조적 중단 신호가 없으면 인자를 넘기지 않는다(종전 호출 그대로).
-        cancel: dict[str, Any] = {"cancel_event": cancel_event} if cancel_event is not None else {}
+        drain_kw: dict[str, Any] = (
+            {"cancel_event": cancel_event} if cancel_event is not None else {})
+        if getattr(self.settings, "stall_stop_enabled", False):
+            # plans/198 I-10 — off면 인자를 넘기지 않는다(종전 호출 그대로). getattr: 설정 대역
+            # (필드 일부만 가진 객체)을 쓰는 호출자도 종전처럼 돈다.
+            # 사유의 인자 표기는 실행 기록과 같은 가림을 거친다(사유가 답변·브리핑·감사로 나간다).
+            drain_kw["stall"] = StallTracker(self.settings.stall_repeat_threshold,
+                                             self.settings.stall_idle_steps,
+                                             masker=mask_activity_text)
         if tool_cache is None:
-            drain = _StreamDrain(self.llm, activity=activity, **cancel)
+            drain = _StreamDrain(base, activity=activity, **drain_kw)
         else:
-            llm, invoke = _with_tool_cache(self.llm, tool_cache)
-            drain = _StreamDrain(llm, activity=activity, cache_hit=invoke.is_hit, **cancel)
+            llm, invoke = _with_tool_cache(base, tool_cache)
+            drain = _StreamDrain(llm, activity=activity, cache_hit=invoke.is_hit, **drain_kw)
         try:
             result = drain.run(messages)
+        except InvestigationStalledError as stalled:
+            partial = drain.partial(stalled.steps)
+            return DiagnosisResult(
+                answer=(
+                    f"[미완주] 조사가 정체돼 중단했습니다({stalled.reason}). 수집된 근거가 "
+                    f"불충분하므로 가설/한계로 취급합니다."
+                ),
+                tool_calls=[tc.description for tc in (partial.tool_calls or [])],
+                tool_outputs=to_tool_records(partial.tool_calls),
+                total_tokens=partial.total_tokens,
+                total_cost=partial.total_cost,
+                incomplete=True,
+                steps=partial.num_llm_calls,
+                stalled=stalled.reason,
+            )
         except Exception as exc:  # noqa: BLE001 — holmes는 전용 예외 클래스 없이 plain Exception
             drain._judge_end("error")  # 열린 판단 회차가 있으면 실패로 닫는다(기록 없으면 무동작)
             msg = str(exc)

@@ -7,7 +7,8 @@ poll하여 브리핑을 받아 state에 실어 notifier가 통보에 첨부하�
 status·verdict)는 decision_store에 감사한다. (plans/153 W2) 조사 저장소가 주입되면
 상태·사유·브리핑을 웹 조회용으로 함께 남긴다(미주입이면 no-op). (plans/153 W4) 사건 맥락 플래그가
 켜져 있으면 페이로드에 제출 시점 사건 스냅샷을 싣고, 워커가 부르는 `submit_episode_investigation`이
-사건당 1회 종합 조사를 제출한다.
+사건당 1회 종합 조사를 제출한다. (plans/198 I-11) 사건 단위 조사 플래그가 켜져 있으면 같은 사건의
+진행 중 조사에 합류하고 새 잡을 내지 않는다.
 
 설계 안전장치(회귀 0·비차단·graceful):
     - 게이트 판정·라우팅 무변경 — 이 노드는 gate 노드를 건드리지 않고 gate 다음에 삽입되며,
@@ -41,6 +42,7 @@ from noise_gate.domain.investigation_payload import (
 )
 from noise_gate.domain.notification_policy import _TIER_RANK, TIER_PAGE
 from noise_gate.domain.process_rank import KIND_APM, is_apm_event
+from noise_gate.infrastructure.metrics import record_incident_investigation
 from src.domain.host_authz import Principal, authorize_host_investigation
 from src.observability.investigation_metrics import record_investigation
 from src.utils.prior_targets import resolve_targets
@@ -110,6 +112,12 @@ async def investigation_trigger_node(
         return {}
     if _authz_denied(cfg, event, first, decision, decision_store, inv_store, source):
         return {}
+    # (plans/198 교정) 합류는 발주 게이트(호스트 미해소·대상 미확정·인가) 뒤에서 판정한다 — 원래
+    # 발주되지 않았을 알람을 「아낀 발주」로 세지 않는다.
+    if _joined_incident_investigation(
+        state, event, decision, decision_store, inv_store, source, episode_id
+    ):
+        return {}
     if await _service_unreachable(client, event, decision, decision_store, inv_store, source):
         return {}
 
@@ -144,6 +152,49 @@ def _meets_min_tier(gate_cfg: Any, decision: Any) -> bool:
     return _TIER_RANK.get(decision.tier, _TIER_RANK[TIER_PAGE]) >= min_rank
 
 
+def _joined_incident_investigation(
+    state: dict[str, Any],
+    event: Any,
+    decision: Any,
+    decision_store: Any,
+    inv_store: Any,
+    source: str,
+    episode_id: str | None,
+) -> bool:
+    """같은 사건의 진행 중 조사에 합류했으면 True(감사·연결 행 후 — 노드는 빈 dict로 끝난다).
+
+    (plans/198 I-11 · 194 R8) 워커가 `episode_investigation`에 `joined=True`를 실어 넘긴 경우만
+    — 사건 단위 조사 플래그 on이고 같은 사건(존·정규화 호스트 키)에 진행 중 조사가 있을 때다.
+    새 잡을 내지 않고 조사 저장소에 연결 행(`episode_existing`)으로 이 알람 id를 보탠다 — 화면은
+    종전 연결과 같이 그 조사를 보인다. 감사 상태는 `incident_joined`(아낀 발주 수 집계 근거)다.
+    `count=False`(같은 처리에서 증상 선착 종합 조사가 나갈 사건)면 `joined` 카운터를 올리지 않는다.
+    """
+    existing = state.get("episode_investigation")
+    if not (
+        isinstance(existing, dict)
+        and existing.get("joined")
+        and existing.get("investigation_id")
+    ):
+        return False
+    investigation_id = str(existing["investigation_id"])
+    joined_episode = str(existing.get("episode_id") or episode_id or "") or None
+    logger.info(
+        "조사 합류 — 같은 사건의 진행 중 조사: alarm_id=%s episode=%s inv=%s",
+        getattr(event, "alarm_id", ""), joined_episode, investigation_id,
+    )
+    if existing.get("count", True):
+        record_incident_investigation("joined")
+    _audit(
+        decision_store, event, decision, investigation_id, "incident_joined", None,
+        episode_id=joined_episode,
+    )
+    _store(
+        inv_store, event, investigation_id, "episode_existing", source=source,
+        episode_id=joined_episode,
+    )
+    return True
+
+
 def _reused_episode_investigation(
     state: dict[str, Any],
     event: Any,
@@ -164,6 +215,7 @@ def _reused_episode_investigation(
         is_apm_event(event)
         and isinstance(existing, dict)
         and existing.get("investigation_id")
+        and not existing.get("joined")  # 사건 합류(plans/198)는 게이트 뒤 `_joined_…`가 맡는다
     ):
         return False
     logger.info(

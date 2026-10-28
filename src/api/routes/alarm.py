@@ -1018,6 +1018,10 @@ async def retract_alarm_feedback(
         target_ts=body.target_ts,
         alarm_name=body.alarm_name,
         labeled_by=current_user.get("sub") or current_user.get("name") or "",
+        # (plans/198 교정 m1) 조사 라벨 철회는 원 작성자·운영자 것만 인정한다 — 알람 피드백 무관.
+        # 라벨 플래그 off면 표지를 싣지 않는다(철회 행 형식 비트 동일)
+        operator=bool(getattr(ng, "investigation_label_enabled", False))
+        and _is_alarm_operator(config, current_user),
     )
     return AlarmFeedbackRetractResponse(retracted=True)
 
@@ -1100,6 +1104,10 @@ async def alarm_capabilities(
         ),
         # plans/193 W2: 포털 「노이즈 관제」 뷰 탭 — 거짓이면 포털은 관제 자산을 싣지 않는다.
         noise_console_portal_tab=bool(getattr(ng, "console_portal_tab_enabled", False)),
+        # plans/198 교정: 라벨·유사 조사 라우트 등록 조건과 같은 플래그
+        # — 거짓이면 웹이 GET을 보내지 않는다.
+        investigation_label_enabled=bool(getattr(ng, "investigation_label_enabled", False)),
+        investigation_memory_enabled=bool(getattr(ng, "investigation_memory_enabled", False)),
     )
 
 
@@ -1711,13 +1719,19 @@ async def get_investigation(
 
 
 def _assert_investigation_access(
-    request: Request, current_user: dict[str, Any], rec: dict[str, Any] | None
+    request: Request,
+    current_user: dict[str, Any],
+    rec: dict[str, Any] | None,
+    *,
+    db_cache: dict[str, str | None] | None = None,
 ) -> None:
     """조사 id 조회 인가 — `get_investigation`과 실시간 스트림 `watch`가 같이 쓴다.
 
     순서: 내 사용자 요청 조사(plans/187 W12 — 존 검사 없이 연다) → 알람 수신 권한(없으면
     레코드 유무와 무관하게 403) → 알람 없는 사용자 요청 조사는 소유자·운영자만(교정 H1) →
     추가 조사(켜짐)는 소유자·관리자만 → 그 밖에는 조사에 걸린 알람 전부의 존 검사(fail-closed).
+    `db_cache`는 여러 조사를 거르는 호출부(비슷한 과거 조사)의 요청 단위 판정 기록 메모다
+    (규칙 불변).
 
     Raises:
         HTTPException: 권한 없음(403).
@@ -1732,7 +1746,8 @@ def _assert_investigation_access(
         return
     if rec is not None:
         _assert_investigation_zone(
-            request, current_user, list(rec.get("alarm_ids") or []), rec.get("alarm_db_ids")
+            request, current_user, list(rec.get("alarm_ids") or []), rec.get("alarm_db_ids"),
+            db_cache=db_cache,
         )
 
 

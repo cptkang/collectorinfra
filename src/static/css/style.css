@@ -1020,6 +1020,31 @@ body:has(.chat-layout.history-collapsed) {
     margin-top: 8px;
 }
 
+/* (plans/198 W0 I-1) 완료 조사 하단 「실제 원인」 1줄 */
+.dv-cause {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 0.8125rem;
+}
+.dv-cause [hidden] { display: none; }
+.dv-cause-note { flex: 1 1 220px; min-width: 160px; }
+.dv-cause .dv-note { flex-basis: 100%; }
+
+/* (plans/198 W7 I-8) 완료 조사 하단 「비슷한 과거 조사」 */
+.dv-similar {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 0.8125rem;
+}
+.dv-similar-list { margin: 4px 0; padding-left: 18px; }
+.dv-similar-open { color: var(--text-muted); }
+
 /* (plans/187 W20 · G-50) 「조사 흐름」·「실행 기록」 전환 · 단계 카드 */
 .dv-modes { display: flex; gap: 2px; margin: 6px 0 8px; border-bottom: 1px solid var(--border); }
 .dv-mode {

@@ -8,6 +8,9 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-28 | D-350 | 부기 2 — 미결 6건 사용자 확정(Q4~Q6 · 수동 버튼 경로 합류 미적용 · KEDB 운영자 라벨 · 제안값은 154 A/B 확정 · W6 A/B는 HolmesGPT 경로 · W3 재판정 시 conditional 심층 생략 허용) |
+| 2026-10-28 | D-350 | 구현 줄 채움(`plans/198` W0~W3·W5~W8 · 플래그 기본 off · 커밋 없음) · 부기 1(KEDB 초안 트리거·계수는 운영자 라벨만 — 기존 kb-draft operator_only 정렬 · 사용자 확인 전) |
+| 2026-10-28 | D-350 | 신규 — 장애 조사·진단(RCA) 개선 게이트 묶음(plans/198 §8 · Q1~Q9) |
 | 2026-10-28 | D-341 · D-036 | D-341 부기 21 · D-036 부기 — S0r `instance_unresolved`(전 대조) → `no_was` 판정·그 밖은 「WAS 여부 미확인」 · S6 소스 전달·0건 결손 · mcp_server 소스별 프로세스 API(`PROCESS_API_BASE_URLS_CSV` · 매핑 밖 소스 오류) |
 | 2026-10-27 | D-349 · D-109 · D-317 · D-175 | D-349 신규(`plans/197` W3): 제니퍼 상관 도메인 스코프 + 대표 외 DASHBOARD 상한(`NOISE_APM_CORRELATION_DOMAIN_SCOPE_ENABLED` 기본 off · Q2 (a) 권고 적용·사용자 확인 전) · D-109·D-317 부기(D-349 참조) · D-175 부기(G-4 근거 정정 — 공동존 PG 점검은 `cmm_resource_maintenance` · b0 W0 대기) |
 | 2026-10-27 | D-348 부기 1 | plans/196 잔여 라운드 — 사건 종합 조사에도 `polestar_link` 부착 · 연결 저장 WATCH/MULTI 원자화 · 호출 상한 Redis 공유 카운터(오류 시 프로세스 폴백) · 재조회 혼합 단계 제니퍼 재호출 유지 확정(근거: 브리핑 크기·사용자 뷰 마스킹) |
