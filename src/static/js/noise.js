@@ -882,7 +882,7 @@ function mount(mountRoot, opts) {
             // SSE로만 들어온 항목(레코드 없음)만 서버 조회로 폴백한다.
             function open() {
                 if (item.record) openDrawerFromRecord(item.record, node);
-                else openDrawer(item.alarm_id, node);
+                else openDrawer(item.alarm_id, node, item);
             }
             node.addEventListener("click", open);
             node.addEventListener("keydown", function (e) {
@@ -998,9 +998,10 @@ function mount(mountRoot, opts) {
             stage_label: "",
             reason: payload.tier_reason,
             ts: payload.received_at || payload.alarm_time || new Date().toISOString(),
-            // (plans/153 W1) 스트림의 AI 분석 서술을 버리지 않고 행에 담는다(출처 = 스트림 ·
-            // 분석 실패 표시는 스트림에 없다 — 드로어는 서버 레코드로 다시 그린다).
-            analysis: streamAnalysis(payload),
+            // (D-325 부기) AI 추정은 저장된 판정 레코드의 `analysis`로만 그린다 — 스트림 서술은
+            // 실패 표시가 없어 폴백 문구가 추정처럼 보이고, 마스킹도 거치지 않으며, 플래그가 꺼져
+            // 있으면 드로어(서버 레코드)와 어긋난다. 드로어를 열면 받은 레코드 값으로 채운다.
+            analysis: null,
         };
         var exists = state.feed.some(function (f) { return feedKey(f) === feedKey(item); });
         if (!exists) {
@@ -1008,16 +1009,6 @@ function mount(mountRoot, opts) {
             state.feed = state.feed.slice(0, FEED_MAX);
             renderFeed();
         }
-    }
-
-    // 스트림 페이로드의 AI 분석 서술 3필드 — 셋 다 비면 null(행에 AI 줄을 만들지 않는다).
-    function streamAnalysis(payload) {
-        var out = {
-            summary: payload.summary || "",
-            probable_cause: payload.probable_cause || "",
-            recommended_action: payload.recommended_action || "",
-        };
-        return out.summary || out.probable_cause || out.recommended_action ? out : null;
     }
 
     function setStreamPill(kind, text) {
@@ -1090,16 +1081,28 @@ function mount(mountRoot, opts) {
     }
 
     // 폴백: 레코드가 없는 항목(SSE 피드)만 서버의 최신 판단·타임라인으로 그린다.
-    async function openDrawer(alarmId, trigger) {
+    // `feedItem`(SSE 피드 행)을 주면 받은 레코드의 AI 추정으로 그 행의 줄을 채운다(D-325 부기).
+    async function openDrawer(alarmId, trigger, feedItem) {
         if (!alarmId) return;
         try {
             var data = await getJSON(API + "/decisions/" + encodeURIComponent(alarmId));
             if (!data) return;
             renderDrawer(data.decision, data.timeline);
             showDrawer(trigger);
+            adoptStoredAnalysis(feedItem, data.decision);
         } catch (err) {
             showError(err.message);
         }
+    }
+
+    // SSE 피드 행에 서버 레코드의 `analysis`를 옮긴다 — 같은 알람일 때만, 값이 있을 때만 다시 그린다
+    // (진입점 포커스는 `data-focus-key`로 복귀하므로 다시 그려도 안전하다).
+    function adoptStoredAnalysis(feedItem, record) {
+        if (!feedItem || !record || record.alarm_id !== feedItem.alarm_id) return;
+        var a = analysisOf(record);
+        if (!a || feedItem.analysis === a) return;
+        feedItem.analysis = a;
+        renderFeed();
     }
 
     // 타임라인은 서버 `noise_decision_trace`(`_trace_timeline`)와 같은 규칙으로 클라이언트가 계산한다 —
