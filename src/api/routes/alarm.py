@@ -1108,6 +1108,11 @@ async def alarm_capabilities(
         # — 거짓이면 웹이 GET을 보내지 않는다.
         investigation_label_enabled=bool(getattr(ng, "investigation_label_enabled", False)),
         investigation_memory_enabled=bool(getattr(ng, "investigation_memory_enabled", False)),
+        # plans/199 W1 · D-351: 「한눈에 보기」 카드 — 표시 전용(라우트·응답 모양 무관)
+        # · 폴백 = config 기본값(on · D-351 부기 2) — investigation_manual_enabled 관례
+        investigation_summary_view_enabled=bool(
+            getattr(ng, "investigation_summary_view_enabled", True)
+        ),
     )
 
 

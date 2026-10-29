@@ -364,6 +364,56 @@
     };
     var VERDICT_CELLS = { degraded: "이상", normal: "정상", no_was: "WAS 아님" };
 
+    // ── plans/199 W5b · D-351 §3.9: 용어 정리(표시 문구만) ───────────────────────────────────
+    // `extra.summaryView`가 참일 때만 쓴다(거짓이면 위 표 그대로 · 비트 동일). 내부 키·저장값은 바꾸지 않고, 모르는 열·값은
+    // 원문 그대로 보인다(침묵 금지). 뜻·단위는 생산 코드 기준 — 단계 표는 sre_agent `playbook_steps.py`, 지표 이름은 같은
+    // 파일의 지표 행과 apm_gateway 중립 지표 이름(`adapters/jennifer/fields.py`)이다.
+    var TERM_TEXT = { stripHead: "단계별 판정", levelHead: "중요도" };
+    // 단계 표 열(COLUMN_LABELS에 없던 열 — W0 실측) → 문구 · 단위는 괄호
+    var TERM_COLUMNS = {
+        host: "호스트", baseline_p95_ms: "기준선 p95(ms)", error_rate: "오류율(0~1)", verdict_source: "판정 출처",
+        prev_day: "전일 같은 시간대", prev_week: "전주 같은 시간대",
+        change_pct_prev_day: "전일 대비(%)", change_pct_prev_week: "전주 대비(%)",
+        rss: "RSS(상주 메모리)", args: "실행 인자", elapsed_ms: "경과(ms)", running_mode: "실행 모드",
+        running_text: "실행 중 내용", sql: "SQL 문", error_type: "오류 유형", count: "건수", status: "상태",
+        alarm_time: "알람 시각", severity: "심각도", alarm_name: "알람 이름",
+    };
+    // 「지표」 열(metric) 값 — S1 골든 시그널 비교(apm.golden_signals) · S2 런타임·풀(apm.runtime_and_pool)
+    var METRIC_LABELS = {
+        p95_ms: "p95 응답(ms)", tps: "TPS", error_rate: "오류율(0~1)", calls: "호출 수", avg_response_ms: "평균 응답(ms)",
+        heap_used_mb: "힙 사용량(MB)", heap_committed_mb: "힙 확보량(MB)", gc_time_usage_pct: "GC 시간 비율(%)",
+        process_cpu_pct: "프로세스 CPU(%)", active_services: "실행 중 요청 수", thread_current: "현재 스레드 수",
+        db_pool_active: "DB 풀 사용 중", db_pool_configured_avg: "DB 풀 설정 크기(평균)", db_pool_idle_avg: "DB 풀 유휴(평균)",
+        db_pool_usage_ratio: "DB 풀 사용률(0~1)",
+    };
+    // 「종류」 열(kind) 값 — S4 호스트 자원 지표 종류(usage_trend) · S5 타임라인 항목 종류(correlation.TimelineItem)
+    var KIND_LABELS = {
+        cpu: "CPU 사용률(%)", memory: "메모리 사용률(%)", filesystem: "파일시스템 사용률(%)", disk_io: "디스크 I/O",
+        alarm: "알람", apm_event: "APM 이벤트", metric: "지표", change: "변경",
+    };
+    // 열 → 값 문구 표(판정 출처는 단계 머리 배지와 같은 문구)
+    var TERM_VALUES = {
+        metric: METRIC_LABELS,
+        kind: KIND_LABELS,
+        anomaly_kind: { sustained: "지속", spike: "일시" },
+        verdict_source: PB_TEXT.sourceBadges,
+    };
+
+    function ownLabel(map, key) {
+        return Object.prototype.hasOwnProperty.call(map, key) ? map[key] : null;
+    }
+
+    // 열 머리 문구 — 종전 표 → 용어 정리 표 → 원문
+    function termColumn(col) {
+        return ownLabel(COLUMN_LABELS, col) || ownLabel(TERM_COLUMNS, col) || String(col);
+    }
+
+    // 셀 값 문구 — 그 열의 표에 있는 문자열 값만(없으면 null = 원문 그대로)
+    function termValue(col, value) {
+        var map = ownLabel(TERM_VALUES, col);
+        return map && typeof value === "string" ? ownLabel(map, value) : null;
+    }
+
     // S3 가로 누적 막대 — 응답시간을 SQL(+Fetch) · 외부 호출 · CPU · 기타로 나눈다
     var BAR_PARTS = [
         ["sql", ["sql_ms", "fetch_ms"], "SQL"],
@@ -452,17 +502,22 @@
                 escapeHtml((sec.title || sec.action || "") + " · " + c.text) + '">' +
                 escapeHtml(sec.step || "?") + ' ' + escapeHtml(c.text) + '</span>';
         });
+        return chips.join("") + remainingChips(ctx, secs.length);
+    }
+
+    // 남은 단계(S9 종합 제외) 칩 — 진행 중 단계는 수집 중, 나머지는 대기(칩 줄 · plans/199 W3 단계 스트립 공용)
+    function remainingChips(ctx, shown) {
         var prog = progressOf(ctx);
-        if (prog && prog.total > secs.length + 1) {
-            // 남은 단계(S9 종합 제외) — 진행 중 단계는 수집 중, 나머지는 대기
-            var remain = prog.total - 1 - secs.length;
+        var out = "";
+        if (prog && prog.total > shown + 1) {
+            var remain = prog.total - 1 - shown;
             for (var i = 0; i < remain; i++) {
                 var label = i === 0 && prog.current ? String(prog.current) : "…";
-                chips.push('<span class="bv-step-chip bv-step-chip--pending">' + escapeHtml(label) + ' ' +
-                    escapeHtml(i === 0 ? PB_TEXT.stepPending : PB_TEXT.stepWaiting) + '</span>');
+                out += '<span class="bv-step-chip bv-step-chip--pending">' + escapeHtml(label) + ' ' +
+                    escapeHtml(i === 0 ? PB_TEXT.stepPending : PB_TEXT.stepWaiting) + '</span>';
             }
         }
-        return chips.join("");
+        return out;
     }
 
     function engineChip(b) {
@@ -517,6 +572,469 @@
         return chipHtml(hit[0], hit[1]);
     }
 
+    // ── plans/199 W1 · D-351: 「한눈에 보기」 카드(요약형·상세형·비플레이북 공통) ─────────────────
+    // `summaryModel(view)`은 브리핑에 이미 있는 구조화 필드만 결정적으로 고른다(새 LLM 호출 0 · D-035).
+    // 판정·가설 순위·원인 계층은 바꾸지 않는다 — 계층 판정 정본은 sre_agent `engine_agreement.py`이고 화면은
+    // enum → 문구 표만 가진다(모르는 enum은 원문 그대로 · 침묵 금지). 카드는 `extra.summaryView`가 참일 때만
+    // 그린다(기능 조회 `investigation_summary_view_enabled` · 끄면 종전 렌더 비트 동일 · D-162).
+
+    // 원인 계층 enum → 화면 문구(정본 `engine_agreement.LAYERS` + unknown — W1 테스트가 대조한다)
+    var LAYER_LABELS = {
+        db: "DB(SQL·커넥션 풀)",
+        external: "외부 연계(외부 호출)",
+        cpu: "WAS 애플리케이션(CPU 처리)",
+        gc: "WAS JVM(GC·힙)",
+        host_resource: "서버 자원(OS·메모리·디스크)",
+        unknown: "원인 영역 미확정",
+    };
+
+    // 확실성 배지 → 칩 종류(CSS 접미사). 「확정」 = 판독 규칙의 근거가 지지함(plans/199 §3.2)
+    var CERTAINTY_KINDS = { "확정": "ok", "추정": "warn", "미확정": "none" };
+
+    var SUM_TEXT = {
+        title: "한눈에 보기",
+        rows: { area: "원인 영역", conclusion: "결론", target: "대상", scope: "영향 범위", actions: "할 일", mustSee: "꼭 확인" },
+        confirmed: "확정",
+        presumed: "추정",
+        undetermined: "미확정",
+        altArea: "다른 분석은 {label} 영역",
+        sources: { playbook: "플레이북", deep: "심층 조사" },
+        noCause: "원인 미확정 — {reason}",
+        soFar: "지금까지: {text}",
+        soFarSteps: "끝난 단계 {n}개 · 이상 판정 {bad}개 — 종합 전",
+        noResult: "아직 끝난 단계가 없습니다",
+        symptom: "증상 {text}",
+        at: "발생 {at}",
+        episode: "사건 종합 조사",
+        sameIncident: "같은 사건 알람 {n}건",
+        badInstances: "이상 인스턴스 {bad}/{total}",
+        mustRunning: "조사 진행 중 — {total}단계 중 {done}단계까지의 결과입니다",
+        mustRunningNoProgress: "조사 진행 중 — 끝난 단계까지의 결과입니다",
+        mustQueued: "조사 대기 중 — 시작되면 결과가 채워집니다",
+        mustFailed: "{chip} — {reason}",
+        mustEvidence: "(결론 근거 단계)",
+        mustKe: "알려진 문제 {id} 「{title}」 {result} · 우회 {workaround}",
+        workaround: { yes: "있음", no: "없음" },
+        mustMore: "외 {n}건",
+    };
+    var MUST_SEE_MAX = 3;   // 관제용 꼭 확인 — 최대 3줄 + 「외 n건」(§3.3)
+    var FAILED_STATUSES = { failed: true, timeout: true, rejected: true };
+    var NO_SUMMARY_STATUSES = { none: true, episode_existing: true };   // 요약할 조사 결과가 없는 상태
+    // 「권고 없음」 고정 표지 접두 — 할 일이 아니므로 카드에서 뺀다. 출처: sre_agent/sre_agent/application/
+    // briefing_builder.py(심층 `recommendation.items` · 플레이북 최상위 `recommendation.items` 기본값)
+    var NO_ACTION_PREFIX = "조치 권고 없음(";
+
+    function isAction(text) {
+        return !!text && String(text).indexOf(NO_ACTION_PREFIX) !== 0;
+    }
+
+    function layerLabel(layer) {
+        return Object.prototype.hasOwnProperty.call(LAYER_LABELS, layer) ? LAYER_LABELS[layer] : String(layer);
+    }
+
+    // 타임존 없는 벽시계 시각(`2026-10-19T10:00:00`) → `2026-10-19 10:00` — Date로 해석하지 않는다(시간대 이동 금지)
+    function fmtWall(value) {
+        var m = /^(\d{4}-\d{2}-\d{2})[T ](\d{2}:\d{2})/.exec(String(value || ""));
+        return m ? m[1] + " " + m[2] : String(value || "");
+    }
+
+    // 1순위 가설 「지지」 — 상태 코드·문구 중 실린 것이 모두 지지일 때만(하나라도 다르면 지지 아님 · 단정 금지)
+    function isSupported(h) {
+        var st = h.status ? String(h.status) : "";
+        var lb = h.status_label ? String(h.status_label) : "";
+        if (!st && !lb) return false;
+        return (!st || st === "supported") && (!lb || lb === "지지");
+    }
+
+    // 단계 결손 어휘 — 화면 칩(STEP_CHIPS)과 같은 문구. 결손·미연동이 아니면 빈 문자열.
+    function stepGap(sec) {
+        if (sec.status === "missing") return STEP_CHIPS.missing[1];
+        if (sec.status === "skipped" && /not_connected|미연동/.test(String(sec.reason || ""))) return STEP_CHIPS.not_connected[1];
+        return "";
+    }
+
+    function stepGapText(sec, gap, inEvidence) {
+        var reason = gap === STEP_CHIPS.missing[1] ? String(sec.reason || "").split(" — ")[0] : "";
+        return [sec.step || "?", sec.title || sec.action || ""].filter(Boolean).join(" ") + " " + gap +
+            (inEvidence ? SUM_TEXT.mustEvidence : "") + (reason ? " — " + reason : "");
+    }
+
+    // 원인 영역 — `engine_agreement.playbook.layer` → unknown이면 `holmesgpt.layers[0]` → 없으면 unknown(§2)
+    function summaryArea(b) {
+        var ea = isObj(b.engine_agreement) ? b.engine_agreement : {};
+        var pbLayer = isObj(ea.playbook) && ea.playbook.layer ? String(ea.playbook.layer) : "unknown";
+        var hgLayers = isObj(ea.holmesgpt) ? asList(ea.holmesgpt.layers).map(String) : [];
+        var layer = pbLayer !== "unknown" ? pbLayer : (hgLayers[0] || "unknown");
+        var area = { layer: layer, label: layerLabel(layer), certainty: "" };
+        if (ea.result === "different_layer") {
+            var other = hgLayers.filter(function (l) { return l !== layer; })[0];
+            if (other) area.alt = { layer: other, label: layerLabel(other) };
+        }
+        return { area: area, fromPlaybook: pbLayer !== "unknown", differentLayer: ea.result === "different_layer" };
+    }
+
+    function summaryTarget(view, ctx) {
+        var sc = ctx && isObj(ctx.pb.scope) ? ctx.pb.scope : {};
+        var win = ctx && isObj(ctx.pb.windows) ? ctx.pb.windows : {};
+        var alarm = isObj(view.alarm) ? view.alarm : {};
+        var cs = isObj(view.cross_source) ? view.cross_source : {};
+        var host = sc.host || alarm.server_name || alarm.hostname || cs.host_key || "";
+        var names = [host];
+        if (sc.alarm_instance && sc.alarm_instance !== host) names.push(sc.alarm_instance);
+        var t = {
+            name: names.filter(Boolean).map(String).join(" · "),
+            symptom: String(sc.alarm_name || alarm.alarm_name || ""),
+            at: fmtWall(win.alarm_time || alarm.alarm_time || ""),
+        };
+        return t.name || t.symptom || t.at ? t : null;
+    }
+
+    // 영향 범위 — 사건 종합 조사 · 같은 사건 알람(건수 · 있으면 이름) · 이상 판정 인스턴스 수. 해당 없으면 줄 없음.
+    function summaryScope(view, ctx) {
+        var out = [];
+        if (view.kind === "episode") out.push(SUM_TEXT.episode + (view.episode_id ? " " + view.episode_id : ""));
+        var cs = isObj(view.cross_source) ? view.cross_source : (ctx && isObj(ctx.b.cross_source) ? ctx.b.cross_source : null);
+        var alarm = isObj(view.alarm) ? view.alarm : null;
+        var related = alarm ? asList(alarm.related).filter(isObj) : [];
+        var n = 0;
+        var detail = [];
+        var sources = cs && isObj(cs.sources) ? cs.sources : {};
+        Object.keys(sources).forEach(function (key) {
+            var c = num(sources[key]);
+            if (!c) return;
+            n += c;
+            detail.push((TEXT.sourceNames[key] || key) + " " + c);
+        });
+        if (!n && related.length) n = num(alarm.alarm_count) || related.length;
+        if (n) {
+            var names = related.map(function (r) { return String(r.alarm_name || ""); }).filter(Boolean);
+            out.push(fill(SUM_TEXT.sameIncident, { n: n }) + (detail.length ? "(" + detail.join(" · ") + ")" : "") +
+                (names.length ? " — " + names.join(" · ") : ""));
+        }
+        var targets = ctx && isObj(ctx.pb.scope) ? asList(ctx.pb.scope.targets).filter(isObj) : [];
+        if (targets.length) {
+            var bad = targets.filter(function (t) { return t.verdict === "degraded"; }).length;
+            out.push(fill(SUM_TEXT.badInstances, { bad: bad, total: targets.length }));
+        }
+        return out;
+    }
+
+    function knownLine(ke) {
+        var hit = PB_TEXT.knownResult[ke.result];
+        return fill(SUM_TEXT.mustKe, {
+            id: ke.id || "", title: ke.title || "", result: hit ? hit[1] : String(ke.result || ""),
+            workaround: asList(ke.workaround).length ? SUM_TEXT.workaround.yes : SUM_TEXT.workaround.no,
+        });
+    }
+
+    // 관제용 꼭 확인(§3.3 왼쪽 열) — ① 진행 중·실패 ② 결론 근거 단계의 결손·미연동(1순위 가설이 없으면 모든 단계)
+    // ③ 알려진 문제 일치·후보 한 줄씩. 최대 3줄 + 「외 n건」 · 없으면 빈 배열. 심층 조사 실패·생략은 넣지 않는다(담당자용).
+    function summaryMustSee(view, ctx, chip, running, failed, top) {
+        var items = [];
+        if (running) {
+            var p = isObj(view.progress) ? view.progress : null;
+            items.push({ kind: "run", text: p && num(p.total)
+                ? fill(SUM_TEXT.mustRunning, { done: num(p.done) || 0, total: num(p.total) }) : SUM_TEXT.mustRunningNoProgress });
+        } else if (failed) {
+            items.push({ kind: "warn", text: fill(SUM_TEXT.mustFailed, { chip: chip.text, reason: chip.reason }) });
+        }
+        if (ctx) {
+            var evidence = top ? asList(top.evidence_steps).map(String) : null;
+            stepSections(ctx.pb).forEach(function (sec) {
+                var gap = stepGap(sec);
+                var inEvidence = !!evidence && evidence.indexOf(String(sec.step)) >= 0;
+                if (gap && (!evidence || inEvidence)) items.push({ kind: "warn", text: stepGapText(sec, gap, inEvidence) });
+            });
+        }
+        var b = ctx ? ctx.b : (isObj(view.briefing) ? view.briefing : {});
+        knownErrorsOf(b).forEach(function (ke) {
+            if (ke.result === "match" || ke.result === "candidate") items.push({ kind: "info", text: knownLine(ke) });
+        });
+        if (items.length > MUST_SEE_MAX) {
+            var more = items.length - MUST_SEE_MAX;
+            items = items.slice(0, MUST_SEE_MAX);
+            items.push({ kind: "more", text: fill(SUM_TEXT.mustMore, { n: more }) });
+        }
+        return items;
+    }
+
+    // 플레이북 갈래 — 결론·할 일·확실성(§2 · §3.2). briefing_lines(원 키 줄)는 재료로 쓰지 않는다(W0 실측 ③).
+    function playbookSummary(view, ctx, model, chip, running, failed) {
+        var syn = synthesisOf(ctx.pb);
+        var hyps = asList(syn.hypotheses).filter(isObj);
+        var top = hyps[0] || null;
+        var dd = isObj(ctx.b.deep_dive) ? ctx.b.deep_dive : null;
+        var deepCause = dd && dd.status === "done" ? (textOf(dd.cause) || textOf(asList(dd.root_cause_hypotheses)[0])) : "";
+        var ar = summaryArea(ctx.b);
+        var secs = stepSections(ctx.pb);
+        var gapInEvidence = !!top && secs.some(function (sec) {
+            return stepGap(sec) && asList(top.evidence_steps).map(String).indexOf(String(sec.step)) >= 0;
+        });
+        var text = top ? String(top.title || textOf(top)) : deepCause;
+        var source = top ? "playbook" : (deepCause ? "deep" : null);
+        if (running) {
+            if (!text) {
+                var bad = secs.filter(function (sec) { return sec.verdict === "degraded"; }).length;
+                text = secs.length ? fill(SUM_TEXT.soFarSteps, { n: secs.length, bad: bad }) : SUM_TEXT.noResult;
+            }
+            text = fill(SUM_TEXT.soFar, { text: text });
+        } else if (!text) {
+            text = fill(SUM_TEXT.noCause, { reason: (failed && chip.reason) || PB_TEXT.noHypothesis });
+        }
+        var prog = progressOf(ctx);
+        model.conclusion = { text: text, source: source,
+            progress: running && prog ? fill(PB_TEXT.progress, { done: prog.done, total: prog.total }) : "" };
+        // 위에서부터 먼저 맞는 것 — 미확정 → 추정 → 확정
+        var certainty;
+        if (failed || (!ar.fromPlaybook && !hyps.length)) certainty = SUM_TEXT.undetermined;
+        else if (running || !top || !isSupported(top) || syn.top_inconclusive === true || ar.differentLayer ||
+            gapInEvidence || !ar.fromPlaybook) certainty = SUM_TEXT.presumed;
+        else certainty = SUM_TEXT.confirmed;
+        ar.area.certainty = certainty;
+        model.area = ar.area;
+        var acts = asList(syn.actions).filter(isObj).map(function (a) { return String(a.text || textOf(a)); });
+        if (!acts.length && dd && isObj(dd.recommendation)) acts = asList(dd.recommendation.items).map(textOf);
+        model.actions = acts.filter(isAction).slice(0, 2);
+        model.mustSee = summaryMustSee(view, ctx, chip, running, failed, top);
+    }
+
+    // 비플레이북 갈래(종전 HolmesGPT 브리핑) — 「원인 가설」 첫 줄([추정]) → 없으면 「요약」(원인 영역은 미확정)
+    function plainSummary(view, model, chip, running, failed) {
+        var lines = asList(view.briefing_lines).filter(isObj);
+        function firstRow(label) {
+            var hit = lines.filter(function (l) { return l.label === label; })[0];
+            var rows = hit ? String(hit.text || "").split("\n").filter(function (r) {
+                return r.trim() !== "" && r.trim() !== HUMAN_GATED_NOTE;
+            }) : [];
+            return rows.map(function (r) { return r.replace(BADGE_PREFIX, ""); });
+        }
+        var hypo = firstRow("원인 가설")[0] || "";
+        var text = hypo || firstRow("요약")[0] || "";
+        var source = text ? "deep" : null;
+        if (running) text = fill(SUM_TEXT.soFar, { text: text || SUM_TEXT.noResult });
+        else if (!text) text = fill(SUM_TEXT.noCause, { reason: (failed && chip.reason) || PB_TEXT.noHypothesis });
+        model.conclusion = { text: text, source: source, progress: "" };
+        model.area = { layer: "unknown", label: layerLabel("unknown"),
+            certainty: !failed && hypo ? SUM_TEXT.presumed : SUM_TEXT.undetermined };
+        model.actions = firstRow("권고").filter(isAction).slice(0, 2);
+        model.mustSee = summaryMustSee(view, null, chip, running, failed, null);
+    }
+
+    /**
+     * (plans/199 W1) 조사 응답 1건 → 「한눈에 보기」 모델(순수 함수 · 문자열은 이스케이프 전 원문).
+     * `{status:{code,kind,text,at}, area:{layer,label,certainty,alt?:{layer,label}}, conclusion:{text,source,progress},
+     *   target:{name,symptom,at}|null, scope:[문자열], actions:[문자열 ≤2], mustSee:[{kind,text}], owner:null}`
+     * certainty = 「확정」·「추정」·「미확정」 · conclusion.source = "playbook"|"deep"|null ·
+     * mustSee.kind = run|warn|info|more. `owner`(담당자)는 자리만 둔다(ITAM 등 별도 조회 — 범위 밖 · D-351 ⑧).
+     */
+    function summaryModel(view) {
+        view = view || { status: "none" };
+        var ctx = playbookContext(view);
+        var chip = statusChip(view);
+        var status = view.status || "none";
+        var failed = !!FAILED_STATUSES[status];
+        var running = !failed && (isActive(view) || !!(ctx && ctx.partial));
+        var model = {
+            status: { code: status, kind: chip.kind, text: chip.text, at: view.updated_at || "" },
+            area: null, conclusion: null,
+            target: summaryTarget(view, ctx), scope: summaryScope(view, ctx),
+            actions: [], mustSee: [], owner: null,
+        };
+        if (ctx) playbookSummary(view, ctx, model, chip, running, failed);
+        else plainSummary(view, model, chip, running, failed);
+        return model;
+    }
+
+    function sumRow(label, html) {
+        return '<div class="bv-sum-row"><div class="bv-label">' + escapeHtml(label) + '</div><div class="bv-text">' + html + '</div></div>';
+    }
+
+    // ── plans/199 W2 · D-351 ④: 전달문 — 고정 양식 미리보기 + [전달문 복사] ──────────────────────
+    // 카드와 같은 `summaryModel`만 읽는다(새 계산·LLM 호출 0). 시스템이 메신저·문자로 직접 보내지 않는다.
+    var HANDOFF_TEXT = {
+        head: "[장애 전달]",
+        area: "원인 영역: ",
+        owner: "담당: ",
+        conclusion: "결론: ",
+        scope: "영향 범위: ",
+        actions: "확인 요청: ",
+        mustSee: "주의: ",
+        investigation: "조사: ",
+        // 여러 항목(영향 범위·확인 요청·주의) 사이 — 항목 문구 안에 이미 「 · 」가 있어 다른 기호로 끊는다
+        sep: " / ",
+        // 포털 `/?investigation=<id>`는 장애 진단이 켜져 있으면 그 조사 하위 탭, 꺼져 있으면 조사 대화 탭으로
+        // 연다(app.js openInvestigationFromQuery · 미로그인이면 로그인 뒤 그 주소로 돌아온다) — 두 설정 모두 참인 안내
+        link: "포털에서 근거 확인 {url}",
+        copy: "전달문 복사",
+        view: "전달문 보기",
+        raw: "원문 포함",
+        rawTitle: "운영자 화면 — 가리지 않은 원문이 그대로 복사됩니다",
+    };
+    // 사용자 뷰의 `briefing`에 실리는 키(noise_gate investigation_store.PLAYBOOK_VIEW_KEYS와 같은 집합)
+    var USER_BRIEFING_KEYS = { partial: true, playbook: true, deep_dive: true, engine_agreement: true };
+
+    /**
+     * (plans/199 W2) 운영자 뷰(원문) 판정 — 서버가 정한 응답 모양으로만 본다(클라이언트 역할 값을 쓰지 않는다 · D-325 ③).
+     * 운영자 뷰는 `briefing` 키를 늘 싣고(원 dict 또는 null), 사용자 뷰는 플레이북 표시용 부분
+     * (`USER_BRIEFING_KEYS`)만 싣거나 키 자체가 없다(investigation_store.investigation_view). 원 브리핑은
+     * sre_agent 빌더가 늘 `summary`를 싣는다 — 표시용 키만 남은 dict는 사용자 뷰다.
+     */
+    function isRawView(view) {
+        if (!isObj(view) || !Object.prototype.hasOwnProperty.call(view, "briefing")) return false;
+        var b = view.briefing;
+        if (!isObj(b)) return true;
+        return Object.keys(b).some(function (k) { return !Object.prototype.hasOwnProperty.call(USER_BRIEFING_KEYS, k); });
+    }
+
+    // 전달문 한 줄 — 항목 값 안의 줄바꿈(`\r`·`\n`·U+2028/2029)을 공백 하나로 접는다(LLM 유래 원인·사유가 여러 줄이어도
+    // 「원인 영역:」 같은 머리말 줄이 새로 생기지 않게 — 고정 양식 유지). 카드 HTML에는 쓰지 않는다.
+    function oneLine(text) {
+        return String(text).replace(/\s*[\r\n\u2028\u2029]+\s*/g, " ").trim();
+    }
+
+    // 포털에서 이 조사를 여는 주소 — 브라우저 밖(테스트 등)이거나 id가 없으면 빈 문자열(그 부분은 뺀다)
+    function handoffLink(id) {
+        var origin = typeof location !== "undefined" && location ? String(location.origin || "") : "";
+        return id && /^https?:\/\//.test(origin) ? origin + "/?investigation=" + encodeURIComponent(String(id)) : "";
+    }
+
+    // (plans/199 W2) 카드·전달문의 원인 영역 표시 `{label, certainty}` — 영역을 모르면 「원인 영역 미확정」 대신 「미확정」.
+    // 확실성도 미확정이면 겹치지 않게 한 번만(label 빈 문자열), 추정이면 그 신호를 남긴다(「미확정 — 추정」 — 가설이 단정처럼
+    // 읽히지 않게). 아는 영역은 모델 그대로. 모델의 label·certainty와 엔진 비교의 LAYER_LABELS 문구는 바꾸지 않는다.
+    function areaShown(a) {
+        if (a.layer !== "unknown") return { label: a.label, certainty: a.certainty };
+        var u = SUM_TEXT.undetermined;
+        return a.certainty === u ? { label: "", certainty: u } : { label: u, certainty: a.certainty };
+    }
+
+    // 전달문 「조사:」 시각 — 해석되면 브라우저 지역 시각 `YYYY-MM-DD HH:MM`(머리 줄 `fmtWall`과 같은 모양), 아니면 원문
+    // (`updated_at`은 시간대가 붙어 와 fmtWall로 자르면 UTC 벽시계가 된다 — Date로 해석한다 · 공용 fmtTime은 그대로)
+    function fmtMinute(value) {
+        var d = new Date(value);
+        if (!value || isNaN(d.getTime())) return String(value || "");
+        function p(n) { return (n < 10 ? "0" : "") + n; }
+        return d.getFullYear() + "-" + p(d.getMonth() + 1) + "-" + p(d.getDate()) + " " + p(d.getHours()) + ":" + p(d.getMinutes());
+    }
+
+    /**
+     * (plans/199 W2 · D-351 ④) 「한눈에 보기」 모델 → 담당자 전달문(고정 양식 평문 · 순수 함수). 없는 항목의 줄은 뺀다.
+     * opts: `{id: 조사 id, link: 포털 주소}`(둘 다 선택). 문자열은 모델 값 그대로다(줄바꿈만 공백으로 접는다 — `oneLine`)
+     * — 사용자 뷰는 서버가 가린 값이 그대로 실리고, 이 함수는 가리지도 풀지도 않는다. 담당자 줄은 `model.owner`가 있을 때만(지금은 자리만 · D-351 ⑧).
+     */
+    function handoffText(model, opts) {
+        if (!isObj(model) || !isObj(model.area) || !isObj(model.conclusion)) return "";
+        opts = opts || {};
+        var T = HANDOFF_TEXT;
+        var t = isObj(model.target) ? model.target : {};
+        var head = [t.name, t.symptom, t.at ? fill(SUM_TEXT.at, { at: t.at }) : ""].filter(Boolean).join(" · ");
+        var a = model.area;
+        var s = areaShown(a);
+        var lines = [T.head + (head ? " " + head : "")];
+        lines.push(T.area + (s.label ? s.label + (s.certainty ? " — " + s.certainty : "") : s.certainty) +
+            (isObj(a.alt) ? " · " + fill(SUM_TEXT.altArea, { label: a.alt.label }) : ""));
+        if (model.owner) lines.push(T.owner + textOf(model.owner));
+        if (model.conclusion.text) lines.push(T.conclusion + model.conclusion.text);
+        var scope = asList(model.scope).filter(Boolean);
+        if (scope.length) lines.push(T.scope + scope.join(T.sep));
+        var acts = asList(model.actions).filter(Boolean);
+        if (acts.length) lines.push(T.actions + acts.join(T.sep));
+        var must = asList(model.mustSee).filter(isObj).map(function (m) { return String(m.text || ""); }).filter(Boolean);
+        if (must.length) lines.push(T.mustSee + must.join(T.sep));
+        var st = isObj(model.status) ? model.status : {};
+        var inv = [opts.id ? String(opts.id) : "", st.at ? fmtMinute(st.at) : "",
+            opts.link ? fill(T.link, { url: opts.link }) : ""].filter(Boolean);
+        if (inv.length) lines.push(T.investigation + inv.join(" · "));
+        return lines.map(oneLine).join("\n");
+    }
+
+    // 카드·[전달문 복사]가 함께 쓰는 전달문 재료 — 같은 뷰면 같은 글자(복사는 DOM을 읽지 않고 다시 만든다)
+    function handoffOf(view, model) {
+        var id = isObj(view) && view.investigation_id ? String(view.investigation_id) : "";
+        return { text: handoffText(model, { id: id, link: handoffLink(id) }), raw: isRawView(view) };
+    }
+
+    // [전달문 복사] · 「원문 포함」(운영자 뷰만) · [전달문 보기](JS 없이 열리는 읽기 전용 미리보기 — 재조회에도
+    // 열림 유지는 attach keepOpenState의 `data-bv-key`)
+    function handoffButtonsHtml(handoff) {
+        var T = HANDOFF_TEXT;
+        return '<button type="button" class="bv-choice" data-bv-action="handoff-copy">' + escapeHtml(T.copy) + '</button>' +
+            (handoff.raw ? '<span class="bv-handoff-raw" title="' + escapeHtml(T.rawTitle) + '">' + escapeHtml(T.raw) + '</span>' : "") +
+            '<details class="bv-handoff" data-bv-key="handoff"><summary class="bv-choice">' + escapeHtml(T.view) + '</summary>' +
+            '<pre class="bv-pre bv-handoff-text">' + escapeHtml(handoff.text) + '</pre></details>';
+    }
+
+    /**
+     * (plans/199 W1) 「한눈에 보기」 카드 HTML(모든 문자열 이스케이프). 맨 아래 `.bv-sum-actions`
+     * (`data-bv-summary-actions`)는 W2·W3 버튼([전달문 복사]·[전달문 보기]·[근거 보기]·[자세히]) 자리다.
+     * (plans/199 W2) `handoff`(`{text, raw}` — `handoffOf`)가 있으면 그 자리 맨 앞에 전달문 버튼을 둔다 —
+     * 클릭 처리기가 있는 attach 렌더만 넘긴다(없으면 종전처럼 빈 자리). 복사 결과 안내는 `extra.ui.handoff.msg`.
+     * (plans/199 W3) `tiers`가 참이면 그 뒤에 [근거 보기]·[자세히](상세형 ②·③을 열고 스크롤) — 같은 조건(attach 상세형)만.
+     */
+    function summaryCardHtml(model, extra, handoff, tiers) {
+        if (!isObj(model) || !isObj(model.area) || !isObj(model.conclusion)) return "";
+        var R = SUM_TEXT.rows;
+        var st = isObj(model.status) ? model.status : {};
+        var head = '<div class="bv-sum-head"><span class="bv-sum-title">' + escapeHtml(SUM_TEXT.title) + '</span>' +
+            (st.text ? chipHtml(st.kind || "none", st.text) : "") +
+            (st.at ? '<span class="bv-meta">' + escapeHtml(fmtTime(st.at)) + '</span>' : "") + '</div>';
+        var a = model.area;
+        var s = areaShown(a);
+        var rows = [sumRow(R.area, (s.label ? escapeHtml(s.label) + ' ' : "") + chipHtml(CERTAINTY_KINDS[s.certainty] || "none", s.certainty) +
+            (isObj(a.alt) ? ' <span class="bv-sum-alt">' + escapeHtml(fill(SUM_TEXT.altArea, { label: a.alt.label })) + '</span>' : ""))];
+        var c = model.conclusion;
+        rows.push(sumRow(R.conclusion, escapeHtml(c.text) +
+            (SUM_TEXT.sources[c.source] ? ' <span class="bv-src">' + escapeHtml(SUM_TEXT.sources[c.source]) + '</span>' : "") +
+            (c.progress ? ' ' + chipHtml("running", c.progress) : "")));
+        var t = model.target;
+        if (isObj(t)) {
+            var tp = [t.name];
+            if (t.symptom) tp.push(fill(SUM_TEXT.symptom, { text: t.symptom }));
+            if (t.at) tp.push(fill(SUM_TEXT.at, { at: t.at }));
+            rows.push(sumRow(R.target, escapeHtml(tp.filter(Boolean).join(" · "))));
+        }
+        var scope = asList(model.scope);
+        if (scope.length) rows.push(sumRow(R.scope, escapeHtml(scope.join(" · "))));
+        var acts = asList(model.actions);
+        if (acts.length) {
+            rows.push(sumRow(R.actions, acts.map(function (x) { return '<div>' + escapeHtml(x) + '</div>'; }).join("") +
+                '<div class="bv-gated">' + escapeHtml(HUMAN_GATED_NOTE) + '</div>'));
+        }
+        var must = asList(model.mustSee).filter(isObj);
+        if (must.length) {
+            rows.push(sumRow(R.mustSee, '<ul class="bv-sum-must">' + must.map(function (m) {
+                return '<li class="bv-sum-must-item bv-sum-must-item--' + escapeHtml(m.kind || "warn") + '">' + escapeHtml(m.text) + '</li>';
+            }).join("") + '</ul>'));
+        }
+        var hs = uiOf(extra).handoff;
+        return '<section class="bv-sum" data-bv-summary="1">' + head + '<div class="bv-sum-rows">' + rows.join("") + '</div>' +
+            '<div class="bv-sum-actions" data-bv-summary-actions>' + (isObj(handoff) ? handoffButtonsHtml(handoff) : "") +
+            (tiers ? tierButtonsHtml() : "") + '</div>' +
+            (isObj(hs) && hs.msg ? '<div class="bv-note">' + escapeHtml(hs.msg) + '</div>' : "") + '</section>';
+    }
+
+    // (plans/199 W1 교정) 대기열 — `extra.queue(view)`가 대기 칩을 주면(`queueOf`) 카드 상태 칩과 꼭 확인 진행 줄을
+    // 머리 칩과 같은 말로 맞춘다. 대기 정보가 없으면 모델 그대로(종전).
+    function queuedModel(model, qd) {
+        if (!qd) return model;
+        model.status.kind = "hold";
+        model.status.text = qd.chip;
+        model.mustSee = model.mustSee.map(function (m) {
+            return m.kind === "run" ? { kind: "run", text: SUM_TEXT.mustQueued } : m;
+        });
+        return model;
+    }
+
+    // 머리 바로 아래 카드 — `extra.summaryView`가 참이고 요약할 결과가 있는 상태일 때만(아니면 빈 문자열 = 종전 그대로)
+    // (plans/199 W3) `tiers` = 이 카드 아래에 상세형 ②·③이 있다(플레이북 상세형) — 단 이동 버튼도 처리기 있는 렌더에서만
+    function summaryBlock(view, extra, tiers) {
+        if (!extra || !extra.summaryView || NO_SUMMARY_STATUSES[(view && view.status) || "none"]) return "";
+        var qd = queueOf(view, extra);
+        var model = queuedModel(summaryModel(view), qd);
+        // (plans/199 W2) 전달문 버튼은 클릭 처리기가 붙은 attach 렌더(`extra.handoff`)에서만 — 직접 렌더 경로는 빈 자리.
+        // 대기 중(`qd`)에도 뺀다 — 아직 전달할 결과가 없다(대기가 아닌 진행 중은 그대로 · §3.4)
+        return summaryCardHtml(model, extra, extra.handoff && !qd ? handoffOf(view, model) : null, !!tiers && !!extra.handoff);
+    }
+
     // 요약형 — 알람 카드·관제 드로어(§5.6 ①)
     function renderPlaybookSummary(view, ctx, extra) {
         var syn = synthesisOf(ctx.pb);
@@ -537,10 +1055,13 @@
             lines.push('<div class="bv-pb-line"><span class="bv-pb-key">' + escapeHtml(PB_TEXT.followupHead) + '</span> ' +
                 escapeHtml(textOf(fups[0])) + '</div>');
         }
-        parts.push('<div class="bv-pb-block"><div class="bv-label">' + escapeHtml(PB_TEXT.summaryHead) + '</div>' +
-            (lines.length ? lines.join("")
-                : '<div class="bv-note">' + escapeHtml(ctx.partial ? PB_TEXT.synthesisPending : PB_TEXT.noHypothesis) + '</div>') +
-            '</div>');
+        // (plans/199 W1) 「한눈에 보기」 카드가 켜져 있으면 머리 아래 카드가 이 「종합」 칸을 대신한다
+        if (!extra.summaryView) {
+            parts.push('<div class="bv-pb-block"><div class="bv-label">' + escapeHtml(PB_TEXT.summaryHead) + '</div>' +
+                (lines.length ? lines.join("")
+                    : '<div class="bv-note">' + escapeHtml(ctx.partial ? PB_TEXT.synthesisPending : PB_TEXT.noHypothesis) + '</div>') +
+                '</div>');
+        }
         var kes = knownErrorsOf(ctx.b).filter(function (ke) { return ke.result === "match" || ke.result === "candidate"; });
         if (kes.length) {
             parts.push('<div class="bv-pb-block"><div class="bv-label">' + escapeHtml(PB_TEXT.knownHead) + '</div>' +
@@ -561,12 +1082,14 @@
         return parts.join("");
     }
 
-    // 표 셀 1칸
-    function cellHtml(col, value) {
+    // 표 셀 1칸 — terms(plans/199 W5b · summaryView 켜짐)면 지표·종류 등 원문 값을 문구로
+    function cellHtml(col, value, terms) {
         if (Array.isArray(value) && value.length > 1 && value.every(function (v) { return num(v) !== null; })) {
             return sparkline(value);
         }
         if (value === null || value === undefined || value === "") return "—";
+        var term = terms ? termValue(col, value) : null;
+        if (term) return escapeHtml(term);
         if (typeof value === "boolean") return value ? "예" : "아니오";
         var n = num(value);
         if ((col === "t_offset_min" || col === "minutes_before_alarm") && n !== null) {
@@ -632,7 +1155,7 @@
         }).join("") + '</div>';
     }
 
-    function renderPbTable(table) {
+    function renderPbTable(table, terms) {
         if (!isObj(table) || !Array.isArray(table.columns) || !asList(table.rows).length) return "";
         var cols = table.columns.map(String);
         var withBar = cols.indexOf("response_time_ms") >= 0 && BAR_PARTS.some(function (p) {
@@ -645,11 +1168,11 @@
             if (!Array.isArray(row)) return "";
             var bad = (vIdx >= 0 && row[vIdx] === "degraded") || (aIdx >= 0 && row[aIdx] === true);
             return '<tr' + (bad ? ' class="bv-row--bad"' : "") + '>' +
-                cols.map(function (c, i) { return '<td>' + cellHtml(c, row[i]) + '</td>'; }).join("") +
+                cols.map(function (c, i) { return '<td>' + cellHtml(c, row[i], terms) + '</td>'; }).join("") +
                 (withBar ? '<td class="bv-bar-cell">' + stackedBar(cols, row) + '</td>' : "") + '</tr>';
         }).join("");
         return '<div class="bv-table-wrap"><table class="bv-cross-table bv-pb-table"><thead><tr>' +
-            cols.map(function (c) { return '<th>' + escapeHtml(COLUMN_LABELS[c] || c) + '</th>'; }).join("") +
+            cols.map(function (c) { return '<th>' + escapeHtml(terms ? termColumn(c) : COLUMN_LABELS[c] || c) + '</th>'; }).join("") +
             (withBar ? '<th>구성</th>' : "") + '</tr></thead><tbody>' + body + '</tbody></table></div>' +
             (withBar ? barLegend() : "");
     }
@@ -666,7 +1189,7 @@
         return "";
     }
 
-    function stepSectionHtml(sec, readings) {
+    function stepSectionHtml(sec, readings, terms) {
         var c = stepChip(sec, readings);
         var open = c.kind === "bad" || c.kind === "missing";
         var head = '<span class="bv-mono">' + escapeHtml(sec.step || "?") + '</span> ' +
@@ -685,7 +1208,7 @@
             body.push('<div class="bv-reason' + (sec.status === "missing" ? " bv-reason--fail" : "") + '">' +
                 escapeHtml(sec.status === "ok" ? PB_TEXT.partialReason : PB_TEXT.reason) + ': ' + escapeHtml(sec.reason) + '</div>');
         }
-        body.push(renderPbTable(sec.table));   // 근거(표)를 소견보다 먼저
+        body.push(renderPbTable(sec.table, terms));   // 근거(표)를 소견보다 먼저
         body.push(opinionHtml(sec));
         var tools = asList(sec.tools);
         if (tools.length) {
@@ -738,11 +1261,14 @@
             '" aria-valuenow="' + prog.done + '"><span style="width:' + pct.toFixed(1) + '%"></span></div>';
     }
 
-    function synthesisHtml(ctx) {
+    // (plans/199 W3) noHypo = 가설 표는 ② 근거 요약이 맡는다 — 대응·추가 확인·AI 소견만(없으면 블록 없음)
+    function synthesisHtml(ctx, noHypo) {
         var syn = synthesisOf(ctx.pb);
         var hyps = asList(syn.hypotheses).filter(isObj);
         var parts = [];
-        if (hyps.length) {
+        if (noHypo) {
+            // 가설 표·「가설 없음」 안내는 ②의 가설 표 자리(hypoGridHtml)
+        } else if (hyps.length) {
             parts.push('<table class="bv-cross-table bv-hypo-table"><thead><tr><th>순위</th><th>가설</th><th>상태</th><th>' +
                 escapeHtml(PB_TEXT.evidence) + '</th></tr></thead><tbody>' + hyps.map(function (h) {
                     var links = asList(h.evidence_steps).map(function (s) {
@@ -778,6 +1304,7 @@
         } else if (syn.narrative_dropped_reason) {
             parts.push('<div class="bv-note bv-note--warn">' + escapeHtml(fill(PB_TEXT.narrativeDropped, { reason: syn.narrative_dropped_reason })) + '</div>');
         }
+        if (noHypo && !parts.length) return "";
         return '<div class="bv-pb-block bv-pb-synthesis"><div class="bv-label">' + escapeHtml(PB_TEXT.summaryHead) + '</div>' + parts.join("") + '</div>';
     }
 
@@ -1120,6 +1647,156 @@
         return items.map(function (x) { return '<div>' + escapeHtml(x) + '</div>'; }).join("");
     }
 
+    // ── plans/199 W3 · D-351 ①: 상세형 3단 — ① 한눈에 보기(카드) → ② 근거 요약(접힘) → ③ 상세(접힘) ────────────
+    // `extra.summaryView`가 참일 때만 상세형을 이 배치로 그린다(거짓이면 종전 renderPlaybookDetail 그대로 · 비트 동일).
+    // 블록은 지우지 않고 ②·③으로 내려 접는다 — 같은 결론은 카드 한 곳만 펼친 채 보인다(§3.1 끝). 펼침은 누구나 하고,
+    // 관리자 추가 항목(가설 코드)은 서버가 운영자 뷰를 보냈을 때만 그린다(`isRawView` — 응답 모양 · D-325 ③ 개정 없음).
+    // 펼침 기억은 attach가 맡는다(저장값 → `extra.expand` → 첫 `open`) — 렌더 함수는 순수하다(§3.7).
+    var EV_TEXT = {
+        evidenceHead: "근거 요약",
+        detailHead: "상세",
+        evidenceButton: "근거 보기 ▾",
+        detailButton: "자세히 ▾",
+        timelineHead: "타임라인 — 알람 시각 기준",
+        timelineTitle: "알람 시각 기준 사건 {n}개",
+        timelineAt: "알람 시각 {at}",
+        lanes: { infra: "인프라", apm: "APM" },
+        alarmMark: "알람",
+        minutes: "{m}분",
+        hypoColumns: [["지지", "ok"], ["판단 보류", "hold"], ["반박", "bad"]],
+        mustHead: "꼭 확인 — 담당자용",
+        mustEngine: "엔진 간 판단 불일치 — 플레이북 {pb} · 심층 조사 {hg}",
+        mustDeep: "심층 조사 {status}",
+        mustRunbook: "런북 검토 기한 경과",
+        reviewed: " — 마지막 검토 {at}",
+        limitsHead: "한계",
+    };
+    var EXPAND_KEYS = { evidence: true, detail: true };   // 펼침을 기억하는 단 — localStorage `bv.expand.<키>`
+    var EXPAND_PREFIX = "bv.expand.";
+
+    // 펼침 기억 읽기·쓰기 — 사람별 편의일 뿐 노출 범위와 무관하다. 사생활 모드·차단으로 던지면 기본 접힘(§3.7).
+    function readExpand(key) {
+        try {
+            var s = root.localStorage;
+            return !!s && s.getItem(EXPAND_PREFIX + key) === "1";
+        } catch (_) { return false; }
+    }
+
+    function writeExpand(key, on) {
+        try {
+            var s = root.localStorage;
+            if (s) s.setItem(EXPAND_PREFIX + key, on ? "1" : "0");
+        } catch (_) { /* 저장 불가 — 이 패널 안에서만 유지 */ }
+    }
+
+    // ── plans/199 W4 · D-351 ⑤: [서술 보기] — 4줄 요약 먼저 · 원문은 다시 접어 안전 렌더 ─────────────────
+    // 원문(HolmesGPT 마크다운)은 줄마다 **escapeHtml 먼저** 하고 그 결과에 화이트리스트 변환만 한다 — 제목(#~####) →
+    // 굵은 소제목 · 목록(-·*·1.) · **굵게** · `인라인 코드` · 파이프 표(둘째 줄이 구분 행일 때). 링크·이미지·원시 HTML·
+    // 자동 링크는 변환하지 않는다(escape된 글자 그대로). 만드는 태그·class는 고정 문자열이고 속성값에 원문을 넣지 않는다.
+    // 답변 형식을 프롬프트로 고정하지 않으므로 형식이 어긋나도 글자는 그대로 남는다(생략 표지 줄 포함).
+    var NARR_TEXT = {
+        rows: { cause: "원인", basis: "근거", action: "대응", limits: "한계" },
+        raw: "원문",
+        toc: "목차",
+        noRaw: "이 기록에는 답변 원문이 실려 있지 않습니다.",
+        // (plans/199 W3) 종합 블록은 ③ 상세 안으로 옮겼다 — 단 이름을 함께 가리킨다
+        seeSynthesis: "서술은 「" + EV_TEXT.detailHead + "」의 「{head}」 AI 소견을 보세요(같은 문장).",
+    };
+    var MD_TOC_MIN = 3;   // 제목이 이 수 이상이면 맨 위에 소제목 목차(텍스트만 — 한 화면 여러 패널이라 앵커 id 없음)
+    var MD_HEAD = /^(#{1,4})\s+(.*)$/;
+    var MD_ITEM = /^\s*([-*]|\d+\.)\s+(.*)$/;
+    var MD_ROW = /^\s*\|/;
+    var MD_SEP = /^\|?(\s*:?-{3,}:?\s*\|)*\s*:?-{3,}:?\s*\|?$/;
+
+    // esc = escape가 끝난 한 줄. 백틱 짝 안은 코드(굵게 변환 안 함) · 짝 없는 백틱·별표는 글자 그대로.
+    function mdInline(esc) {
+        var segs = esc.split("`");
+        return segs.map(function (seg, i) {
+            if (i % 2 === 1 && i < segs.length - 1) return "<code>" + seg + "</code>";
+            return (i % 2 === 1 ? "`" : "") + mdBold(seg);
+        }).join("");
+    }
+
+    // `**` 짝을 앞에서부터 맞춘다(정규식 역추적 없이 선형). 안쪽 첫·끝 글자가 공백·별표면 짝으로 보지 않는다 —
+    // 마스킹 표지(`password=***`)를 바꾸지 않는다.
+    function mdBold(s) {
+        var p = s.split("**"), out = p[0];
+        for (var i = 1; i < p.length; i++) {
+            if (i + 1 < p.length && /^[^\s*]/.test(p[i]) && /[^\s*]$/.test(p[i])) out += "<strong>" + p[i] + "</strong>" + p[++i];
+            else out += "**" + p[i];
+        }
+        return out;
+    }
+
+    function mdRow(esc, tag) {
+        return "<tr>" + esc.trim().replace(/^\||\|$/g, "").split("|").map(function (c) {
+            return "<" + tag + ">" + mdInline(c.trim()) + "</" + tag + ">";
+        }).join("") + "</tr>";
+    }
+
+    function renderMarkdownSafe(text) {
+        var lines = String(text === null || text === undefined ? "" : text).split(/\r?\n/).map(escapeHtml);
+        var out = [], heads = [], list = "", i = 0, m;
+        function closeList() { if (list) { out.push("</" + list + ">"); list = ""; } }
+        while (i < lines.length) {
+            var ln = lines[i];
+            if (MD_ROW.test(ln) && i + 1 < lines.length && MD_SEP.test(lines[i + 1].trim())) {
+                closeList();
+                var rows = [];
+                for (i += 2; i < lines.length && MD_ROW.test(lines[i]); i++) rows.push(mdRow(lines[i], "td"));
+                out.push('<div class="bv-md-tbl"><table><thead>' + mdRow(ln, "th") + "</thead><tbody>" + rows.join("") + "</tbody></table></div>");
+                continue;
+            }
+            if ((m = MD_ITEM.exec(ln))) {
+                var tag = /\d/.test(m[1]) ? "ol" : "ul";
+                if (list !== tag) { closeList(); out.push("<" + tag + ">"); list = tag; }
+                // 번호 목록은 원문 번호를 글자로 둔다(빈 줄·하위 목록으로 끊겨도 번호가 다시 1부터 시작하지 않게)
+                out.push("<li>" + (tag === "ol" ? m[1] + " " : "") + mdInline(m[2]) + "</li>");
+            } else {
+                closeList();
+                if ((m = MD_HEAD.exec(ln))) {
+                    heads.push(mdInline(m[2]));
+                    out.push('<div class="bv-md-h">' + heads[heads.length - 1] + "</div>");
+                } else if (ln.trim()) {
+                    out.push("<div>" + mdInline(ln) + "</div>");
+                }
+            }
+            i++;
+        }
+        closeList();
+        if (!out.length) return "";
+        var toc = heads.length < MD_TOC_MIN ? "" : '<div class="bv-md-toc"><div class="bv-label">' + escapeHtml(NARR_TEXT.toc) +
+            "</div><ul>" + heads.map(function (h) { return "<li>" + h + "</li>"; }).join("") + "</ul></div>";
+        return '<div class="bv-md">' + toc + out.join("") + "</div>";
+    }
+
+    // HolmesGPT 칸 [서술 보기](summaryView 켜짐) — 원인·근거·대응·한계 4줄(없는 줄 생략 · 대응은 「권고 없음」 표지 제외)
+    // 다음에 원문을 다시 접어 둔다. 원문이 없으면 첫 줄 summary + 중립 안내(이유는 단정하지 않는다 — 저장 상한·옛 레코드).
+    function deepNarrativeHtml(dd, hgSide) {
+        var R = NARR_TEXT.rows;
+        var rec = isObj(dd.recommendation) ? dd.recommendation : {};
+        var rows = [
+            [R.cause, [textOf(dd.cause)]],
+            [R.basis, asList(hgSide.basis).map(textOf)],
+            [R.action, asList(rec.items).map(textOf).filter(isAction)],
+            [R.limits, (Array.isArray(dd.limitations) ? dd.limitations : [dd.limitations]).map(textOf)],
+        ].map(function (r) {
+            var t = r[1].filter(Boolean).join(" · ");
+            return t ? '<div class="bv-item"><div class="bv-label">' + escapeHtml(r[0]) + '</div><div class="bv-text">' + mdInline(escapeHtml(t)) + '</div></div>' : "";
+        }).join("");
+        var raw = textOf(dd.narrative);
+        var short = textOf(dd.summary);
+        var ai = '<span class="bv-ai">' + escapeHtml(PB_TEXT.aiBadge) + '</span>';
+        var body = raw
+            ? '<details class="bv-md-raw" data-bv-key="narr-hg-raw"><summary>' + escapeHtml(NARR_TEXT.raw) + ' ' + ai + '</summary>' +
+                renderMarkdownSafe(raw) + '</details>'
+            : (short ? '<div class="bv-md-short">' + ai + renderMarkdownSafe(short) + '</div>' : "") +
+                '<div class="bv-meta">' + escapeHtml(NARR_TEXT.noRaw) + '</div>';
+        if (!rows && !raw && !short) return "";
+        return '<details class="bv-engine-narr" data-bv-key="narr-hg"><summary>' + escapeHtml(PB_TEXT.engineNarrative) + '</summary>' +
+            (rows ? '<div class="bv-md-sum">' + rows + '</div>' : "") + body + '</details>';
+    }
+
     // 엔진 비교(§5.0.1 6) — 같은 틀(1순위 원인 · 근거 · 대응 · 미결)을 나란히. 서술은 그 아래 접힘.
     function engineCompareHtml(view, ctx, extra) {
         var b = ctx.b;
@@ -1130,11 +1807,12 @@
         var hyps = asList(syn.hypotheses).filter(isObj);
         var pbSide = isObj(ea.playbook) ? ea.playbook : {};
         var hgSide = isObj(ea.holmesgpt) ? ea.holmesgpt : {};
+        var terms = !!extra.summaryView;   // (plans/199 W5b) 켜짐이면 계층 enum → 원인 영역 문구(LAYER_LABELS)
         var pbCol = {
             cause: listCell(hyps.length ? [String(hyps[0].title || "") + (hyps[0].status_label ? " [" + hyps[0].status_label + "]" : "")] : []),
             basis: listCell(asList(pbSide.basis).map(textOf).concat(
                 hyps.length && asList(hyps[0].evidence_steps).length ? [PB_TEXT.evidence + " " + asList(hyps[0].evidence_steps).join(", ")] : [])
-                .concat(pbSide.layer ? [PB_TEXT.engineLayers + " " + pbSide.layer] : [])),
+                .concat(pbSide.layer ? [PB_TEXT.engineLayers + " " + (terms ? layerLabel(String(pbSide.layer)) : pbSide.layer)] : [])),
             action: listCell(asList(syn.actions).filter(isObj).slice(0, 3).map(function (a) { return String(a.text || ""); })),
             open: listCell((syn.top_inconclusive ? ["1순위 가설 판단 보류"] : []).concat(asList(syn.followups).map(textOf))),
         };
@@ -1152,13 +1830,16 @@
             var hcol = {
                 cause: listCell([textOf(dd.cause) || textOf(asList(dd.root_cause_hypotheses)[0])]),
                 basis: listCell(asList(hgSide.basis).map(textOf)
-                    .concat(asList(hgSide.layers).length ? [PB_TEXT.engineLayers + " " + asList(hgSide.layers).join(", ")] : [])
+                    .concat(asList(hgSide.layers).length ? [PB_TEXT.engineLayers + " " + (terms ? asList(hgSide.layers).map(function (l) {
+                        return layerLabel(String(l));
+                    }) : asList(hgSide.layers)).join(", ")] : [])
                     .concat(tc ? [fill(PB_TEXT.engineToolCalls, { n: tc })] : [])),
                 action: listCell(asList(rec.items).slice(0, 3).map(textOf)),
                 open: listCell(Array.isArray(dd.limitations) ? dd.limitations.map(textOf) : [textOf(dd.limitations)]),
             };
             // narrative = 심층 답변 원문(D-325 부기) · 옛 레코드는 첫 줄 summary만 있다
-            hgCol = engineColumn(dd.label || PB_TEXT.engineHolmes, hcol, textOf(dd.narrative) || dd.summary, true);
+            hgCol = engineColumn(dd.label || PB_TEXT.engineHolmes, hcol, textOf(dd.narrative) || dd.summary, true,
+                extra.summaryView ? deepNarrativeHtml(dd, hgSide) : undefined);
         }
         var head = '<div class="bv-engine-head"><span class="bv-label">' + escapeHtml(PB_TEXT.engineHead) + '</span>';
         if (AGREEMENT[ea.result]) head += chipHtml(AGREEMENT[ea.result][0], ea.label || AGREEMENT[ea.result][1]);
@@ -1167,19 +1848,23 @@
         if (ea.badge) head += chipHtml("warn", ea.badge);
         head += '</div>';
         var notes = [ea.note, ea.reason].filter(Boolean).map(function (n) { return '<div class="bv-note">' + escapeHtml(n) + '</div>'; }).join("");
+        // (plans/199 W4) 플레이북 칸 서술은 종합 블록 AI 소견과 같은 문장이라 summaryView 켜짐이면 원문 대신 안내 1줄
+        var pbNarr = !extra.summaryView ? undefined : syn.narrative
+            ? '<div class="bv-meta">' + escapeHtml(fill(NARR_TEXT.seeSynthesis, { head: PB_TEXT.summaryHead })) + '</div>' : "";
         return '<div class="bv-pb-block bv-engine">' + head + notes +
-            '<div class="bv-engine-grid">' + engineColumn(PB_TEXT.enginePlaybook, pbCol, syn.narrative, false) + hgCol + '</div>' +
+            '<div class="bv-engine-grid">' + engineColumn(PB_TEXT.enginePlaybook, pbCol, syn.narrative, false, pbNarr) + hgCol + '</div>' +
             (running ? "" : engineChoiceHtml(view, extra)) + '</div>';
     }
 
-    function engineColumn(title, col, narrative, isHypo) {
+    // narrHtml(plans/199 W4 · summaryView 켜짐에서만 문자열)이 오면 종전 [서술 보기] 대신 그것을 쓴다 — 없으면 종전 그대로.
+    function engineColumn(title, col, narrative, isHypo, narrHtml) {
         var R = PB_TEXT.engineRows;
         return '<div class="bv-engine-col"><div class="bv-engine-title">' + escapeHtml(title) +
             (isHypo ? ' <span class="bv-badge bv-badge--hypo">가설</span>' : "") + '</div>' +
             ["cause", "basis", "action", "open"].map(function (k) {
                 return '<div class="bv-item"><div class="bv-label">' + escapeHtml(R[k]) + '</div><div class="bv-text">' + col[k] + '</div></div>';
             }).join("") +
-            (narrative ? '<details class="bv-engine-narr" data-bv-key="narr-' + (isHypo ? "hg" : "pb") + '"><summary>' +
+            (narrHtml !== undefined ? narrHtml : narrative ? '<details class="bv-engine-narr" data-bv-key="narr-' + (isHypo ? "hg" : "pb") + '"><summary>' +
                 escapeHtml(PB_TEXT.engineNarrative) + '</summary><div class="bv-opinion"><span class="bv-ai">' + escapeHtml(PB_TEXT.aiBadge) +
                 '</span> ' + escapeHtml(narrative) + '</div></details>' : "") + '</div>';
     }
@@ -1200,10 +1885,253 @@
             '<div class="bv-meta">' + escapeHtml(PB_TEXT.choiceNote) + '</div>' + msg + '</div>';
     }
 
+    // 단계 섹션(아코디언 · 이상 단계 기본 펼침) + 진행 중 스켈레톤
+    // terms = 용어 정리(plans/199 W5b · summaryView 켜짐의 ③ 상세에서만 참)
+    function stepsDetailHtml(ctx, terms) {
+        var readings = readingsOf(ctx.pb);
+        return '<div class="bv-pb-block"><div class="bv-label">' + escapeHtml(PB_TEXT.stepsDetailHead) + '</div>' +
+            stepSections(ctx.pb).map(function (sec) { return stepSectionHtml(sec, readings, terms); }).join("") + skeletonSteps(ctx) + '</div>';
+    }
+
+    // 실행 메모(없으면 빈 문자열)
+    function notesHtml(ctx) {
+        var notes = asList(ctx.pb.notes);
+        if (!notes.length) return "";
+        return '<div class="bv-pb-block"><div class="bv-label">' + escapeHtml(PB_TEXT.notesHead) + '</div>' +
+            notes.map(function (n) { return '<div class="bv-meta">' + escapeHtml(textOf(n)) + '</div>'; }).join("") + '</div>';
+    }
+
+    // ── plans/199 W3: ② 근거 요약 · ③ 상세 ───────────────────────────────────────────────────
+
+    // S번호 자연 정렬 — 숫자 부분 → 접미사(`S0` < `S0r` < `S1` < `S2` < `S2.pool` < `S10`). 번호 없는 단계는 뒤(원래 순서).
+    var STEP_NO = /^S?(\d+)(.*)$/i;
+    function stepOrder(a, b) {
+        var ma = STEP_NO.exec(String(a.step || ""));
+        var mb = STEP_NO.exec(String(b.step || ""));
+        if (!ma || !mb) return (ma ? 0 : 1) - (mb ? 0 : 1);
+        return Number(ma[1]) - Number(mb[1]) || (ma[2] < mb[2] ? -1 : ma[2] > mb[2] ? 1 : 0);
+    }
+
+    // (a) 단계 판정 스트립(머리 「단계별 판정」 · W5b) — S번호 순 · 사람 말 라벨(단계 이름 + 판정 칩 문구) · 번호는 꼬리 작은 글씨 ·
+    // 누르면 ③을 열고 그 단계(`data-bv-step`)로 간다(attach `goto-step`).
+    function stepStripHtml(ctx) {
+        var readings = readingsOf(ctx.pb);
+        var secs = stepSections(ctx.pb);
+        var chips = secs.slice().sort(stepOrder).map(function (sec) {
+            var c = stepChip(sec, readings);
+            return '<button type="button" class="bv-step-chip bv-step-chip--' + c.kind + ' bv-strip-chip" data-bv-action="goto-step"' +
+                ' data-step="' + escapeHtml(sec.step || "") + '">' + escapeHtml([sec.title || sec.action || "", c.text].filter(Boolean).join(" ")) +
+                ' <span class="bv-strip-no">' + escapeHtml(sec.step || "?") + '</span></button>';
+        });
+        return '<div class="bv-pb-block"><div class="bv-label">' + escapeHtml(TERM_TEXT.stripHead) + '</div>' +
+            '<div class="bv-steps bv-strip">' + chips.join("") + remainingChips(ctx, secs.length) + '</div></div>';
+    }
+
+    // (b) 미니 타임라인 재료 — 단계 표의 알람 기준 분(`t_offset_min` · `minutes_before_alarm`)만 쓴다(구조 필드만 ·
+    // 서술 줄은 해석하지 않는다). 레인은 행의 kind·source에 apm·jennifer가 있으면 APM, 그 열이 비면 단계가 `apm.*`인지로 정한다.
+    var TL_TEXT_COLS = ["detail", "description", "alarm_name", "name"];
+    function timelinePoints(ctx) {
+        var pts = [];
+        stepSections(ctx.pb).forEach(function (sec) {
+            var t = sec.table;
+            if (!isObj(t) || !Array.isArray(t.columns)) return;
+            var cols = t.columns.map(String);
+            var oi = cols.indexOf("t_offset_min");
+            var bi = cols.indexOf("minutes_before_alarm");
+            if (oi < 0 && bi < 0) return;
+            var ti = TL_TEXT_COLS.map(function (c) { return cols.indexOf(c); }).filter(function (i) { return i >= 0; })[0];
+            asList(t.rows).forEach(function (row) {
+                if (isObj(row)) row = cols.map(function (c) { return row[c]; });
+                if (!Array.isArray(row)) return;
+                var m = oi >= 0 ? num(row[oi]) : null;
+                if (m === null && bi >= 0 && num(row[bi]) !== null) m = -num(row[bi]);
+                if (m === null) return;
+                var tag = ["kind", "source"].map(function (c) {
+                    var i = cols.indexOf(c);
+                    return i >= 0 ? textOf(row[i]) : "";
+                }).join(" ");
+                var apm = tag.trim() ? /apm|jennifer/i.test(tag) : /^apm\./.test(String(sec.action || ""));
+                pts.push({ lane: apm ? "apm" : "infra", m: m, step: String(sec.step || ""),
+                    text: ti === undefined ? "" : textOf(row[ti]) });
+            });
+        });
+        return pts;
+    }
+
+    function offsetText(m) {
+        return m === 0 ? "알람 시각" : "알람 " + fmtNum(Math.abs(m)) + "분 " + (m < 0 ? "전" : "후");
+    }
+
+    // 인라인 SVG(외부 라이브러리 없음 · 색은 CSS 테마 토큰). 속성값은 숫자·고정 class만 — 사용자 텍스트는
+    // 이스케이프한 `<text>`·`<title>` 안에만 둔다. 점이 2개 미만이면 그리지 않는다.
+    var TL = { w: 600, h: 66, left: 52, right: 14, axis: 62, lanes: { infra: 20, apm: 42 } };
+    function timelineHtml(ctx) {
+        var pts = timelinePoints(ctx);
+        if (pts.length < 2) return "";
+        var lo = 0, hi = 0;
+        pts.forEach(function (p) { lo = Math.min(lo, p.m); hi = Math.max(hi, p.m); });
+        var dLo = lo === hi ? -1 : lo, dHi = lo === hi ? 1 : hi;
+        function x(m) { return (TL.left + ((m - dLo) / (dHi - dLo)) * (TL.w - TL.left - TL.right)).toFixed(1); }
+        var parts = ['<title>' + escapeHtml(fill(EV_TEXT.timelineTitle, { n: pts.length })) + '</title>'];
+        Object.keys(TL.lanes).forEach(function (lane) {
+            var y = TL.lanes[lane];
+            parts.push('<line class="bv-tl-lane" x1="' + TL.left + '" y1="' + y + '" x2="' + (TL.w - TL.right) + '" y2="' + y + '"></line>' +
+                '<text class="bv-tl-label" x="4" y="' + (y + 4) + '">' + escapeHtml(EV_TEXT.lanes[lane]) + '</text>');
+        });
+        var x0 = x(0);
+        parts.push('<line class="bv-tl-zero" x1="' + x0 + '" y1="8" x2="' + x0 + '" y2="' + (TL.axis - 10) + '"></line>' +
+            '<text class="bv-tl-tick" x="' + x0 + '" y="' + TL.axis + '" text-anchor="middle">' + escapeHtml(EV_TEXT.alarmMark) + '</text>');
+        [[lo, "start"], [hi, "end"]].forEach(function (t) {
+            if (t[0] === 0) return;
+            parts.push('<text class="bv-tl-tick" x="' + x(t[0]) + '" y="' + TL.axis + '" text-anchor="' + t[1] + '">' +
+                escapeHtml(fill(EV_TEXT.minutes, { m: (t[0] > 0 ? "+" : "-") + fmtNum(Math.abs(t[0])) })) + '</text>');
+        });
+        pts.forEach(function (p) {
+            parts.push('<circle class="bv-tl-dot bv-tl-dot--' + p.lane + '" cx="' + x(p.m) + '" cy="' + TL.lanes[p.lane] + '" r="4"><title>' +
+                escapeHtml([offsetText(p.m), p.step, p.text].filter(Boolean).join(" · ")) + '</title></circle>');
+        });
+        var win = isObj(ctx.pb.windows) ? ctx.pb.windows : {};
+        return '<div class="bv-pb-block"><div class="bv-label">' + escapeHtml(EV_TEXT.timelineHead) + '</div>' +
+            '<svg class="bv-tl" viewBox="0 0 ' + TL.w + ' ' + TL.h + '" role="img">' + parts.join("") + '</svg>' +
+            (win.alarm_time ? '<div class="bv-meta">' + escapeHtml(fill(EV_TEXT.timelineAt, { at: fmtWall(win.alarm_time) })) + '</div>' : "") +
+            '</div>';
+    }
+
+    // (c) 가설 표 — 지지·판단 보류·반박 3칸(칸 안은 순위 순). 상태를 모르는 가설은 「판단 보류」 칸에 원 상태 배지와 함께
+    // (단정 금지 · 침묵 금지). 가설 코드(`rule_id`)는 운영자 뷰에만. 198 I-3(가설 신뢰도)이 오면 이 자리
+    // (`data-bv-slot="hypothesis"`)를 그 카드로 바꾼다 — 점수·신뢰도는 여기서 만들지 않는다(D-351 ⑧).
+    var HYPO_STATUS_LABELS = { supported: "지지", inconclusive: "판단 보류", refuted: "반박" };
+    function hypoLabel(h) {
+        return String(h.status_label || HYPO_STATUS_LABELS[h.status] || "");
+    }
+
+    function hypoItemHtml(h, raw) {
+        var known = Object.prototype.hasOwnProperty.call(HYPO_KINDS, hypoLabel(h));
+        var links = asList(h.evidence_steps).map(function (s) {
+            return '<a href="#" class="bv-step-link" data-bv-action="goto-step" data-step="' + escapeHtml(s) + '">' + escapeHtml(s) + '</a>';
+        }).join(" ");
+        return '<li class="bv-ev-hitem"><span class="bv-mono">' + escapeHtml(h.rank || "") + '</span> ' + escapeHtml(h.title || "") +
+            (known ? "" : ' ' + hypoBadge(h)) +
+            (raw && h.rule_id ? ' <span class="bv-meta bv-mono bv-ev-code">' + escapeHtml(h.rule_id) + '</span>' : "") +
+            (links ? '<div class="bv-meta">' + escapeHtml(PB_TEXT.evidence) + ' ' + links + '</div>' : "") + '</li>';
+    }
+
+    function hypoGridHtml(view, ctx) {
+        var hyps = asList(synthesisOf(ctx.pb).hypotheses).filter(isObj);
+        var raw = isRawView(view);
+        var hold = EV_TEXT.hypoColumns[1][0];
+        var body = !hyps.length
+            ? '<div class="bv-note">' + escapeHtml(ctx.partial ? PB_TEXT.synthesisPending : PB_TEXT.noHypothesis) + '</div>'
+            : '<div class="bv-ev-hypo">' + EV_TEXT.hypoColumns.map(function (col) {
+                var items = hyps.filter(function (h) {
+                    var label = hypoLabel(h);
+                    return (Object.prototype.hasOwnProperty.call(HYPO_KINDS, label) ? label : hold) === col[0];
+                });
+                return '<div class="bv-ev-hcol"><div class="bv-ev-hcol-head"><span class="bv-hypo bv-hypo--' + col[1] + '">' +
+                    escapeHtml(col[0]) + '</span> <span class="bv-meta">' + items.length + '</span></div>' +
+                    (items.length ? '<ol class="bv-ev-hlist">' + items.map(function (h) { return hypoItemHtml(h, raw); }).join("") + '</ol>'
+                        : '<div class="bv-meta">—</div>') + '</div>';
+            }).join("") + '</div>';
+        return '<div class="bv-pb-block" data-bv-slot="hypothesis"><div class="bv-label">' + escapeHtml(PB_TEXT.hypoHead) + '</div>' +
+            body + '</div>';
+    }
+
+    // 한계 전부 — 브리핑 최상위(운영자 뷰에만 실린다) + 심층 조사. 같은 문장은 한 번만(순서 유지).
+    function limitationsOf(b) {
+        var dd = isObj(b.deep_dive) ? b.deep_dive : {};
+        var seen = {};
+        return [b.limitations, dd.limitations].reduce(function (acc, v) {
+            return acc.concat(Array.isArray(v) ? v : [v]);
+        }, []).map(textOf).filter(function (t) {
+            if (!t || Object.prototype.hasOwnProperty.call(seen, t)) return false;
+            seen[t] = true;
+            return true;
+        });
+    }
+
+    var DEEP_GAPS = { failed: true, timeout: true, skipped: true };   // 담당자용 꼭 확인에 사유를 올리는 심층 조사 상태
+
+    // (e) 담당자용 꼭 확인(§3.3 오른쪽 열) — 엔진 불일치 요지 · 심층 조사 실패·생략 사유 · 검토 기한 지난 런북 · 한계 전부 ·
+    // 알려진 문제 상세(피드백 3버튼 조건은 knownErrorsHtml 그대로). 해당 없으면 칸을 그리지 않는다(빈 경고 칸 금지).
+    function ownerMustHtml(view, ctx, extra) {
+        var b = ctx.b;
+        var items = [];
+        var ea = isObj(b.engine_agreement) ? b.engine_agreement : {};
+        if (ea.result === "different_layer") {
+            var pbLayer = isObj(ea.playbook) && ea.playbook.layer ? layerLabel(String(ea.playbook.layer)) : "";
+            var hgLayers = isObj(ea.holmesgpt) ? asList(ea.holmesgpt.layers).map(function (l) { return layerLabel(String(l)); }) : [];
+            items.push(fill(EV_TEXT.mustEngine, { pb: pbLayer || "—", hg: hgLayers.join(", ") || "—" }));
+        }
+        var dd = isObj(b.deep_dive) ? b.deep_dive : null;
+        if (dd && DEEP_GAPS[dd.status]) {
+            // 사유가 이미 「심층 조사 실패 — …」 꼴이면 머리를 겹쳐 쓰지 않는다
+            var deepHead = fill(EV_TEXT.mustDeep, { status: DEEP_STATUS[dd.status][1] });
+            var deepReason = textOf(dd.reason);
+            items.push(deepReason.indexOf(deepHead) === 0 ? deepReason : deepHead + (deepReason ? " — " + deepReason : ""));
+        }
+        var rb = runbookOf(b);
+        if (rb && rb.stale) {
+            items.push(EV_TEXT.mustRunbook + (rb.last_reviewed ? fill(EV_TEXT.reviewed, { at: textOf(rb.last_reviewed) }) : ""));
+        }
+        var limits = limitationsOf(b);
+        var kes = knownErrorsHtml(b, view, extra);
+        if (!items.length && !limits.length && !kes) return "";
+        return '<div class="bv-pb-block bv-ev-must"><div class="bv-label">' + escapeHtml(EV_TEXT.mustHead) + '</div>' +
+            (items.length ? '<ul class="bv-sum-must">' + items.map(function (t) {
+                return '<li class="bv-sum-must-item bv-sum-must-item--warn">' + escapeHtml(t) + '</li>';
+            }).join("") + '</ul>' : "") +
+            (limits.length ? '<div class="bv-label">' + escapeHtml(EV_TEXT.limitsHead) + '</div><ul class="bv-actions">' +
+                limits.map(function (t) { return '<li>' + escapeHtml(t) + '</li>'; }).join("") + '</ul>' : "") +
+            kes + '</div>';
+    }
+
+    // 접힌 단(②·③) — `data-bv-key`로 재조회 중 열림 유지(keepOpenState)와 펼침 기억(attach toggle)이 함께 잡는다
+    function tierHtml(key, head, body, open) {
+        return '<details class="bv-ev bv-ev--' + key + '" data-bv-key="' + key + '"' + (open ? " open" : "") + '>' +
+            '<summary class="bv-ev-head">' + escapeHtml(head) + '</summary><div class="bv-ev-body">' + body + '</div></details>';
+    }
+
+    // 카드의 [근거 보기]·[자세히] — attach가 해당 단을 열고 그 자리로 스크롤한다(`data-bv-target`)
+    function tierButtonsHtml() {
+        return '<button type="button" class="bv-choice" data-bv-action="expand" data-bv-target="evidence">' +
+            escapeHtml(EV_TEXT.evidenceButton) + '</button>' +
+            '<button type="button" class="bv-choice" data-bv-action="expand" data-bv-target="detail">' +
+            escapeHtml(EV_TEXT.detailButton) + '</button>';
+    }
+
+    // 상세형 3단(summaryView 켜짐) — 카드는 renderPlaybook이 머리 아래에 이미 그렸다. 진행 중(부분 브리핑)도 같은 구조.
+    // ② 단계 스트립 · 타임라인 · 가설 표 · 엔진 비교(1회) · 담당자용 꼭 확인 / ③ 메타·진척·대상 · 단계별 근거 · 종합의
+    // 대응·추가 확인·AI 소견 · 런북 · 참고 문서 · 메모 · KB 초안·포스트모템(종전 조건 그대로).
+    function renderPlaybookTiers(view, ctx, extra) {
+        var b = ctx.b;
+        var open = isObj(extra.expand) ? extra.expand : {};
+        var evidence = [
+            stepStripHtml(ctx),
+            timelineHtml(ctx),
+            hypoGridHtml(view, ctx),
+            engineCompareHtml(view, ctx, extra),
+            ownerMustHtml(view, ctx, extra),
+        ];
+        var detail = [
+            '<div class="bv-pb-meta">' + playbookMeta(ctx) + '</div>',
+            progressBar(ctx),
+            targetsHtml(ctx.pb),
+            stepsDetailHtml(ctx, true),
+            synthesisHtml(ctx, true),
+            runbookHtml(b),
+            referencesHtml(b),
+            notesHtml(ctx),
+            kbTailHtml(view, extra),
+        ];
+        return tierHtml("evidence", EV_TEXT.evidenceHead, evidence.join(""), open.evidence === true) +
+            tierHtml("detail", EV_TEXT.detailHead, detail.join(""), open.detail === true);
+    }
+
     // 상세형 — 조사 대화 첫 고정 카드 · break-glass 드로어(§5.6 ③ 배치 1~7 순서 고정)
     function renderPlaybookDetail(view, ctx, extra) {
+        // (plans/199 W3) 「한눈에 보기」 켜짐이면 ②·③ 접힘 배치 — 아래 종전 배치는 꺼짐에서만(비트 동일)
+        if (extra.summaryView) return renderPlaybookTiers(view, ctx, extra);
         var b = ctx.b;
-        var readings = readingsOf(ctx.pb);
         var parts = [];
         // 1. 머리 — 대상 · 진척 · 단계 판정(공통 칸 1회)
         parts.push('<div class="bv-pb-meta">' + playbookMeta(ctx) + '</div>');
@@ -1220,16 +2148,11 @@
         // 4. 런북(접힘)
         parts.push(runbookHtml(b));
         // 5. 단계 섹션(아코디언 · 이상 단계 기본 펼침) + 진행 중 스켈레톤
-        parts.push('<div class="bv-pb-block"><div class="bv-label">' + escapeHtml(PB_TEXT.stepsDetailHead) + '</div>' +
-            stepSections(ctx.pb).map(function (sec) { return stepSectionHtml(sec, readings); }).join("") + skeletonSteps(ctx) + '</div>');
+        parts.push(stepsDetailHtml(ctx));
         // 6. 참고 문서
         parts.push(referencesHtml(b));
         // 7. 꼬리 — 실행 메모
-        var notes = asList(ctx.pb.notes);
-        if (notes.length) {
-            parts.push('<div class="bv-pb-block"><div class="bv-label">' + escapeHtml(PB_TEXT.notesHead) + '</div>' +
-                notes.map(function (n) { return '<div class="bv-meta">' + escapeHtml(textOf(n)) + '</div>'; }).join("") + '</div>');
-        }
+        parts.push(notesHtml(ctx));
         // 7. 꼬리 — KB 초안 · 포스트모템(extra.kb일 때만 · W9)
         parts.push(kbTailHtml(view, extra));
         return parts.join("");
@@ -1239,7 +2162,7 @@
         var chip = statusChip(view);
         var qd = queueOf(view, extra);
         if (qd) { chip.kind = "hold"; chip.text = qd.chip; }
-        var parts = [renderHead(view, chip)];
+        var parts = [renderHead(view, chip, extra), summaryBlock(view, extra, extra.mode === "detail")];
         if (qd && qd.note) parts.push('<div class="bv-meta">' + escapeHtml(qd.note) + '</div>');
         if (chip.reason) {
             parts.push('<div class="bv-reason' + (chip.kind === "fail" ? " bv-reason--fail" : "") + '">' +
@@ -1274,11 +2197,17 @@
         return '<span class="bv-src">' + escapeHtml(manual ? TEXT.manualSourceBadge : TEXT.sourceBadge) + '</span>';
     }
 
-    function renderHead(view, chip) {
+    // 머리 판정 등급 — `verdict_level`은 중요도(해소·주의·경고·심각 · sre_agent `severity_signatures.LEVEL_NAMES`)라
+    // (plans/199 W5b) 켜짐이면 브리핑 줄(noise_gate `investigation_briefing`)과 같은 「중요도」, 꺼짐이면 종전 「평가」
+    function verdictLevelHtml(view, extra) {
+        return (extra && extra.summaryView ? TERM_TEXT.levelHead : "평가") + " " + escapeHtml(view.verdict_level);
+    }
+
+    function renderHead(view, chip, extra) {
         var head = '<div class="bv-head">' +
             '<span class="bv-chip bv-chip--' + chip.kind + '">' + escapeHtml(chip.text) + '</span>' +
             sourceBadgeHtml(view);
-        if (view.verdict_level) head += '<span class="bv-meta">평가 ' + escapeHtml(view.verdict_level) + '</span>';
+        if (view.verdict_level) head += '<span class="bv-meta">' + verdictLevelHtml(view, extra) + '</span>';
         if (view.kind === "episode") head += '<span class="bv-meta">사건 종합 조사</span>';
         if (view.updated_at) head += '<span class="bv-meta">' + escapeHtml(fmtTime(view.updated_at)) + '</span>';
         head += '</div>';
@@ -1293,6 +2222,11 @@
      *     (plans/187 W5b) 플레이북 브리핑일 때만 읽는 키: `mode`("summary"|"detail") ·
      *     `openConversation`(요약형 「조사 대화로 열기」 버튼) · `busy`(bool|함수 — 버튼 비활성) ·
      *     `engineChoice`(상세형 4택 표시) · `ui`(4택 상태) · `runningText`(진행 중 안내 대체 — 빈 문자열이면 생략)
+     *     (plans/199 W1) `summaryView`(참이면 머리 바로 아래 「한눈에 보기」 카드 — 플레이북·비플레이북 공통,
+     *     요약형은 「종합(플레이북)」 칸을 카드로 대신한다. 없거나 거짓이면 종전 출력과 바이트 동일)
+     *     (plans/199 W2) `handoff`(참이면 카드에 전달문 버튼 — 클릭 처리기가 있는 attach만 싣는다)
+     *     (plans/199 W3) summaryView 켜짐의 상세형은 ② 근거 요약 · ③ 상세 접힘 배치 — `expand`(`{evidence, detail}`
+     *     불리언 · 참이면 그 단을 펼친 채 그린다 · 없으면 접힘)는 attach가 펼침 기억에서 읽어 싣는다
      */
     function renderBody(view, extra) {
         view = view || { status: "none" };
@@ -1307,12 +2241,12 @@
         var head = '<div class="bv-head">' +
             '<span class="bv-chip bv-chip--' + chip.kind + '">' + escapeHtml(chip.text) + '</span>' +
             (manualNone ? "" : sourceBadgeHtml(view));
-        if (view.verdict_level) head += '<span class="bv-meta">평가 ' + escapeHtml(view.verdict_level) + '</span>';
+        if (view.verdict_level) head += '<span class="bv-meta">' + verdictLevelHtml(view, extra) + '</span>';
         if (view.kind === "episode") head += '<span class="bv-meta">사건 종합 조사</span>';
         if (view.updated_at) head += '<span class="bv-meta">' + escapeHtml(fmtTime(view.updated_at)) + '</span>';
         head += '</div>';
 
-        var parts = [head];
+        var parts = [head, summaryBlock(view, extra)];
         if (qd && qd.note) parts.push('<div class="bv-meta">' + escapeHtml(qd.note) + '</div>');
         if (chip.reason) {
             parts.push('<div class="bv-reason' + (chip.kind === "fail" ? " bv-reason--fail" : "") + '">' +
@@ -1435,6 +2369,12 @@
      *   (plans/192 P8 · 선택 키 — 없으면 종전과 같다)
      *   onOpenPrevious(id): 「이전 분석」 각 행의 버튼 — 렌더 모드와 무관하게 그리고 행의 「조사 대화로 열기」를 대체
      *   openPreviousLabel: 그 버튼 문구(문자열 또는 함수 · 기본 「조사 대화로 열기」)
+     *   (plans/199 W1 · 선택 키 — 없으면 종전과 같다)
+     *   summaryView: 불리언 또는 함수 — 렌더할 때마다 평가해 참이면 `extra.summaryView`(「한눈에 보기」 카드).
+     *     함수면 기능 조회가 늦게 와도 다음 렌더부터 맞는다. (plans/199 W2) 참이면 `extra.handoff`도 실어 카드에
+     *     [전달문 복사]·[전달문 보기]를 그리고 이 패널이 복사를 처리한다(키가 있으면 클릭 처리기를 붙인다).
+     *     (plans/199 W3) 상세형 ②·③의 펼침을 브라우저 저장소(`bv.expand.evidence`·`bv.expand.detail`)에 기억한다 —
+     *     켜진 첫 렌더에 1회 읽어 `extra.expand`로 넘기고 toggle 때 쓴다. 저장소가 막히면 기본 접힘(이 패널 안에서만 유지).
      */
     function attach(container, opts) {
         var limitS = Number(opts.limitSeconds) > 0 ? Number(opts.limitSeconds) : DEFAULT_LIMIT_S;
@@ -1446,11 +2386,28 @@
         var fuTimer = null;
         var fuStartedAt = 0;
         var fe2 = !!(opts.analyze || opts.followup || opts.keFeedback || opts.kb || opts.manualMode);
+        // (plans/199 W3) ②·③ 펼침 — 이 패널이 아는 값. 켜진 첫 렌더에 저장소에서 1회 읽고 toggle로 갱신한다.
+        var expand = null;
+
+        function expandNow() {
+            if (!expand) expand = { evidence: readExpand("evidence"), detail: readExpand("detail") };
+            return { evidence: expand.evidence, detail: expand.detail };
+        }
 
         function extraFor(info) {
             var extra = info && info.limited ? { note: fill(TEXT.limitReached, { s: limitS }) } : null;
-            if (!opts.render && !opts.engineChoice && !fe2) return extra;
+            // (plans/199 W1) 카드 켜짐은 렌더 시점 값 — 거짓이면 키를 싣지 않는다(종전 extra 그대로)
+            var summary = typeof opts.summaryView === "function" ? !!opts.summaryView() : !!opts.summaryView;
+            // (plans/199 W2) 카드가 켜지면 전달문 버튼도 — 이 패널에는 그 클릭 처리기가 있다(`handoff`)
+            if (!opts.render && !opts.engineChoice && !fe2) {
+                if (summary) {
+                    extra = extra || {};
+                    extra.summaryView = true; extra.handoff = true; extra.ui = ui; extra.expand = expandNow();
+                }
+                return extra;
+            }
             var merged = {};
+            if (summary) { merged.summaryView = true; merged.handoff = true; merged.expand = expandNow(); }
             Object.keys(opts.render || {}).forEach(function (k) { merged[k] = opts.render[k]; });
             if (extra) merged.note = extra.note;
             merged.engineChoice = !!opts.engineChoice;
@@ -1477,6 +2434,8 @@
         }
 
         // 다시 그려도 사용자가 펼친·접은 아코디언(<details data-bv-key>)은 그대로 둔다(15초 재조회)
+        // (plans/199 W3) ②·③(`evidence`·`detail`)도 같다 — 우선순위는 지금 화면의 열림(이 함수) > 이 패널의 펼침 값
+        // (`extra.expand` · 첫 렌더는 저장값) > 기본 접힘. 펼침 값은 toggle마다 따라가므로 둘은 보통 같다.
         function keepOpenState(paint) {
             var q = container.querySelectorAll ? container : null;
             var state = {};
@@ -1558,6 +2517,7 @@
                 currentLoad = function () { return opts.analyze.loadById(id); };
                 ui.ke = {};
                 ui.kb = {};
+                ui.handoff = null;
                 poller.start();
             }, function (err) {
                 a.msg = fill(PB_TEXT.analyzeFailed, { reason: failText(err) });
@@ -1745,6 +2705,26 @@
                 .then(repaint);
         }
 
+        // (plans/199 W2) [전달문 복사] — 그린 카드와 같은 뷰·모델로 다시 만든다(DOM을 읽지 않는다). 실패·미지원이면
+        // copyKb와 같은 안내를 보이고 [전달문 보기]를 펼쳐 둔다(직접 선택해 복사 — keepOpenState가 열림을 유지).
+        // 대기 중 카드에는 이 버튼이 없다(summaryBlock) — 대기 문구를 입힐 일이 없다.
+        function copyHandoff() {
+            var h = ui.handoff = {};
+            var text = handoffOf(last.view, summaryModel(last.view)).text;
+            var clip = typeof navigator !== "undefined" && navigator.clipboard;
+            Promise.resolve()
+                .then(function () {
+                    if (!clip || !clip.writeText) throw new Error("clipboard");
+                    return clip.writeText(text);
+                })
+                .then(function () { h.msg = PB_TEXT.copied; }, function () {
+                    h.msg = PB_TEXT.copyFailed;
+                    var d = container.querySelector ? container.querySelector('details[data-bv-key="handoff"]') : null;
+                    if (d) d.open = true;
+                })
+                .then(repaint);
+        }
+
         function downloadKb(key) {
             if (typeof Blob === "undefined" || typeof document === "undefined" || typeof URL === "undefined" || !URL.createObjectURL) return;
             var id = last && last.view ? String(last.view.investigation_id || "") : "";
@@ -1763,7 +2743,19 @@
             keepOpenState(function () { container.innerHTML = renderBody(last.view, extraFor(last.info)); });
         }
 
-        if ((opts.render || opts.engineChoice || opts.onOpenConversation || fe2) && container.addEventListener) {
+        // (plans/199 W3) ②·③ 펼침 기억 — <details>의 toggle은 거품이 오르지 않아 캡처로 받는다. 이 패널이 아는 값과
+        // 다를 때만 쓴다(다시 그리기·열림 유지 복원이 일으키는 toggle은 같은 값이라 쓰지 않는다). 클릭 처리기보다 먼저 붙인다.
+        if (opts.summaryView && container.addEventListener) {
+            container.addEventListener("toggle", function (e) {
+                var d = e && e.target;
+                var key = d && d.getAttribute ? d.getAttribute("data-bv-key") : null;
+                if (!expand || !Object.prototype.hasOwnProperty.call(EXPAND_KEYS, key) || expand[key] === !!d.open) return;
+                expand[key] = !!d.open;
+                writeExpand(key, expand[key]);
+            }, true);
+        }
+
+        if ((opts.render || opts.engineChoice || opts.onOpenConversation || fe2 || opts.summaryView) && container.addEventListener) {
             container.addEventListener("click", function (e) {
                 var el = e.target && e.target.closest ? e.target.closest("[data-bv-action]") : null;
                 if (!el || !container.contains(el)) return;
@@ -1771,6 +2763,9 @@
                 if (action === "goto-step") {
                     e.preventDefault();
                     var step = el.getAttribute("data-step");
+                    // (plans/199 W3) 단계 근거가 ③ 상세 안에 있으면 그 단부터 연다(없으면 종전 그대로)
+                    var tier = container.querySelector ? container.querySelector('details[data-bv-key="detail"]') : null;
+                    if (tier) tier.open = true;
                     Array.prototype.forEach.call(container.querySelectorAll("[data-bv-step]"), function (sec) {
                         if (sec.getAttribute("data-bv-step") !== step) return;
                         sec.open = true;
@@ -1815,6 +2810,17 @@
                     copyKb(el.getAttribute("data-bv-copy"));
                 } else if (action === "download" && opts.kb) {
                     downloadKb(el.getAttribute("data-bv-copy"));
+                } else if (action === "handoff-copy" && last) {
+                    copyHandoff();
+                } else if (action === "expand") {
+                    // (plans/199 W3) [근거 보기]·[자세히] — 그 단을 열고 그 자리로(열림은 toggle이 기억한다)
+                    var key = el.getAttribute("data-bv-target");
+                    var d = Object.prototype.hasOwnProperty.call(EXPAND_KEYS, key) && container.querySelector
+                        ? container.querySelector('details[data-bv-key="' + key + '"]') : null;
+                    if (d) {
+                        d.open = true;
+                        if (d.scrollIntoView) d.scrollIntoView({ block: "start", behavior: "smooth" });
+                    }
                 }
             });
         }
@@ -1875,6 +2881,28 @@
         renderError: renderError,
         renderCrossSource: renderCrossSource,
         PB_TEXT: PB_TEXT,
+        // (plans/199 W5b) 용어 정리 — 문구 표 · 열 머리·셀 값 문구(장애 진단 「조사 흐름」 카드 표도 쓴다)
+        TERM_TEXT: TERM_TEXT,
+        TERM_COLUMNS: TERM_COLUMNS,
+        METRIC_LABELS: METRIC_LABELS,
+        KIND_LABELS: KIND_LABELS,
+        termColumn: termColumn,
+        termValue: termValue,
+        // (plans/199 W4) [서술 보기] 원문 안전 렌더 · 문구
+        NARR_TEXT: NARR_TEXT,
+        // (plans/199 W3) 상세형 ②·③ 문구
+        EV_TEXT: EV_TEXT,
+        renderMarkdownSafe: renderMarkdownSafe,
+        // (plans/199 W1) 「한눈에 보기」 — 모델(순수) · 카드 HTML · 원인 영역 문구 표 · 문구
+        SUM_TEXT: SUM_TEXT,
+        NO_ACTION_PREFIX: NO_ACTION_PREFIX,
+        LAYER_LABELS: LAYER_LABELS,
+        summaryModel: summaryModel,
+        summaryCardHtml: summaryCardHtml,
+        // (plans/199 W2) 전달문 — 양식(순수) · 운영자 뷰(원문) 판정 · 문구
+        HANDOFF_TEXT: HANDOFF_TEXT,
+        handoffText: handoffText,
+        isRawView: isRawView,
         hasPlaybook: function (view) { return !!playbookContext(view); },
         playbookScope: function (view) {
             var ctx = playbookContext(view);

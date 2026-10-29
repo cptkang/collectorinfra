@@ -222,6 +222,14 @@ class NoiseHealthResponse(BaseModel):
     last_event_age_seconds: Optional[float] = None
     window_seconds: int
     gate_enabled: bool
+    investigation_summary_view_enabled: bool = Field(
+        default=False,
+        description=(
+            "조사 결과 「한눈에 보기」 카드 — 거짓이면 break-glass 관제 서랍이 "
+            "종전 조사 화면을 그대로 그린다 (NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED · "
+            "plans/199 W6 · 사용자 토큰 세션은 기능 조회 값만 쓴다)"
+        ),
+    )
 
 
 class DecisionsResponse(BaseModel):
@@ -790,6 +798,11 @@ async def noise_health(
         last_event_age_seconds=agg["last_event_age_seconds"],
         window_seconds=window,
         gate_enabled=bool(ng.enable_noise_gate),
+        # (plans/199 W6) break-glass 운영자 토큰은 기능 조회(사용자 토큰 인가)를
+        # 못 부르므로 여기서 읽는다
+        investigation_summary_view_enabled=bool(
+            getattr(ng, "investigation_summary_view_enabled", True)
+        ),
     )
 
 

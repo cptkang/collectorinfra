@@ -1131,7 +1131,7 @@ settings:
       진행 중인 조사 1건마다 poll 간격에 한 번 조사 서비스를 호출한다. 본체 프로세스 메모리에
       조사당 실행 기록 300건까지 담는다. 본체를 여러 워커로 띄우면 워커마다 호출이 생긴다.
     stability: 조사 서비스 호출이 실패하면 그 조사에만 「갱신 실패」를 알리고 다음 주기에 다시 묻는다. 끄면 기존 동작과 같다.
-    recommendation: 조사 서비스의 실행 기록(SRE_ACTIVITY_LOG_ENABLED)을 켠 뒤 함께 켠다.
+    recommendation: 조사 서비스의 실행 기록(SRE_ACTIVITY_LOG_ENABLED · 기본 켜짐)이 켜져 있는지 확인하고 켠다. 조사 서비스 쪽을 꺼 두면 진행 중 실행 기록이 종결 때까지 비어 있다.
     related: [NOISE_INVESTIGATION_LIVE_POLL_SECONDS, NOISE_INVESTIGATION_TRIGGER_ENABLED]
 
   NOISE_INVESTIGATION_LIVE_POLL_SECONDS:
@@ -1151,3 +1151,23 @@ settings:
     stability: 실시간 화면이 켜져 있을 때만 쓰인다.
     recommendation: 기본 5 유지.
     related: [NOISE_INVESTIGATION_LIVE_VIEW_ENABLED]
+
+  NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED:
+    example: >-
+      켜 두면(기본) 알람 카드·관제 서랍·장애 진단의 조사 결과 맨 위에 「한눈에 보기」 카드가 나온다 — 원인 영역과 확실성(확정·추정·미확정), 결론 한 문장, 대상, 영향 범위, 할 일, 꼭 확인. false로 두면 조사 화면이 이 기능 이전과 같다.
+    summary: 조사 결과 맨 위에 「한눈에 보기」 요약 카드를 보일지.
+    behavior: >-
+      조사 브리핑에 이미 있는 구조화 필드(엔진 비교 계층·가설·대응 제안·단계 상태·알려진 문제)를
+      정해진 규칙으로 조립해 보인다(LLM 추가 호출 없음). 판정·저장 형식·가림 처리·노출 범위는
+      바꾸지 않는다. 화면은 기능 조회(/alarm/capabilities)의 값으로 켜고 끈다 — 운영자(break-glass)
+      토큰으로 연 관제는 운영자 헬스 조회(/admin/noise/health)의 같은 값을 쓴다(D-351).
+    options:
+      - value: "true"
+        label: 기본
+        effect: 조사 결과 머리 아래에 한눈에 보기 카드가 붙는다.
+      - value: "false"
+        effect: 카드가 없고 조사 화면이 종전과 비트 동일하다.
+    performance: 화면이 이미 받은 조사 응답으로 그리므로 서버 호출이 늘지 않는다.
+    stability: 표시 방식만 바뀐다. 끄면(false) 조사 화면이 종전과 비트 동일하다.
+    recommendation: 기본 켜짐 유지.
+    related: [NOISE_INVESTIGATION_TRIGGER_ENABLED, NOISE_INVESTIGATION_LIVE_VIEW_ENABLED]

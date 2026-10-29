@@ -750,6 +750,8 @@ function mount(mountRoot, opts) {
     async function loadHealth() {
         var data = await getJSON(API + "/health");
         if (!data) return;
+        // (plans/199 W6) break-glass 세션만 — 서랍 「한눈에 보기」 카드를 헬스 응답 값으로 정한다(아래 summaryViewOn)
+        if (IS_BREAK_GLASS) summaryViewOn = data.investigation_summary_view_enabled === true;
 
         var pill = document.getElementById("healthPill");
         pill.className = "pill " + (data.healthy ? "pill--ok" : "pill--warn");
@@ -1980,12 +1982,22 @@ function mount(mountRoot, opts) {
     // `investigation_manual_enabled === true && investigation_auto_enabled === false`일 때만 참이고, 키가 없거나
     // 조회가 실패하면 거짓(종전 표시). 기능 조회는 사용자 토큰 인가라 break-glass 운영자 토큰이면 부르지 않는다
     // (401 → 로그아웃을 피해 apiRequest를 거치지 않는다).
+    // (plans/199 W1 · D-351) 같은 기능 조회의 `investigation_summary_view_enabled` — 참이면 ⓒ 칸 공용 렌더에
+    // 「한눈에 보기」 카드를 붙인다(조회 전·실패면 거짓 = 종전 화면). 렌더할 때마다 읽는다.
+    // (plans/199 W6) break-glass 운영자 토큰 세션은 기능 조회를 부르지 않으므로 운영자 헬스 응답
+    // (`loadHealth` · 첫 로드와 60초마다)의 같은 키로 정한다 — 첫 성공 응답 전(실패 포함)·키 없음이면 거짓, 그 뒤
+    // 실패는 마지막 성공 값을 유지한다(설정은 기동 때 1회 읽는다). 사용자 토큰 세션(관리자 역할 포함)은 기능 조회
+    // 값만 쓰고 헬스 값으로 덮지 않는다. 열린 서랍은 다음 렌더부터 반영된다.
+    var summaryViewOn = false;
     var manualOnlyMode = (IS_BREAK_GLASS || !window.BriefingView)
         ? Promise.resolve(false)
         : alarmCall("/api/v1/alarm/capabilities").then(function (res) {
             var caps = res.ok ? res.body : {};
+            summaryViewOn = caps.investigation_summary_view_enabled === true;
             return caps.investigation_manual_enabled === true && caps.investigation_auto_enabled === false;
         }, function () { return false; });
+
+    function summaryViewNow() { return summaryViewOn; }
 
     manualOnlyMode.then(function (on) {
         var title = on ? mountRoot.querySelector(".noise-brand h1") : null;
@@ -2071,6 +2083,7 @@ function mount(mountRoot, opts) {
                     render: { mode: "summary" },
                     analyze: analyzeOptions(alarmId),
                     onView: onInvestigationView,
+                    summaryView: summaryViewNow,   // (plans/199 W1) 「한눈에 보기」 카드
                     // (plans/194 W5 U5) 수동 조사 모드 — 「조사 안 됨 → [조사 시작]」 · 거부 사유 · 합류 안내
                     manualMode: got[1],
                     onOpenInvestigation: function (id) { openInPortal(id); },
@@ -2117,6 +2130,7 @@ function mount(mountRoot, opts) {
                 render: IS_BREAK_GLASS ? { mode: "detail" } : { mode: "summary" },
                 analyze: analyzeOptions(alarmId),
                 onView: onInvestigationView,
+                summaryView: summaryViewNow,   // (plans/199 W1) 「한눈에 보기」 카드
             });
             investigationPanel.open();
             if (asked) scrollToCause();

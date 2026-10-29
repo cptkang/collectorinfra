@@ -5027,6 +5027,10 @@
         investigationPinPanel = window.BriefingView.attach(el.querySelector(".investigation-pin-body"), {
             limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
             render: { mode: "detail" },
+            // (plans/199 W1) 「한눈에 보기」 카드 — 기능 조회가 참일 때만(렌더할 때마다 읽는다)
+            summaryView: function () {
+                return !!(alarmCapabilities && alarmCapabilities.investigation_summary_view_enabled === true);
+            },
             // plans/187 FE-2 — 추가 조사(W10) · 알려진 문제 피드백(W8) · KB 초안·포스트모템(W9).
             // 기능이 꺼지면 서버가 404를 돌려주고 공용 렌더가 버튼을 숨기거나 막는다.
             followup: {
@@ -5243,6 +5247,10 @@
             // (plans/198 W7 I-8) 비슷한 과거 조사 조회 — 기능 조회 `investigation_memory_enabled`가 참일 때만
             similar: function () {
                 return !!(alarmCapabilities && alarmCapabilities.investigation_memory_enabled === true);
+            },
+            // (plans/199 W1 · D-351) 「한눈에 보기」 카드 — 중간 결과·조사 결과 공용 렌더에 넘긴다
+            summaryView: function () {
+                return !!(alarmCapabilities && alarmCapabilities.investigation_summary_view_enabled === true);
             },
         }).catch(function (err) {
             console.warn("[diagnosis] 장애 진단 초기화 실패:", err);
@@ -5549,6 +5557,10 @@
             var panel = window.BriefingView.attach(card.querySelector(".chat-inv-body"), {
                 limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
                 render: { mode: "summary" },
+                // (plans/199 W1) 「한눈에 보기」 카드 — 기능 조회가 참일 때만(렌더할 때마다 읽는다)
+                summaryView: function () {
+                    return !!(alarmCapabilities && alarmCapabilities.investigation_summary_view_enabled === true);
+                },
                 load: function () { return loadInvestigationView(id); },
             });
             chatInvestigationPanels.push(panel);
@@ -6112,6 +6124,10 @@
             // (plans/194 W5 · U3) 대기 중이면 「대기 중 · 순번 N」 칩 + 동시 조사 수 · 자동 시작 안내
             render: entryRender({ mode: "summary", openConversation: true, busy: function () { return isProcessing; },
                 queue: alarmQueueDisplay }),
+            // (plans/199 W1) 「한눈에 보기」 카드 — 기능 조회가 참일 때만(렌더할 때마다 읽는다)
+            summaryView: function () {
+                return !!(alarmCapabilities && alarmCapabilities.investigation_summary_view_enabled === true);
+            },
             // plans/192 P4: 남은 요약형 버튼도 클릭 시점의 진단 여부를 따른다 · P8: 「이전 분석」 행도 같은 진입
             onOpenConversation: function (id) { openInvestigationEntry(id, data.alarm_id); },
             onOpenPrevious: function (id) { openInvestigationEntry(id, data.alarm_id); },
@@ -6657,6 +6673,10 @@
         var panel = window.BriefingView.attach(body, {
             limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
             render: entryRender({ mode: "summary", openConversation: true, busy: function () { return isProcessing; } }),
+            // (plans/199 W1) 「한눈에 보기」 카드 — 기능 조회가 참일 때만(렌더할 때마다 읽는다)
+            summaryView: function () {
+                return !!(alarmCapabilities && alarmCapabilities.investigation_summary_view_enabled === true);
+            },
             // plans/192 P4·P8 — 요약형 버튼과 「이전 분석」 행은 클릭 시점의 진단 여부를 따른다
             onOpenConversation: function (id) { openInvestigationEntry(id, item.alarm_id); },
             onOpenPrevious: function (id) { openInvestigationEntry(id, item.alarm_id); },
