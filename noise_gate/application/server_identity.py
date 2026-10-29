@@ -115,6 +115,73 @@ def source_labels_for(db_id: str, zone_label: str = "", site_label: str = "") ->
     return label, detail
 
 
+def _short_label(label: str) -> str:
+    """레지스트리 라벨의 `(`/`—` 앞 토큰 — 「폴스타(인프라 모니터링)」 → 「폴스타」."""
+    return (label or "").split("(")[0].split("—")[0].strip()
+
+
+def alarm_origin_for(db_id: str) -> dict[str, str]:
+    """판단 기록의 db_id → 알람 출처 `{solution, solution_label, location}` (D-351).
+
+    solution은 레지스트리 `solutions[].code`(polestar·apm …)다. DB 항목은 `family`로, APM 소스는
+    `alarm_source`로 솔루션을 찾는다. 레지스트리에 소스 표가 없어도(폐쇄망 config 덮어쓰기)
+    `jennifer`·`jennifer_*`는 `is_apm_db_id`로 APM family에 넣는다 — 솔루션 분류는 고정 규칙으로
+    유지되고 위치만 빈다. 못 풀면 solution 빈 문자열(= 미분류).
+
+    location은 「존 약칭 + 사이트」(공동존 김포 · 은행존)다. APM 소스는 소스 라벨에서 끝의 솔루션
+    이름을 떼어 존 약칭과 합친다(「공동존 운영 제니퍼」 → 「공동존 운영」 · 「은행 제니퍼」 → 「은행존」).
+    """
+    origin = {"solution": "", "solution_label": "", "location": ""}
+    db_id = db_id or ""
+    if not db_id:
+        return origin
+    try:
+        from src.routing.registry import get_registry
+
+        registry = get_registry()
+        entry = registry.get(db_id)
+        found = registry.alarm_source(db_id) if entry is None else None
+        family = (entry.family if entry and entry.family else "") or ""
+        if not family and is_apm_db_id(db_id):
+            family = _APM_SOURCE_ID
+        spec = next(
+            (s for s in registry.solutions() if found and s.code == found[0]), None
+        ) or next((s for s in registry.solutions() if family and s.family == family), None)
+        if spec is not None:
+            origin["solution"] = spec.code
+            origin["solution_label"] = _short_label(spec.label) or spec.code
+        elif family:
+            origin["solution"] = family
+            origin["solution_label"] = (
+                _APM_SOURCE_LABEL if family == _APM_SOURCE_ID else family
+            )
+    except Exception:  # noqa: BLE001 — 라벨 파생 실패가 화면 조회를 막지 않는다
+        logger.warning("알람 출처 솔루션 파생 실패(미분류): db_id=%s", db_id)
+        if is_apm_db_id(db_id):
+            origin["solution"] = _APM_SOURCE_ID
+            origin["solution_label"] = _APM_SOURCE_LABEL
+        return origin
+
+    _, zone_label, site = zone_labels_for(db_id)
+    zone_short = _short_label(zone_label)
+    if found is not None:
+        rest = found[1].label.strip()
+        name = origin["solution_label"]
+        if name and rest.endswith(name):
+            rest = rest[: -len(name)].strip()
+        if not rest or (zone_short and rest in zone_short):
+            origin["location"] = zone_short
+        elif not zone_short or zone_short in rest:
+            origin["location"] = rest
+        else:
+            origin["location"] = f"{zone_short} {rest}"
+    elif site and zone_short and (site == zone_short or zone_short in site):
+        origin["location"] = site
+    else:
+        origin["location"] = " ".join(p for p in (zone_short, site) if p)
+    return origin
+
+
 def apm_source_labels(event: AlarmEvent, zone_label: str = "") -> tuple[str, str]:
     """APM 이벤트의 (소스 배지 라벨, 툴팁 상세) — 배지는 이벤트를 **보낸 소스**다.
 

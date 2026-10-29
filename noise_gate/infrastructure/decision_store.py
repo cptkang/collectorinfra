@@ -1092,6 +1092,8 @@ class DecisionStore:
         size: int = 50,
         mask_fn=None,  # noqa: ANN001 — Callable[[str], str] | None (덕 타이핑)
         operator_view: bool = False,
+        solution: str | None = None,
+        solution_of: Callable[[str], str] | None = None,
     ) -> dict:
         """결정 레코드를 필터·페이지로 조회한다 (Plan 54 모듈 3 — 근거 조회).
 
@@ -1109,6 +1111,9 @@ class DecisionStore:
             (plans/187 W18) `alarm_q`는 알람명, `server_q`는 서버명·hostname의 부분일치
             (대소문자 무시) — 장애 진단 탭 「이벤트 찾아 조사」가 칸을 나눠 거른다.
             미지정이면 종전과 같다.
+            (D-351) `solution_of`(db_id → 솔루션 코드 · 라우트가 레지스트리로 주입)를 주면
+            `facets.solutions`(**solution 필터만 뺀** 집합 · 0보다 큰 키만)를 싣고, `solution`이
+            있으면 그 코드로 거른다. 저장소는 레지스트리를 모른다(계층). 미주입이면 종전과 같다.
             목록·facets·related는 **파일 1회 읽기**로 만든다 — related는 창 밖 tail까지 봐야
             하므로 tail을 창 없이 한 번 읽고 창은 여기서 건다(`_tail_records(window)`와 같은 판정).
 
@@ -1127,6 +1132,8 @@ class DecisionStore:
             size: 페이지 크기.
             mask_fn: 표시 전 문자열 마스킹 함수(미주입이면 원문 그대로).
             operator_view: 운영자 전용 키(`condition_log`)를 싣는지 — 기본은 싣지 않는다.
+            solution: 솔루션 코드 필터(`solution_of`가 있을 때만 적용).
+            solution_of: db_id → 솔루션 코드 분류 함수.
 
         Returns:
             `{items, total, page, size, facets}`. 파일 부재·비활성이면 빈 목록.
@@ -1144,6 +1151,8 @@ class DecisionStore:
         tail = self._tail_records(None)
         facet_tiers: dict[str, int] = {t: 0 for t in _TIER_KEYS}
         facet_stages: dict[str, int] = {}
+        facet_solutions: dict[str, int] = {}
+        solution_codes: dict[str, str] = {}  # db_id → 코드(분류 호출을 db_id당 1회로)
         matched: list[int] = []  # tail 인덱스(시간순)
         for index, rec in enumerate(tail):
             if cutoff_ts is not None and not self._within_window(rec, cutoff_ts):
@@ -1176,11 +1185,20 @@ class DecisionStore:
             rec_stage = self._stage_of(rec)
             tier_ok = not tiers or rec_tier in tiers
             stage_ok = not stage or rec_stage == stage
-            if stage_ok and rec_tier in facet_tiers:
+            solution_ok = True
+            if solution_of is not None:
+                rec_db_id = str(rec.get("db_id", "") or "")
+                if rec_db_id not in solution_codes:
+                    solution_codes[rec_db_id] = solution_of(rec_db_id)
+                rec_solution = solution_codes[rec_db_id]
+                solution_ok = not solution or rec_solution == solution
+                if tier_ok and stage_ok:
+                    facet_solutions[rec_solution] = facet_solutions.get(rec_solution, 0) + 1
+            if stage_ok and solution_ok and rec_tier in facet_tiers:
                 facet_tiers[rec_tier] += 1
-            if tier_ok:
+            if tier_ok and solution_ok:
                 facet_stages[rec_stage] = facet_stages.get(rec_stage, 0) + 1
-            if tier_ok and stage_ok:
+            if tier_ok and stage_ok and solution_ok:
                 matched.append(index)
 
         matched.reverse()  # 최신 우선
@@ -1204,12 +1222,15 @@ class DecisionStore:
                     bundled = self._bundled_index(tail)
                 rec = self._with_bundled(rec, bundled)
             items.append(self._view(rec, mask_fn, operator_view=operator_view))
+        facets: dict[str, dict[str, int]] = {"tiers": facet_tiers, "stages": facet_stages}
+        if solution_of is not None:
+            facets["solutions"] = facet_solutions
         return {
             "items": items,
             "total": total,
             "page": page,
             "size": size,
-            "facets": {"tiers": facet_tiers, "stages": facet_stages},
+            "facets": facets,
         }
 
     @classmethod

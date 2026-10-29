@@ -556,10 +556,13 @@ def test_single_tier_response_is_unchanged_except_facets(tmp_path, mode):
     _seed_decisions(tmp_path, records)
     client, base = _mode_client(mode, _make_config(tmp_path))
     body = client.get(f"{base}/decisions?tier=page").json()
-    assert set(body) == {"items", "total", "page", "size", "facets"}
+    assert set(body) == {"items", "total", "page", "size", "facets", "solution_labels"}
     # 변경 전 뷰 = 레코드 전체 + stage_label (S6 필드가 없는 레코드는 키가 늘지 않는다).
+    # (D-351) + 알람 출처 3키 — db_id 없는 레코드는 미분류·위치 빈 값이다.
     expected = [
-        {**rec, "stage_label": "심각도3 단락"} for rec in records if rec["tier"] == "page"
+        {**rec, "stage_label": "심각도3 단락", "solution": "unclassified",
+         "solution_label": "미분류", "location_label": ""}
+        for rec in records if rec["tier"] == "page"
     ]
     assert body["items"] == expected
     assert (body["total"], body["page"], body["size"]) == (1, 1, 50)

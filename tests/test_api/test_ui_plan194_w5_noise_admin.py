@@ -244,4 +244,4 @@ def test_noise_pages_cache_busted() -> None:
     assert ".noise-mode-chip {" in css
     for page in ("noise.html", "admin/noise.html"):
         html = (_STATIC / page).read_text(encoding="utf-8")
-        assert "noise.js?v=24" in html and "noise-console.css?v=11" in html, page
+        assert "noise.js?v=26" in html and "noise-console.css?v=11" in html, page

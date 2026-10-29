@@ -177,6 +177,18 @@ function mount(mountRoot, opts) {
         return Number(value || 0).toLocaleString("ko-KR");
     }
 
+    // 알람 출처(D-351) — 결정 조회 API가 db_id를 레지스트리로 푼 `location_label`(공동존 김포 등)을
+    // 싣는다. 라벨이 없는 응답(실시간 피드 등)·못 푼 db_id는 db_id 원문으로 폴백한다.
+    function zoneText(record) {
+        return (record && (record.location_label || record.db_id)) || "";
+    }
+
+    function zoneCell(record, className) {
+        var cell = el("td", className, zoneText(record) || "—");
+        if (record && record.db_id) cell.title = record.db_id;
+        return cell;
+    }
+
     function fmtPct(ratio) {
         return Math.round(Number(ratio || 0) * 1000) / 10 + "%";
     }
@@ -870,7 +882,7 @@ function mount(mountRoot, opts) {
             // SSE로만 들어온 항목(레코드 없음)만 서버 조회로 폴백한다.
             function open() {
                 if (item.record) openDrawerFromRecord(item.record, node);
-                else openDrawer(item.alarm_id, node);
+                else openDrawer(item.alarm_id, node, item);
             }
             node.addEventListener("click", open);
             node.addEventListener("keydown", function (e) {
@@ -986,9 +998,10 @@ function mount(mountRoot, opts) {
             stage_label: "",
             reason: payload.tier_reason,
             ts: payload.received_at || payload.alarm_time || new Date().toISOString(),
-            // (plans/153 W1) 스트림의 AI 분석 서술을 버리지 않고 행에 담는다(출처 = 스트림 ·
-            // 분석 실패 표시는 스트림에 없다 — 드로어는 서버 레코드로 다시 그린다).
-            analysis: streamAnalysis(payload),
+            // (D-325 부기) AI 추정은 저장된 판정 레코드의 `analysis`로만 그린다 — 스트림 서술은
+            // 실패 표시가 없어 폴백 문구가 추정처럼 보이고, 마스킹도 거치지 않으며, 플래그가 꺼져
+            // 있으면 드로어(서버 레코드)와 어긋난다. 드로어를 열면 받은 레코드 값으로 채운다.
+            analysis: null,
         };
         var exists = state.feed.some(function (f) { return feedKey(f) === feedKey(item); });
         if (!exists) {
@@ -996,16 +1009,6 @@ function mount(mountRoot, opts) {
             state.feed = state.feed.slice(0, FEED_MAX);
             renderFeed();
         }
-    }
-
-    // 스트림 페이로드의 AI 분석 서술 3필드 — 셋 다 비면 null(행에 AI 줄을 만들지 않는다).
-    function streamAnalysis(payload) {
-        var out = {
-            summary: payload.summary || "",
-            probable_cause: payload.probable_cause || "",
-            recommended_action: payload.recommended_action || "",
-        };
-        return out.summary || out.probable_cause || out.recommended_action ? out : null;
     }
 
     function setStreamPill(kind, text) {
@@ -1078,16 +1081,28 @@ function mount(mountRoot, opts) {
     }
 
     // 폴백: 레코드가 없는 항목(SSE 피드)만 서버의 최신 판단·타임라인으로 그린다.
-    async function openDrawer(alarmId, trigger) {
+    // `feedItem`(SSE 피드 행)을 주면 받은 레코드의 AI 추정으로 그 행의 줄을 채운다(D-325 부기).
+    async function openDrawer(alarmId, trigger, feedItem) {
         if (!alarmId) return;
         try {
             var data = await getJSON(API + "/decisions/" + encodeURIComponent(alarmId));
             if (!data) return;
             renderDrawer(data.decision, data.timeline);
             showDrawer(trigger);
+            adoptStoredAnalysis(feedItem, data.decision);
         } catch (err) {
             showError(err.message);
         }
+    }
+
+    // SSE 피드 행에 서버 레코드의 `analysis`를 옮긴다 — 같은 알람일 때만, 값이 있을 때만 다시 그린다
+    // (진입점 포커스는 `data-focus-key`로 복귀하므로 다시 그려도 안전하다).
+    function adoptStoredAnalysis(feedItem, record) {
+        if (!feedItem || !record || record.alarm_id !== feedItem.alarm_id) return;
+        var a = analysisOf(record);
+        if (!a || feedItem.analysis === a) return;
+        feedItem.analysis = a;
+        renderFeed();
     }
 
     // 타임라인은 서버 `noise_decision_trace`(`_trace_timeline`)와 같은 규칙으로 클라이언트가 계산한다 —
@@ -1141,7 +1156,9 @@ function mount(mountRoot, opts) {
         drawerFactsBody.innerHTML = "";
         addFactRow(drawerFactsBody, "판단 결과", tierBadge(record.tier));
         addFactRow(drawerFactsBody, "결정 단계", record.stage_label || record.stage);
-        addFactRow(drawerFactsBody, "존", record.db_id);
+        addFactRow(drawerFactsBody, "솔루션", record.solution_label);
+        addFactRow(drawerFactsBody, "존", record.location_label && record.db_id
+            ? record.location_label + " (" + record.db_id + ")" : zoneText(record));
         addFactRow(drawerFactsBody, "자원", record.resource_name);
         // 운영자 경로 응답에만 온다(G-2 (c)) — 사용자 화면은 키 자체가 없어 줄이 생기지 않는다.
         addFactRow(drawerFactsBody, "울린 값", record.condition_log);
@@ -2339,7 +2356,8 @@ function mount(mountRoot, opts) {
         zone: {
             head: "존", cls: "k",
             when: function (it) { return !!it.db_id; },
-            render: function (it) { return it.db_id; },
+            render: function (it) { return zoneText(it); },
+            title: function (it) { return it.db_id; },
         },
         resource: {
             head: "자원", cls: "k",
@@ -3153,6 +3171,7 @@ function mount(mountRoot, opts) {
                 var col = COLS[id];
                 var cell = cellNode(col.render(item, ps));
                 if (col.cls) col.cls.split(" ").forEach(function (c) { cell.classList.add(c); });
+                if (col.title && col.title(item)) cell.title = col.title(item);
                 row.appendChild(cell);
             });
             var act = actionCell(item, row);
@@ -3335,6 +3354,29 @@ function mount(mountRoot, opts) {
         });
     }
 
+    // 솔루션 선택지(D-351) — 조회마다 `facets.solutions`(솔루션 필터만 뺀 건수)로 다시 채운다.
+    // 기간 안에 판단이 있는 솔루션만 보이고, 고른 값은 0건이 돼도 남겨 선택이 풀리지 않게 한다.
+    function fillSolutionFilter(facets, labels) {
+        var select = document.getElementById("decSolution");
+        var current = select.value;
+        var counts = (facets && facets.solutions) || {};
+        var codes = Object.keys(counts);
+        if (current && codes.indexOf(current) < 0) codes.push(current);
+        codes.sort(function (a, b) {
+            // 미분류는 맨 뒤, 나머지는 표시 이름순
+            if ((a === "unclassified") !== (b === "unclassified")) return a === "unclassified" ? 1 : -1;
+            return String(labels[a] || a).localeCompare(String(labels[b] || b), "ko");
+        });
+        while (select.options.length > 1) select.remove(1);
+        codes.forEach(function (code) {
+            var option = document.createElement("option");
+            option.value = code;
+            option.textContent = (labels[code] || code) + " (" + fmtInt(counts[code] || 0) + ")";
+            select.appendChild(option);
+        });
+        select.value = current;
+    }
+
     async function loadDecisions() {
         var params = [
             "range=" + state.range,
@@ -3342,18 +3384,20 @@ function mount(mountRoot, opts) {
             "q=" + encodeURIComponent(document.getElementById("decSearch").value.trim()),
             "tier=" + document.getElementById("decTier").value,
             "stage=" + document.getElementById("decStage").value,
+            "solution=" + encodeURIComponent(document.getElementById("decSolution").value),
             "related=true",
         ];
         var data = await getJSON(API + "/decisions?" + params.join("&"));
         if (!data) return;
 
+        fillSolutionFilter(data.facets, data.solution_labels || {});
         document.getElementById("decTotal").textContent = fmtInt(data.total) + "건";
         var body = document.getElementById("decisionBody");
         body.innerHTML = "";
         if (!data.items.length) {
             var row = el("tr");
             var cell = el("td", null, "조건에 맞는 결정이 없습니다.");
-            cell.colSpan = 6;
+            cell.colSpan = 8;
             cell.style.color = "var(--text-muted)";
             row.appendChild(cell);
             body.appendChild(row);
@@ -3375,6 +3419,8 @@ function mount(mountRoot, opts) {
             row.appendChild(el("td", "k", fmtTime(item.ts)));
             row.appendChild(el("td", null, item.alarm_name || "—"));
             row.appendChild(el("td", "k", item.server_name || "—"));
+            row.appendChild(el("td", null, item.solution_label || "—"));
+            row.appendChild(zoneCell(item, "k"));
 
             var tierCell = el("td");
             tierCell.appendChild(el("span", "badge-tier t-" + item.tier,
