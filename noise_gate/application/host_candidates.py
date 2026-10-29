@@ -25,7 +25,9 @@ from src.domain.host_names import normalize_hostname
 from noise_gate.domain.host_link import (
     MAX_CANDIDATES,
     build_probe_plan,
+    NODE_UNCHECKED,
     is_confirmed_link,
+    node_address_match,
     public_link_view,
     rank_candidates,
     valid_server_text,
@@ -54,6 +56,75 @@ def _default_probes(app_config: Any) -> tuple[ProbeFn, TokenProbeFn]:
         return await probe_host_tokens(app_config, db_id, tokens)
 
     return _probe, _tokens
+
+
+#: 노드 주소를 찾을 관측 소스의 소유 시스템 키(레지스트리 · 후보 검색 라우트와 같은 값).
+NODE_LOOKUP_SYSTEM = "polestar"
+
+
+def node_lookup_db_ids(app_config: Any) -> list[str]:
+    """노드 주소를 찾을 소스 — 그 시스템의 활성 DB **전부**(존 조회 순서 · plans/199 §2.2).
+
+    순서는 실행 그룹 정본(은행존 → 공동존)이고 존 미배정 DB는 뒤에 붙인다(`host_sweep` ·
+    `entity_locator.probe_scope`와 같은 규약 — 조립 계층을 import하지 않으려고 같은 정본
+    `partition_execution_groups`를 직접 쓴다). 사용자 인가 필터는 없다 — 자동 경로는 시스템
+    주체다(D-352 ② 「전 존에서 정확히 1대」).
+    """
+    from src.routing.execution_groups import partition_execution_groups
+    from src.routing.registry import get_registry
+
+    multi_db = getattr(app_config, "multi_db", None)
+    active = set(multi_db.get_active_db_ids()) if multi_db is not None else set()
+    members = [d for d in get_registry().system_db_ids(NODE_LOOKUP_SYSTEM) if d in active]
+    ordered: list[str] = []
+    for group in partition_execution_groups(list(members)):
+        for db_id in group.get("db_ids") or []:
+            if db_id in members and db_id not in ordered:
+                ordered.append(db_id)
+    return ordered + [d for d in members if d not in ordered]
+
+
+async def node_address_link(
+    app_config: Any,
+    *,
+    host_address: str,
+    db_ids: Sequence[str] | None = None,
+    probe: ProbeFn | None = None,
+) -> dict[str, Any]:
+    """파드 노드 주소를 소스 전부에서 IP 정확 일치로 찾는다 (plans/199 §2.2 · D-352 ②).
+
+    소스별 개별 try — 실패한 소스가 있으면 `node_unchecked`로 남기고 「없음」과 합치지 않는다.
+    캐시하지 않는다(방금 등록된 서버 · D-224 규약 4). 결과를 저장하지 않는다(알람 시점 사실).
+
+    Returns:
+        `node_address_match` 판정 + `unchecked`(실패 소스 `[{db_id, reason}]`).
+    """
+    probe = probe or _default_probes(app_config)[0]
+    sources = list(db_ids) if db_ids is not None else node_lookup_db_ids(app_config)
+    rows: list[tuple[str, Mapping[str, Any]]] = []
+    unchecked: list[dict[str, str]] = []
+    for db_id in sources:
+        try:
+            found = await probe(db_id, [], [], [host_address])
+        except Exception as exc:  # noqa: BLE001 — 소스별 개별 실패(확인하지 못함)
+            logger.warning(
+                "노드 주소 조회 실패 — 확인하지 못함: db_id=%s addr=%s err=%s",
+                db_id, host_address, exc,
+            )
+            unchecked.append({"db_id": db_id, "reason": _unchecked_reason(exc)})
+            continue
+        rows.extend((db_id, row) for row in found)
+    if not sources:
+        logger.warning("노드 주소 조회 대상 소스 없음 — 확인하지 못함: addr=%s", host_address)
+        result = {"status": "unresolved", "reason": NODE_UNCHECKED}
+    else:
+        result = node_address_match(rows, host_address=host_address, unchecked=bool(unchecked))
+    logger.info(
+        "노드 주소 연결: addr=%s 소스=%d 행=%d 확인못함=%d status=%s reason=%s db_id=%s",
+        host_address, len(sources), len(rows), len(unchecked), result.get("status"),
+        result.get("reason", ""), result.get("db_id", ""),
+    )
+    return {**result, "unchecked": unchecked}
 
 
 def _unchecked_reason(exc: BaseException) -> str:
@@ -285,8 +356,11 @@ async def polestar_link_for(
 
 
 __all__ = [
+    "NODE_LOOKUP_SYSTEM",
     "find_host_candidates",
     "locate_selected_server",
+    "node_address_link",
+    "node_lookup_db_ids",
     "polestar_link_for",
     "verify_selected_server",
 ]

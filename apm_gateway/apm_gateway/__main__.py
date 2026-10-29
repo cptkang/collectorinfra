@@ -8,6 +8,8 @@ SSE MCP 서버(uvicorn · 주체별 Bearer)와 이벤트 폴러(옵트인)를 �
 R-20). 설정 오류(단일·다중 설정 동시 · 소스 필수 키 누락 · id 형식 · 같은 토큰 두 주체)는
 기동 실패다(plans/87 J8 · D-287 ③ · plans/134 W0-B). 기동 시 작업 스풀을 훑어 남은 진행 중 작업을
 interrupted로 바꾸고, 종료 시 진행 중 백그라운드 작업을 interrupted로 끝낸다(종료 감사 포함).
+노드 주소 조회(plans/199 · `JENNIFER_NODE_ADDRESS_ENABLED`)가 켜져 있으면 소스별 웹 세션 조회기를
+하나 만들어 폴러(`alarm:raw` 가산)와 `apm_instance_map`(`host_address` 칸)에 함께 넘긴다.
 
 로그: HTTP·MCP 전송 라이브러리 로거는 경고 이상만 남긴다(로그 수준 설정과 무관).
 - httpx·httpcore: INFO로 `HTTP Request: GET <전체 URL>`을 찍어 계정 ID 경로 변수·쿼리 값
@@ -81,6 +83,7 @@ async def _serve() -> list[int]:
     from apm_gateway.adapters.log_masking import install_log_record_factory
     from apm_gateway.application.event_buffer import EventBuffer
     from apm_gateway.application.jobs import JobManager
+    from apm_gateway.application.node_address import build_node_address
     from apm_gateway.application.poller import EventPoller
     from apm_gateway.application.sources import build_source_set
     from apm_gateway.application.tools import ApmTools
@@ -103,6 +106,7 @@ async def _serve() -> list[int]:
     logger = logging.getLogger("apm_gateway")
 
     sources = build_source_set(cfg)
+    node_address = build_node_address(cfg)  # 플래그 off면 None(현행 동일)
     poller: EventPoller | None = None
     event_buffer: EventBuffer | None = None
     redis_client = None
@@ -119,8 +123,15 @@ async def _serve() -> list[int]:
             retention_minutes=cfg.poller.buffer_minutes,
             max_events=cfg.poller.buffer_max_events,
         )
-        poller = EventPoller(sources, cfg, redis_client, event_buffer=event_buffer)
-    tools = ApmTools(sources, cfg, poller_status=poller.status if poller else None)
+        poller = EventPoller(
+            sources, cfg, redis_client, event_buffer=event_buffer, node_address=node_address
+        )
+    tools = ApmTools(
+        sources,
+        cfg,
+        poller_status=poller.status if poller else None,
+        node_address=node_address,
+    )
     jobs = JobManager.from_config(
         cfg, envelope=tools.ok, error_envelope=tools.err, on_finish=audit_job_finished
     )
@@ -169,6 +180,8 @@ async def _serve() -> list[int]:
         await jobs.aclose()  # 진행 중 백그라운드 작업 → interrupted(종료 감사 1줄씩)
         for src in sources:
             await src.api.client.aclose()
+        if node_address is not None:
+            await node_address.aclose()
         if redis_client is not None:
             await redis_client.aclose()
     captured: list[int] = server.captured()

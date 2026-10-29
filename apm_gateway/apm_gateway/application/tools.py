@@ -54,6 +54,7 @@ from apm_gateway.application.masking import mask_text
 from apm_gateway.application.name_search import QUERY_MAX as QUERY_MAX
 from apm_gateway.application.name_search import domain_order
 from apm_gateway.application.name_search import search_query as search_query
+from apm_gateway.application.node_address import NodeAddressService
 from apm_gateway.application.period_stats import period_stats, stats_delta, sum_stats
 from apm_gateway.application.sources import SourceSet
 from apm_gateway.application.stats_tools import StatsTools
@@ -143,8 +144,11 @@ class ApmTools(ApmCore):
         *,
         clock: Callable[[], float] = time.time,
         poller_status: Callable[[], dict[str, Any]] | None = None,
+        node_address: NodeAddressService | None = None,
     ) -> None:
-        super().__init__(sources, cfg, clock=clock, poller_status=poller_status)
+        super().__init__(
+            sources, cfg, clock=clock, poller_status=poller_status, node_address=node_address
+        )
         # 도구군(plans/178 W2·W3) — 코어(self)를 받아 합성한다
         self._instance_tools = InstanceTools(self)
         self._health_tools = HealthTools(self)

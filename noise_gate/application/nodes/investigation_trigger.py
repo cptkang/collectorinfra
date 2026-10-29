@@ -27,6 +27,7 @@ infrastructure(sre_agent_client·decision_store) 소비. 다른 노드·graph를
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 from typing import Any, Optional
 
@@ -689,39 +690,152 @@ async def _attach_polestar_link(
     link: dict[str, Any] | None = None,
     rerun: dict[str, Any] | None = None,
 ) -> None:
-    """APM 알람 페이로드에 `meta.hints.polestar_link`(+`rerun`)를 단다 (plans/196 §5.2).
+    """APM 알람 페이로드에 `meta.hints.polestar_link`(+`rerun`)를 단다 (plans/196 §5.2 · plans/199).
 
-    D-188 `attach_server_identity`와 같은 대칭 원칙 — 자동 트리거·수동 재분석 양쪽이 이 함수를
-    부른다. 자동 사용은 **확정 연결만**이고(Q5) 확정 대기·연결 없음은 `unresolved`다. 플래그 off
-    이거나 APM 알람이 아니면(`meta.hints` 없음) 아무것도 하지 않는다(비트 동일).
+    D-188 `attach_server_identity`와 같은 대칭 원칙 — 자동 트리거·사건 종합·수동 재분석 세 경로가
+    이 함수를 부른다. APM 알람이 아니면(`meta.hints` 없음) 아무것도 하지 않는다.
+
+    우선순위(D-352 ③④):
+        ① 파드(`apm.pod is True`) 노드 주소 연결 `linked` — `host_link_enabled`와 독립
+        ② 저장된 확정 연결(D-348 · `host_link_enabled`일 때만)
+        ③ 파드 미확정 사유(`unresolved` + `reason` · `pod: true`)
+        ④ 파드 아님 — 종전(플래그 off면 키 없음 · 비트 동일)
+    사용자가 고른 연결(`link` · 「이 서버로 다시 조회」)은 그 재조회 요청이라 그대로 쓴다.
     """
-    gate_cfg = getattr(cfg, "noise_gate", None)
-    if gate_cfg is None or not getattr(gate_cfg, "host_link_enabled", False):
-        return
     hints = (payload.get("meta") or {}).get("hints")
     if not isinstance(hints, dict) or hints.get("solution") != KIND_APM:
         return
-    if link is None:
-        from noise_gate.application.host_candidates import polestar_link_for
-        from noise_gate.domain.host_link import apm_source_id
-        from noise_gate.infrastructure.host_link_store import HostLinkStore
+    gate_cfg = getattr(cfg, "noise_gate", None)
+    host_link_on = gate_cfg is not None and bool(getattr(gate_cfg, "host_link_enabled", False))
+    if host_link_on and link is not None:
+        _set_polestar_link(event, hints, link, rerun)
+        return
+    node = await _node_address_hint(cfg, event)
+    if node is None and not host_link_on:
+        return
+    if not host_link_on:
+        _set_polestar_link(event, hints, node or {}, None)
+        return
+    stored = await _stored_polestar_link(event, hints, store=store, redis=redis)
+    if node is not None and node.get("status") == "linked":
+        if stored.get("status") == "linked" and (
+            str(stored.get("db_id") or ""), str(stored.get("server_name") or "")
+        ) != (str(node.get("db_id") or ""), str(node.get("server_name") or "")):
+            node["previous_link"] = {
+                "db_id": str(stored.get("db_id") or ""),
+                "server_name": str(stored.get("server_name") or ""),
+            }
+        chosen = node
+    elif node is not None and stored.get("status") != "linked":
+        chosen = node
+    else:
+        chosen = stored
+    _set_polestar_link(event, hints, chosen, rerun)
 
-        if store is None and redis is not None:
-            store = HostLinkStore(redis)
-        link = await polestar_link_for(
-            store,
-            source_id=apm_source_id(
-                str(getattr(event, "db_id", "") or ""), hints.get("source_id")
-            ),
-            hostname=str(getattr(event, "hostname", "") or ""),
-        )
+
+def _set_polestar_link(
+    event: Any, hints: dict[str, Any], link: dict[str, Any], rerun: dict[str, Any] | None
+) -> None:
     hints["polestar_link"] = link
     if rerun:
         hints["rerun"] = rerun
     logger.info(
-        "호스트 연결 힌트: alarm_id=%s status=%s rerun=%s",
-        getattr(event, "alarm_id", ""), link.get("status"), bool(rerun),
+        "호스트 연결 힌트: alarm_id=%s status=%s basis=%s reason=%s rerun=%s",
+        getattr(event, "alarm_id", ""), link.get("status"), link.get("basis", ""),
+        link.get("reason", ""), bool(rerun),
     )
+
+
+async def _stored_polestar_link(
+    event: Any, hints: dict[str, Any], *, store: Any, redis: Any
+) -> dict[str, Any]:
+    """저장된 확정 연결(D-348) → 힌트(확정만 · 저장소 실패는 `unresolved`)."""
+    from noise_gate.application.host_candidates import polestar_link_for
+    from noise_gate.domain.host_link import apm_source_id
+    from noise_gate.infrastructure.host_link_store import HostLinkStore
+
+    if store is None and redis is not None:
+        store = HostLinkStore(redis)
+    return await polestar_link_for(
+        store,
+        source_id=apm_source_id(str(getattr(event, "db_id", "") or ""), hints.get("source_id")),
+        hostname=str(getattr(event, "hostname", "") or ""),
+    )
+
+
+async def _node_address_hint(cfg: Any, event: Any) -> dict[str, Any] | None:
+    """파드 알람의 노드 주소 연결 힌트(plans/199 §2.2 · D-352). 파드가 아니면 None.
+
+    게이트웨이가 원문 `apm` 블록에 실은 `pod`·`host_address`·`host_address_status`를 직접 읽는다
+    (`apm_trigger_hints` 고정 키 집합은 건드리지 않는다). `pod`가 True가 아니면(false·키 없음 =
+    게이트웨이 플래그 off·판정 불가) None — 종전 경로. 상태가 `ok`가 아니면(`stale` 포함) 조회
+    없이 `node_lookup_<상태>`. 조회 자체의 예외도 삼키지 않고 사유로 남긴다.
+    """
+    from datetime import UTC, datetime
+
+    raw = getattr(event, "raw_payload", None)
+    apm = raw.get("apm") if isinstance(raw, dict) else None
+    if not isinstance(apm, dict) or apm.get("pod") is not True:
+        return None
+    host_address = str(apm.get("host_address") or "").strip()
+    status = str(apm.get("host_address_status") or "").strip() or "missing"
+    alarm_id = getattr(event, "alarm_id", "")
+    if status != "ok" or not host_address:
+        reason = f"node_lookup_{status if status != 'ok' else 'missing'}"
+        logger.info(
+            "파드 노드 주소 미확정 — 조회 생략: alarm_id=%s status=%s reason=%s",
+            alarm_id, status, reason,
+        )
+        return {"status": "unresolved", "reason": reason, "pod": True}
+    try:
+        # 정확한 IPv4 점 표기만 — 게이트웨이 검증에만 기대지 않는다(프로브 리터럴 이중 방어).
+        ipaddress.IPv4Address(host_address)
+    except ValueError:
+        logger.warning(
+            "파드 노드 주소 형식 불일치 — 조회 생략: alarm_id=%s reason=node_lookup_error",
+            alarm_id,
+        )
+        return {"status": "unresolved", "reason": "node_lookup_error", "pod": True}
+    from noise_gate.application.host_candidates import node_address_link
+    from noise_gate.domain.host_link import BASIS_NODE_ADDRESS, NODE_UNCHECKED
+
+    try:
+        found = await node_address_link(cfg, host_address=host_address)
+    except Exception:  # noqa: BLE001 — 소스 목록 해석 실패도 조사 제출을 막지 않는다
+        logger.warning(
+            "파드 노드 주소 연결 실패 — 확인하지 못함: alarm_id=%s addr=%s",
+            alarm_id, host_address, exc_info=True,
+        )
+        found = {"status": "unresolved", "reason": NODE_UNCHECKED}
+    if found.get("status") == "linked":
+        linked = {
+            "status": "linked",
+            "db_id": found["db_id"],
+            "server_name": found["server_name"],
+            "hostname": found.get("hostname", ""),
+            "basis": BASIS_NODE_ADDRESS,
+            "host_address": host_address,
+            "at": datetime.now(UTC).isoformat(),
+        }
+        # D-352 부기 2 — 일부 존 실패여도 1대 일치면 연결하고, 확인 못 한 소스를 근거에 남긴다
+        unchecked = [
+            str(u.get("db_id") or "")
+            for u in found.get("unchecked") or []
+            if isinstance(u, dict) and u.get("db_id")
+        ]
+        if unchecked:
+            linked["unchecked_db_ids"] = ",".join(unchecked)
+        return linked
+    logger.info(
+        "파드 노드 주소 미확정: alarm_id=%s addr=%s reason=%s",
+        alarm_id, host_address, found.get("reason"),
+    )
+    return {
+        "status": "unresolved",
+        "reason": str(found.get("reason") or NODE_UNCHECKED),
+        "pod": True,
+        "host_address": host_address,
+    }
 
 
 class _FingerprintOnly:

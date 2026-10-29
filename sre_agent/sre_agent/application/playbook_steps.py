@@ -679,7 +679,7 @@ def _polestar_reason(ctx: StepContext) -> str | None:
         if _polestar_skipped(ctx) and ctx.scope.polestar_reason:
             return ctx.scope.polestar_reason
         detail = ctx.scope.polestar_reason or "폴스타 소스·서버명을 결정적으로 정할 수 없다"
-        return f"{POLESTAR_UNRESOLVED} — {detail}"
+        return polestar_unresolved_text(detail)
     if ctx.polestar is None:
         return "폴스타 MCP 미구성"
     return None
@@ -1235,10 +1235,18 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
     )
 
 
+def polestar_unresolved_text(reason: str) -> str:
+    """「폴스타 서버 미확정 — {사유}」. 사유가 이미 그 머리로 시작하면(파드 미확정 · plans/199)
+    머리를 겹쳐 붙이지 않는다."""
+    if reason.startswith(f"{POLESTAR_UNRESOLVED} — "):
+        return reason
+    return f"{POLESTAR_UNRESOLVED} — {reason}"
+
+
 def scope_polestar_reason(scope: RunScope) -> str | None:
     """S0 사유의 폴스타 토막 — 미확정이면 그 사유, 대체·연결로 정했으면 근거(없으면 None)."""
     if not scope.polestar_source:
-        return f"{POLESTAR_UNRESOLVED} — {scope.polestar_reason or '폴스타 소스 결정 불가'}"
+        return polestar_unresolved_text(scope.polestar_reason or "폴스타 소스 결정 불가")
     return scope.polestar_basis
 
 
@@ -2440,6 +2448,7 @@ __all__ = [
     "RunScope",
     "RunWindows",
     "SCOPE_ACTIONS",
+    "polestar_unresolved_text",
     "scope_polestar_reason",
     "section_axis_status",
     "STEP_ABORTED",

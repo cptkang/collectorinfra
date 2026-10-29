@@ -34,6 +34,7 @@ from sre_agent.domain.cross_source_episode import (
 )
 from sre_agent.domain.investigation_limits import is_apm_trigger
 from sre_agent.domain.topology_neighbors import (
+    CONFIRMED_LINK_BASIS,
     NEIGHBOR_LEAD_ANCHOR,
     Neighbor,
     link_neighbor,
@@ -62,6 +63,8 @@ TOOL_TOPOLOGY = "polestar_topology"   # plans/198 I-7 — 배치 맨 끝 1건(�
 # plans/153 R-4 — APM(제니퍼) 트리거인데 폴스타 소스를 모를 때. 제니퍼 dbId를 폴스타 도구에 넘기면
 # mcp_server가 「알 수 없는 소스」로 전 축을 결손 처리한다 — 호출 자체를 하지 않고 이 사실만 남긴다.
 INFRA_SOURCE_UNKNOWN_NOTE = "인프라 소스 미상 — 폴스타 사전수집 생략"
+#: 노드 주소 연결 힌트 근거(plans/199 · D-352 — `playbook_runner.POLESTAR_LINK_BASIS` 키와 같은 값).
+NODE_ADDRESS_BASIS = "node_address"
 
 
 @dataclass(frozen=True)
@@ -101,8 +104,13 @@ def scope_from_job(
     있으면 그것을 쓰고, 아니면 폴스타 축을 호출하지 않는 범위(`skip_infra`)를 돌려준다.
     `cross_source`이고 두 소스 멤버가 있는 사건이면 멤버를 타임라인 점으로 싣는다.
 
+    plans/199(D-352 ⑦): 사건 `infra_db_ids`가 없고 연결 힌트가 노드 주소 연결(`basis:
+    node_address` linked)이면 그 `db_id`·`server_name`으로 폴스타 축을 연다(`infra_db_ids` 우선 —
+    현행 순서). 파드 미확정(`unresolved` + `pod`)은 열지 않는다(`skip_infra`).
+
     `neighbors_max`(plans/198 I-7 · 0 = off)면 이웃 상한과 확정 연결 이웃
-    (`meta.hints.polestar_link` — 이전 확정 연결만)을 범위에 싣는다.
+    (`meta.hints.polestar_link` — 이전 확정 연결만 · 노드 주소 연결이면 함께 실린
+    저장 확정 연결 `previous_link`)을 범위에 싣는다.
     """
     ref = getattr(job, "reference_time", None)
     if not ref:
@@ -116,6 +124,11 @@ def scope_from_job(
     if is_apm_trigger(payload):
         episode = episode_from_payload(payload) if cross_source else None
         source = episode.infra_db_ids[0] if episode is not None and episode.infra_db_ids else ""
+        if not source:
+            # plans/199 · D-352 ⑦ — 노드 주소 연결(알람 시점 자동)이면 그 서버가 대상 자체다
+            node = _node_link(payload)
+            if node is not None:
+                source, server = node
         skip_infra = not source
     else:
         source = str(event.get("dbId") or payload.get("db_id") or "").strip()
@@ -156,9 +169,28 @@ def _confirmed_link(payload: dict) -> Neighbor | None:
     """APM 알람의 확정 연결 힌트(`meta.hints.polestar_link` — D-348)를 이웃으로. 형식 검증은
     플레이북과 같은 해석(`playbook_runner.polestar_link`)을 쓰고, 확정 여부는 도메인이 정한다."""
     # 지연 import — playbook_runner → playbook_steps → 이 모듈 순환을 피한다(플래그 on일 때만 적재)
+    from sre_agent.application.playbook_runner import polestar_link, polestar_previous_link
+
+    link = polestar_link(payload)
+    if link is not None and link.get("basis") == NODE_ADDRESS_BASIS:
+        # 노드 주소 연결은 이웃이 아니라 대상 자체(plans/199 §2.3) — 함께 실린 저장 확정 연결
+        # (`previous_link` · D-352 ③)을 이전 확정 연결 모양으로 넘겨 이웃 규칙을 그대로 쓴다
+        previous = polestar_previous_link(payload)
+        if previous is None:
+            return None
+        link = {"status": "linked", "basis": CONFIRMED_LINK_BASIS, **previous}
+    return link_neighbor(link)
+
+
+def _node_link(payload: dict) -> tuple[str, str] | None:
+    """노드 주소 연결 힌트(`basis: node_address` linked — plans/199)의 `(db_id, server_name)`.
+    형식 검증은 플레이북과 같은 해석(`playbook_runner.polestar_link`)을 쓴다. 아니면 None."""
     from sre_agent.application.playbook_runner import polestar_link
 
-    return link_neighbor(polestar_link(payload))
+    link = polestar_link(payload)
+    if link is None or link["status"] != "linked" or link.get("basis") != NODE_ADDRESS_BASIS:
+        return None
+    return link["db_id"], link["server_name"]
 
 
 def build_calls(scope: EvidenceScope) -> list[tuple[str, dict]]:

@@ -511,6 +511,63 @@ out = [
     assert out[3] is None
 
 
+_POD = "폴스타 서버 미확정 — K8s 파드(노드 10.0.0.9 — 노드 IP 폴스타 미등록)"
+_NODE_BASIS = "제니퍼 노드 주소 일치 — 10.0.0.9 (알람 시점 · 자동)"
+
+
+def test_host_link_state_pod_and_node_address() -> None:
+    """(plans/199 · D-352 ④) 파드 미확정은 선택 대기가 아니다 · 노드 주소 일치는 연결 표시."""
+    out = _node(f"""
+var c = function (step, because) {{ return {{ step: step, skipped: true, because: because, skipRaw: "" }}; }};
+out = [
+    DV.hostLinkState([c("S4", {json.dumps(_POD, ensure_ascii=False)})], null),
+    DV.hostLinkState([], {{ polestar_basis: {json.dumps(_NODE_BASIS, ensure_ascii=False)} }}),
+];
+""")
+    assert out[0] is None
+    assert out[1] == {"mode": "linked", "step": "", "basis": _NODE_BASIS}
+
+
+def test_pod_unresolved_card_shows_reason_without_selection() -> None:
+    sections = [{"step": "S4", "title": "호스트 자원", "status": "skipped", "reason": _POD}]
+    out = _node(
+        _script(
+            _final({"playbook": {"id": "fallback", "sections": sections}}),
+            """
+ctl.select("inv-f");
+await flush();
+out = { host: findAll(tab.dom.flowBody, "dv-host").length,
+    called: calls.filter(function (u) { return u.indexOf("host-candidates") >= 0; }).length,
+    title: texts(tab.dom.flowBody, "dv-card-title").join("|") };
+""",
+            cands=_CANDS,
+        )
+    )
+    assert out["host"] == 0 and out["called"] == 0
+    assert "K8s 파드(노드 10.0.0.9 — 노드 IP 폴스타 미등록)" in out["title"]
+
+
+def test_node_address_linked_shows_basis_without_change_button() -> None:
+    sections = [{"step": "S4", "title": "호스트 자원", "status": "ok", "finding": "CPU 정상"}]
+    basis = _NODE_BASIS + " · 저장된 확정 연결 kbl-a(polestar_cm_gp)과 다름 — 노드 주소 우선"
+    out = _node(
+        _script(
+            _final({"playbook": {"id": "fallback", "sections": sections,
+                                 "scope": {"polestar_basis": basis}}}),
+            """
+ctl.select("inv-f");
+await flush();
+out = { basis: texts(tab.dom.flowBody, "dv-host-basis"),
+    change: findAll(tab.dom.flowBody, "dv-host-change").length,
+    called: calls.filter(function (u) { return u.indexOf("host-candidates") >= 0; }).length };
+""",
+            cands=_CANDS,
+        )
+    )
+    assert out["basis"] == ["폴스타 서버 연결 — " + basis]
+    assert out["change"] == 0 and out["called"] == 0
+
+
 # ─── 정적 — 쓰기 경로는 app.js 주입 · 관리자 탭 ───────────────────────────
 
 

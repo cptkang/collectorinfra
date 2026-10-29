@@ -38,6 +38,7 @@ GROUP_TITLES = {
     "jobs": "장기 작업",
     "poller": "이벤트 폴러",
     "redis": "Redis",
+    "node_address": "노드 주소 조회",
 }
 _Getter = Callable[[GatewayConfig], Any]
 
@@ -282,6 +283,30 @@ _TABLE: tuple[tuple[str, str, str, Any, _Getter, str], ...] = (
     ("REDIS_PORT", "redis", "int", "6379", lambda c: c.redis.port, "Redis 포트"),
     ("REDIS_DB", "redis", "int", "0", lambda c: c.redis.db, "Redis DB 번호"),
     ("REDIS_PASSWORD", "redis", "secret", None, lambda c: c.redis.password, "Redis 비밀번호"),
+    (
+        "JENNIFER_NODE_ADDRESS_ENABLED",
+        "node_address",
+        "bool",
+        "false",
+        lambda c: c.node_address.enabled,
+        "웹 세션 노드 주소 조회 사용(plans/199 · 소스별 웹 계정 필요)",
+    ),
+    (
+        "JENNIFER_NODE_ADDRESS_TTL_SECONDS",
+        "node_address",
+        "int",
+        "900",
+        lambda c: c.node_address.ttl_seconds,
+        "도메인 캐시 수명(초 · MCP 표면과 조회 실패 시 stale 상한)",
+    ),
+    (
+        "JENNIFER_NODE_ADDRESS_MIN_REFETCH_SECONDS",
+        "node_address",
+        "int",
+        "60",
+        lambda c: c.node_address.min_refetch_seconds,
+        "같은 도메인 재조회 최소 간격(초 · 알람 경로 캐시 신선도 상한)",
+    ),
 )
 # 소스별 접두 키 접미 → (type, 기동 값 읽기, 설명) — `config.SOURCE_KEY_SUFFIXES`와 같은 집합
 _SOURCE_SUFFIX_META: dict[str, tuple[str, Callable[[Any], Any], str]] = {
@@ -295,6 +320,15 @@ _SOURCE_SUFFIX_META: dict[str, tuple[str, Callable[[Any], Any], str]] = {
         "int",
         lambda s: s.max_inflight_per_source,
         "동시 호출 상한(비면 전역 값)",
+    ),
+    # 웹 세션 노드 주소 조회(plans/199) — 전역 값을 승계하지 않는다(소스별 전용 계정)
+    "WEB_USER": ("string", lambda s: s.web_user, "노드 주소 조회 전용 웹 계정 ID(비면 disabled)"),
+    "WEB_PASSWORD": ("secret", lambda s: s.web_password, "노드 주소 조회 전용 웹 계정 비밀번호"),
+    "WEB_URL": ("string", lambda s: s.web_url, "뷰 서버 웹 주소(비면 API_URL)"),
+    "WEB_TLS_VERIFY": (
+        "bool",
+        lambda s: s.web_tls_verify,
+        "웹 https 인증서 검증(사설 인증서면 false)",
     ),
 }
 

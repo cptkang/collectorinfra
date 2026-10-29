@@ -1,8 +1,15 @@
 """인스턴스 목록·이름 검색·업무명 해석 도구군 `InstanceTools`(`apm_instance_map` · plans/130
-N-1·N-2 · plans/178 W2에서 `tools.py`의 `ApmTools`에서 옮김)."""
+N-1·N-2 · plans/178 W2에서 `tools.py`의 `ApmTools`에서 옮김).
+
+노드 주소 조회기(plans/199 · D-352)가 있으면 결과 행마다 `host_address`(웹 세션 노드 주소 — 알람
+경로와 같은 캐시 · TTL 안 값 · 모르면 빈 값) 칸을 가산한다. 캐시 밖 도메인은 결과가
+`MCP_FETCH_DOMAIN_LIMIT`개 도메인 이하일 때만 새로 조회한다(목록 전체 호출이 전 도메인 조회가 되지
+않게). 조회기가 없으면(플래그 off) 칸이 없다(현행 동일)."""
 
 from __future__ import annotations
 
+import asyncio
+import logging
 import math
 from collections.abc import Iterable
 from typing import Any
@@ -22,6 +29,11 @@ from apm_gateway.application.name_search import (
     search_instances,
     search_query,
 )
+from apm_gateway.application.node_address import (
+    LOOKUP_TIMEOUT_SECONDS,
+    MCP_FETCH_DOMAIN_LIMIT,
+    instance_key,
+)
 from apm_gateway.application.resolver import Inventory
 from apm_gateway.application.sources import (
     STATUS_NO_MATCH,
@@ -39,6 +51,8 @@ from apm_gateway.application.tool_common import (
 )
 from apm_gateway.domain.call_context import expect_calls
 from apm_gateway.domain.errors import INVALID_ARGUMENT, ApmError
+
+logger = logging.getLogger(__name__)
 
 # plans/130 N-1 — 인스턴스 이름 검색 단계별 신뢰도
 _SEARCH_CONFIDENCE = {
@@ -59,6 +73,32 @@ class InstanceTools:
         self.core = core
         # 업무명 해석(plans/130 N-2) — (소스, 도메인) → (읽은 시각, 최근 처리 업무 id → 인스턴스 id)
         self._business_seen: dict[tuple[str, int], tuple[float, dict[str, set[int]]]] = {}
+
+    async def _fill_host_address(self, rows: list[dict[str, Any]]) -> None:
+        """노드 주소 칸 가산(조회기가 있을 때만). 조회 실패·상한 초과는 빈 값이다."""
+        service = self.core.node_address
+        if service is None:
+            return
+        pairs = list(dict.fromkeys((row["source_id"], row["domain_id"]) for row in rows))
+        fetch = len(pairs) <= MCP_FETCH_DOMAIN_LIMIT
+        found: dict[tuple[str, Any], dict[str, str]] = {}
+        for source_id, domain_id in pairs:
+            try:
+                found[(source_id, domain_id)] = await asyncio.wait_for(
+                    service.domain_addresses(source_id, domain_id, fetch=fetch),
+                    LOOKUP_TIMEOUT_SECONDS,
+                )
+            except Exception as e:  # 부가 칸 — 실패가 목록 응답을 막지 않는다(빈 값)
+                logger.warning(
+                    "apm_instance_map: 노드 주소 칸 조회 실패(소스 %s 도메인 %s · %s) — 빈 값",
+                    source_id,
+                    domain_id,
+                    type(e).__name__,
+                )
+                found[(source_id, domain_id)] = {}
+        for row in rows:
+            addresses = found.get((row["source_id"], row["domain_id"]), {})
+            row["host_address"] = addresses.get(instance_key(row["instance_id"]) or "", "")
 
     async def _domain_descriptions(self, source_ids: set[str]) -> dict[tuple[str, int], str]:
         """도메인 설명(사용자 입력 자유 텍스트 — 마스킹본) — 캐시된 인벤토리에서 읽는다."""
@@ -134,6 +174,7 @@ class InstanceTools:
                         match_reason=reason,
                     )
                 )
+            await self._fill_host_address(rows)
             return self.core.ok(tool, rows, resolution=res, file_only=FILE_ONLY_COLUMNS)
         usable, statuses, found = await self.core.sources.available(
             self.core.sources.select(source_ids)
@@ -150,7 +191,9 @@ class InstanceTools:
                 f"도메인 ID {domain}는 제니퍼 도메인 목록에 없습니다(있는 도메인: {listed})"
             )
         if text is not None:
-            return self._instance_search(tool, usable, statuses, limits, partial, text, domain)
+            return await self._instance_search(
+                tool, usable, statuses, limits, partial, text, domain
+            )
         if biz is not None:
             return await self._business_search(tool, usable, statuses, limits, partial, biz, domain)
         rows = []
@@ -174,6 +217,7 @@ class InstanceTools:
                         match_reason=reason,
                     )
                 )
+        await self._fill_host_address(rows)
         return self.core.ok(
             tool,
             rows,
@@ -183,7 +227,7 @@ class InstanceTools:
             file_only=FILE_ONLY_COLUMNS,
         )
 
-    def _instance_search(
+    async def _instance_search(
         self,
         tool: str,
         usable: list[tuple[JenniferSource, Inventory]],
@@ -226,6 +270,7 @@ class InstanceTools:
         for row in statuses:
             if row["status"] == STATUS_OK and row["source_id"] not in hit_sources:
                 row["status"] = STATUS_NO_MATCH
+        await self._fill_host_address(rows)
         extra: dict[str, Any] = {"search": {"tier": found.tier, "counts": found.counts}}
         if not rows:
             extra["suggestions"] = found.suggestions
@@ -276,6 +321,7 @@ class InstanceTools:
             key=lambda h: (h.rank, domain_order(h.inst["domain_id"]), h.inst["instance_name"]),
         )
         rows = self._business_rows(ordered)
+        await self._fill_host_address(rows)
         hit_sources = {h.src.source_id for h in ordered}
         for row in statuses:
             if row["status"] == STATUS_OK and row["source_id"] not in hit_sources:

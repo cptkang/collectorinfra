@@ -73,6 +73,13 @@ KIND_ABSENT = "absent"
 #: 페이로드 `meta.hints.polestar_link.basis` 값(§5.2).
 BASIS_PREVIOUS = "previous_confirmed"
 BASIS_USER = "user_selected"
+#: (plans/199 · D-352) 제니퍼 파드의 노드 주소 정확 일치 1대 자동 연결 — 저장하지 않는다.
+BASIS_NODE_ADDRESS = "node_address"
+
+#: 노드 주소 연결 미확정 사유(plans/199 §2.2) — 「확인하지 못함」과 「없음」을 합치지 않는다.
+NODE_NOT_REGISTERED = "node_not_registered"
+NODE_AMBIGUOUS = "node_ambiguous"
+NODE_UNCHECKED = "node_unchecked"
 
 _PATTERN_LABELS: dict[str, str] = {
     "normalize": "대소문자·FQDN 접미 제거",
@@ -469,6 +476,53 @@ def polestar_link_hint(link: Mapping[str, Any] | None, now: datetime) -> dict[st
     return {"status": "unresolved"}
 
 
+def node_address_match(
+    rows: Sequence[tuple[str, Mapping[str, Any]]],
+    *,
+    host_address: str | None = None,
+    unchecked: bool = False,
+) -> dict[str, Any]:
+    """노드 주소 조회 행 → 연결 판정(plans/199 §2.2 · D-352 ②).
+
+    Args:
+        rows: `(db_id, 행)` 목록 — 행은 `{"hostname", "name", "ipaddress"}`(소스 전부의 합)
+        host_address: 주면 행 IP가 이 값과 정확히 같은 행만 센다(조회가 넓게 걸러도 안전하게)
+        unchecked: 조회하지 못한 소스가 하나라도 있으면 True
+
+    Returns:
+        - 서로 다른 서버(`db_id`·서버명 쌍) 정확히 1대 →
+          `{"status": "linked", "db_id", "server_name", "hostname"}` — 실패 소스가 있어도 연결한다
+          (D-352 부기 2 — 폴스타는 존 간 중복 등록이 거의 없다 · 실패 소스는 호출자가 근거에 적는다)
+        - 2대 이상 → `{"status": "unresolved", "reason": NODE_AMBIGUOUS}`(실패 소스가 있어도
+          이미 모호하다)
+        - 0대 · 실패 소스 있음 → `NODE_UNCHECKED`(실패한 소스에 있을 수 있다)
+        - 0대 → `NODE_NOT_REGISTERED`
+    """
+    wanted = _lower(host_address) if host_address is not None else None
+    servers: dict[tuple[str, str], tuple[str, Mapping[str, Any]]] = {}
+    for db_id, row in rows:
+        if wanted is not None and _lower(row.get("ipaddress")) != wanted:
+            continue
+        name = _lower(row.get("name")) or _lower(row.get("hostname"))
+        if not name:
+            continue
+        servers.setdefault((str(db_id), name), (str(db_id), row))
+    if len(servers) >= 2:
+        return {"status": "unresolved", "reason": NODE_AMBIGUOUS}
+    if not servers:
+        return {
+            "status": "unresolved",
+            "reason": NODE_UNCHECKED if unchecked else NODE_NOT_REGISTERED,
+        }
+    db_id, row = next(iter(servers.values()))
+    return {
+        "status": "linked",
+        "db_id": db_id,
+        "server_name": str(row.get("name") or row.get("hostname") or "").strip(),
+        "hostname": str(row.get("hostname") or "").strip(),
+    }
+
+
 def user_selected_hint(
     *, db_id: str, server_name: str, polestar_hostname: str, by: str, at: str
 ) -> dict[str, Any]:
@@ -528,6 +582,7 @@ def public_link_view(link: Mapping[str, Any] | None) -> dict[str, Any] | None:
 
 
 __all__ = [
+    "BASIS_NODE_ADDRESS",
     "BASIS_PREVIOUS",
     "BASIS_USER",
     "GRADE_CONFIRMED",
@@ -539,6 +594,9 @@ __all__ = [
     "KIND_ABSENT",
     "KIND_LINK",
     "MAX_CANDIDATES",
+    "NODE_AMBIGUOUS",
+    "NODE_NOT_REGISTERED",
+    "NODE_UNCHECKED",
     "PUBLIC_LINK_KEYS",
     "ProbePlan",
     "STATE_CONFIRMED",
@@ -550,6 +608,7 @@ __all__ = [
     "extract_patterns",
     "grade_row",
     "is_confirmed_link",
+    "node_address_match",
     "pattern_label",
     "polestar_link_hint",
     "public_link_view",

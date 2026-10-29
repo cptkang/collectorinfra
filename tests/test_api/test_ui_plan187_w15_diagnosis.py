@@ -722,7 +722,7 @@ def test_tab_markup_hidden_by_default_and_script_order() -> None:
     assert 'style="display: none;"' in tab and 'aria-controls="diagnosisView"' in tab
     assert 'id="diagnosisView"' in html and 'class="diagnosis-view view-hidden"' in html
     bv = html.index("briefing-view.js?v=9")
-    dv = html.index("diagnosis-view.js?v=13")
+    dv = html.index("diagnosis-view.js?v=14")
     app = html.index("app.js?v=43")
     assert bv < dv < app
     css = (_STATIC / "css" / "style.css").read_text(encoding="utf-8")

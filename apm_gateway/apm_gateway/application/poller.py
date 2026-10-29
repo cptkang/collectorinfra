@@ -19,6 +19,10 @@ SPEC-apm-gateway §5).
   폴링한다(속도 상한은 소스 클라이언트마다). 커서 키·멱등 키·백오프·중지는 (소스, 도메인)별이다 —
   두 서버의 같은 도메인 id가 커서를 덮어쓰거나 같은 값 이벤트가 중복으로 버려지지 않게(S-6·S-7).
   운영 발행 이력이 없어(§0.12) 종전 커서 키를 옮기지 않는다.
+- 노드 주소(plans/199 · D-352): 조회기(`node_address`)가 있으면(`JENNIFER_NODE_ADDRESS_ENABLED`)
+  멱등 키로 **새 이벤트임을 확인한 뒤 · XADD 전에** 조회해 `apm.host_address`·`host_address_status`·
+  `apm.pod`를 가산한다(기존 키 불변 · 대기 상한 5초 — 넘으면 `error`로 싣고 진행). 조회기가 없으면
+  세 키를 싣지 않는다(현행 페이로드와 비트 동일). 중복 이벤트는 조회하지 않는다.
 """
 
 from __future__ import annotations
@@ -32,6 +36,7 @@ from typing import TYPE_CHECKING, Any
 
 from apm_gateway.adapters.jennifer.api import SOURCE, SOURCE_LABEL
 from apm_gateway.application.masking import mask_text, mask_url
+from apm_gateway.application.node_address import NodeAddressService, lookup_fields
 from apm_gateway.application.resolver import Inventory
 from apm_gateway.application.sources import JenniferSource, SourceSet
 from apm_gateway.config import GatewayConfig
@@ -61,12 +66,14 @@ class EventPoller:
         *,
         clock: Callable[[], float] = time.time,
         event_buffer: EventBuffer | None = None,
+        node_address: NodeAddressService | None = None,
     ) -> None:
         self.sources = sources
         self.cfg = cfg
         self.redis = redis
         self.clock = clock
         self.event_buffer = event_buffer
+        self.node_address = node_address
         self._state: dict[tuple[str, int], dict[str, Any]] = {}
         self.published_total = 0
         self.duplicates_total = 0
@@ -85,6 +92,8 @@ class EventPoller:
         }
         if self.event_buffer is not None:
             status["event_buffer"] = self.event_buffer.status()
+        if self.node_address is not None:
+            status["node_address"] = self.node_address.status()
         return status
 
     async def run_forever(self) -> None:
@@ -260,6 +269,15 @@ class EventPoller:
         if not fresh:
             self.duplicates_total += 1
             return 0
+        if self.node_address is not None:  # 새 이벤트만 · XADD 전(plans/199 검토 I)
+            payload["apm"].update(
+                await lookup_fields(
+                    self.node_address,
+                    src.source_id,
+                    clean["domain_id"],
+                    clean.get("instance_id"),
+                )
+            )
         try:
             await self.redis.xadd(
                 self.cfg.poller.stream_key, {"data": json.dumps(payload, ensure_ascii=False)}

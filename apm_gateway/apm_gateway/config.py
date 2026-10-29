@@ -18,6 +18,10 @@
 - 호출 주체(§3.6): `APM_GATEWAY_BEARER_TOKENS`(JSON 객체 `{주체: 토큰}`) + 종전 단일
   `APM_GATEWAY_BEARER_TOKEN`(주체 `default`). 같은 토큰을 두 주체에 주면 기동 실패다(메시지에 토큰
   값 없음).
+- 노드 주소 조회(plans/199 · D-352): `JENNIFER_NODE_ADDRESS_ENABLED`(기본 off = 현행 동일) + 소스별
+  웹 계정 `JENNIFER_<ID>_WEB_USER`·`_WEB_PASSWORD`(비면 그 소스는 `disabled`) · `_WEB_URL`(비면
+  `_API_URL`) · `_WEB_TLS_VERIFY`(기본 true). 웹 키는 전역 값을 승계하지 않는다 — 소스마다 전용
+  계정이다(사람 계정·소스 간 공유 금지). 단일 설정(소스 `default`)은 웹 키가 없어 `disabled`다.
 - 설정 관리 API(plans/191 · D-345): `APM_GATEWAY_ADMIN_TOKEN`이 있을 때만 `/admin/config`를 연다.
   `load_dotenv`가 `os.environ`에 넣은 키는 `DOTENV_INJECTED_KEYS`에 기록한다 — 거기 없는데
   `os.environ`에 있는 키는 프로세스 환경 원천(파일을 고쳐도 반영되지 않음)으로 판정한다.
@@ -48,6 +52,8 @@ POLICY_DIR = PACKAGE_ROOT / "config"
 
 POLL_INTERVAL_FLOOR = 10
 # 소스별 접두 키 `JENNIFER_<ID>_<접미>` — 앞 둘은 필수, 나머지는 비면 전역 `JENNIFER_<접미>` 값.
+# 예외: `WEB_*`(plans/199)는 전역 값을 승계하지 않는다(소스별 전용 계정 · `WEB_URL`만 `API_URL`
+# 승계).
 SOURCE_KEY_SUFFIXES = (
     "API_URL",
     "API_TOKEN",
@@ -56,6 +62,10 @@ SOURCE_KEY_SUFFIXES = (
     "RATE_LIMIT_PER_SEC",
     "MAX_RESPONSE_BYTES",
     "MAX_INFLIGHT_PER_SOURCE",
+    "WEB_USER",
+    "WEB_PASSWORD",
+    "WEB_URL",
+    "WEB_TLS_VERIFY",
 )
 # `load_dotenv`가 `os.environ`에 넣은 키(설정 관리 API의 프로세스 환경 원천 판정용 · plans/191)
 DOTENV_INJECTED_KEYS: set[str] = set()
@@ -64,7 +74,7 @@ DOTENV_INJECTED_KEYS: set[str] = set()
 @dataclass
 class JenniferApiConfig:
     url: str = ""
-    token: str = ""
+    token: str = field(default="", repr=False)
     domain_ids: tuple[int, ...] = ()
     # 제니퍼 API 1건 상한(plans/187 W22 · D-341 부기 13)
     # — sre_agent MCP 도구 1건 상한(60s)보다 작게.
@@ -77,6 +87,23 @@ class JenniferApiConfig:
     # 1.6s(= 8 / 5회/s) 안이면 이 상한에 닿지 않아 정상 부하 동작은 같다.
     max_inflight_per_source: int = 8
     source_id: str = DEFAULT_SOURCE_ID
+    # 웹 세션 노드 주소 조회(plans/199 · D-352) — 소스별 전용 조회 권한 계정. 비면 `disabled`.
+    web_url: str = ""
+    web_user: str = ""
+    web_password: str = field(default="", repr=False)
+    web_tls_verify: bool = True
+
+
+@dataclass
+class NodeAddressConfig:
+    """웹 세션 노드 주소 조회(plans/199 · D-352) — 기본 off = `alarm:raw` 페이로드 현행과
+    비트 동일."""
+
+    enabled: bool = False
+    # 도메인 캐시 수명 — MCP 표면(`apm_instance_map`)과 조회 실패 시 `stale` 상한에만 쓴다
+    ttl_seconds: int = 900
+    # 같은 도메인 재조회 최소 간격 = 알람 경로의 캐시 신선도 상한(검토 C)
+    min_refetch_seconds: int = 60
 
 
 @dataclass
@@ -153,12 +180,35 @@ class GatewayConfig:
     poller: PollerConfig = field(default_factory=PollerConfig)
     redis: RedisConfig = field(default_factory=RedisConfig)
     policies: Policies = field(default_factory=Policies)
+    node_address: NodeAddressConfig = field(default_factory=NodeAddressConfig)
 
 
 def _bool(value: str | None, default: bool) -> bool:
     if value is None or value.strip() == "":
         return default
     return value.strip().lower() in ("1", "true", "yes", "on")
+
+
+_TRUE_WORDS = frozenset({"1", "true", "yes", "on"})
+_FALSE_WORDS = frozenset({"0", "false", "no", "off"})
+
+
+def _strict_bool(value: str | None, default: bool, prefix: str) -> bool:
+    """`WEB_TLS_VERIFY` 엄격 파싱 — 인식 못 한 값은 기본값(검증 켬)과 경고
+    (fail-closed · 값은 로그에 싣지 않는다)."""
+    if value is None or value.strip() == "":
+        return default
+    word = value.strip().lower()
+    if word in _TRUE_WORDS:
+        return True
+    if word in _FALSE_WORDS:
+        return False
+    logger.warning(
+        "%sWEB_TLS_VERIFY 값을 인식하지 못했다(true/false/1/0/yes/no/on/off) — %s로 둔다",
+        prefix,
+        "true(검증 켬)" if default else "false",
+    )
+    return default
 
 
 def _int_list(value: str | None, key: str = "JENNIFER_DOMAIN_IDS") -> tuple[int, ...]:
@@ -225,6 +275,11 @@ def _load_sources(
                     prefix + "MAX_INFLIGHT_PER_SOURCE",
                 ),
                 source_id=sid,
+                web_url=pick("WEB_URL") or pick("API_URL"),
+                web_user=pick("WEB_USER"),
+                # 비밀번호는 앞뒤 공백도 값일 수 있어 다듬지 않는다(비었는지만 본다)
+                web_password=env.get(prefix + "WEB_PASSWORD") or "",
+                web_tls_verify=_strict_bool(env.get(prefix + "WEB_TLS_VERIFY"), True, prefix),
             )
         )
     return tuple(sources)
@@ -454,6 +509,17 @@ def load_config(
             password=get("REDIS_PASSWORD") or "",
         ),
         policies=policies,
+        node_address=NodeAddressConfig(
+            enabled=_bool(get("JENNIFER_NODE_ADDRESS_ENABLED"), False),
+            ttl_seconds=_positive_int(
+                get("JENNIFER_NODE_ADDRESS_TTL_SECONDS"), 900, "JENNIFER_NODE_ADDRESS_TTL_SECONDS"
+            ),
+            min_refetch_seconds=_positive_int(
+                get("JENNIFER_NODE_ADDRESS_MIN_REFETCH_SECONDS"),
+                60,
+                "JENNIFER_NODE_ADDRESS_MIN_REFETCH_SECONDS",
+            ),
+        ),
     )
 
 
@@ -466,6 +532,7 @@ def describe(cfg: GatewayConfig) -> dict[str, Any]:
                 "url_set": bool(s.url),
                 "token_set": bool(s.token),
                 "domain_filter": list(s.domain_ids),
+                "web_account_set": bool(s.web_user and s.web_password),
             }
             for s in cfg.sources
         ],
@@ -480,5 +547,6 @@ def describe(cfg: GatewayConfig) -> dict[str, Any]:
         },
         "poller": cfg.poller.enabled,
         "poll_interval": cfg.poller.interval_seconds,
+        "node_address": cfg.node_address.enabled,
         "overrides": len(cfg.policies.instance_map.get("overrides") or []),
     }
