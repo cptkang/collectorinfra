@@ -121,6 +121,9 @@
             <div class="noise-actions">
                 <input type="search" id="decSearch" placeholder="알람명·서버명·사유 검색"
                        style="flex:1;min-width:200px;padding:7px 10px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);">
+                <select id="decSolution" title="알람을 보낸 솔루션으로 거릅니다" style="padding:7px 9px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);">
+                    <option value="">전 솔루션</option>
+                </select>
                 <select id="decTier" style="padding:7px 9px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);">
                     <option value="">전 티어</option>
                     <option value="page">PAGE</option>
@@ -136,7 +139,7 @@
             </div>
             <div class="tbl-wrap">
                 <table class="tbl">
-                    <thead><tr><th>시각</th><th>알람</th><th>서버</th><th>티어</th><th>결정 단계</th><th>사유</th></tr></thead>
+                    <thead><tr><th>시각</th><th>알람</th><th>서버</th><th>솔루션</th><th>존</th><th>티어</th><th>결정 단계</th><th>사유</th></tr></thead>
                     <tbody id="decisionBody"></tbody>
                 </table>
             </div>
@@ -156,6 +159,6 @@
 
     <script src="/static/js/noise-help.js?v=6"></script>
     <script src="/static/js/briefing-view.js?v=9"></script>
-    <script src="/static/js/noise.js?v=24"></script>
+    <script src="/static/js/noise.js?v=25"></script>
 </body>
 </html>
