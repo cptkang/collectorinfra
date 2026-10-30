@@ -163,7 +163,7 @@ def test_polestar_link_basis_values_match_sre_agent_templates() -> None:
     prev = polestar_link_hint({"state": "confirmed", "kind": "link", "db_id": "d",
                                "server_name": "s", "by": "b", "at": "t"}, now)
     user = user_selected_hint(db_id="d", server_name="s", polestar_hostname="h", by="b", at="t")
-    # plans/199 · D-352 ② — 노드 주소 자동 연결 근거도 같은 키 집합이다
+    # plans/202 · D-355 ② — 노드 주소 자동 연결 근거도 같은 키 집합이다
     assert {prev["basis"], user["basis"], BASIS_NODE_ADDRESS} == sre_keys
     # sre_agent `polestar_link()`이 linked로 받는 필수 키(db_id·server_name)와 상태 어휘
     statuses = re.search(r"_LINK_STATUSES = frozenset\(\{(.*?)\}\)", src, re.S)
@@ -195,7 +195,7 @@ def test_frontend_regexes_match_sre_agent_sentences() -> None:
     assert block is not None
     for sentence in re.findall(r':\s*"(.*?)"', block.group(1)):
         assert linked.search(sentence), sentence
-    # (plans/199 · D-352 ④) 파드 미확정 문장은 선택 UI를 열지 않는 HOST_POD_RE에 걸린다
+    # (plans/202 · D-355 ④) 파드 미확정 문장은 선택 UI를 열지 않는 HOST_POD_RE에 걸린다
     pod = re.search(r'^POLESTAR_POD_UNRESOLVED = f"(.*?)"', src, re.M)
     assert pod is not None
     assert js_re("HOST_POD_RE").search(pod.group(1))

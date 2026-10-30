@@ -1,4 +1,4 @@
-"""plans/199 독립 검증(verifier) — noise_gate 노드 주소 연결 경계.
+"""plans/202 독립 검증(verifier) — noise_gate 노드 주소 연결 경계.
 
 DB·Redis 없음(프로브 대역 · FakeAsyncRedis). `xfail(strict=True)`는 검증에서 찾은 결함·권고를 고정한다.
 """
@@ -12,7 +12,7 @@ from tests.mocks.async_redis import FakeAsyncRedis
 
 from noise_gate.application import host_candidates as hc
 from noise_gate.domain import host_link as hl
-from noise_gate.tests.test_plan199_node_address_link import (  # noqa: F401 — fixture 재사용
+from noise_gate.tests.test_plan202_node_address_link import (  # noqa: F401 — fixture 재사용
     NODE_IP,
     POD,
     _apm,
@@ -34,7 +34,7 @@ def test_same_node_registered_in_two_zones_is_ambiguous():
 
 
 def test_partial_failure_with_one_match_links_and_names_unchecked(probe):  # noqa: ANN001
-    # D-352 부기 2 — 폴스타는 존 간 중복 등록이 거의 없어 나머지 존 1대 일치면 연결한다
+    # D-355 부기 2 — 폴스타는 존 간 중복 등록이 거의 없어 나머지 존 1대 일치면 연결한다
     probe.table = {"polestar_b0": RuntimeError("down"), "polestar_cm_gp": [_row("NODE-01")]}
     for on in (True, False):
         link = _attach(_cfg(on), _pod_event())["polestar_link"]

@@ -1096,7 +1096,7 @@
     // ── (plans/196 §1.1 ② · §5.2) 폴스타 서버 연결 상태 — 화면이 서버 선택 UI를 어디에 둘지(순수) ──
     // 서버 사유 문장(§5.2): 대기 = 「폴스타 서버 선택 대기 — …」(구 문구 「폴스타 서버 미확정」 포함) ·
     // 부정 연결 = 「폴스타 미등록(사용자 확인 · …)」 · 확정 연결 근거(`scope.polestar_basis`) = 「이전 확정 연결 — …」/「사용자 선택으로 연결 — …」
-    // (plans/199 · D-352 ④) 파드 미확정 = 「폴스타 서버 미확정 — K8s 파드(노드 … — 사유)」 — 사람이 서버를 골라도
+    // (plans/202 · D-355 ④) 파드 미확정 = 「폴스타 서버 미확정 — K8s 파드(노드 … — 사유)」 — 사람이 서버를 골라도
     // 다음 재기동에 무효라 선택 UI를 열지 않고 생략 카드 사유만 보인다. 노드 주소 자동 연결 근거 = 「제니퍼 노드 주소 일치 — …」
     var HOST_WAIT_RE = /폴스타 서버 (선택 대기|미확정)/;
     var HOST_POD_RE = /K8s 파드/;
@@ -1907,7 +1907,7 @@
             var box = el("div", "dv-host");
             if (host.mode !== "wait") {
                 if (host.mode === "linked") box.appendChild(el("div", "dv-host-basis", T.linkedHead + " — " + host.basis));
-                // (D-352 ④) 노드 주소 자동 연결은 파드 — 서버를 바꿔 저장해도 다음 재기동에 무효라 [연결 변경]을 두지 않는다
+                // (D-355 ④) 노드 주소 자동 연결은 파드 — 서버를 바꿔 저장해도 다음 재기동에 무효라 [연결 변경]을 두지 않는다
                 if (host.mode === "linked" && HOST_NODE_RE.test(host.basis)) return box;
                 if (!h.open) {
                     var change = el("button", "dv-host-change", T.change);

@@ -302,14 +302,14 @@ POLESTAR_REASON_DETAILS: dict[str, str] = {
 POLESTAR_LINK_BASIS: dict[str, str] = {
     "previous_confirmed": "이전 확정 연결 — {by}·{at}",
     "user_selected": "사용자 선택으로 연결 — {by}·{at}",
-    # plans/199 · D-352 ② — 알람마다 판정하는 자동 연결(저장하지 않는다)
+    # plans/202 · D-355 ② — 알람마다 판정하는 자동 연결(저장하지 않는다)
     "node_address": "제니퍼 노드 주소 일치 — {host_address} (알람 시점 · 자동)",
 }
-#: 노드 주소 연결이 저장된 확정 연결과 다를 때 근거 뒤에 붙이는 문장(D-352 ③ — 둘 다 적는다).
+#: 노드 주소 연결이 저장된 확정 연결과 다를 때 근거 뒤에 붙이는 문장(D-355 ③ — 둘 다 적는다).
 POLESTAR_LINK_PREVIOUS = "저장된 확정 연결 {server_name}({db_id})과 다름 — 노드 주소 우선"
-#: 일부 존 조회 실패 중 나머지 존 1대 일치로 연결했을 때 근거 뒤에 붙이는 문장(D-352 부기 2).
+#: 일부 존 조회 실패 중 나머지 존 1대 일치로 연결했을 때 근거 뒤에 붙이는 문장(D-355 부기 2).
 POLESTAR_LINK_UNCHECKED = "일부 존 확인 못 함({db_ids}) — 나머지 존에서 1대 일치"
-#: 파드 미확정(D-352 ④) 사유 — 폴스타 축 생략 카드에 그대로 나오는 문장(「서버 선택 대기」 자리).
+#: 파드 미확정(D-355 ④) 사유 — 폴스타 축 생략 카드에 그대로 나오는 문장(「서버 선택 대기」 자리).
 #: 설정 매핑으로 대체하지 않는다. `{node}`는 「 10.0.0.1」 꼴.
 POLESTAR_POD_UNRESOLVED = f"{POLESTAR_UNRESOLVED} — K8s 파드(노드{{node}} — {{why}})"
 #: 연결 힌트 `reason` → 사유(`{why}`). `node_lookup_<상태>`는 `POLESTAR_POD_LOOKUP`이 정한다.
@@ -364,7 +364,7 @@ def polestar_link(payload: Mapping[str, Any]) -> dict[str, str] | None:
         and str(v).strip()
     }
     link["status"] = status
-    if _truthy(raw.get("pod")):  # bool True·문자열 "True"/"true" 모두 파드(plans/199)
+    if _truthy(raw.get("pod")):  # bool True·문자열 "True"/"true" 모두 파드(plans/202)
         link["pod"] = "true"
     if status == "linked" and not (link.get("db_id") and link.get("server_name")):
         return None
@@ -379,7 +379,7 @@ def _truthy(value: Any) -> bool:
 
 def polestar_previous_link(payload: Mapping[str, Any]) -> dict[str, str] | None:
     """노드 주소 연결 힌트에 함께 실린 저장 확정 연결 `previous_link: {db_id, server_name}`
-    (plans/199 · D-352 ③). linked 힌트가 아니거나 두 값 중 하나라도 없으면 None. JSON 문자열로
+    (plans/202 · D-355 ③). linked 힌트가 아니거나 두 값 중 하나라도 없으면 None. JSON 문자열로
     직렬화돼 와도 읽는다."""
     link = polestar_link(payload)
     if link is None or link["status"] != "linked":
@@ -401,7 +401,7 @@ def polestar_previous_link(payload: Mapping[str, Any]) -> dict[str, str] | None:
 
 
 def is_pod_unresolved(link: Mapping[str, str] | None) -> bool:
-    """파드로 판정됐는데 노드 서버를 정하지 못한 힌트인가(D-352 ④ — `unresolved` + `pod`)."""
+    """파드로 판정됐는데 노드 서버를 정하지 못한 힌트인가(D-355 ④ — `unresolved` + `pod`)."""
     return link is not None and link.get("status") == "unresolved" and link.get("pod") == "true"
 
 
@@ -436,8 +436,8 @@ def resolve_polestar_source(
     """폴스타 소스(db_id)와 미확정 사유(사용자 문장). 결정적으로 정할 수 없으면 (None, 사유).
 
     APM 트리거: `meta.episode.infra_db_ids[0]` → 연결 힌트 `meta.hints.polestar_link`가 linked면
-    그 `db_id`(노드 주소 연결 포함 · plans/199) → absent면 미확정(미등록 사유) → unresolved +
-    `pod`면 미확정(파드 사유 — 설정 매핑 대체 금지 · D-352 ④) → 호출자가 명시한 `configured` → unresolved면
+    그 `db_id`(노드 주소 연결 포함 · plans/202) → absent면 미확정(미등록 사유) → unresolved +
+    `pod`면 미확정(파드 사유 — 설정 매핑 대체 금지 · D-355 ④) → 호출자가 명시한 `configured` → unresolved면
     미확정(선택 대기 사유) → 미확정(plans/196 §5.2 — 플래그를 켜도 현행보다 나빠지지 않게
     unresolved는 설정 매핑을 이기지 않는다).
     폴스타 알람: `event.dbId`(또는 pull 진단 `db_id`) → `configured` → 미확정.
@@ -453,7 +453,7 @@ def resolve_polestar_source(
         if link is not None and status == "absent":
             return None, _link_text(POLESTAR_LINK_ABSENT, link)
         if link is not None and is_pod_unresolved(link):
-            # 파드 미확정은 설정 매핑으로 대체하지 않는다(D-352 ④ — 틀린 존 0건이 미확인보다 나쁘다)
+            # 파드 미확정은 설정 매핑으로 대체하지 않는다(D-355 ④ — 틀린 존 0건이 미확인보다 나쁘다)
             return None, pod_unresolved_reason(link)
         if configured:
             return configured, None
@@ -537,7 +537,7 @@ def initial_scope(
                 if previous is not None and (
                     previous["db_id"], previous["server_name"]
                 ) != (link["db_id"], link["server_name"]):
-                    # 노드 주소 연결이 저장 확정 연결과 다르다 — 둘 다 적는다(D-352 ③)
+                    # 노드 주소 연결이 저장 확정 연결과 다르다 — 둘 다 적는다(D-355 ③)
                     basis = f"{basis} · {POLESTAR_LINK_PREVIOUS.format(**previous)}"
                 if link.get("unchecked_db_ids"):
                     basis = (

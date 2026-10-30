@@ -1,4 +1,4 @@
-"""plans/199 독립 검증(verifier) — 웹 세션 노드 주소 조회기 보안·동시성·정책 경계.
+"""plans/202 독립 검증(verifier) — 웹 세션 노드 주소 조회기 보안·동시성·정책 경계.
 
 가짜 웹 서버(`httpx.MockTransport`)·대역만 쓴다 — 실제 제니퍼·외부 네트워크 없음.
 `xfail(strict=True)`는 검증에서 찾은 결함을 고정한다(고치면 XPASS → 표식 제거).
@@ -19,7 +19,7 @@ from apm_gateway.adapters.jennifer.web_session import (
 )
 from apm_gateway.application import node_address as na
 from apm_gateway.application.node_address import NodeAddressService
-from test_plan199_web_session import (
+from test_plan202_web_session import (
     COOKIE_ID,
     COOKIE_PW,
     JMX_PW,

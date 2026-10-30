@@ -1,4 +1,4 @@
-"""plans/199 sre_agent 쪽 — 제니퍼 K8s 파드 알람의 노드 주소 연결(D-352 ②③④⑦).
+"""plans/202 sre_agent 쪽 — 제니퍼 K8s 파드 알람의 노드 주소 연결(D-355 ②③④⑦).
 
 연결 힌트 `meta.hints.polestar_link`의 `basis: node_address` linked · 파드 미확정
 (`unresolved` + `pod`)을 소스 결정·근거 문장·사전 수집이 어떻게 쓰는지 본다.
@@ -107,7 +107,7 @@ def test_node_linked_differs_from_saved_link_basis_shows_both() -> None:
 
 
 def test_node_linked_with_unchecked_zone_names_it_in_basis() -> None:
-    # D-352 부기 2 — 일부 존 실패 중 1대 일치 연결은 확인 못 한 소스를 근거에 적는다
+    # D-355 부기 2 — 일부 존 실패 중 1대 일치 연결은 확인 못 한 소스를 근거에 적는다
     alarm = _latency_alarm(_node(unchecked_db_ids="polestar_b0"))
     basis = initial_scope(alarm, "polestar_cm_gp", None).polestar_basis or ""
     assert basis == (

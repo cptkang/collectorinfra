@@ -18,7 +18,7 @@
 - 호출 주체(§3.6): `APM_GATEWAY_BEARER_TOKENS`(JSON 객체 `{주체: 토큰}`) + 종전 단일
   `APM_GATEWAY_BEARER_TOKEN`(주체 `default`). 같은 토큰을 두 주체에 주면 기동 실패다(메시지에 토큰
   값 없음).
-- 노드 주소 조회(plans/199 · D-352): `JENNIFER_NODE_ADDRESS_ENABLED`(기본 off = 현행 동일) + 소스별
+- 노드 주소 조회(plans/202 · D-355): `JENNIFER_NODE_ADDRESS_ENABLED`(기본 off = 현행 동일) + 소스별
   웹 계정 `JENNIFER_<ID>_WEB_USER`·`_WEB_PASSWORD`(비면 그 소스는 `disabled`) · `_WEB_URL`(비면
   `_API_URL`) · `_WEB_TLS_VERIFY`(기본 true). 웹 키는 전역 값을 승계하지 않는다 — 소스마다 전용
   계정이다(사람 계정·소스 간 공유 금지). 단일 설정(소스 `default`)은 웹 키가 없어 `disabled`다.
@@ -52,7 +52,7 @@ POLICY_DIR = PACKAGE_ROOT / "config"
 
 POLL_INTERVAL_FLOOR = 10
 # 소스별 접두 키 `JENNIFER_<ID>_<접미>` — 앞 둘은 필수, 나머지는 비면 전역 `JENNIFER_<접미>` 값.
-# 예외: `WEB_*`(plans/199)는 전역 값을 승계하지 않는다(소스별 전용 계정 · `WEB_URL`만 `API_URL`
+# 예외: `WEB_*`(plans/202)는 전역 값을 승계하지 않는다(소스별 전용 계정 · `WEB_URL`만 `API_URL`
 # 승계).
 SOURCE_KEY_SUFFIXES = (
     "API_URL",
@@ -87,7 +87,7 @@ class JenniferApiConfig:
     # 1.6s(= 8 / 5회/s) 안이면 이 상한에 닿지 않아 정상 부하 동작은 같다.
     max_inflight_per_source: int = 8
     source_id: str = DEFAULT_SOURCE_ID
-    # 웹 세션 노드 주소 조회(plans/199 · D-352) — 소스별 전용 조회 권한 계정. 비면 `disabled`.
+    # 웹 세션 노드 주소 조회(plans/202 · D-355) — 소스별 전용 조회 권한 계정. 비면 `disabled`.
     web_url: str = ""
     web_user: str = ""
     web_password: str = field(default="", repr=False)
@@ -96,7 +96,7 @@ class JenniferApiConfig:
 
 @dataclass
 class NodeAddressConfig:
-    """웹 세션 노드 주소 조회(plans/199 · D-352) — 기본 off = `alarm:raw` 페이로드 현행과
+    """웹 세션 노드 주소 조회(plans/202 · D-355) — 기본 off = `alarm:raw` 페이로드 현행과
     비트 동일."""
 
     enabled: bool = False

@@ -73,10 +73,10 @@ KIND_ABSENT = "absent"
 #: 페이로드 `meta.hints.polestar_link.basis` 값(§5.2).
 BASIS_PREVIOUS = "previous_confirmed"
 BASIS_USER = "user_selected"
-#: (plans/199 · D-352) 제니퍼 파드의 노드 주소 정확 일치 1대 자동 연결 — 저장하지 않는다.
+#: (plans/202 · D-355) 제니퍼 파드의 노드 주소 정확 일치 1대 자동 연결 — 저장하지 않는다.
 BASIS_NODE_ADDRESS = "node_address"
 
-#: 노드 주소 연결 미확정 사유(plans/199 §2.2) — 「확인하지 못함」과 「없음」을 합치지 않는다.
+#: 노드 주소 연결 미확정 사유(plans/202 §2.2) — 「확인하지 못함」과 「없음」을 합치지 않는다.
 NODE_NOT_REGISTERED = "node_not_registered"
 NODE_AMBIGUOUS = "node_ambiguous"
 NODE_UNCHECKED = "node_unchecked"
@@ -482,7 +482,7 @@ def node_address_match(
     host_address: str | None = None,
     unchecked: bool = False,
 ) -> dict[str, Any]:
-    """노드 주소 조회 행 → 연결 판정(plans/199 §2.2 · D-352 ②).
+    """노드 주소 조회 행 → 연결 판정(plans/202 §2.2 · D-355 ②).
 
     Args:
         rows: `(db_id, 행)` 목록 — 행은 `{"hostname", "name", "ipaddress"}`(소스 전부의 합)
@@ -492,7 +492,7 @@ def node_address_match(
     Returns:
         - 서로 다른 서버(`db_id`·서버명 쌍) 정확히 1대 →
           `{"status": "linked", "db_id", "server_name", "hostname"}` — 실패 소스가 있어도 연결한다
-          (D-352 부기 2 — 폴스타는 존 간 중복 등록이 거의 없다 · 실패 소스는 호출자가 근거에 적는다)
+          (D-355 부기 2 — 폴스타는 존 간 중복 등록이 거의 없다 · 실패 소스는 호출자가 근거에 적는다)
         - 2대 이상 → `{"status": "unresolved", "reason": NODE_AMBIGUOUS}`(실패 소스가 있어도
           이미 모호하다)
         - 0대 · 실패 소스 있음 → `NODE_UNCHECKED`(실패한 소스에 있을 수 있다)

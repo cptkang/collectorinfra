@@ -1,4 +1,4 @@
-"""제니퍼 뷰서버 웹 세션 클라이언트 — 노드 주소 조회 전용 (plans/199 §2.1·§3 · D-352 ①⑥).
+"""제니퍼 뷰서버 웹 세션 클라이언트 — 노드 주소 조회 전용 (plans/202 §2.1·§3 · D-355 ①⑥).
 
 웹 내부 API `GET /agent/upgrade/list?sid=`의 `hostAddress`(파드가 도는 노드 IP)는 Open API 토큰으로
 읽을 수 없고 웹 세션으로만 읽힌다(§0-8). 그래서 소스별 **전용 조회 권한 웹 계정**으로 로그인한다.
@@ -32,7 +32,7 @@
   재시도한다. 만료 시간을 가정하지 않는다.
 - 로그·예외 사유에는 비밀번호·쿠키 값·응답 본문을 싣지 않는다(상태 코드·경로·예외 형 이름만 ·
   D-300 ③). 사유 문자열은 마지막으로 자격증명 가림(`domain/credentials.scrub_text`)을 지난다.
-- `tls_verify=False`면 인증서 검증을 끈다(b0 사설 인증서 · D-352 ⑥ 위험 수용) — 경고 로그 1회.
+- `tls_verify=False`면 인증서 검증을 끈다(b0 사설 인증서 · D-355 ⑥ 위험 수용) — 경고 로그 1회.
 
 로그인 실패 연속 횟수에 따른 정지(차단기)는 응용 계층(`application/node_address.py`)이 소스별로
 건다.
@@ -233,7 +233,7 @@ class WebSession:
         if self.configured and not self._tls_verify:
             logger.warning(
                 "노드 주소 조회: 소스 %s 웹 TLS 인증서 검증 off"
-                "(WEB_TLS_VERIFY=false · D-352 ⑥ 위험 수용)",
+                "(WEB_TLS_VERIFY=false · D-355 ⑥ 위험 수용)",
                 source_id,
             )
 

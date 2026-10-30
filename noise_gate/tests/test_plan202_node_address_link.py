@@ -1,4 +1,4 @@
-"""plans/199 §2.2 · D-352 — 제니퍼 파드 알람의 노드 주소 연결(noise_gate W3).
+"""plans/202 §2.2 · D-355 — 제니퍼 파드 알람의 노드 주소 연결(noise_gate W3).
 
 DB·Redis는 띄우지 않는다 — 프로브는 대역 함수, Redis는 `tests.mocks.async_redis.FakeAsyncRedis`.
 """
@@ -124,7 +124,7 @@ def test_match_zero_two_and_unchecked():
     two = [("polestar_b0", _row("A")), ("polestar_cm_gp", _row("A"))]
     assert hl.node_address_match(two)["reason"] == hl.NODE_AMBIGUOUS
     assert hl.node_address_match([], unchecked=True)["reason"] == hl.NODE_UNCHECKED
-    # 일부 실패 + 1대 → 연결한다(D-352 부기 2 · 실패 소스는 호출자가 근거에 적는다)
+    # 일부 실패 + 1대 → 연결한다(D-355 부기 2 · 실패 소스는 호출자가 근거에 적는다)
     one = [("polestar_cm_gp", _row("A"))]
     assert hl.node_address_match(one, unchecked=True)["status"] == "linked"
     # 일부 실패여도 이미 2대면 모호

@@ -690,12 +690,12 @@ async def _attach_polestar_link(
     link: dict[str, Any] | None = None,
     rerun: dict[str, Any] | None = None,
 ) -> None:
-    """APM 알람 페이로드에 `meta.hints.polestar_link`(+`rerun`)를 단다 (plans/196 §5.2 · plans/199).
+    """APM 알람 페이로드에 `meta.hints.polestar_link`(+`rerun`)를 단다 (plans/196 §5.2 · plans/202).
 
     D-188 `attach_server_identity`와 같은 대칭 원칙 — 자동 트리거·사건 종합·수동 재분석 세 경로가
     이 함수를 부른다. APM 알람이 아니면(`meta.hints` 없음) 아무것도 하지 않는다.
 
-    우선순위(D-352 ③④):
+    우선순위(D-355 ③④):
         ① 파드(`apm.pod is True`) 노드 주소 연결 `linked` — `host_link_enabled`와 독립
         ② 저장된 확정 연결(D-348 · `host_link_enabled`일 때만)
         ③ 파드 미확정 사유(`unresolved` + `reason` · `pod: true`)
@@ -764,7 +764,7 @@ async def _stored_polestar_link(
 
 
 async def _node_address_hint(cfg: Any, event: Any) -> dict[str, Any] | None:
-    """파드 알람의 노드 주소 연결 힌트(plans/199 §2.2 · D-352). 파드가 아니면 None.
+    """파드 알람의 노드 주소 연결 힌트(plans/202 §2.2 · D-355). 파드가 아니면 None.
 
     게이트웨이가 원문 `apm` 블록에 실은 `pod`·`host_address`·`host_address_status`를 직접 읽는다
     (`apm_trigger_hints` 고정 키 집합은 건드리지 않는다). `pod`가 True가 아니면(false·키 없음 =
@@ -817,7 +817,7 @@ async def _node_address_hint(cfg: Any, event: Any) -> dict[str, Any] | None:
             "host_address": host_address,
             "at": datetime.now(UTC).isoformat(),
         }
-        # D-352 부기 2 — 일부 존 실패여도 1대 일치면 연결하고, 확인 못 한 소스를 근거에 남긴다
+        # D-355 부기 2 — 일부 존 실패여도 1대 일치면 연결하고, 확인 못 한 소스를 근거에 남긴다
         unchecked = [
             str(u.get("db_id") or "")
             for u in found.get("unchecked") or []

@@ -63,12 +63,12 @@ NODE_LOOKUP_SYSTEM = "polestar"
 
 
 def node_lookup_db_ids(app_config: Any) -> list[str]:
-    """노드 주소를 찾을 소스 — 그 시스템의 활성 DB **전부**(존 조회 순서 · plans/199 §2.2).
+    """노드 주소를 찾을 소스 — 그 시스템의 활성 DB **전부**(존 조회 순서 · plans/202 §2.2).
 
     순서는 실행 그룹 정본(은행존 → 공동존)이고 존 미배정 DB는 뒤에 붙인다(`host_sweep` ·
     `entity_locator.probe_scope`와 같은 규약 — 조립 계층을 import하지 않으려고 같은 정본
     `partition_execution_groups`를 직접 쓴다). 사용자 인가 필터는 없다 — 자동 경로는 시스템
-    주체다(D-352 ② 「전 존에서 정확히 1대」).
+    주체다(D-355 ② 「전 존에서 정확히 1대」).
     """
     from src.routing.execution_groups import partition_execution_groups
     from src.routing.registry import get_registry
@@ -91,7 +91,7 @@ async def node_address_link(
     db_ids: Sequence[str] | None = None,
     probe: ProbeFn | None = None,
 ) -> dict[str, Any]:
-    """파드 노드 주소를 소스 전부에서 IP 정확 일치로 찾는다 (plans/199 §2.2 · D-352 ②).
+    """파드 노드 주소를 소스 전부에서 IP 정확 일치로 찾는다 (plans/202 §2.2 · D-355 ②).
 
     소스별 개별 try — 실패한 소스가 있으면 `node_unchecked`로 남기고 「없음」과 합치지 않는다.
     캐시하지 않는다(방금 등록된 서버 · D-224 규약 4). 결과를 저장하지 않는다(알람 시점 사실).

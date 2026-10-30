@@ -289,7 +289,7 @@ _TABLE: tuple[tuple[str, str, str, Any, _Getter, str], ...] = (
         "bool",
         "false",
         lambda c: c.node_address.enabled,
-        "웹 세션 노드 주소 조회 사용(plans/199 · 소스별 웹 계정 필요)",
+        "웹 세션 노드 주소 조회 사용(plans/202 · 소스별 웹 계정 필요)",
     ),
     (
         "JENNIFER_NODE_ADDRESS_TTL_SECONDS",
@@ -321,7 +321,7 @@ _SOURCE_SUFFIX_META: dict[str, tuple[str, Callable[[Any], Any], str]] = {
         lambda s: s.max_inflight_per_source,
         "동시 호출 상한(비면 전역 값)",
     ),
-    # 웹 세션 노드 주소 조회(plans/199) — 전역 값을 승계하지 않는다(소스별 전용 계정)
+    # 웹 세션 노드 주소 조회(plans/202) — 전역 값을 승계하지 않는다(소스별 전용 계정)
     "WEB_USER": ("string", lambda s: s.web_user, "노드 주소 조회 전용 웹 계정 ID(비면 disabled)"),
     "WEB_PASSWORD": ("secret", lambda s: s.web_password, "노드 주소 조회 전용 웹 계정 비밀번호"),
     "WEB_URL": ("string", lambda s: s.web_url, "뷰 서버 웹 주소(비면 API_URL)"),

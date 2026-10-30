@@ -1,13 +1,13 @@
-# 199. 제니퍼 K8s 파드 알람의 노드 서버 연결 — 웹 세션으로 `hostAddress` 수집 · 노드 IP 정확 일치 · 틀린 존 대체 금지
+# 202. 제니퍼 K8s 파드 알람의 노드 서버 연결 — 웹 세션으로 `hostAddress` 수집 · 노드 IP 정확 일치 · 틀린 존 대체 금지
 
-> **작성일**: 2026-10-29
-> **상태**: **WIP** — W1~W4 구현·검증 완료(2026-10-29 · 커밋 없음 · 플래그 `JENNIFER_NODE_ADDRESS_ENABLED` 기본 off) · 계획 끝 모듈 회귀 1회(새 실패 0 — 실패는 전부 기준선 동일·환경성) · verifier Critical 0 · 보안 감사 Critical/High 0 · 지적 교정(실패 백오프 · 로그인 판정 축소 · 스트리밍 상한 · TLS 엄격 파싱 · IPv4 재검증) · **잔여**: ① 수동 재분석 경로(`src/api/routes/alarm.py` `_manual_event`가 판정 기록에서 이벤트를 다시 만들며 `apm` 블록이 없음 → 노드 연결 미작동 · 현행과 같음) ② 로그인 차단기 재기동 초기화(메모리) ③ 폐쇄망 실검증(3소스 웹 로그인·노드 연결) · D-352 부기 1
+> **작성일**: 2026-10-29 · **번호 재부여**(2026-10-30): 원 `plans/199`·D-352 → `plans/202`·D-355(origin/main `36ce5f1` 선점)
+> **상태**: **WIP** — W1~W4 구현·검증 완료(2026-10-29 · 커밋 없음 · 플래그 `JENNIFER_NODE_ADDRESS_ENABLED` 기본 off) · 계획 끝 모듈 회귀 1회(새 실패 0 — 실패는 전부 기준선 동일·환경성) · verifier Critical 0 · 보안 감사 Critical/High 0 · 지적 교정(실패 백오프 · 로그인 판정 축소 · 스트리밍 상한 · TLS 엄격 파싱 · IPv4 재검증) · **잔여**: ① 수동 재분석 경로(`src/api/routes/alarm.py` `_manual_event`가 판정 기록에서 이벤트를 다시 만들며 `apm` 블록이 없음 → 노드 연결 미작동 · 현행과 같음) ② 로그인 차단기 재기동 초기화(메모리) ③ 폐쇄망 실검증(3소스 웹 로그인·노드 연결) · D-355 부기 1
 > **분석 기준 HEAD**: `60b4992b`
 > **계획 시작 SHA**: `60b4992b`
 > **브랜치**: `improve_noise_canceling`
 > **사용자 제기(2026-10-29)**: *"제니퍼 알람에 대해 호스트네임으로 서버를 검색하는데, 제니퍼상에서는 인스턴스 이름==호스트이름(POD 이름)으로 조회되는 자원이 있는데, IP 주소는 10.139.x.x (POD대역)과 호스트 주소(10.136.x.x; 서비스 대역 — 이걸로 조회해야함)인 경우가 있음. 참고로 B0 제니퍼이지만 실제 자원은 폴스타 CM-GP에서 조회할 수 있음"* → 출처 탐색 실측 뒤 *"계획서 작성은 새로운 브랜치 improve_noise_canceling 같은 이름으로 만들어서 진행하시오"*
 > **근거**: 내부망 실측(사용자 수행 · 2026-10-29 · §0) · 저장소 코드
-> **관련 계획·결정**: `plans/196` §1.1·W5·§5.7-3(파드 → 노드 출처 — **이 계획이 이어받는다**) · `plans/197`(제니퍼 알람 폴스타 경로) · `plans/144`(크로스소스 사건) · D-274(게이트웨이 자격증명 경계) · D-348(호스트 연결 학습) · D-188(서버 식별 역조회) · D-329(소스 id) · D-300 ③④(자격증명·식별자 가림) · D-296(제니퍼 조회 범위) · D-255(매뉴얼 동반) · **D-352**(이 계획의 결정)
+> **관련 계획·결정**: `plans/196` §1.1·W5·§5.7-3(파드 → 노드 출처 — **이 계획이 이어받는다**) · `plans/197`(제니퍼 알람 폴스타 경로) · `plans/144`(크로스소스 사건) · D-274(게이트웨이 자격증명 경계) · D-348(호스트 연결 학습) · D-188(서버 식별 역조회) · D-329(소스 id) · D-300 ③④(자격증명·식별자 가림) · D-296(제니퍼 조회 범위) · D-255(매뉴얼 동반) · **D-355**(이 계획의 결정)
 
 ---
 
@@ -139,7 +139,7 @@
 - 읽는 곳: `event.raw_payload["apm"]`에서 직접 읽는다. `apm_trigger_hints`의 고정 키 집합은 건드리지 않는다(검토 G — 키 추가는 플래그 off 비트 동일을 깬다).
 - 조건: `apm.pod is True`. `false`·키 없음이면 이 경로를 타지 않는다(Q4 · 현행).
 - **`host_link_enabled`와 독립**(검토 E): 현재 `_attach_polestar_link`는 그 플래그가 꺼져 있으면 즉시 돌아간다. 노드 연결은 게이트웨이가 `apm.pod`를 실었을 때만 작동하므로 별도 플래그 없이 이 조기 반환보다 먼저 판정한다(게이트웨이 플래그 off = 키 없음 = 비트 동일). D-348 저장 연결 조회는 종전대로 그 플래그 뒤에 둔다.
-- 검색: `probe_hosts(db_id, names=[], prefixes=[], ips=[host_address])`를 **등록된 폴스타 소스 전부**(존 조회 순서 · `host_sweep` 규약)에 소스별 개별 try로 돈다. 판정은 순수 함수(`noise_gate/domain/host_link.py`에 `node_address_match(rows)` 가산): 서로 다른 서버 1대 → linked · 0대 → `node_not_registered` · 2대 이상 → `node_ambiguous` · 소스 일부 실패 + 0대 → `node_unchecked`(「확인하지 못함」과 「없음」을 합치지 않는다) · 소스 일부 실패 + 1대 → linked + 힌트 `unchecked_db_ids`(근거에 실패 존 표시 · D-352 부기 2).
+- 검색: `probe_hosts(db_id, names=[], prefixes=[], ips=[host_address])`를 **등록된 폴스타 소스 전부**(존 조회 순서 · `host_sweep` 규약)에 소스별 개별 try로 돈다. 판정은 순수 함수(`noise_gate/domain/host_link.py`에 `node_address_match(rows)` 가산): 서로 다른 서버 1대 → linked · 0대 → `node_not_registered` · 2대 이상 → `node_ambiguous` · 소스 일부 실패 + 0대 → `node_unchecked`(「확인하지 못함」과 「없음」을 합치지 않는다) · 소스 일부 실패 + 1대 → linked + 힌트 `unchecked_db_ids`(근거에 실패 존 표시 · D-355 부기 2).
 - 힌트: linked면 `{status: "linked", db_id, server_name, hostname, basis: "node_address", host_address, at}` · 아니면 `{status: "unresolved", reason: <위 사유>, pod: true, host_address}`. 게이트웨이 상태가 `ok`가 아니면(`stale` 포함 — 검토 C) 프로브 없이 `{status: "unresolved", reason: "node_lookup_<상태>", pod: true}`. `pod` 키는 `apm.pod is True`일 때만 붙는다(검토 A — 판정 불가는 현행).
 - **우선순위**(Q2 · 검토 D): ① 노드 주소 linked → ② 저장된 확정 연결(D-348 · `host_link_enabled`일 때) → ③ 파드 unresolved 사유 → ④ (파드 아님) 현행. 노드 linked와 저장 연결이 다르면 힌트에 `previous_link: {db_id, server_name}`를 함께 싣는다(근거 문장에 둘 다).
 - 노드 연결은 **저장하지 않는다**(파드가 옮겨 다님 — 알람 시점 사실).
@@ -183,13 +183,13 @@
 | W1 | 웹 세션 클라이언트(브라우저 방식 로그인·재로그인·차단기·허용 목록·가림·TLS 검증 설정) · 응답 허용 칸 파서 · 노드 주소 조회기(캐시·최소 간격·도메인 종류 기억·`pod` 판정) · 설정 + 설정 관리 표(secret) · 단위 테스트(가짜 웹 서버: 리다이렉트 만료·형태 오류·`jmx` 폐기·차단기·허용 목록 밖 거부·사전 GET 없으면 거부) | `apm_gateway` | 중 |
 | W2 | 폴러 페이로드 `apm.host_address`·`host_address_status`·`apm.pod` 가산(멱등 확인 뒤 · 플래그 off 비트 동일) · `apm_instance_map` 칸 가산 · 경계 테스트 | `apm_gateway` | 소 |
 | W3 | noise_gate 노드 연결(순수 판정 함수 + 부착 3경로 · `host_link_enabled` 독립 · 우선순위) · sre_agent 근거·소스 결정(파드 미확정 매핑 대체 금지 · 사전 수집 경로 포함) · 계약 테스트(페이로드 사본) | `noise_gate` · `sre_agent` | 중 |
-| W4 | 매뉴얼(관리자·사용자) · `.env.example`(게이트웨이) · D-352 본문 등재 · D-348·D-274 부기 · `plans/196` W5 이관 표기 | 문서 | 소 |
+| W4 | 매뉴얼(관리자·사용자) · `.env.example`(게이트웨이) · D-355 본문 등재 · D-348·D-274 부기 · `plans/196` W5 이관 표기 | 문서 | 소 |
 
 회귀: D-303 — 계획 끝 1회 `regress.py --base <계획 시작 SHA> --files <바꾼 파일>`. `mcp_server`·`apm_gateway`는 루트 수집 밖이라 `../.venv/bin/python -m pytest`로 따로 돈다. `overfit_check` 스캔 대상(`noise_gate/domain`)에 폴스타 리터럴을 독스트링까지 넣지 않는다.
 
 ---
 
-## 5. 사용자 결정 — **확정(2026-10-29 · Q1~Q4 권고안 · Q5 운영 답변 · D-352)**
+## 5. 사용자 결정 — **확정(2026-10-29 · Q1~Q4 권고안 · Q5 운영 답변 · D-355)**
 
 | # | 질문 | 권고 → 확정 |
 |---|---|---|
@@ -197,7 +197,7 @@
 | Q2 | 같은 알람에 저장된 확정 연결(D-348)과 노드 주소 연결이 함께 있으면 어느 쪽을 쓸지 | ✅ 확정 — **노드 주소 우선**(알람 시점 사실). 둘이 다르면 근거에 둘 다 적는다 |
 | Q3 | 파드인데 노드를 정하지 못하면 설정 매핑(b0 → polestar_b0)으로 대체하지 않을지 — **`plans/196` §5.2 「unresolved는 설정 매핑을 이기지 않는다」 순서 변경**(파드 한정) | ✅ 확정 — **대체하지 않음**. 지금 대체는 틀린 존 0건(침묵 오답)이다. 파드는 사람 선택 UI도 열지 않는다(다음 재기동에 무효) |
 | Q4 | VM(`hostAddress = ip`)에도 노드 주소 자동 연결을 적용할지 | ✅ 확정 — **적용하지 않음**(현행 비트 동일). VM은 기존 이름·IP 후보 + 확정 연결로 충분하다 |
-| Q5 | 웹 계정 운영 — 소스별 전용 모니터링 계정 발급 · 뷰서버가 `http`라면 평문 전송 위험 수용 | **사용자 확정(2026-10-29)**: 소스별 전용 계정 발급 완료(조회 권한) · b0 = `https` · cm_prd·cm_stg = `http` · 평문 전송 위험 수용(D-352에 기록) |
+| Q5 | 웹 계정 운영 — 소스별 전용 모니터링 계정 발급 · 뷰서버가 `http`라면 평문 전송 위험 수용 | **사용자 확정(2026-10-29)**: 소스별 전용 계정 발급 완료(조회 권한) · b0 = `https` · cm_prd·cm_stg = `http` · 평문 전송 위험 수용(D-355에 기록) |
 
 ---
 
@@ -243,8 +243,8 @@
 
 | Wave | 파일 |
 |---|---|
-| W1·W2 | `apm_gateway/apm_gateway/adapters/jennifer/web_session.py`·`web_fields.py`(신규) · `application/node_address.py`(신규) · `config.py` · `interface/config_admin_adapter.py` · `application/poller.py` · `application/instance_tools.py` · `application/apm_core.py` · `application/tools.py` · `__main__.py` · `.env.example` · 테스트 `tests/test_plan199_web_session.py`·`test_plan199_payload.py`·`test_plan199_verify.py` · `tests/test_config_admin.py`(읽기 전용 기대 집합) |
-| W3 | `noise_gate/domain/host_link.py`(`node_address_match`) · `noise_gate/application/host_candidates.py`(`node_address_link`·`node_lookup_db_ids`) · `noise_gate/application/nodes/investigation_trigger.py`(`_node_address_hint`) · `sre_agent/sre_agent/application/playbook_runner.py` · `playbook_steps.py`(`polestar_unresolved_text`) · `evidence_prefetch.py`(`_node_link`) · 테스트 `noise_gate/tests/test_plan199_*.py`·`sre_agent/tests/test_plan199_*.py` |
-| W4 | `src/static/js/diagnosis-view.js`(`HOST_POD_RE` · 노드 연결 근거 linked 표시 · [연결 변경] 숨김) · `src/static/index.html`(v=14) · 매뉴얼 `scripts/manual/{features.yaml,content/admin.md,content/user.md}` → `src/static/manual/{admin,user}.html`·`help_index.json`(A-87 · U-70 14번) · `apm_gateway/jennifer_adapter/README.md` · 테스트 `tests/test_api/test_ui_plan196_diagnosis.py`·`test_plan196_verify.py`·`test_ui_plan187_w15_diagnosis.py` · D-352 부기 1 · D-274 부기 |
+| W1·W2 | `apm_gateway/apm_gateway/adapters/jennifer/web_session.py`·`web_fields.py`(신규) · `application/node_address.py`(신규) · `config.py` · `interface/config_admin_adapter.py` · `application/poller.py` · `application/instance_tools.py` · `application/apm_core.py` · `application/tools.py` · `__main__.py` · `.env.example` · 테스트 `tests/test_plan202_web_session.py`·`test_plan202_payload.py`·`test_plan202_verify.py` · `tests/test_config_admin.py`(읽기 전용 기대 집합) |
+| W3 | `noise_gate/domain/host_link.py`(`node_address_match`) · `noise_gate/application/host_candidates.py`(`node_address_link`·`node_lookup_db_ids`) · `noise_gate/application/nodes/investigation_trigger.py`(`_node_address_hint`) · `sre_agent/sre_agent/application/playbook_runner.py` · `playbook_steps.py`(`polestar_unresolved_text`) · `evidence_prefetch.py`(`_node_link`) · 테스트 `noise_gate/tests/test_plan202_*.py`·`sre_agent/tests/test_plan202_*.py` |
+| W4 | `src/static/js/diagnosis-view.js`(`HOST_POD_RE` · 노드 연결 근거 linked 표시 · [연결 변경] 숨김) · `src/static/index.html`(v=14) · 매뉴얼 `scripts/manual/{features.yaml,content/admin.md,content/user.md}` → `src/static/manual/{admin,user}.html`·`help_index.json`(A-87 · U-70 14번) · `apm_gateway/jennifer_adapter/README.md` · 테스트 `tests/test_api/test_ui_plan196_diagnosis.py`·`test_plan196_verify.py`·`test_ui_plan187_w15_diagnosis.py` · D-355 부기 1 · D-274 부기 |
 
-**이탈(근거)**: ~~일부 존 프로브 실패면 1대 일치여도 `node_unchecked`~~ → **2026-10-30 사용자 판단으로 연결로 변경**(존 간 중복 등록 거의 없음 · 근거에 「일부 존 확인 못 함(db_id)」 · D-352 부기 2) · 파드 미확정은 폴스타 축 「생략」에 사유 문장만 교체(결손 집계 불변) · 실패 뒤 `MIN_REFETCH` 동안 같은 실패 상태 재사용·소스 단위 전송 실패 백오프(웹 무응답 시 폴러 직렬 지연 방지) · 캐시에 없는 instId는 10초 하한으로 재조회 · 로그인 성공은 같은 호스트 `/` 302만 · 단일 설정(소스 `default`)은 웹 키 없음 = `disabled` · 사용자 선택 연결(재조회 요청)은 노드 판정보다 우선.
+**이탈(근거)**: ~~일부 존 프로브 실패면 1대 일치여도 `node_unchecked`~~ → **2026-10-30 사용자 판단으로 연결로 변경**(존 간 중복 등록 거의 없음 · 근거에 「일부 존 확인 못 함(db_id)」 · D-355 부기 2) · 파드 미확정은 폴스타 축 「생략」에 사유 문장만 교체(결손 집계 불변) · 실패 뒤 `MIN_REFETCH` 동안 같은 실패 상태 재사용·소스 단위 전송 실패 백오프(웹 무응답 시 폴러 직렬 지연 방지) · 캐시에 없는 instId는 10초 하한으로 재조회 · 로그인 성공은 같은 호스트 `/` 302만 · 단일 설정(소스 `default`)은 웹 키 없음 = `disabled` · 사용자 선택 연결(재조회 요청)은 노드 판정보다 우선.

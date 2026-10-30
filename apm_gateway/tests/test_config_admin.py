@@ -344,7 +344,7 @@ def test_url_host_path_domain_keys_are_readonly(tmp_path):
         "REDIS_HOST",
         "JENNIFER_BANK_API_URL",
         "JENNIFER_BANK_DOMAIN_IDS",
-        # 노드 주소 웹 세션(plans/199) — 자격증명이 따라가는 주소 · 인증서 검증
+        # 노드 주소 웹 세션(plans/202) — 자격증명이 따라가는 주소 · 인증서 검증
         "JENNIFER_BANK_WEB_URL",
         "JENNIFER_BANK_WEB_TLS_VERIFY",
     }

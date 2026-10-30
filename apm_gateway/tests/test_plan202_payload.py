@@ -1,4 +1,4 @@
-"""plans/199 W2 — `alarm:raw` 노드 주소 칸 · `apm_instance_map` `host_address` 칸 (D-352 ①⑦).
+"""plans/202 W2 — `alarm:raw` 노드 주소 칸 · `apm_instance_map` `host_address` 칸 (D-355 ①⑦).
 
 Open API는 합성 픽스처(`synthetic_handler`), 웹 목록은 대역(`FakeLister`)으로 대신한다 — 실제
 제니퍼·외부 네트워크 없음. 플래그 off 페이로드는 계획 시작 SHA(60b4992b)에서 같은 입력으로 받은

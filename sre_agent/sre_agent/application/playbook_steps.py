@@ -1236,7 +1236,7 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
 
 
 def polestar_unresolved_text(reason: str) -> str:
-    """「폴스타 서버 미확정 — {사유}」. 사유가 이미 그 머리로 시작하면(파드 미확정 · plans/199)
+    """「폴스타 서버 미확정 — {사유}」. 사유가 이미 그 머리로 시작하면(파드 미확정 · plans/202)
     머리를 겹쳐 붙이지 않는다."""
     if reason.startswith(f"{POLESTAR_UNRESOLVED} — "):
         return reason

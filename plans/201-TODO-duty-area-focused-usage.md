@@ -273,7 +273,7 @@ areas:
     | H-DB-INSTANCE (인스턴스 SQL 지연) | 실행 지연 ∧ 이 인스턴스만 | db |
     - 1순위 가설이 **지지**면 위 표대로 한 영역 · **판단 보류**(예: R-D `db_split`이 n/a라 획득·실행을 못 가름)면 **was_mw·db 둘 다 의심** + 사유 「획득·실행 구분 정보 없음」 · 커넥션 계열 가설이 없으면 계층표로 대략 판정. 계층표는 고치지 않는다(187·198 엔진 일치 표시에 영향).
     - 가설 → 영역 매핑도 `sre_agent/config/duty_area_layers.yaml`에 둔다(가설 id 키). R-D가 판독되려면 게이트웨이가 프로파일 `acquire_ms`·`execute_ms`를 줘야 한다(W0 ⑦).
-  - 근거 한계: ① OS 원인 확인은 WAS 서버의 폴스타 연결(D-348·D-352)이 있어야 한다 — 없으면 server_os = `unverified`(「WAS 서버의 폴스타 연결 없음」). ② DB 서버 자체 지표는 WAS가 어느 DB 서버를 쓰는지 모르면 볼 수 없다 — db 영역 근거는 「앱이 본 SQL」까지이고, 제니퍼가 JDBC 대상 주소를 주는지는 W0 실측(§3.6 ④). ③ 상관 ≠ 인과(`CORRELATION_NOT_CAUSATION_NOTE`) — 표시는 「원인 확정」이 아니라 「의심 · 확인 필요」.
+  - 근거 한계: ① OS 원인 확인은 WAS 서버의 폴스타 연결(D-348·D-355)이 있어야 한다 — 없으면 server_os = `unverified`(「WAS 서버의 폴스타 연결 없음」). ② DB 서버 자체 지표는 WAS가 어느 DB 서버를 쓰는지 모르면 볼 수 없다 — db 영역 근거는 「앱이 본 SQL」까지이고, 제니퍼가 JDBC 대상 주소를 주는지는 W0 실측(§3.6 ④). ③ 상관 ≠ 인과(`CORRELATION_NOT_CAUSATION_NOTE`) — 표시는 「원인 확정」이 아니라 「의심 · 확인 필요」.
   - 매핑은 sre_agent 자체 config(`sre_agent/config/duty_area_layers.yaml`)에 두고 영역 코드는 §6.3 계약으로 묶는다. 역방향(OS 알람인데 원인이 WAS 프로세스)도 같은 표로 대칭 처리된다(R-E `cpu_owner`).
 - **상태 4값**: `abnormal`(단계 판정이 이상 · 도구 인용 있음) · `suspect`(가설 · 한쪽 인용) · `normal`(해당 영역 단계가 돌았고 **인용 있는 정상 판정**) · `unverified`(단계 없음·실패·생략 — 사유 필수). 근거 없이 `normal`을 내지 않는다(원칙 7).
 - 상태 판정은 기존 단계 판정·증거 원장(`evidence_ledger`)·인용 검증 결과를 읽기만 한다 — 새 LLM 호출 없음.

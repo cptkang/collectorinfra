@@ -1,4 +1,4 @@
-"""제니퍼 웹 내부 API 응답 파서 — `/agent/upgrade/list` 허용 칸만 남긴다 (plans/199 §2.1 · D-352 ①).
+"""제니퍼 웹 내부 API 응답 파서 — `/agent/upgrade/list` 허용 칸만 남긴다 (plans/202 §2.1 · D-355 ①).
 
 - 원소마다 `instId`·`sid`·`hostName`·`ip`·`hostAddress`·`status`·`statusMsg`·`lastLiveTime`만 남기고
   **나머지는 파싱 직후 버린다**(`jmx.*` JMX 자격증명 포함 — 게이트웨이 밖으로 나가지 않는다).

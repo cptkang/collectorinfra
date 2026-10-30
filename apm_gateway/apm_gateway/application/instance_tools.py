@@ -1,7 +1,7 @@
 """인스턴스 목록·이름 검색·업무명 해석 도구군 `InstanceTools`(`apm_instance_map` · plans/130
 N-1·N-2 · plans/178 W2에서 `tools.py`의 `ApmTools`에서 옮김).
 
-노드 주소 조회기(plans/199 · D-352)가 있으면 결과 행마다 `host_address`(웹 세션 노드 주소 — 알람
+노드 주소 조회기(plans/202 · D-355)가 있으면 결과 행마다 `host_address`(웹 세션 노드 주소 — 알람
 경로와 같은 캐시 · TTL 안 값 · 모르면 빈 값) 칸을 가산한다. 캐시 밖 도메인은 결과가
 `MCP_FETCH_DOMAIN_LIMIT`개 도메인 이하일 때만 새로 조회한다(목록 전체 호출이 전 도메인 조회가 되지
 않게). 조회기가 없으면(플래그 off) 칸이 없다(현행 동일)."""

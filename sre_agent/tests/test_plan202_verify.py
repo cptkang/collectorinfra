@@ -1,4 +1,4 @@
-"""plans/199 독립 검증(verifier) — sre_agent 파드 미확정·노드 연결 경계(실 MCP·LLM 0)."""
+"""plans/202 독립 검증(verifier) — sre_agent 파드 미확정·노드 연결 경계(실 MCP·LLM 0)."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from sre_agent.application.playbook_runner import (
     resolve_polestar_source,
 )
 from sre_agent.application.playbook_steps import POLESTAR_UNRESOLVED, polestar_unresolved_text
-from test_plan199_node_address import MAP, NODE_IP, REF, _latency_alarm, _node, _pod
+from test_plan202_node_address import MAP, NODE_IP, REF, _latency_alarm, _node, _pod
 
 ALL_REASONS = [*POLESTAR_POD_REASONS, *(f"node_lookup_{s}" for s in POLESTAR_POD_LOOKUP)]
 

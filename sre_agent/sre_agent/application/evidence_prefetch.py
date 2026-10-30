@@ -63,7 +63,7 @@ TOOL_TOPOLOGY = "polestar_topology"   # plans/198 I-7 — 배치 맨 끝 1건(�
 # plans/153 R-4 — APM(제니퍼) 트리거인데 폴스타 소스를 모를 때. 제니퍼 dbId를 폴스타 도구에 넘기면
 # mcp_server가 「알 수 없는 소스」로 전 축을 결손 처리한다 — 호출 자체를 하지 않고 이 사실만 남긴다.
 INFRA_SOURCE_UNKNOWN_NOTE = "인프라 소스 미상 — 폴스타 사전수집 생략"
-#: 노드 주소 연결 힌트 근거(plans/199 · D-352 — `playbook_runner.POLESTAR_LINK_BASIS` 키와 같은 값).
+#: 노드 주소 연결 힌트 근거(plans/202 · D-355 — `playbook_runner.POLESTAR_LINK_BASIS` 키와 같은 값).
 NODE_ADDRESS_BASIS = "node_address"
 
 
@@ -104,7 +104,7 @@ def scope_from_job(
     있으면 그것을 쓰고, 아니면 폴스타 축을 호출하지 않는 범위(`skip_infra`)를 돌려준다.
     `cross_source`이고 두 소스 멤버가 있는 사건이면 멤버를 타임라인 점으로 싣는다.
 
-    plans/199(D-352 ⑦): 사건 `infra_db_ids`가 없고 연결 힌트가 노드 주소 연결(`basis:
+    plans/202(D-355 ⑦): 사건 `infra_db_ids`가 없고 연결 힌트가 노드 주소 연결(`basis:
     node_address` linked)이면 그 `db_id`·`server_name`으로 폴스타 축을 연다(`infra_db_ids` 우선 —
     현행 순서). 파드 미확정(`unresolved` + `pod`)은 열지 않는다(`skip_infra`).
 
@@ -125,7 +125,7 @@ def scope_from_job(
         episode = episode_from_payload(payload) if cross_source else None
         source = episode.infra_db_ids[0] if episode is not None and episode.infra_db_ids else ""
         if not source:
-            # plans/199 · D-352 ⑦ — 노드 주소 연결(알람 시점 자동)이면 그 서버가 대상 자체다
+            # plans/202 · D-355 ⑦ — 노드 주소 연결(알람 시점 자동)이면 그 서버가 대상 자체다
             node = _node_link(payload)
             if node is not None:
                 source, server = node
@@ -173,8 +173,8 @@ def _confirmed_link(payload: dict) -> Neighbor | None:
 
     link = polestar_link(payload)
     if link is not None and link.get("basis") == NODE_ADDRESS_BASIS:
-        # 노드 주소 연결은 이웃이 아니라 대상 자체(plans/199 §2.3) — 함께 실린 저장 확정 연결
-        # (`previous_link` · D-352 ③)을 이전 확정 연결 모양으로 넘겨 이웃 규칙을 그대로 쓴다
+        # 노드 주소 연결은 이웃이 아니라 대상 자체(plans/202 §2.3) — 함께 실린 저장 확정 연결
+        # (`previous_link` · D-355 ③)을 이전 확정 연결 모양으로 넘겨 이웃 규칙을 그대로 쓴다
         previous = polestar_previous_link(payload)
         if previous is None:
             return None
@@ -183,7 +183,7 @@ def _confirmed_link(payload: dict) -> Neighbor | None:
 
 
 def _node_link(payload: dict) -> tuple[str, str] | None:
-    """노드 주소 연결 힌트(`basis: node_address` linked — plans/199)의 `(db_id, server_name)`.
+    """노드 주소 연결 힌트(`basis: node_address` linked — plans/202)의 `(db_id, server_name)`.
     형식 검증은 플레이북과 같은 해석(`playbook_runner.polestar_link`)을 쓴다. 아니면 None."""
     from sre_agent.application.playbook_runner import polestar_link
 

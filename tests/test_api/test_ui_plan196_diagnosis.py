@@ -516,7 +516,7 @@ _NODE_BASIS = "제니퍼 노드 주소 일치 — 10.0.0.9 (알람 시점 · 자
 
 
 def test_host_link_state_pod_and_node_address() -> None:
-    """(plans/199 · D-352 ④) 파드 미확정은 선택 대기가 아니다 · 노드 주소 일치는 연결 표시."""
+    """(plans/202 · D-355 ④) 파드 미확정은 선택 대기가 아니다 · 노드 주소 일치는 연결 표시."""
     out = _node(f"""
 var c = function (step, because) {{ return {{ step: step, skipped: true, because: because, skipRaw: "" }}; }};
 out = [

@@ -82,7 +82,7 @@ class ApmCore:
         self.cfg = cfg
         self.clock = clock
         self.poller_status = poller_status
-        # 노드 주소 조회기(plans/199) — 플래그 off면 None(`apm_instance_map` 칸 없음 = 현행)
+        # 노드 주소 조회기(plans/202) — 플래그 off면 None(`apm_instance_map` 칸 없음 = 현행)
         self.node_address = node_address
         self.th = cfg.policies.thresholds
         self.tz = cfg.runtime.timezone

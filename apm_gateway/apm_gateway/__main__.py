@@ -8,7 +8,7 @@ SSE MCP 서버(uvicorn · 주체별 Bearer)와 이벤트 폴러(옵트인)를 �
 R-20). 설정 오류(단일·다중 설정 동시 · 소스 필수 키 누락 · id 형식 · 같은 토큰 두 주체)는
 기동 실패다(plans/87 J8 · D-287 ③ · plans/134 W0-B). 기동 시 작업 스풀을 훑어 남은 진행 중 작업을
 interrupted로 바꾸고, 종료 시 진행 중 백그라운드 작업을 interrupted로 끝낸다(종료 감사 포함).
-노드 주소 조회(plans/199 · `JENNIFER_NODE_ADDRESS_ENABLED`)가 켜져 있으면 소스별 웹 세션 조회기를
+노드 주소 조회(plans/202 · `JENNIFER_NODE_ADDRESS_ENABLED`)가 켜져 있으면 소스별 웹 세션 조회기를
 하나 만들어 폴러(`alarm:raw` 가산)와 `apm_instance_map`(`host_address` 칸)에 함께 넘긴다.
 
 로그: HTTP·MCP 전송 라이브러리 로거는 경고 이상만 남긴다(로그 수준 설정과 무관).

@@ -1,4 +1,4 @@
-"""제니퍼 웹 세션 내부망 실측 — `plans/199` §7 2~6 · D-352.
+"""제니퍼 웹 세션 내부망 실측 — `plans/202` §7 2~6 · D-355.
 
 뷰서버 웹 세션(`/login/page` → `JSESSIONID<포트>`)으로 `/agent/upgrade/list?sid=`가
 어떻게 동작하는지 한 번에 점검한다. 출력에는 **비밀번호·쿠키 값·IP·호스트명을 남기지 않는다**
@@ -318,7 +318,7 @@ def compare_open_api(api: httpx.Client, sid: str, rows: list[Any]) -> None:
 
 def dump_nodes(path: Path, web_rows: dict[str, list[Any]]) -> None:
     """파드 원소의 고유 노드 IP를 서버 안 로컬 파일로만 남긴다(화면에는 건수만) — 폴스타 등록률
-    측정용(plans/199 검토 §1). 같은 이름 `.sql`에 존별로 돌릴 조회문을 함께 쓴다."""
+    측정용(plans/202 검토 §1). 같은 이름 `.sql`에 존별로 돌릴 조회문을 함께 쓴다."""
     nodes = sorted(
         {
             str(r["hostAddress"])
@@ -483,7 +483,7 @@ def run(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="제니퍼 웹 세션 내부망 실측(plans/199 §7)")
+    ap = argparse.ArgumentParser(description="제니퍼 웹 세션 내부망 실측(plans/202 §7)")
     ap.add_argument("--source", help="소스 id(b0·cm_prd·cm_stg) — .env JENNIFER_<ID>_* 사용")
     ap.add_argument("--url", help="뷰서버 기준 URL(예: http://host:7900) — .env보다 우선")
     ap.add_argument("--user", help="웹 계정 ID — .env보다 우선(비밀번호는 .env 또는 프롬프트만)")

@@ -252,7 +252,7 @@ TCP · UTF-8 · **1줄 = 이벤트 1건**(`\n` 종단, 문자열 안 줄바꿈�
 1. **게이트웨이 push 수신부 미구현** — 이것이 없으면 알람까지 이어지지 않는다(별도 계획 필요).
 2. 등록 시점의 클래스 로드 시점(등록 즉시인지, 재기동 때인지, 첫 이벤트 때인지)과 5.6.5.10+ 차단의 화면 표시 방식. → 로컬 Docker 제니퍼 **5.7.0.1**(`apm_gateway/testdata/jennifer` · 라이선스 없이도 로드 확인 가능)에서 §5를 **리허설**하면 운영에서 한 번에 끝낼 수 있다.
 3. 운영 `eventLevel` 실제 값 · 같은 장애에서 폴러와 push의 `time`/`txid` 동일성(멱등 키 일치 여부).
-4. **`instance.k8s`는 항상 `null`이다** — 운영 뷰서버 extension `com.aries.extension.data.InstanceData`에 K8s 클래스가 없어 어댑터의 `k8s.nodeName` 읽기가 값을 얻지 못한다(2026-10-29 `javap` 실측 · plans/199 §0-6). 파드의 노드 주소는 apm_gateway 웹 세션 조회기(`JENNIFER_NODE_ADDRESS_ENABLED` · D-352)가 담당한다.
+4. **`instance.k8s`는 항상 `null`이다** — 운영 뷰서버 extension `com.aries.extension.data.InstanceData`에 K8s 클래스가 없어 어댑터의 `k8s.nodeName` 읽기가 값을 얻지 못한다(2026-10-29 `javap` 실측 · plans/202 §0-6). 파드의 노드 주소는 apm_gateway 웹 세션 조회기(`JENNIFER_NODE_ADDRESS_ENABLED` · D-355)가 담당한다.
 
 ## 로컬 시험(개발자용)
 
