@@ -306,6 +306,9 @@ _ALLOWED_REFERRERS = {
     # (plans/201 W3) 알람 화면 담당 강조 — 통보 노드가 `cfg.duty_area.alarm_focus_effective`로 SSE 키를
     # 실을지만 정한다(인가 판정 아님 · 존·티어 가시성 `event_visible_to`는 이 값을 읽지 않는다).
     "noise_gate/application/nodes/alarm_notifier.py",
+    # (plans/201 W6) 첫 화면 24시간 요약 집계 — 담당 어휘로 **보이는** 알람 중 겹침만 센다(인가 판정 아님 ·
+    # 존·SUPPRESS 공개는 `event_visible_to`가 하고 그 함수는 이 값을 읽지 않는다).
+    "src/api/duty_daily_summary.py",
 }
 
 

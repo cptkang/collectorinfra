@@ -9,6 +9,9 @@
   매핑 점검은 노이즈 결정 기록(`/noise/summary`와 같은 저장소)의 최근 7일 판정 레코드에서
   **볼 때마다** 센다 — 새 파일·메모리 계수기 없음.
 
+- `GET /auth/duty-areas/daily-summary` — (plans/201 W6) 첫 화면 「지난 24시간 · 내 담당」 요약. 별도 라우터
+  (`daily_summary_router`)라 `DUTY_DAILY_SUMMARY_ENABLED`까지 켠 기동에서만 등록된다(끄면 404).
+
 응답의 `sections`는 점검 항목 목록이다 — 뒤 Wave가 제니퍼 `event_type_norm` 점검·알려진 미매핑
 (`known_unmapped`) 분리를 항목으로 더한다(W1은 `resource_type` 항목 하나).
 """
@@ -17,21 +20,32 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import threading
+from datetime import UTC, datetime
 from typing import Any
 
 from fastapi import APIRouter, Depends, Query, Request
 
-from src.api.dependencies import require_admin_user
+from src.api.dependencies import alarm_zones_for_user, is_admin, require_admin_user, require_user
 from src.api.duty_area_support import (
     duty_alarm_focus_enabled,
     duty_area_vocabulary,
     effective_duty_areas,
 )
+from src.api.duty_daily_summary import (
+    WINDOW_HOURS,
+    SummaryStopped,
+    summarize_duty_records,
+)
+from src.api.routes.alarm import event_visible_to
 from src.api.routes.noise_dashboard import _decision_store
 from src.domain.duty_areas import unmapped_apm_event_types, unmapped_resource_types
+from src.routing.zones import all_zones
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
+#: (plans/201 W6) 첫 화면 24시간 요약 — `DUTY_DAILY_SUMMARY_ENABLED`까지 켠 기동에서만 등록한다.
+daily_summary_router = APIRouter()
 
 #: 매핑 점검 창(일).
 MAPPING_WINDOW_DAYS = 7
@@ -149,4 +163,106 @@ async def duty_area_status(
             sections.append(await _apm_event_type_section(request))
         body["sections"] = sections
         body["badge_count"] = sum(int(s.get("unmapped_distinct") or 0) for s in sections)
+    return body
+
+
+# ─── (plans/201 W6) 첫 화면 「지난 24시간 · 내 담당」 요약 ───
+
+#: 집계 시간 상한(초) — 넘으면 `unavailable: "timeout"`으로 답한다(침묵 폴백 아님).
+DAILY_SUMMARY_TIMEOUT_SECONDS = 5.0
+
+
+async def _stored_duty_areas(request: Request, current_user: dict[str, Any]) -> list[str] | None:
+    """담당 값을 저장소에서 다시 읽는다(`/auth/me`와 같은 규칙 — 인가 dict에는 담당이 없다).
+
+    저장소에 없는 사용자(개발 모드 anonymous)·조회 실패는 미지정이다.
+    """
+    stored = None
+    user_repo = getattr(request.app.state, "user_repo", None)
+    sub = str(current_user.get("sub", "") or "")
+    if user_repo and sub and sub != "anonymous":
+        try:
+            user = await user_repo.get_by_user_id(sub)
+            stored = user.duty_areas if user else None
+        except Exception as exc:  # noqa: BLE001 — 부가 정보: 실패는 미지정으로 답한다
+            logger.warning("24시간 요약 담당 조회 실패(미지정으로 응답): %s", type(exc).__name__)
+            stored = None
+    return effective_duty_areas(sub, stored)
+
+
+@daily_summary_router.get("/auth/duty-areas/daily-summary")
+async def duty_daily_summary(
+    request: Request,
+    current_user: dict[str, Any] = Depends(require_user),
+) -> dict[str, Any]:
+    """첫 화면 「지난 24시간 · 내 담당」 요약(plans/201 W6) — 볼 때마다 결정 기록을 센다.
+
+    - 존 범위·SUPPRESS 공개는 알람 SSE와 같은 판정(`alarm_zones_for_user` · `event_visible_to`)만 쓴다.
+      담당 업무는 인가가 아니다 — 보이는 알람 가운데 담당과 겹치는 것만 **센다**.
+    - 담당 미지정 → `eligible: false, reason: "no_duty"` · 알람 존 없음 → `reason: "no_alarm_zone"`(집계 안 함).
+    - 비관리자 응답의 `tiers`에는 `suppress` 키가 없다(관리자·개발 모드만).
+    - 집계 시간 초과·실패는 `eligible: true, unavailable: "timeout" | "error"`다(로그에는 사유만).
+    """
+    vocab = duty_area_vocabulary()
+    areas = await _stored_duty_areas(request, current_user) or []
+    labels = {opt["code"]: opt["label"] for opt in vocab.options()}
+    body: dict[str, Any] = {
+        "eligible": False,
+        "window_hours": WINDOW_HOURS,
+        "areas": [{"code": code, "label": labels.get(code, code)} for code in areas],
+        "generated_at": datetime.now(UTC).isoformat(),
+    }
+    if not areas:
+        body["reason"] = "no_duty"
+        return body
+    auth_enabled = bool(request.app.state.config.auth.enabled)
+    allowed_zones = alarm_zones_for_user(current_user, auth_enabled)
+    if not allowed_zones:
+        body["reason"] = "no_alarm_zone"
+        return body
+    body["eligible"] = True
+    deliver_all = allowed_zones >= set(all_zones())
+    # 알람 SSE(`alarm_notifications_stream`)와 같은 판정 — 개발 모드는 종전 진입성을 보존한다
+    admin = (not auth_enabled) or is_admin(current_user)
+
+    def _visible(rec: dict[str, Any]) -> bool:
+        return event_visible_to(
+            rec, allowed_zones=allowed_zones, deliver_all=deliver_all, is_admin=admin
+        )
+
+    stop = threading.Event()
+    # 중단 신호는 순회 자체에도 꽂는다(건너뛰는 줄 포함 주기 확인) — 저장소는 요청마다 새로 만든다
+    store = _decision_store(request)
+    store.scan_should_stop = stop.is_set
+
+    def _run() -> dict[str, Any]:
+        return summarize_duty_records(
+            store.iter_recent_decisions(WINDOW_HOURS * 3600),
+            vocab=vocab,
+            user_areas=areas,
+            visible=_visible,
+            include_suppress=admin,
+            should_stop=stop.is_set,
+            newest_first=True,
+        )
+
+    try:
+        result = await asyncio.wait_for(
+            asyncio.to_thread(_run), timeout=DAILY_SUMMARY_TIMEOUT_SECONDS
+        )
+    except TimeoutError:
+        stop.set()
+        logger.warning(
+            "24시간 요약 집계 시간 초과(%.0f초) — unavailable 응답", DAILY_SUMMARY_TIMEOUT_SECONDS
+        )
+        body["unavailable"] = "timeout"
+        return body
+    except SummaryStopped:
+        body["unavailable"] = "timeout"
+        return body
+    except Exception as exc:  # noqa: BLE001 — 부가 카드: 실패는 구조화 사유로 답한다
+        logger.warning("24시간 요약 집계 실패 — unavailable 응답: %s", type(exc).__name__)
+        body["unavailable"] = "error"
+        return body
+    body.update(result)
     return body

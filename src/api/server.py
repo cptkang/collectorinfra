@@ -878,6 +878,11 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     application.state.duty_action_assist_enabled = (
         getattr(duty_cfg, "action_assist_effective", False) is True
     )
+    # (plans/201 W6) 첫 화면 24시간 요약 카드
+    # — 유효값 = DUTY_AREA_ENABLED AND DUTY_DAILY_SUMMARY_ENABLED(기동 시 1회).
+    application.state.duty_daily_summary_enabled = (
+        getattr(duty_cfg, "daily_summary_effective", False) is True
+    )
     # (plans/201 W5 P3) 알람 카드 재배치 — 담당 업무와 독립(기동 시 1회 · 알람 capabilities로 전달).
     application.state.alarm_card_flow_enabled = (
         getattr(getattr(config, "alarm_card_flow", None), "enabled", False) is True
@@ -929,6 +934,11 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
         from src.api.routes import duty_areas
 
         application.include_router(duty_areas.router, prefix="/api/v1", tags=["admin"])
+        # (plans/201 W6) 첫 화면 24시간 요약 — DUTY_DAILY_SUMMARY_ENABLED까지 켰을 때만 등록(끄면 404).
+        if application.state.duty_daily_summary_enabled:
+            application.include_router(
+                duty_areas.daily_summary_router, prefix="/api/v1", tags=["auth"]
+            )
     # (plans/191) 분리 컴포넌트 설정 프록시 — 관리 토큰이 없으면 빈 목록(현행 화면).
     application.include_router(admin_components.router, prefix="/api/v1", tags=["admin"])
     # (plans/194 W5 · C5) 관리자 조사 설정 요약 — 읽기 전용(모드·상한·조사 서비스 부하)

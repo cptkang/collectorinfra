@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -66,6 +66,13 @@ _PAGE_REVIEW_POINTER_KEYS: tuple[str, ...] = (
     "representative_alarm_id",
 )
 
+# (plans/201 W6) `iter_recent_decisions` 역방향 읽기 — 블록 크기 · 종료 여유 · 중단 확인 주기.
+# 레코드는 append 시각 순이지만 워커 동시 처리·`ts` 인자 지정 호출로 몇 초~몇 분 어긋날 수 있다.
+# 창 하한보다 10분 넘게 오래된 결정 레코드를 만나면 그 앞(더 오래된 쪽)은 창 안일 수 없다고 보고 멈춘다.
+_REVERSE_SCAN_BLOCK_BYTES = 64 * 1024
+_REVERSE_SCAN_SLACK_SECONDS = 600
+_SCAN_STOP_CHECK_EVERY = 256
+
 # 화면에 내보내기 전 마스킹하는 최상위 문자열 키.
 _MASKED_TEXT_KEYS: tuple[str, ...] = (
     "alarm_name",
@@ -110,6 +117,10 @@ def _as_tier_set(tier: object) -> frozenset[str]:
 
 class DecisionStore:
     """발송 판단을 JSONL로 적재하고 티어별 집계·억제율을 산출하는 경량 감사 저장소."""
+
+    # (plans/201 W6) `iter_recent_decisions` 기본 중단 신호(없음). 인스턴스를 여러 순회가 공유하면
+    # 서로 덮어쓰므로 공유 인스턴스에는 꽂지 말고 `should_stop` 인자를 쓴다.
+    scan_should_stop: Callable[[], bool] | None = None
 
     def __init__(
         self, path: str, enabled: bool = True, max_lines: int = 20000
@@ -828,6 +839,70 @@ class DecisionStore:
             logger.warning("결정 기록 값 집계 읽기 실패(무시): %s", exc)
             return {}, 0
         return counts, empty
+
+    def iter_recent_decisions(
+        self, window_seconds: int, *, should_stop: Callable[[], bool] | None = None
+    ) -> Iterator[dict[str, Any]]:
+        """최근 `window_seconds` 안 결정 레코드를 **최신부터** 한 건씩 내준다(읽기 전용 · 제너레이터).
+
+        (plans/201 W6) 첫 화면 24시간 요약용 — 레코드를 메모리에 쌓지 않고 소비처가 한 건씩 센다.
+        결정 기록은 보존 상한 없이 쌓이고 시간 창은 파일 끝에 있으므로 **파일 끝에서 블록 단위로
+        거꾸로** 읽고, 창 하한보다 `_REVERSE_SCAN_SLACK_SECONDS` 이상 오래된 결정 레코드를 만나면
+        멈춘다(그보다 앞 줄은 읽지 않는다). 줄 수 상한은 두지 않는다 — 창 안 레코드는 모두 센다.
+
+        제외 규칙은 `count_recent_values`와 같다: 비-decision `type` 레코드·손상 줄 제외 · 시간 창
+        (`ts` 없음·파싱 실패는 포함 · 종료 판정에는 쓰지 않음). 파일 부재·비활성이면 아무것도 내지
+        않는다. 읽기 실패는 경고 1줄 뒤 멈춘다(그때까지 내준 레코드는 소비처 몫).
+
+        중단 신호는 `should_stop`(없으면 인스턴스 `scan_should_stop`)이며, 건너뛰는 줄을 포함해
+        `_SCAN_STOP_CHECK_EVERY`줄마다 확인한다 — 참이면 그 자리에서 조용히 끝난다(소비처가 중단을 안다).
+        """
+        if not self.enabled or not self.path.exists():
+            return
+        stop = should_stop or getattr(self, "scan_should_stop", None)
+        cutoff_ts = datetime.now(UTC).timestamp() - window_seconds
+        floor_ts = cutoff_ts - _REVERSE_SCAN_SLACK_SECONDS
+        seen = 0
+        try:
+            for raw in self._reverse_lines():
+                seen += 1
+                if stop is not None and seen % _SCAN_STOP_CHECK_EVERY == 0 and stop():
+                    return
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if not isinstance(rec, dict) or rec.get("type"):
+                    continue
+                if not self._within_window(rec, cutoff_ts):
+                    parsed = self._parse_ts(rec.get("ts"))
+                    if parsed is not None and parsed.timestamp() < floor_ts:
+                        return
+                    continue
+                yield rec
+        except OSError as exc:
+            logger.warning("결정 기록 순회 읽기 실패(무시): %s", exc)
+
+    def _reverse_lines(self) -> Iterator[bytes]:
+        """파일 줄을 끝에서부터 내준다(블록 단위 역방향 읽기 · 줄 끝 개행 제외 · UTF-8 바이트)."""
+        with self.path.open("rb") as fh:
+            fh.seek(0, 2)
+            pos = fh.tell()
+            rest = b""
+            while pos > 0:
+                size = min(_REVERSE_SCAN_BLOCK_BYTES, pos)
+                pos -= size
+                fh.seek(pos)
+                chunk = fh.read(size) + rest
+                parts = chunk.split(b"\n")
+                rest = parts[0]  # 블록 경계에 걸린 줄 앞부분 — 다음(앞쪽) 블록과 이어 붙인다
+                for part in reversed(parts[1:]):
+                    yield part
+            if rest:
+                yield rest
 
     @staticmethod
     def _nested_value(rec: dict[str, Any], path: list[str]) -> Any:

@@ -107,6 +107,14 @@ def duty_action_assist_meta(areas: list[str] | None) -> dict[str, Any]:
     }
 
 
+def duty_daily_summary_enabled(request: Request) -> bool:
+    """이 기동에서 첫 화면 24시간 요약 카드가 켜졌는가(plans/201 W6 · 기동 시 1회 해석 · 없으면 off).
+
+    유효값은 `DUTY_AREA_ENABLED` AND `DUTY_DAILY_SUMMARY_ENABLED`다(`create_app`이 둘을 함께 본다).
+    """
+    return bool(getattr(request.app.state, "duty_daily_summary_enabled", False))
+
+
 def welcome_guide_enabled(request: Request) -> bool:
     """이 기동에서 첫 화면 상황 안내가 켜졌는가(plans/201 W2 P2 · 담당 업무와 독립 · 기동 시 1회 · 없으면 off)."""
     return bool(getattr(request.app.state, "welcome_guide_enabled", False))

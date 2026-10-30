@@ -232,13 +232,24 @@ class DutyAreaConfig(BaseSettings):
         default=False,
         validation_alias="DUTY_ACTION_ASSIST_ENABLED",
     )
+    # (plans/201 W6) 첫 화면 「지난 24시간 · 내 담당」 요약 카드 — 노이즈 결정 기록(새 수집 없음)에서 사용자 알람 존 범위 ·
+    # 담당 영역(발생·단서)이 겹치는 알람의 티어별 건수 · 확인 필요 상위 3건 · 반복 상위 1종을 보인다
+    # (`/auth/me` `duty_daily_summary` · `GET /api/v1/auth/duty-areas/daily-summary`).
+    # 유효값 = `enabled` AND 이 값(`daily_summary_effective`). env 이름은 이것 하나만.
+    # 기본 off = `/auth/me`·첫 화면 비트 동일 · 경로 미등록(404).
+    daily_summary_enabled: bool = Field(
+        default=False,
+        validation_alias="DUTY_DAILY_SUMMARY_ENABLED",
+    )
 
     model_config = {"env_prefix": "DUTY_AREA_", "env_file": ".env", "extra": "ignore"}
 
     @model_validator(mode="before")
     @classmethod
     def _accept_alarm_focus_field_name(cls, data: Any) -> Any:
-        """생성자 필드명 인자(`alarm_focus_enabled=`·`welcome_hints_enabled=`·`action_assist_enabled=`)를 env 이름으로 옮긴다(plans/201 W3 교정 · W2 · W5).
+        """생성자 필드명 인자(`alarm_focus_enabled=` 등 `_DUTY_FIELD_ALIASES` 키)를 env 이름으로 옮긴다.
+
+        plans/201 W3 교정 · W2 · W5 · W6(`daily_summary_enabled=`).
 
         env는 `DUTY_ALARM_FOCUS_ENABLED`·`DUTY_WELCOME_HINTS_ENABLED` 하나씩만 받아야 한다 — `AliasChoices`에
         필드명을 넣으면 접두 없는 env(`ALARM_FOCUS_ENABLED`·`WELCOME_HINTS_ENABLED`)가, `populate_by_name`을 켜면
@@ -267,12 +278,18 @@ class DutyAreaConfig(BaseSettings):
         """조치 지원(재정렬·점검 순서·인계 요약)이 실제로 켜졌는가(`DUTY_AREA_ENABLED` AND `DUTY_ACTION_ASSIST_ENABLED`)."""
         return self.enabled is True and self.action_assist_enabled is True
 
+    @property
+    def daily_summary_effective(self) -> bool:
+        """첫 화면 24시간 요약 카드가 실제로 켜졌는가(`DUTY_AREA_ENABLED` AND `DUTY_DAILY_SUMMARY_ENABLED`)."""
+        return self.enabled is True and self.daily_summary_enabled is True
+
 
 #: `DutyAreaConfig` 생성자 필드명 → env 별칭(필드명 인자 이관용 · 접두 없는 env는 받지 않는다).
 _DUTY_FIELD_ALIASES: dict[str, str] = {
     "alarm_focus_enabled": "DUTY_ALARM_FOCUS_ENABLED",
     "welcome_hints_enabled": "DUTY_WELCOME_HINTS_ENABLED",
     "action_assist_enabled": "DUTY_ACTION_ASSIST_ENABLED",
+    "daily_summary_enabled": "DUTY_DAILY_SUMMARY_ENABLED",
 }
 
 

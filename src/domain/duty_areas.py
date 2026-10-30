@@ -2,7 +2,7 @@
 
 **무엇을 하나.** 담당 업무 영역(`server_os` 등)의 어휘 객체와, 그 어휘로 하는 결정적 판정
 (알람 자원 유형 → 영역 · 저장 값 검증·정규화 · 폐지 코드 걸러내기 · 첫 화면 예시 질의 검증·선별 ·
-W5 조사 질의 축 → 영역 · 점검 순서 검증·선별)만
+W5 조사 질의 축 → 영역 · 점검 순서 검증·선별 · W6 알람과 담당의 겹침)만
 둔다. 파일을 읽지 않는다 —
 선언 파일(`config/duty_areas.yaml`) 로드는 `src.infrastructure.duty_area_vocabulary` 소관이다.
 
@@ -652,3 +652,46 @@ def unmapped_apm_event_types(
         "known_unmapped_total": sum(known.values()),
         "known_unmapped": _ranked(known),
     }
+
+
+@dataclass(frozen=True)
+class DutyOverlap:
+    """알람 하나와 사용자 담당의 겹침(plans/201 W6) — 화면 `dutyBadgesOf`와 같은 판정 결과.
+
+    - `occurrence`: 발생 영역(`resource_type`)이 담당과 겹친다.
+    - `hint`: 원인 단서(제니퍼 정규화 유형)가 담당과 겹친다.
+    - `hint_label`: 겹친 단서의 근거 문구(겹치지 않으면 빈 문자열).
+    """
+
+    occurrence: bool = False
+    hint: bool = False
+    hint_label: str = ""
+
+    @property
+    def mine(self) -> bool:
+        """담당 알람인가(발생 또는 단서)."""
+        return self.occurrence or self.hint
+
+
+def duty_overlap(
+    vocabulary: DutyAreaVocabulary,
+    user_areas: Iterable[str],
+    *,
+    resource_type: object = None,
+    event_type: object = None,
+) -> DutyOverlap:
+    """알람의 발생 영역·원인 단서가 사용자 담당과 겹치는가(plans/201 W6 · 순수).
+
+    W3 화면 판정(`app.js` `dutyAreasOf`·`dutyCauseHintsOf`의 제니퍼 유형 줄 → `dutyBadgesOf`)과 같은 규칙이다
+    — 발생은 `areas_for_resource_type`(대소문자 무시), 단서는 제니퍼 이벤트 유형 `event_type`을
+    `cause_hints.apm_hint`로(정규화 대조). 두 구현은
+    같은 픽스처 테스트로 고정한다. 프로세스 kind 단서는 받지 않는다(서버 판정 기록에 없다). 문자열이 아닌
+    값·빈 값은 겹침 없음이다.
+    """
+    mine = set(user_areas)
+    rt = resource_type if isinstance(resource_type, str) else None
+    occurrence = any(code in mine for code in vocabulary.areas_for_resource_type(rt))
+    hint = vocabulary.cause_hints.apm_hint(event_type)
+    if hint is None or not any(code in mine for code in hint.areas):
+        return DutyOverlap(occurrence=occurrence)
+    return DutyOverlap(occurrence=occurrence, hint=True, hint_label=hint.label)

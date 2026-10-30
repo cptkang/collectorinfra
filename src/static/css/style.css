@@ -2581,6 +2581,60 @@ body.auth-pending .auth-splash {
     color: var(--text-muted);
 }
 
+/* ─── plans/201 W6 첫 화면 「지난 24시간 · 내 담당」 요약 카드 (app.js가 `duty_daily_summary`일 때만 만든다) ─── */
+.duty-summary-card {
+    width: 100%;
+    max-width: 600px;
+    margin-bottom: 20px;
+    padding: 10px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    text-align: left;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
+.duty-summary-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+}
+
+.duty-summary-title {
+    flex: 1;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.duty-summary-tiers {
+    margin-top: 6px;
+}
+
+.duty-summary-section-title {
+    margin-top: 8px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.duty-summary-list {
+    margin: 2px 0 0;
+    padding-left: 18px;
+}
+
+.duty-summary-hint,
+.duty-summary-empty,
+.duty-summary-unavailable {
+    color: var(--text-muted);
+}
+
+.duty-summary-repeat,
+.duty-summary-unavailable {
+    margin-top: 6px;
+}
+
 /* ─── Zone Clarification (Plan 75 §4 — 존 선택 역질문 체크박스) ─── */
 .zone-clarify {
     margin-top: 12px;

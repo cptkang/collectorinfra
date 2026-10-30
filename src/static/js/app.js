@@ -364,6 +364,129 @@
             try { applyDutyWelcomeHints(me); } catch (e) { /* 예시 교체 실패 — 현행 버튼 그대로 */ }
         });
     }
+    // ─── plans/201 W6 첫 화면 「지난 24시간 · 내 담당」 요약 카드 ───
+    // `/auth/me` `duty_daily_summary === true`(DUTY_DAILY_SUMMARY_ENABLED · 담당 지정 · 알람 존 있음)일 때만 카드를 만들고
+    // 요약을 **1회** 조회한다(자동 갱신 없음). 키가 없거나 false면 #chatWelcome도 네트워크도 건드리지 않는다.
+    // 담당 영역 라벨은 응답(`areas`)에서만 읽는다(어휘 사본 없음). 출력은 createElement + textContent만(XSS 경계).
+    // 카드는 #chatWelcome 안 맨 위에 붙어 첫 질문 전송 때 첫 화면과 함께 사라진다. W2 첫 화면 구역 안에 둔다 —
+    // 구역 밖(새 대화·탭 복원)은 #chatWelcome의 hidden만 토글한다.
+    var DUTY_SUMMARY_URL = "/api/v1/auth/duty-areas/daily-summary";
+    var DUTY_SUMMARY_TIERS = [
+        ["page", "즉시 통보"], ["ticket", "대기열"], ["dashboard", "화면 표시"], ["suppress", "억제"]
+    ];
+    var DUTY_SUMMARY_UNAVAILABLE = {
+        timeout: "지금은 요약을 불러올 수 없습니다 — 집계 시간이 초과됐습니다.",
+        error: "지금은 요약을 불러올 수 없습니다 — 집계 중 오류가 났습니다."
+    };
+
+    function dutySummaryTime(ts) {
+        var d = new Date(String(ts || ""));
+        if (isNaN(d.getTime())) return "";
+        function pad(n) { return (n < 10 ? "0" : "") + n; }
+        return pad(d.getMonth() + 1) + "-" + pad(d.getDate()) + " " + pad(d.getHours()) + ":" + pad(d.getMinutes());
+    }
+
+    // 카드 모델(순수) — 응답에서 화면 줄을 만든다. 표시할 수 없는 응답(형식 아님 · eligible false)은 null.
+    // 티어 키가 응답에 없으면 그 칸은 없다(비관리자에게 억제 칸이 없는 것은 서버가 키를 안 싣기 때문이다).
+    function dutyDailySummaryModel(data) {
+        if (!data || typeof data !== "object" || data.eligible !== true) return null;
+        var labels = (Array.isArray(data.areas) ? data.areas : [])
+            .map(function (a) { return a && typeof a.label === "string" ? a.label.trim() : ""; })
+            .filter(function (l) { return !!l; });
+        var hours = Number(data.window_hours) > 0 ? Number(data.window_hours) : 24;
+        var model = {
+            title: "지난 " + hours + "시간 · 내 담당" + (labels.length ? "(" + labels.join(" · ") + ")" : ""),
+            unavailable: "", tiers: "", attention: [], repeat: ""
+        };
+        if (data.unavailable) {
+            model.unavailable = DUTY_SUMMARY_UNAVAILABLE[data.unavailable] || DUTY_SUMMARY_UNAVAILABLE.error;
+            return model;
+        }
+        var tiers = data.tiers && typeof data.tiers === "object" ? data.tiers : {};
+        model.tiers = DUTY_SUMMARY_TIERS.filter(function (t) {
+            return Object.prototype.hasOwnProperty.call(tiers, t[0]);
+        }).map(function (t) { return t[1] + " " + (Number(tiers[t[0]]) || 0); }).join(" · ");
+        (Array.isArray(data.needs_attention) ? data.needs_attention : []).slice(0, 3).forEach(function (it) {
+            if (!it || typeof it !== "object") return;
+            var parts = [];
+            var when = dutySummaryTime(it.ts);
+            if (when) parts.push(when);
+            if (typeof it.server_name === "string" && it.server_name.trim()) parts.push(it.server_name.trim());
+            var name = typeof it.alarm_name === "string" && it.alarm_name.trim() ? it.alarm_name.trim()
+                : (typeof it.resource_type === "string" ? it.resource_type.trim() : "");
+            if (name) parts.push(name);
+            var hint = it.hint === true && typeof it.hint_label === "string" && it.hint_label.trim()
+                ? "단서: " + it.hint_label.trim() : "";
+            model.attention.push({ text: parts.join(" · "), hint: hint });
+        });
+        var rep = data.top_repeat;
+        if (rep && typeof rep === "object" && Number(rep.count) >= 2) {
+            var repName = typeof rep.alarm_name === "string" && rep.alarm_name.trim() ? rep.alarm_name.trim() : "(이름 없음)";
+            model.repeat = "가장 많이 반복 — " + repName + " " + Number(rep.count) + "건";
+        }
+        return model;
+    }
+
+    function dutySummaryEl(tag, cls, text) {
+        var el = document.createElement(tag);
+        if (cls) el.className = cls;
+        if (text) el.textContent = text;
+        return el;
+    }
+
+    // 카드 그리기 — 모델이 없으면 아무것도 붙이지 않는다. 이미 있으면 다시 만들지 않는다(1회).
+    function renderDutyDailySummary(data) {
+        if (!chatWelcome || chatWelcome.querySelector(".duty-summary-card")) return false;
+        var model = dutyDailySummaryModel(data);
+        if (!model) return false;
+        var card = dutySummaryEl("div", "duty-summary-card");
+        card.id = "dutyDailySummary";
+        card.setAttribute("role", "region");
+        card.setAttribute("aria-label", model.title);
+        var head = dutySummaryEl("div", "duty-summary-head");
+        head.appendChild(dutySummaryEl("span", "duty-summary-title", model.title));
+        var go = dutySummaryEl("button", "btn btn-secondary btn-sm duty-summary-go", "이벤트 알람에서 보기");
+        go.type = "button";
+        go.addEventListener("click", openAlarmsDutyFirst);
+        head.appendChild(go);
+        card.appendChild(head);
+        if (model.unavailable) {
+            card.appendChild(dutySummaryEl("div", "duty-summary-unavailable", model.unavailable));
+        } else {
+            card.appendChild(dutySummaryEl("div", "duty-summary-tiers", model.tiers));
+            card.appendChild(dutySummaryEl("div", "duty-summary-section-title", "확인 필요"));
+            if (model.attention.length) {
+                var list = dutySummaryEl("ul", "duty-summary-list");
+                model.attention.forEach(function (row) {
+                    var li = dutySummaryEl("li", "duty-summary-item", row.text);
+                    if (row.hint) {
+                        li.appendChild(document.createTextNode(" "));
+                        li.appendChild(dutySummaryEl("span", "duty-summary-hint", row.hint));
+                    }
+                    list.appendChild(li);
+                });
+                card.appendChild(list);
+            } else {
+                card.appendChild(dutySummaryEl("div", "duty-summary-empty", "즉시 통보·대기열 알람이 없습니다."));
+            }
+            if (model.repeat) card.appendChild(dutySummaryEl("div", "duty-summary-repeat", model.repeat));
+        }
+        chatWelcome.insertBefore(card, chatWelcome.firstChild);
+        return true;
+    }
+
+    function loadDutyDailySummary() {
+        fetchAuthMeOnce().then(function (me) {
+            if (!me || me.duty_daily_summary !== true || !chatWelcome) return;
+            fetch(DUTY_SUMMARY_URL, { headers: getAuthHeaders() })
+                .then(function (res) { return res.ok ? res.json() : { eligible: true, unavailable: "error" }; })
+                .catch(function () { return { eligible: true, unavailable: "error" }; })
+                .then(function (data) {
+                    try { renderDutyDailySummary(data); } catch (e) { /* 요약은 부가 정보 — 첫 화면은 그대로 */ }
+                });
+        });
+    }
+    // ─── plans/201 W6 끝 ───
     // ─── plans/201 W2 첫 화면 끝 ───
 
     function checkAuthOnLoad() {
@@ -430,6 +553,8 @@
                 // plans/201 W2: 첫 화면 상황 안내·담당별 예시 — 알람 수신 판정(initAlarmSubscription) 뒤에 둔다
                 // (이벤트 알람 줄의 비활성 판정). 키가 없으면 첫 화면을 건드리지 않는다.
                 if (data.auth_enabled && userInfo && userInfo.user_id) loadWelcomeEnhancements();
+                // plans/201 W6: 첫 화면 24시간 요약 카드 — `duty_daily_summary === true`일 때만 1회 조회
+                if (data.auth_enabled && userInfo && userInfo.user_id) loadDutyDailySummary();
                 // plans/187 W5b: `/?investigation=<id>` 진입 — 인증 확정 뒤에만 조사 기록을 읽는다.
                 // (W15) 장애 진단 사전 게이트(/active)를 먼저 끝내야 진입을 진단 탭으로 보낼지 정할 수 있다.
                 initDiagnosisView().then(function () {
@@ -6263,6 +6388,17 @@
         label.appendChild(text);
         alarmTools.appendChild(label);
         if (chk.checked) applyDutyAlarmOrder();
+    }
+
+    // (plans/201 W6) 첫 화면 요약 카드 [이벤트 알람에서 보기] — 알람 탭을 열고 「내 담당 먼저」를 켠다.
+    // 토글과 같은 저장 키·정렬 함수를 쓴다(새 키 없음). 담당 강조 메타가 없는 기동(W3 off)이면 탭만 연다.
+    function openAlarmsDutyFirst() {
+        setActiveView("alarm");
+        if (!dutyAlarmFocus) return;
+        try { localStorage.setItem(DUTY_FIRST_STORAGE_KEY, "1"); } catch (e) { /* 저장 불가면 이번만 */ }
+        var chk = document.getElementById("alarmDutyFirst");
+        if (chk) chk.checked = true;
+        applyDutyAlarmOrder();
     }
 
     // 목록 순서 적용 — 켜면 같은 티어 안에서 담당 카드 먼저, 끄면 최신순(도착 역순)으로 되돌린다.

@@ -294,6 +294,9 @@ class UserInfoResponse(BaseModel):
     # (plans/201 W5) 조치 지원 메타 `{requery_axes, checklists}` — `DUTY_ACTION_ASSIST_ENABLED`까지 켠 기동의
     # `/auth/me`에서만 명시로 채운다(끄면 키 부재). 인가 판정은 이 값을 읽지 않는다.
     duty_action_assist: dict[str, Any] | None = None
+    # (plans/201 W6) 첫 화면 24시간 요약 카드 표시 여부(담당 지정 AND 알람 존 있음) — `DUTY_DAILY_SUMMARY_ENABLED`까지
+    # 켠 기동의 `/auth/me`에서만 명시로 채운다(끄면 키 부재). 인가 판정은 이 값을 읽지 않는다.
+    duty_daily_summary: bool | None = None
     # (plans/201 W2 P2) 첫 화면 상황 안내 — `WELCOME_GUIDE_ENABLED` 켠 기동의 `/auth/me`에서만 `true`로 채운다
     # (담당 업무와 독립 · 끄면 키 부재).
     welcome_guide: bool | None = None
@@ -312,10 +315,10 @@ class UserInfoResponse(BaseModel):
         return data
 
 
-#: 명시로 채울 때만 응답에 싣는 키(plans/201 W1 담당 업무 · W2 예시 질의·상황 안내 · W5 조치 지원).
+#: 명시로 채울 때만 응답에 싣는 키(plans/201 W1 담당 업무 · W2 예시 질의·상황 안내 · W5 조치 지원 · W6 24시간 요약).
 _DUTY_RESPONSE_KEYS: tuple[str, ...] = (
     "duty_areas", "duty_area_options", "duty_alarm_focus", "duty_welcome_queries", "duty_action_assist",
-    "welcome_guide",
+    "duty_daily_summary", "welcome_guide",
 )
 
 
