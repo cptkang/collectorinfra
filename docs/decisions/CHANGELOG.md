@@ -8,6 +8,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-30 | D-354 | 부기 11 — `plans/201` W7 사례 매뉴얼(U-82~84 · 가상 예시 · 캡처 대기 · 판정 조합 실 경로 테스트 · 절 공유 별칭 금지 · 잔여·후속 후보 기록) |
 | 2026-10-30 | D-354 | 부기 10 — `plans/201` W6 구현: `DUTY_DAILY_SUMMARY_ENABLED`(유효 = `DUTY_AREA_ENABLED` AND) 기본 off 비트 동일 · `/auth/me` `duty_daily_summary` · `GET /auth/duty-areas/daily-summary`(존·억제는 `event_visible_to` 재사용 · 비관리자 suppress 키 없음) · `duty_overlap` · `iter_recent_decisions` 역방향 집계 · verifier Major(전량 읽기·중단 미작동) 교정 |
 | 2026-10-30 | D-354 | 부기 9 — `plans/201` W5 구현: `DUTY_ACTION_ASSIST_ENABLED`(유효 = `DUTY_AREA_ENABLED` AND)·`ALARM_CARD_FLOW_ENABLED`(독립) 기본 off 비트 동일 · `/auth/me` `duty_action_assist` · capabilities `card_flow_enabled` · `checklists`(플레이북 id 키) · 인계 요약(조회 0 · 마스킹 뷰) · 카드 3묶음 + 진행 표시(localStorage) |
 | 2026-10-30 | D-354 | 부기 8 — `plans/201` W2 구현: `DUTY_WELCOME_HINTS_ENABLED`(유효 = `DUTY_AREA_ENABLED` AND)·`WELCOME_GUIDE_ENABLED`(독립) 기본 off 비트 동일 · `/auth/me` `duty_welcome_queries`·`welcome_guide` · `verified_by` 규약(gold·assembler·sandbox·mlx·closed_net) · 폐쇄망 전용은 `pending: closed_net` 로드 제외 · 로드 4/12(DB 0) · 계획 이탈 4건 |

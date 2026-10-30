@@ -3,6 +3,7 @@
 > `plans/INDEX.md` 머리의 갱신 이력과, 2026-10-06(D-304) 축약 전의 긴 「상태」 칸 원문을 보존한다. **새 갱신 이력은 아래 「갱신 이력」 목록 맨 위에 한 줄씩 추가한다.** INDEX 머리에는 최종 갱신 날짜만 둔다.
 
 ## 갱신 이력
+- 2026-10-30 — 201 W7 완료(WIP 유지 · 구현 완료 · 잔여 캡처·폐쇄망 검증): 사용자 매뉴얼 「사례로 배우기」 장 U-82(서버/OS 파일시스템 · CPU 동일 흐름)·U-83(WAS 힙)·U-84(DB 응답 지연 → 인계) · 가상 예시 · 캡처 대기 · 절별 구체 별칭(공용 「알람 오면」 제거) · 계획 끝 회귀 모듈 단위 새 실패 0 · D-354 부기 11
 - 2026-10-30 — 201 W6 완료(WIP 유지): 첫 화면 「지난 24시간 · 내 담당」 요약 카드 `DUTY_DAILY_SUMMARY_ENABLED`(기본 off · 존·억제 판정은 알람 SSE `event_visible_to` 재사용 · 비관리자 억제 미노출 · 역방향 스트리밍 집계 5초 상한) · app.js v=52 · css v=48 · 매뉴얼 U-81(캡처 대기) · verifier Major 1·Minor 2 처리 · D-354 부기 10 · 잔여 W7
 - 2026-10-30 — 201 W5 완료(WIP 유지): 조치 지원 `DUTY_ACTION_ASSIST_ENABLED`(담당 순 질의 묶음 · 점검 순서 `checklists` 초안 · 인계 요약 복사) · 알람 카드 재배치 `ALARM_CARD_FLOW_ENABLED`(3묶음 · 담당과 독립) · 기본 off · app.js v=51 · briefing-view v=13 · 매뉴얼 U-79·U-80(캡처 대기) · verifier Major 1·Minor 3 처리 · D-354 부기 9
 - 2026-10-30 — 201 W2 완료(WIP 유지): 첫 화면 상황 안내(`WELCOME_GUIDE_ENABLED` · 알람 줄 권한 없으면 비활성+사유) · 담당별 예시 질문(`DUTY_WELCOME_HINTS_ENABLED` · 영역당 3·전체 6 · `verified_by` 없는 문구 로드 제외 · 로드 4/12 · DB 0) · app.js v=50 · css v=47 · 매뉴얼 U-78(캡처 대기) · verifier Critical·Major 0 · D-354 부기 8
