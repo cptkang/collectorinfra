@@ -712,7 +712,7 @@ def test_flag_default_off_and_declared() -> None:
 
 
 def test_static_cache_versions_bumped() -> None:
-    assert 'src="/static/js/app.js?v=50"' in (_STATIC / "index.html").read_text(encoding="utf-8")
+    assert 'src="/static/js/app.js?v=51"' in (_STATIC / "index.html").read_text(encoding="utf-8")
     dashboard = (_STATIC / "admin" / "dashboard.html").read_text(encoding="utf-8")
     assert 'src="/static/js/admin.js?v=16"' in dashboard
 

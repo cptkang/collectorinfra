@@ -1,7 +1,8 @@
 """담당 업무 어휘 — 순수 판정 (plans/201 W1 · D-354).
 
 **무엇을 하나.** 담당 업무 영역(`server_os` 등)의 어휘 객체와, 그 어휘로 하는 결정적 판정
-(알람 자원 유형 → 영역 · 저장 값 검증·정규화 · 폐지 코드 걸러내기 · 첫 화면 예시 질의 검증·선별)만
+(알람 자원 유형 → 영역 · 저장 값 검증·정규화 · 폐지 코드 걸러내기 · 첫 화면 예시 질의 검증·선별 ·
+W5 조사 질의 축 → 영역 · 점검 순서 검증·선별)만
 둔다. 파일을 읽지 않는다 —
 선언 파일(`config/duty_areas.yaml`) 로드는 `src.infrastructure.duty_area_vocabulary` 소관이다.
 
@@ -175,6 +176,10 @@ class DutyAreaVocabulary:
     cause_hints: CauseHints = field(default_factory=CauseHints)
     # (plans/201 W2) `welcome_queries` 섹션의 검증된 값(영역 code → 선언 순서 문구) — 검증 근거 없는 문구는 없다.
     welcome_queries: Mapping[str, tuple[WelcomeQuery, ...]] = field(default_factory=dict)
+    # (plans/201 W5) `requery_axes` — 조사 「질의응답에서 확인」 항목의 축(`axis`) → 영역 code(어휘 안 값만).
+    requery_axes: Mapping[str, str] = field(default_factory=dict)
+    # (plans/201 W5) `checklists` — 플레이북 id → (영역 code 또는 `common`) → 점검 순서 문장(선언 순서).
+    checklists: Mapping[str, Mapping[str, tuple[str, ...]]] = field(default_factory=dict)
 
     def codes(self) -> tuple[str, ...]:
         """선언 순서의 영역 코드."""
@@ -244,6 +249,41 @@ class DutyAreaVocabulary:
                 )
         return picked
 
+    def requery_axes_meta(self) -> dict[str, dict[str, str]]:
+        """화면 메타 `{axis: {area, label}}`(plans/201 W5 §7.1) — 축 → 영역 표시용(어휘 선언 순서와 무관한 축 키)."""
+        labels = {area.code: area.label for area in self.areas}
+        return {
+            axis: {"area": code, "label": labels[code]}
+            for axis, code in self.requery_axes.items()
+            if code in labels
+        }
+
+    def select_checklists(self, areas: Iterable[str] | None) -> dict[str, list[dict[str, Any]]]:
+        """사용자 담당 영역의 점검 순서를 플레이북마다 고른다(plans/201 W5 §7.2 · 순수 · 결정적).
+
+        영역은 **어휘 선언 순서**로 담는다(입력 순서 무관 · 어휘 밖 코드는 무시). 그 플레이북에 담당 영역 문안이
+        하나도 없거나 담당 미지정이면 공통(`common`) 1벌만, 공통도 없으면 그 플레이북 키를 싣지 않는다.
+
+        Returns:
+            플레이북 id → `[{area, area_label, steps}]`(공통은 `area` = `common` · `area_label` = 「공통」)
+        """
+        chosen = {str(a) for a in (areas or [])}
+        out: dict[str, list[dict[str, Any]]] = {}
+        for playbook, by_area in self.checklists.items():
+            picked: list[dict[str, Any]] = [
+                {"area": area.code, "area_label": area.label, "steps": list(by_area[area.code])}
+                for area in self.areas
+                if area.code in chosen and area.code in by_area
+            ]
+            if not picked and COMMON_CHECKLIST_KEY in by_area:
+                picked = [{
+                    "area": COMMON_CHECKLIST_KEY, "area_label": COMMON_CHECKLIST_LABEL,
+                    "steps": list(by_area[COMMON_CHECKLIST_KEY]),
+                }]
+            if picked:
+                out[playbook] = picked
+        return out
+
     def split_known(self, values: Iterable[str] | None) -> tuple[list[str], list[str]]:
         """저장 값을 (어휘에 있는 코드 · 폐지된 코드)로 나눈다(읽을 때 · 선언 순서 정렬)."""
         stored = [str(v) for v in (values or [])]
@@ -295,8 +335,11 @@ def parse_vocabulary(raw: Mapping[str, Any] | None) -> DutyAreaVocabulary:
     known = tuple(area.code for area in areas)
     hints = parse_cause_hints(sections.get("cause_hints"), known)
     welcome = parse_welcome_queries(sections.get("welcome_queries"), known)
+    axes = parse_requery_axes(sections.get("requery_axes"), known)
+    checklists = parse_checklists(sections.get("checklists"), known)
     return DutyAreaVocabulary(
-        areas=tuple(areas), sections=sections, cause_hints=hints, welcome_queries=welcome
+        areas=tuple(areas), sections=sections, cause_hints=hints, welcome_queries=welcome,
+        requery_axes=axes, checklists=checklists,
     )
 
 
@@ -450,6 +493,94 @@ def parse_welcome_queries(
             "담당 업무 예시 질의: 검증 대기(pending) %d개 제외 — %s", len(pending), ", ".join(pending)
         )
     return {code: tuple(result[code]) for code in known_areas if code in result}
+
+
+#: (plans/201 W5) 점검 순서의 공통 문안 키 · 화면 이름 — 영역이 아니다(담당 미지정·담당 영역 문안 없음일 때 쓴다).
+COMMON_CHECKLIST_KEY = "common"
+COMMON_CHECKLIST_LABEL = "공통"
+#: 점검 순서 키(플레이북 id) 형식 · 영역당 문장 수 상한 · 문장 길이 상한.
+_PLAYBOOK_ID = re.compile(r"[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*")
+MAX_CHECKLIST_STEPS = 8
+MAX_CHECKLIST_STEP_LENGTH = 200
+
+
+def parse_requery_axes(raw: Any, known_areas: tuple[str, ...]) -> dict[str, str]:
+    """`requery_axes` 섹션(축 → 영역 code)을 검증한다(순수 · 결정적 · plans/201 W5 §7.1).
+
+    축 키가 비었거나 영역 code가 어휘 밖이면 경고 1줄 후 건너뛴다(침묵 금지). 섹션이 없으면 빈 표 —
+    화면은 질의 순서를 바꾸지 않는다.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        logger.warning("담당 업무 조치 지원: requery_axes가 매핑이 아님 — 무시")
+        return {}
+    out: dict[str, str] = {}
+    for axis, code in raw.items():
+        key = str(axis or "").strip()
+        value = str(code or "").strip() if isinstance(code, str) else ""
+        if not key or value not in known_areas:
+            logger.warning("담당 업무 조치 지원(requery_axes): 빈 축 또는 어휘 밖 영역을 건너뜀 — %r", key)
+            continue
+        out[key] = value
+    return out
+
+
+def parse_checklists(
+    raw: Any, known_areas: tuple[str, ...]
+) -> dict[str, dict[str, tuple[str, ...]]]:
+    """`checklists` 섹션을 검증해 점검 순서 표로 바꾼다(순수 · 결정적 · plans/201 W5 §7.2).
+
+    원문 형태: 플레이북 id → {영역 code 또는 `common` → [문장…]}. 다음은 **제외 + 경고 1줄**이다(앱은 계속 뜬다):
+    플레이북 id 형식 밖 · 매핑이 아닌 값 · 어휘 밖 영역 키 · 목록이 아닌 문장 값 · 빈 문장 · 길이 상한(200자) 초과 문장.
+    영역당 문장은 앞에서 8개까지(넘치면 경고). 문장이 하나도 남지 않은 영역·플레이북은 키가 없다.
+
+    Returns:
+        플레이북 id(파일 순서) → 영역 code(어휘 선언 순서 · `common`은 끝) → 문장 튜플
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, Mapping):
+        logger.warning("담당 업무 점검 순서: checklists가 매핑이 아님 — 무시")
+        return {}
+    allowed = (*known_areas, COMMON_CHECKLIST_KEY)
+    result: dict[str, dict[str, tuple[str, ...]]] = {}
+    for playbook, by_area in raw.items():
+        pid = str(playbook or "").strip()
+        if not _PLAYBOOK_ID.fullmatch(pid) or not isinstance(by_area, Mapping):
+            logger.warning("담당 업무 점검 순서: 플레이북 id 형식 밖 또는 매핑이 아닌 항목을 건너뜀 — %r", pid)
+            continue
+        kept: dict[str, tuple[str, ...]] = {}
+        for area_code, steps in by_area.items():
+            code = str(area_code or "").strip()
+            if code not in allowed:
+                logger.warning("담당 업무 점검 순서(%s): 어휘 밖 영역 키를 무시 — %r", pid, code)
+                continue
+            if not isinstance(steps, list):
+                logger.warning("담당 업무 점검 순서(%s.%s): 목록이 아님 — 무시", pid, code)
+                continue
+            lines: list[str] = []
+            for step in steps:
+                text = step.strip() if isinstance(step, str) else ""
+                if not text or len(text) > MAX_CHECKLIST_STEP_LENGTH:
+                    logger.warning(
+                        "담당 업무 점검 순서(%s.%s): 빈 문장·비문자열·%d자 초과 문장을 건너뜀",
+                        pid, code, MAX_CHECKLIST_STEP_LENGTH,
+                    )
+                    continue
+                lines.append(text)
+            if len(lines) > MAX_CHECKLIST_STEPS:
+                logger.warning(
+                    "담당 업무 점검 순서(%s.%s): 문장 %d개 중 앞 %d개만 씀",
+                    pid, code, len(lines), MAX_CHECKLIST_STEPS,
+                )
+                lines = lines[:MAX_CHECKLIST_STEPS]
+            if lines:
+                kept[code] = tuple(lines)
+        ordered = {code: kept[code] for code in allowed if code in kept}
+        if ordered:
+            result[pid] = ordered
+    return result
 
 
 def unmapped_resource_types(

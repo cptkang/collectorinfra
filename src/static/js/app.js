@@ -211,6 +211,23 @@
         });
     }
 
+    // plans/201 W5 — 조치 지원(질의 담당 영역 묶음 · 점검 순서 · 인계 요약). `duty_action_assist` 키가 있을 때만 켠다 —
+    // 키 부재(DUTY_ACTION_ASSIST_ENABLED off)면 공용 렌더에 아무것도 넣지 않고 카드에 [인계 요약 복사]도 없다.
+    var dutyActionAssist = null;
+    function loadDutyActionAssist() {
+        fetchAuthMeOnce().then(function (me) {
+            if (!me || !Object.prototype.hasOwnProperty.call(me, "duty_action_assist") || !me.duty_action_assist) return;
+            dutyActionAssist = me.duty_action_assist;
+            if (window.BriefingView && window.BriefingView.setActionAssist) {
+                window.BriefingView.setActionAssist({
+                    requery_axes: dutyActionAssist.requery_axes,
+                    checklists: dutyActionAssist.checklists,
+                    mine: Array.isArray(me.duty_areas) ? me.duty_areas : [],
+                });
+            }
+        });
+    }
+
     function loadDutyAreaNotice(userId) {
         try {
             if (localStorage.getItem(dutyAreaNoticeKey(userId)) === "1") return;
@@ -408,6 +425,8 @@
                 if (data.auth_enabled && userInfo && userInfo.user_id) loadDutyAlarmFocus();
                 // plans/201 W4: 조사 결과 「영역별 점검 결과」 라벨·내 담당 — `duty_area_options` 키가 있을 때만
                 if (data.auth_enabled && userInfo && userInfo.user_id) loadDutyBriefingMeta();
+                // plans/201 W5: 조치 지원 — `duty_action_assist` 키가 있을 때만
+                if (data.auth_enabled && userInfo && userInfo.user_id) loadDutyActionAssist();
                 // plans/201 W2: 첫 화면 상황 안내·담당별 예시 — 알람 수신 판정(initAlarmSubscription) 뒤에 둔다
                 // (이벤트 알람 줄의 비활성 판정). 키가 없으면 첫 화면을 건드리지 않는다.
                 if (data.auth_enabled && userInfo && userInfo.user_id) loadWelcomeEnhancements();
@@ -6433,6 +6452,14 @@
                 '</div>' +
             '</div>';
 
+        // (plans/201 W5) 조치 지원 [인계 요약 복사] · 카드 재배치(인지→분석→조치) — 각 플래그가 켜졌을 때만 진입한다
+        // (둘 다 꺼지면 위 마크업 그대로 = 현행 DOM). 재배치는 위에서 그린 칸 노드를 옮기기만 한다(칸 집합 불변).
+        if (dutyActionAssist) addAlarmHandoffSection(el, data);
+        if (cardFlowOn()) arrangeAlarmCardFlow(el, data, {
+            process: !!processHtml, pattern: !!patternHtml, episode: !!episodeHtml, start: !!startHtml,
+            briefing: !!briefingHtml, ack: !!ackHtml, prompt: !!promptHtml, feedback: !!feedbackHtml,
+        });
+
         // 알람은 질의응답 스트림이 아니라 알람 뷰에 최신순(맨 위)으로 쌓는다.
         // 채팅 웰컴 화면은 건드리지 않는다 — 알람 도착이 대화 시작으로 보이면 안 된다.
         if (!alarmList) return;
@@ -6448,13 +6475,16 @@
             var ackBtn = el.querySelector(".btn-alarm-ack");
             var ackMsg = el.querySelector(".alarm-ack-msg");
             if (ackBtn) {
-                bindIncidentAck(ackBtn, ackMsg, data.incident_id);
+                bindIncidentAck(ackBtn, ackMsg, data.incident_id,
+                    cardFlowOn() ? function () { markAlarmFlow(el, data, FLOW_ACT); } : null);
             }
         }
 
         // Plan 86: 추천 질의 바인딩(같은 closure 패턴). 결정적 추천이 없으면 LLM 보강을 시도한다.
         bindAlarmPrompts(el, alarmPrompts);
         if (!alarmPrompts.length) requestLlmPrompt(el, data);
+        // (plans/201 W5 §7.4) 추천 질의를 입력창에 올리면 「조치」 — 재배치가 켜졌을 때만
+        if (cardFlowOn()) bindAlarmFlowPrompts(el, data);
 
         // Plan 52 E4: 피드백 버튼 바인딩(closure로 data 캡처 — 인라인 onclick 미사용, D-049 패턴)
         bindAlarmFeedback(el, data);
@@ -6655,6 +6685,8 @@
             },
             onView: function (view) {
                 rememberAlarmOf(data.alarm_id, view);
+                // (plans/201 W5 §7.3) 인계 요약은 펼쳐서 받은 이 뷰만 쓴다(조치 지원이 켜졌을 때만 기억)
+                if (dutyActionAssist) rememberAlarmCardView(el, view);
                 bindDiagnosisButton(section, view, data.alarm_id);
                 // (plans/194 W5) 합류 안내 줄의 버튼과 같은 조사면 [장애 진단에서 보기]를 한 번만 보인다
                 var joined = section.querySelector(".alarm-inv-joined .inv-go");
@@ -6670,6 +6702,221 @@
             toggle.setAttribute("aria-expanded", open ? "true" : "false");
             if (open) panel.open();
             else panel.close();
+        });
+        // (plans/201 W5 §7.4) 조사 결과를 펼치면 「분석」 — 재배치가 켜졌을 때만(펼침 처리기 뒤에 붙여 열림을 읽는다)
+        if (cardFlowOn()) {
+            toggle.addEventListener("click", function () {
+                if (!section.classList.contains("alarm-briefing-section--collapsed")) markAlarmFlow(el, data, FLOW_ANALYZE);
+            });
+        }
+    }
+
+    // ─── plans/201 W5 §7.3 · §7.4 — 인계 요약 복사 · 카드 재배치(인지 → 분석 → 조치) ───────────────────
+    // 새 DOM은 createElement·textContent만 쓴다. 진행 표시는 localStorage에만(서버 전송 0 · 수집 아님) — 키 1개에
+    // 알람별 상태를 담고 상한(FLOW_MAX_ENTRIES)·보관 기한(FLOW_TTL_MS)을 넘으면 오래된 것부터 지운다.
+    var FLOW_AWARE = 1, FLOW_ANALYZE = 2, FLOW_ACT = 4;
+    var FLOW_STORAGE_KEY = "alarm_card_flow_progress";
+    var FLOW_MAX_ENTRIES = 200;
+    var FLOW_TTL_MS = 7 * 24 * 3600 * 1000;
+    var FLOW_STAGES = [[FLOW_AWARE, "인지"], [FLOW_ANALYZE, "분석"], [FLOW_ACT, "조치"]];
+    var FLOW_GROUPS = [
+        ["what", "① 무슨 일인가", ["summary", "pattern", "episode"]],
+        ["cause", "② 원인이 내 쪽인가", ["start", "briefing", "process", "cause"]],
+        ["act", "③ 무엇을 하나", ["action", "prompt", "handoff", "ack", "feedback"]],
+    ];
+    var HANDOFF_COPY_TEXT = {
+        button: "인계 요약 복사",
+        title: "알람(서버·시각·유형)·영역별 점검 결과·근거 단계·조사 주소를 정해진 양식 글로 복사합니다(새로 조회하지 않습니다).",
+        copied: "복사했습니다 — 메신저·티켓에 붙여 넣으세요.",
+        unsupported: "복사하지 못했습니다 — 이 브라우저(또는 http 주소)에서는 클립보드를 쓸 수 없습니다. 아래 글을 직접 선택해 복사하세요.",
+        failed: "복사하지 못했습니다 — {reason}. 아래 글을 직접 선택해 복사하세요.",
+    };
+    var alarmCardViews = typeof WeakMap === "function" ? new WeakMap() : null;
+
+    function cardFlowOn() {
+        return !!(alarmCapabilities && alarmCapabilities.card_flow_enabled === true);
+    }
+
+    function rememberAlarmCardView(el, view) {
+        if (alarmCardViews && el && view) alarmCardViews.set(el, view);
+    }
+
+    // 카드 머리에 보이는 값(renderAlarmIdentityHeader와 같은 우선순위) — 새 값을 만들지 않는다
+    function alarmHandoffInfo(data) {
+        var ident = data.server_identity || {};
+        var hostname = data.hostname || "";
+        var title = ident.name || "";
+        if (!title && data.server_name && data.server_name !== hostname) title = data.server_name;
+        if (!title) title = hostname || data.server_name || "";
+        return {
+            server: title, alarm_name: data.alarm_name || "", resource: data.resource_name || "",
+            severity: data.severity_label || "", time: data.alarm_time || data.received_at || "",
+            type: data.resource_type || "",
+        };
+    }
+
+    function addAlarmHandoffSection(el, data) {
+        var bubble = el.querySelector(".message-bubble");
+        if (!bubble || !window.BriefingView || !window.BriefingView.alarmHandoffText) return;
+        var box = document.createElement("div");
+        box.className = "alarm-section alarm-handoff-section";
+        var btn = document.createElement("button");
+        btn.type = "button";
+        btn.className = "btn-alarm-handoff";
+        btn.textContent = HANDOFF_COPY_TEXT.button;
+        btn.title = HANDOFF_COPY_TEXT.title;
+        var msg = document.createElement("span");
+        msg.className = "alarm-handoff-msg";
+        msg.setAttribute("role", "status");
+        var fallback = document.createElement("textarea");
+        fallback.className = "alarm-handoff-text";
+        fallback.readOnly = true;
+        fallback.rows = 6;
+        fallback.hidden = true;
+        fallback.style.cssText = "display:block;width:100%;margin-top:4px;font-size:0.75rem";
+        box.appendChild(btn);
+        box.appendChild(msg);
+        box.appendChild(fallback);
+        btn.addEventListener("click", function () {
+            // 펼쳐서 기억된 뷰만 쓴다 — 여기서 조회 API를 부르지 않는다(plans/153 W3)
+            var view = alarmCardViews ? (alarmCardViews.get(el) || null) : null;
+            var text = window.BriefingView.alarmHandoffText(alarmHandoffInfo(data), view);
+            var clip = navigator.clipboard;
+            Promise.resolve()
+                .then(function () {
+                    if (!clip || !clip.writeText) throw { unsupported: true };
+                    return clip.writeText(text);
+                })
+                .then(function () {
+                    msg.textContent = HANDOFF_COPY_TEXT.copied;
+                    fallback.hidden = true;
+                    if (cardFlowOn()) markAlarmFlow(el, data, FLOW_ACT);
+                }, function (err) {
+                    msg.textContent = err && err.unsupported ? HANDOFF_COPY_TEXT.unsupported
+                        : HANDOFF_COPY_TEXT.failed.replace("{reason}", (err && (err.message || err.name)) || String(err));
+                    fallback.value = text;
+                    fallback.hidden = false;
+                });
+        });
+        // 현행 칸 순서에서는 확인(ack) 뒤 · 추천 질의 앞(없으면 피드백 앞 · 둘 다 없으면 끝)
+        var ref = bubble.querySelector(".alarm-prompt-section") || bubble.querySelector(".alarm-feedback-section");
+        if (ref && ref.parentNode === bubble) bubble.insertBefore(box, ref);
+        else bubble.appendChild(box);
+    }
+
+    function alarmFlowKey(data) {
+        if (data.alarm_id) return "a:" + String(data.alarm_id);
+        if (data.incident_id) return "i:" + String(data.incident_id);
+        return "";
+    }
+
+    // 상태 읽기·쓰기 — 손상·불가는 빈 상태(진행 표시는 부가 정보 — 카드는 그대로)
+    function readAlarmFlowStore() {
+        try {
+            var raw = JSON.parse(localStorage.getItem(FLOW_STORAGE_KEY) || "{}");
+            return raw && typeof raw === "object" && !Array.isArray(raw) ? raw : {};
+        } catch (e) { return {}; }
+    }
+
+    function writeAlarmFlowStore(store) {
+        var now = Date.now();
+        var keys = Object.keys(store).filter(function (k) {
+            var v = store[k];
+            return v && typeof v === "object" && Number(v.t) > 0 && now - Number(v.t) <= FLOW_TTL_MS;
+        });
+        keys.sort(function (a, b) { return Number(store[b].t) - Number(store[a].t); });
+        var kept = {};
+        keys.slice(0, FLOW_MAX_ENTRIES).forEach(function (k) { kept[k] = { s: Number(store[k].s) || 0, t: Number(store[k].t) }; });
+        try { localStorage.setItem(FLOW_STORAGE_KEY, JSON.stringify(kept)); } catch (e) { /* 이번만 화면에 */ }
+    }
+
+    function markAlarmFlow(el, data, bit) {
+        var cur = Number(el.dataset.flowStage || 0) | bit;
+        el.dataset.flowStage = String(cur);
+        var key = alarmFlowKey(data);
+        if (key) {
+            var store = readAlarmFlowStore();
+            var prev = store[key] && Number(store[key].s) || 0;
+            store[key] = { s: prev | cur, t: Date.now() };
+            writeAlarmFlowStore(store);
+        }
+        paintAlarmFlow(el);
+    }
+
+    function paintAlarmFlow(el) {
+        var line = el.querySelector(".alarm-flow-progress");
+        if (!line) return;
+        var cur = Number(el.dataset.flowStage || 0);
+        Array.prototype.forEach.call(line.querySelectorAll(".alarm-flow-step"), function (span) {
+            var bit = Number(span.getAttribute("data-flow-bit"));
+            var on = (cur & bit) === bit;
+            span.textContent = (on ? "● " : "○ ") + span.getAttribute("data-flow-label");
+            span.style.fontWeight = on ? "600" : "400";
+            span.style.color = on ? "var(--primary,#2563eb)" : "var(--text-secondary)";
+        });
+    }
+
+    // 칸 노드를 묶음으로 옮긴다 — 위 마크업의 칸(.alarm-section 직계 자식)을 그린 순서대로 이름과 짝짓는다.
+    // 짝이 안 맞으면(예상 밖 마크업) 옮기지 않는다 — 현행 순서가 그대로 남는다(칸을 잃지 않는다).
+    function arrangeAlarmCardFlow(el, data, present) {
+        var bubble = el.querySelector(".message-bubble");
+        if (!bubble) return;
+        var names = ["summary", "cause", "action"];
+        ["process", "pattern", "episode", "start", "briefing", "ack"].forEach(function (n) { if (present[n]) names.push(n); });
+        if (bubble.querySelector(".alarm-handoff-section")) names.push("handoff");
+        ["prompt", "feedback"].forEach(function (n) { if (present[n]) names.push(n); });
+        // 인계 칸(addAlarmHandoffSection)은 확인(ack) 뒤 · 추천 질의 앞에 끼워져 있어 그린 순서가 곧 이 이름 순서다
+        var sections = Array.prototype.filter.call(bubble.children, function (c) {
+            return c.classList && c.classList.contains("alarm-section");
+        });
+        if (sections.length !== names.length) return;
+        var mapped = {};
+        for (var i = 0; i < sections.length; i++) {
+            if ((names[i] === "handoff") !== sections[i].classList.contains("alarm-handoff-section")) return;
+            mapped[names[i]] = sections[i];
+        }
+        var progress = document.createElement("div");
+        progress.className = "alarm-flow-progress";
+        progress.style.cssText = "display:flex;gap:6px;align-items:center;font-size:0.75rem;margin:4px 0";
+        progress.setAttribute("aria-label", "알람 처리 진행");
+        FLOW_STAGES.forEach(function (st, idx) {
+            if (idx) {
+                var sep = document.createElement("span");
+                sep.className = "alarm-flow-sep";
+                sep.setAttribute("aria-hidden", "true");
+                sep.style.color = "var(--text-secondary)";
+                sep.textContent = "───";
+                progress.appendChild(sep);
+            }
+            var span = document.createElement("span");
+            span.className = "alarm-flow-step";
+            span.setAttribute("data-flow-bit", String(st[0]));
+            span.setAttribute("data-flow-label", st[1]);
+            progress.appendChild(span);
+        });
+        bubble.appendChild(progress);
+        FLOW_GROUPS.forEach(function (g) {
+            var nodes = g[2].filter(function (n) { return mapped[n]; });
+            if (!nodes.length) return;
+            var group = document.createElement("div");
+            group.className = "alarm-flow-group alarm-flow-group--" + g[0];
+            var cap = document.createElement("div");
+            cap.className = "alarm-section-label alarm-flow-caption";
+            cap.textContent = g[1];
+            group.appendChild(cap);
+            nodes.forEach(function (n) { group.appendChild(mapped[n]); });
+            bubble.appendChild(group);
+        });
+        // 인지 = 카드를 그렸을 때(이 브라우저에 남은 이전 단계도 함께 보인다)
+        var key = alarmFlowKey(data);
+        var stored = key ? readAlarmFlowStore()[key] : null;
+        el.dataset.flowStage = String((stored && Number(stored.s)) || 0);
+        markAlarmFlow(el, data, FLOW_AWARE);
+    }
+
+    function bindAlarmFlowPrompts(el, data) {
+        Array.prototype.forEach.call(el.querySelectorAll(".alarm-prompt-chip"), function (chip) {
+            chip.addEventListener("click", function () { markAlarmFlow(el, data, FLOW_ACT); });
         });
     }
 
@@ -6741,7 +6988,7 @@
             .then(function (result) {
                 var sug = result && result.suggestion;
                 if (!sug || !sug.text) return;
-                insertAlarmPromptSection(el, [sug]);
+                insertAlarmPromptSection(el, [sug], data);
             })
             .catch(function (err) {
                 console.warn("[alarm] 질의 추천 실패:", err);
@@ -6750,7 +6997,7 @@
 
     // 뒤늦게 도착한 추천을 카드에 끼워 넣는다. 위치는 결정적 경로와 같다(피드백 섹션 위).
     // 헤더 서버명은 버튼으로 바뀌지 않는다 — 렌더 시점에 확정되며, 트리거는 결정적 추천의 진입이다.
-    function insertAlarmPromptSection(el, prompts) {
+    function insertAlarmPromptSection(el, prompts, data) {
         var bubble = el.querySelector(".message-bubble");
         if (!bubble || el.querySelector(".alarm-prompt-section")) return;
         var holder = document.createElement("div");
@@ -6758,9 +7005,19 @@
         var section = holder.firstChild;
         if (!section) return;
         var feedback = bubble.querySelector(".alarm-feedback-section");
-        if (feedback) bubble.insertBefore(section, feedback);
+        // (plans/201 W5 §7.4) 재배치로 피드백 칸이 ③ 묶음 안에 있으면 그 묶음에서 앞에 끼운다 · 피드백이 없으면 ③ 끝
+        var actGroup = cardFlowOn() ? bubble.querySelector(".alarm-flow-group--act") : null;
+        if (feedback && feedback.parentNode !== bubble) feedback.parentNode.insertBefore(section, feedback);
+        else if (!feedback && actGroup) actGroup.appendChild(section);
+        else if (feedback) bubble.insertBefore(section, feedback);
         else bubble.appendChild(section);
         bindAlarmPrompts(el, prompts);
+        // 늦게 붙은 칩도 「조치」 표시를 켠다 — 재배치가 켜졌을 때만(이 칸의 칩에만 붙인다)
+        if (data && cardFlowOn()) {
+            Array.prototype.forEach.call(section.querySelectorAll(".alarm-prompt-chip"), function (chip) {
+                chip.addEventListener("click", function () { markAlarmFlow(el, data, FLOW_ACT); });
+            });
+        }
     }
 
     // 추천 질의를 입력창에 올리고 **확인을 받는다**(G-2 확정 2026-08-31 · 안 C).
@@ -6920,7 +7177,7 @@
     // POST /api/v1/alarm/incidents/{id}/ack → {acked, incident_id}.
     // 성공(acked) 시 "확인됨 · HH:MM:SS" 비활성, 이미 처리됨(acked=false)이면 "이미 확인됨",
     // 실패(네트워크/503)면 옆 에러 텍스트 + 재시도 가능(카드 자체는 유지 — graceful).
-    function bindIncidentAck(btn, msgEl, incidentId) {
+    function bindIncidentAck(btn, msgEl, incidentId, onAcked) {
         btn.addEventListener("click", function () {
             btn.disabled = true;
             if (msgEl) msgEl.textContent = "";
@@ -6944,6 +7201,8 @@
                     } else {
                         btn.textContent = "이미 확인됨";
                     }
+                    // (plans/201 W5) 재배치 진행 표시 「조치」 — 넘겼을 때만
+                    if (onAcked) onAcked();
                 })
                 .catch(function () {
                     btn.disabled = false;

@@ -23,7 +23,7 @@ areas:
                      mariadb.Process, mssql.Process, mysql.Process, oracle.Process, postgresql.Process, sybase.Process, tibero.Process]
     alarm_kinds: []
     playbook_prefixes: [was.sql]  # SQL 패턴 플레이북은 WAS와 DB 양쪽 영역
-# 각 Wave가 섹션을 더한다: welcome_queries(W2) · alarm_prompt_priority · cause_hints(W3) · checklists(W5).
+# 각 Wave가 섹션을 더한다: welcome_queries(W2) · alarm_prompt_priority · cause_hints(W3) · requery_axes·checklists(W5).
 
 # ── 원인 단서(plans/201 W3 §5.3) — 조사 없이 알람이 이미 싣고 온 정보만으로 담당 영역을 가리킨다 ──
 # 단서는 원인 판정이 아니다. 화면은 「단서 · 알람 정보만 봄(조사 전)」과 근거(label · 유형 · 프로세스 종류)를 함께 보인다.
@@ -113,3 +113,106 @@ welcome_queries:
     - {label: SQL 응답 지연 WAS, query: 최근 1시간 SQL 응답 지연 이벤트가 난 WAS 인스턴스를 보여줘, pending: closed_net}
     # 동형 없음 — 실행 중 요청 골드는 인스턴스 지정형뿐
     - {label: 오래 걸리는 SQL 요청, query: 지금 실행 중인 SQL이 오래 걸리는 요청을 보여줘, pending: closed_net}
+
+# ── 조사 「질의응답에서 확인」 축 → 영역(plans/201 W5 §7.1) ──
+# 조사 질의 항목(src/domain/investigation_requery.py build_requery)의 axis 값 → 담당 영역 code.
+# 담당 지정 사용자에게는 담당 영역 축의 질의를 앞에 두고 영역 이름으로 묶는다(개수·집합 불변 · 새 질의 없음).
+# apm = 제니퍼 인스턴스·서비스 조회(WAS) · polestar = 폴스타 등록 서버 자원 조회(서버/OS). 어휘 밖 영역은 로더가 경고 후 뺀다.
+requery_axes:
+  apm: was_mw
+  polestar: server_os
+
+# ── 영역별 점검 순서(plans/201 W5 §7.2) — 조사 브리핑 「권고」 아래 접힌 블록 ──
+# 초안 · 피드백으로 교정(Q5 담당자 검토 생략 — 2026-10-30 사용자 결정).
+# 키 = 플레이북 id(조사 브리핑 playbook.id — sre_agent/config/playbooks/*.yaml id) → 영역 code 또는 common → 문장 목록.
+# 화면은 담당 영역 것만 보인다(여러 영역이면 선언 순서) · 담당 미지정이거나 그 플레이북에 담당 영역 문안이 없으면 common 1벌 ·
+# common도 없으면 블록 없음. 플레이북 없이 끝난 조사(HolmesGPT 단독)에는 나오지 않는다.
+# 문장은 사람이 확인하는 순서다 — 시스템이 실행하지 않는다(D-011 · 화면이 human-gated 문구를 함께 붙인다).
+# 조직·사람 이름을 넣지 않는다. 영역당 8문장 · 문장당 200자까지(넘치면 로더가 경고 후 자른다·뺀다).
+checklists:
+  host.cpu:
+    server_os:
+      - 같은 시각 같은 업무의 다른 서버도 CPU가 높은지 확인
+      - 영향 프로세스 상위(CPU 점유 프로세스)와 그 실행 계정 확인
+      - 최근 배포·배치·설정 변경이 있었는지 확인
+      - 높은 상태가 얼마나 지속됐는지(일시 급증인지 지속인지) 확인
+    was_mw:
+      - 이 서버의 WAS 인스턴스 응답시간·처리량이 같은 시각에 변했는지 확인
+      - CPU 점유 프로세스가 WAS 프로세스인지 확인
+    db:
+      - CPU 점유 프로세스가 DB 엔진 프로세스인지 확인
+      - 같은 시각 오래 걸리는 SQL 요청이 늘었는지(애플리케이션이 본 SQL 지연) 확인
+    common:
+      - 같은 시각 다른 서버도 높은지 확인
+      - 상위 프로세스 확인
+      - 최근 변경 확인
+      - 지속 시간 확인
+  host.memory:
+    server_os:
+      - 메모리 상위 프로세스와 증가 추이 확인
+      - 스왑 사용이 함께 늘었는지 확인
+      - 최근 배포·재기동 이력 확인
+    was_mw:
+      - WAS 힙 사용률·GC 시간이 같은 시각에 늘었는지 확인
+    common:
+      - 메모리 상위 프로세스 확인
+      - 증가가 지속되는지 확인
+  host.fs:
+    server_os:
+      - 사용률이 오른 파일시스템과 증가 속도 확인
+      - 최근 크게 늘어난 디렉터리(로그·덤프·임시 파일) 확인
+      - 로그 순환·정리 작업이 정상 동작했는지 확인
+    common:
+      - 사용률이 오른 파일시스템 확인
+      - 증가 원인 파일 확인
+  was.heap:
+    was_mw:
+      - 힙 사용률이 GC 뒤에도 내려가지 않는지 확인
+      - 같은 시각 응답시간·에러가 늘었는지 확인
+      - 최근 배포·설정 변경 확인
+    server_os:
+      - 서버 메모리·스왑이 함께 부족한지 확인
+    common:
+      - 힙 추이 확인
+      - 응답시간 영향 확인
+  was.latency:
+    was_mw:
+      - 지연이 특정 서비스(URL)에 몰리는지 확인
+      - 지연 구간이 SQL·외부 호출·애플리케이션 중 어디가 큰지 확인
+      - 액티브 서비스·스레드가 쌓였는지 확인
+    db:
+      - 지연 구간 중 SQL 비중이 큰지(애플리케이션이 본 SQL 지연) 확인
+      - 같은 시각 오래 걸리는 SQL 요청이 늘었는지 확인
+    server_os:
+      - WAS 서버의 CPU·메모리가 같은 시각에 높은지 확인
+    common:
+      - 지연 서비스 확인
+      - 지연 구간 확인
+  was.pool:
+    was_mw:
+      - 커넥션 풀 사용이 최대치에 붙어 있는지 확인
+      - 반납되지 않은 연결(미반납) 이벤트가 있었는지 확인
+    db:
+      - 같은 시각 SQL 실행이 오래 걸렸는지 확인
+      - DB 연결 실패 이벤트가 있었는지 확인
+    common:
+      - 풀 사용 확인
+      - 연결 실패·미반납 이벤트 확인
+  was.sql:
+    db:
+      - 느린 SQL이 특정 문장에 몰리는지 확인
+      - 같은 시각 DB 서버 자원(CPU·메모리)이 높은지 확인
+    was_mw:
+      - 대량 조회(많은 행 반환) 요청이 있었는지 확인
+      - 느린 SQL을 부르는 서비스(URL) 확인
+    common:
+      - 느린 SQL 확인
+      - 호출 서비스 확인
+  was.error:
+    was_mw:
+      - 에러가 특정 서비스·예외 유형에 몰리는지 확인
+      - 외부 연계 오류라면 상대 시스템 상태 확인
+      - 최근 배포·설정 변경 확인
+    common:
+      - 에러 서비스 확인
+      - 최근 변경 확인

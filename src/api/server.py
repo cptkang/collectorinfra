@@ -874,6 +874,14 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     application.state.welcome_guide_enabled = (
         getattr(getattr(config, "welcome_guide", None), "enabled", False) is True
     )
+    # (plans/201 W5) 조치 지원 — 유효값 = DUTY_AREA_ENABLED AND DUTY_ACTION_ASSIST_ENABLED(기동 시 1회).
+    application.state.duty_action_assist_enabled = (
+        getattr(duty_cfg, "action_assist_effective", False) is True
+    )
+    # (plans/201 W5 P3) 알람 카드 재배치 — 담당 업무와 독립(기동 시 1회 · 알람 capabilities로 전달).
+    application.state.alarm_card_flow_enabled = (
+        getattr(getattr(config, "alarm_card_flow", None), "enabled", False) is True
+    )
 
     # CORS 설정 (환경변수에서 제어)
     application.add_middleware(

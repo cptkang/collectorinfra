@@ -14,6 +14,8 @@ from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from src.api.dependencies import get_current_user, require_user
 from src.api.duty_area_support import (
+    duty_action_assist_enabled,
+    duty_action_assist_meta,
     duty_alarm_focus_enabled,
     duty_alarm_focus_meta,
     duty_area_enabled,
@@ -409,7 +411,7 @@ async def get_me(
     """현재 로그인된 사용자 정보를 반환한다.
 
     담당 업무(plans/201 W1 · D-354)는 켠 기동에서만 `duty_areas`·`duty_area_options`로 싣는다.
-    첫 화면 담당별 예시 질의(W2 `duty_welcome_queries`)·상황 안내(W2 `welcome_guide` — 담당과 독립)도
+    첫 화면 담당별 예시 질의(W2 `duty_welcome_queries`)·조치 지원(W5 `duty_action_assist`)·상황 안내(W2 `welcome_guide` — 담당과 독립)도
     켠 기동에서만 키를 싣는다(끄면 응답 키 집합 동일). 어느 것도 인가 판정에 쓰지 않는다.
     값은 인가 dict(`current_user`)가 아니라 저장소에서 다시 읽는다 — 담당 업무는 권한이
     아니라 인가 dict에 싣지 않는다(`User.to_auth_dict`). 저장소에 없는 사용자
@@ -439,6 +441,9 @@ async def get_me(
         # (plans/201 W2) 첫 화면 담당별 예시 질의 — 켠 기동에서만 키(미지정 = 빈 목록 · 화면은 현행 버튼)
         if duty_welcome_hints_enabled(request):
             duty["duty_welcome_queries"] = duty_welcome_queries(areas)
+        # (plans/201 W5) 조치 지원 메타 — 켠 기동에서만 키(미지정 = 재정렬 없음 · 점검 순서는 공통 1벌)
+        if duty_action_assist_enabled(request):
+            duty["duty_action_assist"] = duty_action_assist_meta(areas)
     # (plans/201 W2 P2) 첫 화면 상황 안내 — 담당 업무와 독립 · 켠 기동에서만 키
     if welcome_guide_enabled(request):
         duty["welcome_guide"] = True

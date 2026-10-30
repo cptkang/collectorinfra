@@ -2491,6 +2491,168 @@
         if (model.handoff) slot.appendChild(rqNode(doc, "div", "bv-meta bv-duty-handoff", model.handoff));
     }
 
+    // ─── (plans/201 W5 · D-354) 조치 지원 — 질의 담당 영역 순 묶음 · 점검 순서 · 인계 요약 ───────────────────────
+    // 축 → 영역 · 점검 순서 문안은 이 파일에 사본을 두지 않는다 — app.js가 `/auth/me` `duty_action_assist` 키가 있을 때만
+    // setActionAssist로 넣는다(부르지 않으면 질의 순서·브리핑 DOM이 종전 그대로). 문안은 서버가 이 사용자 몫만 골라 준다.
+    var ASSIST_TEXT = {
+        checklistHead: "점검 순서",
+        checklistGated: "사람이 확인하는 순서입니다 — 시스템이 실행하지 않습니다.",
+        otherGroup: "그 밖",
+        handoffHead: "[알람 인계]",
+        at: "시각: ",
+        type: "유형: ",
+        duty: "영역별 점검: ",
+        steps: "근거 단계: ",
+        investigation: "조사: ",
+        notOpened: "조사 결과를 펼쳐 보지 않음 — 카드에서 조사 결과를 펼친 뒤 복사하면 영역별 점검 결과가 담깁니다",
+        noDuty: "영역별 점검 결과 없음",
+        gated: "※ 사람이 확인·조치합니다 — 시스템이 실행하지 않습니다.",
+    };
+    var assistMeta = null;
+    var HANDOFF_VALUE_MAX = 120;
+
+    function setActionAssist(meta) {
+        if (!isObj(meta)) { assistMeta = null; return; }
+        assistMeta = {
+            axes: isObj(meta.requery_axes) ? meta.requery_axes : {},
+            checklists: isObj(meta.checklists) ? meta.checklists : {},
+            mine: asList(meta.mine).map(String),
+        };
+    }
+
+    /**
+     * (plans/201 W5 §7.1) 질의 항목 → 담당 영역 순 묶음(순수). 메타가 없거나 담당 미지정이면 null(종전 순서 그대로).
+     * 묶음 순서: 담당 영역(메타 `mine` 순서) → 그 밖 영역(처음 나온 순서) → 축이 표에 없는 항목(「그 밖」).
+     * 묶음 안은 원래 순서(안정) — 항목을 더하거나 빼지 않는다(개수·집합 불변).
+     */
+    function requeryGroups(items, meta) {
+        meta = isObj(meta) ? meta : assistMeta;
+        var mine = isObj(meta) ? asList(meta.mine).map(String) : [];
+        if (!isObj(meta) || !mine.length) return null;
+        var axes = isObj(meta.axes) ? meta.axes : (isObj(meta.requery_axes) ? meta.requery_axes : {});
+        var groups = [];
+        var byArea = {};
+        asList(items).forEach(function (it) {
+            var ax = isObj(it) && it.axis ? String(it.axis) : "";
+            var hit = Object.prototype.hasOwnProperty.call(axes, ax) && isObj(axes[ax]) ? axes[ax] : null;
+            var area = hit && hit.area ? String(hit.area) : "";
+            if (!Object.prototype.hasOwnProperty.call(byArea, area)) {
+                byArea[area] = { area: area, label: area ? String(hit.label || area) : ASSIST_TEXT.otherGroup, items: [], first: groups.length };
+                groups.push(byArea[area]);
+            }
+            byArea[area].items.push(it);
+        });
+        function rank(g) {
+            var m = g.area ? mine.indexOf(g.area) : -1;
+            if (m >= 0) return m;
+            return g.area ? mine.length : mine.length + 1;
+        }
+        groups.sort(function (a, b) { return (rank(a) - rank(b)) || (a.first - b.first); });
+        return groups.map(function (g) { return { area: g.area, label: g.label, mine: mine.indexOf(g.area) >= 0, items: g.items }; });
+    }
+
+    // (plans/201 W5 §7.2) 이 조사의 점검 순서(순수) — 플레이북 id로 고른 서버 메타 `[{area, area_label, steps}]` · 없으면 null
+    function checklistFor(view, meta) {
+        meta = isObj(meta) ? meta : assistMeta;
+        if (!isObj(meta)) return null;
+        var lists = isObj(meta.checklists) ? meta.checklists : {};
+        var ctx = playbookContext(view);
+        var id = ctx && ctx.pb && ctx.pb.id ? String(ctx.pb.id) : "";
+        if (!id || !Object.prototype.hasOwnProperty.call(lists, id)) return null;
+        var rows = asList(lists[id]).filter(function (r) { return isObj(r) && asList(r.steps).length; });
+        return rows.length ? rows : null;
+    }
+
+    /**
+     * 점검 순서 블록을 「권고」(human-gated 문구 줄) 바로 아래에 접힌 채 붙인다 — 권고가 없으면 브리핑 끝(`.bv`).
+     * createElement·textContent만 쓴다. o: `{open, onToggle(open)}`(다시 그릴 때 펼침 유지 — attach가 넘긴다).
+     */
+    function fillChecklist(container, view, meta, o) {
+        if (!container || !container.querySelector) return null;
+        var rows = checklistFor(view, meta);
+        if (!rows) return null;
+        o = o || {};
+        var doc = container.ownerDocument || root.document;
+        var box = rqNode(doc, "details", "bv-pb-block bv-checklist");
+        box.setAttribute("data-bv-checklist", "");
+        if (o.open) box.open = true;
+        box.appendChild(rqNode(doc, "summary", "bv-label", ASSIST_TEXT.checklistHead + " — " +
+            rows.map(function (r) { return String(r.area_label || r.area || ""); }).join(" · ")));
+        rows.forEach(function (r) {
+            if (rows.length > 1) box.appendChild(rqNode(doc, "div", "bv-meta bv-checklist-area", String(r.area_label || r.area || "")));
+            var ol = rqNode(doc, "ol", "bv-actions bv-checklist-steps");
+            asList(r.steps).forEach(function (st) { ol.appendChild(rqNode(doc, "li", null, String(st))); });
+            box.appendChild(ol);
+        });
+        box.appendChild(rqNode(doc, "div", "bv-gated", ASSIST_TEXT.checklistGated));
+        if (o.onToggle && box.addEventListener) {
+            box.addEventListener("toggle", function () { o.onToggle(!!box.open); });
+        }
+        // 「권고」의 사람 확인 줄만 기준으로 삼는다 — 플레이북 종합의 권고 조치 목록(.bv-pb-synthesis) → 줄형 「권고」 항목(.bv-item).
+        // 「한눈에 보기」 카드의 할 일 행에도 같은 줄이 있으나 그 안에는 끼우지 않는다 — 못 찾으면 브리핑 끝.
+        var gated = container.querySelector(".bv-pb-synthesis .bv-gated") || container.querySelector(".bv-item .bv-gated");
+        if (gated && gated.parentNode) {
+            gated.parentNode.insertBefore(box, gated.nextSibling);
+        } else {
+            var bv = container.querySelector(".bv") || container;
+            bv.appendChild(box);
+        }
+        return box;
+    }
+
+    function clipValue(text) {
+        var t = oneLine(text === null || text === undefined ? "" : text);
+        return t.length > HANDOFF_VALUE_MAX ? t.slice(0, HANDOFF_VALUE_MAX - 1) + "…" : t;
+    }
+
+    /**
+     * (plans/201 W5 §7.3) 인계 요약(고정 양식 평문 · 순수). 새 조회 없이 카드에 보이는 알람 값과 펼쳐서 받은 조사 뷰만 쓴다.
+     * alarm: `{server, alarm_name, resource, severity, time, type}`(카드 머리에 보이는 값) · view: 기억된 조사 뷰(없으면 null).
+     * 운영자 뷰(원문 — isRawView)면 영역 근거 문구·사유를 싣지 않는다(영역·상태·단계만) — 사용자 뷰는 서버가 가린 값이다(D-325 ③).
+     * 조직·사람 이름 · SQL 원문은 이 양식에 칸이 없다. opts: `{dutyMeta, link}`(시험 주입 — 기본은 모듈 메타 · 현재 주소).
+     */
+    function alarmHandoffText(alarm, view, opts) {
+        alarm = isObj(alarm) ? alarm : {};
+        opts = opts || {};
+        var T = ASSIST_TEXT;
+        var name = alarm.alarm_name ? alarm.alarm_name + (alarm.resource ? "(" + alarm.resource + ")" : "") : alarm.resource;
+        var head = [alarm.server, name, alarm.severity].map(function (v) { return v ? clipValue(v) : ""; })
+            .filter(Boolean).join(" · ");
+        var lines = [T.handoffHead + (head ? " " + head : "")];
+        if (alarm.time) lines.push(T.at + clipValue(alarm.time));
+        if (alarm.type) lines.push(T.type + clipValue(alarm.type));
+        if (!isObj(view)) {
+            lines.push(T.investigation + T.notOpened);
+            lines.push(T.gated);
+            return lines.join("\n");
+        }
+        var raw = isRawView(view);
+        var model = dutyModel(view, opts.dutyMeta);
+        if (model && model.rows.length) {
+            lines.push(T.duty + model.rows.map(function (r) {
+                var part = clipValue(r.label) + " " + clipValue(r.statusLabel);
+                if (!raw && r.signals.length) part += " — " + clipValue(r.signals[0]);
+                if (!raw && r.reason) part += "(" + clipValue(r.reason) + ")";
+                return part;
+            }).join(" / "));
+            var steps = [];
+            model.rows.forEach(function (r) {
+                r.steps.forEach(function (sn) {
+                    if (/^[A-Za-z0-9_-]+$/.test(sn) && steps.indexOf(sn) < 0) steps.push(sn);
+                });
+            });
+            if (steps.length) lines.push(T.steps + steps.join(" · "));
+        } else {
+            lines.push(T.duty + T.noDuty);
+        }
+        var id = view.investigation_id && /^[A-Za-z0-9_.:-]+$/.test(String(view.investigation_id)) ? String(view.investigation_id) : "";
+        var link = id ? (opts.link !== undefined ? opts.link : handoffLink(id)) : "";
+        var inv = [id, link ? fill(HANDOFF_TEXT.link, { url: link }) : ""].filter(Boolean);
+        if (inv.length) lines.push(T.investigation + inv.join(" · "));
+        lines.push(T.gated);
+        return lines.map(oneLine).join("\n");
+    }
+
     function rqNode(doc, tag, cls, text) {
         var node = doc.createElement(tag);
         if (cls) node.className = cls;
@@ -2596,6 +2758,7 @@
         var limitS = Number(opts.limitSeconds) > 0 ? Number(opts.limitSeconds) : DEFAULT_LIMIT_S;
         var ui = { choice: null, choiceMsg: "", choiceOff: "", pending: false };
         var last = null;
+        var checklistOpen = false;   // (plans/201 W5) 점검 순서 펼침 — 15초 재조회로 다시 그려도 유지
         var currentLoad = opts.load;
         var probed = false;
         var fuListed = false;
@@ -2958,6 +3121,8 @@
         function decorate(view) {
             // (plans/201 W4) 영역별 점검 결과 — 자리가 그려졌을 때만 채운다(키가 없으면 자리도 없다)
             fillDutyView(container, view);
+            // (plans/201 W5) 점검 순서 — 조치 지원 메타가 있고 이 플레이북 문안이 있을 때만(없으면 아무것도 붙이지 않는다)
+            if (assistMeta) fillChecklist(container, view, null, { open: checklistOpen, onToggle: function (v) { checklistOpen = v; } });
             if (!opts.requery || !container.querySelectorAll) return;
             var doc = container.ownerDocument || root.document;
             var ctx = playbookContext(view);
@@ -2986,7 +3151,18 @@
             var box = rqNode(doc, "div", "bv-pb-block bv-requery");
             box.appendChild(rqNode(doc, "div", "bv-label", RQ_TEXT.head));
             box.appendChild(rqNode(doc, "div", "bv-meta", RQ_TEXT.note));
-            box.appendChild(requeryList(doc, items, { stage: opts.requery.stage, busy: opts.requery.busy, showStep: true }));
+            // (plans/201 W5 §7.1) 담당 지정 사용자면 담당 영역 순으로 묶고 영역 이름을 붙인다(개수·집합 불변) — 아니면 종전 그대로
+            var groups = assistMeta ? requeryGroups(items) : null;
+            if (groups) {
+                groups.forEach(function (g) {
+                    var gl = rqNode(doc, "div", "bv-meta bv-requery-area", g.label);
+                    gl.setAttribute("data-duty-code", g.area);
+                    box.appendChild(gl);
+                    box.appendChild(requeryList(doc, g.items, { stage: opts.requery.stage, busy: opts.requery.busy, showStep: true }));
+                });
+            } else {
+                box.appendChild(requeryList(doc, items, { stage: opts.requery.stage, busy: opts.requery.busy, showStep: true }));
+            }
             container.appendChild(box);
         }
 
@@ -3173,6 +3349,13 @@
         // (plans/201 W4) 영역별 점검 결과 — 메타 주입 · 표 모델(순수) · 채우기 · 문구
         DUTY_TEXT: DUTY_TEXT,
         setDutyMeta: setDutyMeta,
+        // (plans/201 W5) 조치 지원 — 메타 주입 · 질의 묶음(순수) · 점검 순서(순수·채우기) · 인계 요약(순수) · 문구
+        ASSIST_TEXT: ASSIST_TEXT,
+        setActionAssist: setActionAssist,
+        requeryGroups: requeryGroups,
+        checklistFor: checklistFor,
+        fillChecklist: fillChecklist,
+        alarmHandoffText: alarmHandoffText,
         dutyModel: dutyModel,
         fillDutyView: fillDutyView,
         // (plans/195 W3) 「질의응답에서 확인」 — 장애 진단 단계 카드도 같은 노드를 쓴다

@@ -85,6 +85,28 @@ def duty_welcome_queries(areas: list[str] | None) -> list[dict[str, str]]:
     )
 
 
+def duty_action_assist_enabled(request: Request) -> bool:
+    """이 기동에서 조치 지원이 켜졌는가(plans/201 W5 · 기동 시 1회 해석 · 없으면 off).
+
+    유효값은 `DUTY_AREA_ENABLED` AND `DUTY_ACTION_ASSIST_ENABLED`다(`create_app`이 둘을 함께 본다).
+    """
+    return bool(getattr(request.app.state, "duty_action_assist_enabled", False))
+
+
+def duty_action_assist_meta(areas: list[str] | None) -> dict[str, Any]:
+    """`/auth/me` `duty_action_assist` 메타(plans/201 W5) — 화면은 어휘 사본 없이 이 값만 읽는다.
+
+    - `requery_axes`: 조사 질의 축 → `{area, label}`(§7.1 재정렬·묶음 — 담당 미지정이면 화면이 순서를 바꾸지 않는다).
+    - `checklists`: 플레이북 id → 이 사용자에게 보일 점검 순서 `[{area, area_label, steps}]`(§7.2 — 담당 영역 것만 ·
+      미지정이거나 담당 영역 문안이 없으면 공통 1벌 · 공통도 없으면 키 없음).
+    """
+    vocab = duty_area_vocabulary()
+    return {
+        "requery_axes": vocab.requery_axes_meta(),
+        "checklists": vocab.select_checklists(areas),
+    }
+
+
 def welcome_guide_enabled(request: Request) -> bool:
     """이 기동에서 첫 화면 상황 안내가 켜졌는가(plans/201 W2 P2 · 담당 업무와 독립 · 기동 시 1회 · 없으면 off)."""
     return bool(getattr(request.app.state, "welcome_guide_enabled", False))

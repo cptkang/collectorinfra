@@ -1081,6 +1081,10 @@ async def alarm_capabilities(
     gate_on = bool(getattr(ng, "enable_noise_gate", False))
     trigger_on = bool(getattr(ng, "investigation_trigger_enabled", False))
     manual_on = bool(getattr(ng, "investigation_manual_enabled", True))
+    # (plans/201 W5 P3) 알람 카드 재배치 — 기동 시 1회 해석한 값 · 켰을 때만 키를 싣는다(끄면 응답 키 집합 동일)
+    extra: dict[str, bool] = {}
+    if getattr(request.app.state, "alarm_card_flow_enabled", False) is True:
+        extra["card_flow_enabled"] = True
     return AlarmCapabilitiesResponse(
         # 피드백 라우트의 503 조건과 **같은 식**이어야 한다(어긋나면 UI가 거짓말을 한다).
         feedback_enabled=gate_on and bool(getattr(ng, "enable_llm_actionability", False)),
@@ -1113,6 +1117,7 @@ async def alarm_capabilities(
         investigation_summary_view_enabled=bool(
             getattr(ng, "investigation_summary_view_enabled", True)
         ),
+        **extra,
     )
 
 

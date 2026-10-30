@@ -224,13 +224,21 @@ class DutyAreaConfig(BaseSettings):
         default=False,
         validation_alias="DUTY_WELCOME_HINTS_ENABLED",
     )
+    # (plans/201 W5) 조치 지원 — 조사 「질의응답에서 확인」 담당 영역 순 재정렬·영역 묶음, 브리핑 「권고」 아래 담당 영역
+    # 점검 순서(접힘), 알람 카드 [인계 요약 복사]. 정본은 `config/duty_areas.yaml` `requery_axes`·`checklists`
+    # (`/auth/me` `duty_action_assist`). 유효값 = `enabled` AND 이 값(`action_assist_effective`). env 이름은 이것 하나만.
+    # 기본 off = `/auth/me`·카드·브리핑 DOM 비트 동일.
+    action_assist_enabled: bool = Field(
+        default=False,
+        validation_alias="DUTY_ACTION_ASSIST_ENABLED",
+    )
 
     model_config = {"env_prefix": "DUTY_AREA_", "env_file": ".env", "extra": "ignore"}
 
     @model_validator(mode="before")
     @classmethod
     def _accept_alarm_focus_field_name(cls, data: Any) -> Any:
-        """생성자 필드명 인자(`alarm_focus_enabled=`·`welcome_hints_enabled=`)를 env 이름으로 옮긴다(plans/201 W3 교정 · W2).
+        """생성자 필드명 인자(`alarm_focus_enabled=`·`welcome_hints_enabled=`·`action_assist_enabled=`)를 env 이름으로 옮긴다(plans/201 W3 교정 · W2 · W5).
 
         env는 `DUTY_ALARM_FOCUS_ENABLED`·`DUTY_WELCOME_HINTS_ENABLED` 하나씩만 받아야 한다 — `AliasChoices`에
         필드명을 넣으면 접두 없는 env(`ALARM_FOCUS_ENABLED`·`WELCOME_HINTS_ENABLED`)가, `populate_by_name`을 켜면
@@ -254,11 +262,17 @@ class DutyAreaConfig(BaseSettings):
         """첫 화면 담당별 예시 질의가 실제로 켜졌는가(`DUTY_AREA_ENABLED` AND `DUTY_WELCOME_HINTS_ENABLED`)."""
         return self.enabled is True and self.welcome_hints_enabled is True
 
+    @property
+    def action_assist_effective(self) -> bool:
+        """조치 지원(재정렬·점검 순서·인계 요약)이 실제로 켜졌는가(`DUTY_AREA_ENABLED` AND `DUTY_ACTION_ASSIST_ENABLED`)."""
+        return self.enabled is True and self.action_assist_enabled is True
+
 
 #: `DutyAreaConfig` 생성자 필드명 → env 별칭(필드명 인자 이관용 · 접두 없는 env는 받지 않는다).
 _DUTY_FIELD_ALIASES: dict[str, str] = {
     "alarm_focus_enabled": "DUTY_ALARM_FOCUS_ENABLED",
     "welcome_hints_enabled": "DUTY_WELCOME_HINTS_ENABLED",
+    "action_assist_enabled": "DUTY_ACTION_ASSIST_ENABLED",
 }
 
 
@@ -274,6 +288,21 @@ class WelcomeGuideConfig(BaseSettings):
     enabled: bool = False
 
     model_config = {"env_prefix": "WELCOME_GUIDE_", "env_file": ".env", "extra": "ignore"}
+
+
+class AlarmCardFlowConfig(BaseSettings):
+    """알람 카드 인지 → 분석 → 조치 재배치 `alarm_card_flow` 설정 (plans/201 W5 §7.4 P3 · D-354).
+
+    이벤트 알람 탭 카드의 기존 칸을 ① 무슨 일인가 ② 원인이 내 쪽인가 ③ 무엇을 하나로 다시 묶고 맨 위에 진행 표시
+    한 줄(인지·분석·조치 — 브라우저 localStorage에만 · 서버 전송 없음)을 둔다. 칸을 덧붙이거나 빼지 않는다.
+    **담당 업무와 독립**이다 — `DUTY_AREA_ENABLED`와 무관하게 모든 사용자에게 같다. 화면 전달은 알람 기능 조회
+    (`GET /alarm/capabilities` `card_flow_enabled` — 켠 기동에서만 키)다. 노이즈 관제 드로어 배치는 바꾸지 않는다.
+    기본 off(D-162) — 끄면 capabilities 키 집합과 카드 DOM이 현행과 같다. 기동 시 1회 해석한다(재시작 반영).
+    """
+
+    enabled: bool = False
+
+    model_config = {"env_prefix": "ALARM_CARD_FLOW_", "env_file": ".env", "extra": "ignore"}
 
 
 #: 본체 프록시가 받는 분리 컴포넌트 이름(plans/191 · D-345). 이 밖의 이름은 설정에 있어도 무시한다.
