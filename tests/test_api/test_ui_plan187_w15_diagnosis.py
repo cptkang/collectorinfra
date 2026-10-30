@@ -721,9 +721,9 @@ def test_tab_markup_hidden_by_default_and_script_order() -> None:
     tab = html[html.index('data-view="diagnosis"') - 60: html.index('id="diagnosisTabBadge"')]
     assert 'style="display: none;"' in tab and 'aria-controls="diagnosisView"' in tab
     assert 'id="diagnosisView"' in html and 'class="diagnosis-view view-hidden"' in html
-    bv = html.index("briefing-view.js?v=9")
-    dv = html.index("diagnosis-view.js?v=14")
-    app = html.index("app.js?v=43")
+    bv = html.index("briefing-view.js?v=11")
+    dv = html.index("diagnosis-view.js?v=16")
+    app = html.index("app.js?v=45")
     assert bv < dv < app
     css = (_STATIC / "css" / "style.css").read_text(encoding="utf-8")
     gate = css[css.index("body.auth-pending > header"):]
@@ -794,7 +794,8 @@ out = {{ same: same, keys: keys, offBtn: off.indexOf('data-bv-action="open-conve
 def test_server_text_never_goes_through_inner_html_and_no_write_buttons() -> None:
     src = _DV_JS.read_text(encoding="utf-8")
     assigns = re.findall(r"\.innerHTML\s*=\s*([^;]+);", src)
-    assert len(assigns) == 1 and assigns[0].startswith("bv.renderBody(")
+    # (plans/199 W5a) 공용 렌더(자체 이스케이프) 출력만 — 상세형 렌더 + 진척형 「한눈에 보기」 카드
+    assert sorted(a.split("(")[0] for a in assigns) == ["bv.renderBody", "bv.summaryCardHtml"]
     assert "insertAdjacentHTML" not in src and "outerHTML" not in src and "eval(" not in src
     # D-003 — 조사 취소·명령 실행 경로 없음(읽기 GET만)
     assert "POST" not in src and "DELETE" not in src and "method:" not in src

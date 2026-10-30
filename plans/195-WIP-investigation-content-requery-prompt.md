@@ -2,10 +2,12 @@
 
 > **작성일**: 2026-10-27 · **v1.2**(같은 날 — `plans/196` 기준 정리 · §1.4) · v1.1 사용자 결정 반영 · v0.1 검토안
 > **v1.2 변경(196 기준)**: 화면 문구 「다시 조회」를 「질의응답에서 확인」으로 바꿈(196 단계 카드 [이 서버로 다시 조회]와 충돌) · 폴스타 단계 질의의 대상 이름 출처를 196 확정 연결(`polestar_server` · `polestar_link`)로 고정 · 생략·결손·재사용 섹션 규칙 · 섹션 가산 키 `queries`는 196 `reason_detail`·`reused_from`과 같은 방식 · Wave 선후 = 196 W2b·W1(D6) 뒤 · D2 `was.sql` 행 추가(196 W3 뒤 확정)
-> **상태**: **TODO** — 코드 0줄 · **결정 확정**(2026-10-27 · §8.0): Q2 ② 제니퍼 벤치 인정 · Q3 둘 다 · Q4 복사 + 조사 대화에서 확인 후 조회 · Q6 저장(W4 정식) · Q1·Q5·Q7·Q8은 **권고 적용 · 사용자 확인 전** · W0 착수 대기
+> **상태**: **WIP** — W1~W5 구현(2026-10-27 · 커밋 없음) · 결정 전건 확정(§8.0 — Q1·Q5·Q7·Q8 사용자 확정 2026-10-27 권고안대로) · D-341 부기 24 · D-192 부기 등재 · 플래그 `NOISE_INVESTIGATION_REQUERY_ENABLED` 기본 off · 질의는 제니퍼 축만(폴스타 축 0건) · **잔여**: W0② 폴스타 「서버 한정 × 사건창」 골드(내부망 `--check-gold` 뒤 등재 + 카탈로그 폴스타 항목) · W0③ MLX 1회(이 체크아웃 `.env` 없음 — 두 평면 mlx 아님) · W5 캡처 2장(플래그 켠 장면 정의·촬영) · §3.5
 > **v1.1 변경**: §8.0 결정 결과 신설 · §7 Wave 확정(W4 정식) · §6 D-192·D-341 ⑪ 부기 필요 명시(구현 Wave에서 등재) · §3.4 선택 → 확정
 > **분석 기준 HEAD**: `1f61461f` (계획 시작 SHA는 W0 착수 때 이 줄 아래에 적는다)
-> **회귀 대상 파일**: (착수 뒤 Wave마다 누적)
+> **계획 시작 SHA**: `1a2ad01a274b12bb7dd7eae7647d7e732ae7c9cf`(2026-10-27 · main clean · plans/196 병합 뒤 — 196 계약 실측 확인: `playbook_steps.py` 확정 연결이면 `polestar_server`를 제니퍼 host로 덮지 않음 · 섹션 `reason_detail`·`reused_from` 가산 키 · `scope.polestar_link` · 진단 카드 후보 블록)
+> **회귀 대상 파일**: `src/domain/investigation_requery.py` · `src/api/routes/alarm.py` · `src/api/settings_catalog.py` · `src/config/alarm.py` · `config/settings_help/noise_gate_investigation.yaml` · `.env.example` · `src/static/{css/style.css,index.html,js/app.js,js/briefing-view.js,js/diagnosis-view.js}` · `src/static/manual/{user,admin}.html`·`help_index.json` · `scripts/manual/{features.yaml,content/user.md,content/admin.md}` · `noise_gate/infrastructure/investigation_store.py` · `sre_agent/sre_agent/application/{playbook_steps,playbook_runner,investigation_dispatcher}.py`(별 venv) · 테스트 `tests/test_plan195_{w1_investigation_requery,w3_requery_ui,verify_requery}.py` · `tests/test_api/test_plan195_w2_requery.py` · `noise_gate/tests/test_plan195_w4_briefing_queries.py` · `sre_agent/tests/test_plan195_w4_section_queries.py` · 단언 갱신 `tests/test_api/{test_settings_catalog,test_plan160_static_assets,test_ui_plan187_w15_diagnosis,test_plan186_auth_fail_closed}.py` · `tests/test_plan187_{fe2,w5b}_static.py`
+> **계획 끝 회귀(2026-10-27)**: `regress.py --base 1a2ad01a --files <위 27파일>` exit 0 · 본체 통과 3,210 · 실패 6 전부 원래 실패 · 정적 게이트 통과 · `범위: 모듈 단위 — 전체 미실행` · `[전체 회귀 권고]`(src.config.alarm 87%) · verifier Critical·High 0 · Medium 2 교정 완료(가림 표지 2종 대조 · 「조회한 것」 `data-bv-step` 매칭)
 > **사용자 제기(2026-10-27)**: *"조사 화면에는 조사내용과 이 조사를 다시 조회하기 위한 프롬프트를 사용자에게 보여줄 수 있는 방법을 검토해 봐라."*
 > **관련 결정**: D-192(알람 → 질의 프롬프트 인계 — 검증된 형태만 · 확인 뒤 전송) · D-341 ⑪(조사 대화 고정 카드 · **추천 칩은 골드셋 동형만**)·⑫(문맥 승계 G-19)·㉜·부기 11(조사 흐름) · D-325 ③(사용자 뷰 마스킹) · D-347(수동 전용) · D-248(조사 대화 탭) · D-183(이력 재사용 — 확인 바 없음) · D-309·D-328(시간 해석 · 분 단위) · D-255(매뉴얼 동반) · D-162(기본 off)
 > **관련 실수**: `docs/18` 2026-07-20 「골드셋 자체가 실 DB에서 실행 검증 없이 작성」 · 2026-10-19 「사용자 요청 경로마다 열람 인가를 따로 씀」
@@ -143,6 +145,14 @@ D-192는 「추천 = 골드셋 동형의 재사용」이고 D-341 ⑪이 조사 
 
 지금 조회 인자는 옵트인 2개가 켜졌을 때 실행 기록에만 있다. sre_agent가 섹션에 `queries: [{tool, phrase}]`(196 `reason_detail`·`reused_from`과 같은 `StepResult` 가산 키 — 값이 없으면 키를 싣지 않는다 · 재사용 섹션은 부모 섹션의 `queries`를 그대로 가진다)(이미 만드는 `tool_phrase` 문장 · 인자 원문은 제외)를 저장하면, 플래그와 무관하게 조사 대화 고정 카드·보관 뒤에도 「무엇을 조회했나」가 보인다. 비용: sre_agent 변경(별 venv 테스트) · 브리핑 32KB 상한(`MAX_BRIEFING_BYTES`) 안에서 클립 우선순위 조정. Q6 = 저장 확정(2026-10-27) — W4 정식 Wave.
 
+### 3.5 W0 결과 (2026-10-27 · 실측)
+
+- **낸다(제니퍼 축 · 출처 = `testdata/apm_bench/scenarios.yaml`)**: `scope.host_to_was`(APM-INST-host) · `apm.golden_signals`(APM-HEALTH-colloquial · APM-HEALTH-host-30m) · `apm.runtime_and_pool`(APM-RUNTIME-heap · APM-RUNTIME-metrics-interval · 현재값 APM-POOL-inst · APM-POOL-mode) · `apm.slow_tx_breakdown`(APM-SLOWTX-10m · APM-MT-profile-sql) · `apm.events_errors`(APM-ERROR-record · APM-ERROR-colloquial) · `apm.active_services`(현재값 APM-ACTIVE-inst · APM-ACTIVE-n) · `change.recent` 제니퍼 축(APM-CHANGES-default · APM-CHANGES-3d · 사건창 끝 기준 24시간 = 스텝 기본 lookback).
+- **내지 않는다(부재를 테스트로 고정)**: `host.usage_trend` · `host.process_top`(r-081 미채점) · `host.alarm_history` · `xsource.related_alarms` · `change.recent` 폴스타 축(④ — `polestar_change_history`는 자원 생애주기 이력, `change_terms`는 급증 어휘라 다른 데이터) · `host.resource_status` · `host.topology` · `apm.active_sql` · `dpm.db_health` · `scope.resolve_was_targets` · `synthesize` · HolmesGPT 단독. 196 W3 `was.sql`·`was.fallback`에 새 action 없음.
+- **시간 표기**: 「YYYY년 M월 D일 오전/오후 h시 m분부터 …까지」 — 질의응답 `time_expr.interpret_detail(subject="event")`가 0~23시·날짜 걸침을 분 단위로 되읽음을 테스트로 고정. 「19:10~19:40」은 하루로 뭉개지고 표지 없는 1~12시는 되묻기라 쓰지 않는다.
+- **② 폴스타 골드 미등재(잔여)**: 샌드박스 `polestar_pg`에서 서버 한정 알람 이력 초안 SQL 1행 실행 확인(성능 추이는 샌드박스 시 통계가 자리 행뿐이라 검증 불가). gp/yd/b0 골드는 실 대상 DB `--check-gold`로 확정해 온 세트라(README 착수 조건 · docs/18 2026-07-20) 픽스처 서버명·시각 골드는 등재하지 않았다 — 내부망에서 실존 서버·실제 알람 시각으로 검증 뒤 등재하고 카탈로그에 폴스타 축 항목을 더한다(가드는 구현·테스트 완료).
+- **③ MLX 미실행(잔여)**: 이 체크아웃에 `.env`가 없어 두 평면이 `ollama`/`vllm`로 해석됨(`scripts.bench --show-env`) — 절대 구간 질의가 벤치와 같은 보기·창으로 처리되는지 1회 확인 필요.
+
 ---
 
 ## 4. 보안·권한
@@ -213,14 +223,14 @@ D-192는 「추천 = 골드셋 동형의 재사용」이고 D-341 ⑪이 조사 
 
 | # | 결정 | 상태 | 계획 반영 |
 |---|---|---|---|
-| Q1 | A 질의응답에 넣을 질의 | **권고 적용 · 사용자 확인 전** | 조사 재실행(B)은 범위 밖 — 기존 U-64·U-66 |
+| Q1 | A 질의응답에 넣을 질의 | **사용자 확정**(2026-10-27 · 권고안대로) | 조사 재실행(B)은 범위 밖 — 기존 U-64·U-66 |
 | Q2 | **② 골드셋 + 제니퍼 벤치 인정** · 폴스타는 W0 실측으로 골드 보강 | **사용자 확정** | §3.3 · §6(D-341 ⑪·D-192 부기 — W1 끝 등재) · W0 |
 | Q3 | **둘 다**(장애 진단 단계 카드 P1 + 조사 대화 고정 카드 P2) | **사용자 확정** | W3 |
 | Q4 | **복사 + 조사 대화 입력창에 채우고 「이대로 조회」 확인 후 조회** | **사용자 확정** | W3 새 인계 함수(조사 대화 탭 유지) · 첫 턴은 기존 `disclosures.ref.investigation_id`로 조사와 묶이므로 별도 `origin` 표지는 두지 않는다(§4) |
-| Q5 | 「지금 값 — 조사 당시와 다를 수 있음」 표시 달고 넣음 | **권고 적용 · 사용자 확인 전** | W1 `realtime` 표지 · W3 렌더 |
+| Q5 | 「지금 값 — 조사 당시와 다를 수 있음」 표시 달고 넣음 | **사용자 확정**(2026-10-27 · 권고안대로) | W1 `realtime` 표지 · W3 렌더 |
 | Q6 | **저장**(sre_agent 섹션 `queries[{tool, phrase}]`) | **사용자 확정** | W4 정식 Wave |
-| Q7 | HolmesGPT 단독 조사는 질의 없음 | **권고 적용 · 사용자 확인 전** | W1 — 플레이북 섹션 없는 브리핑은 0건 |
-| Q8 | 기본 off(관리자가 켬) | **권고 적용 · 사용자 확인 전** | W2 설정 1개 · D-162 |
+| Q7 | HolmesGPT 단독 조사는 질의 없음 | **사용자 확정**(2026-10-27 · 권고안대로) | W1 — 플레이북 섹션 없는 브리핑은 0건 |
+| Q8 | 기본 off(관리자가 켬) | **사용자 확정**(2026-10-27 · 권고안대로) | W2 설정 1개 · D-162 |
 
 ### 8.1 원 질문 표 (v0.1 — 기록용)
 

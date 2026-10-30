@@ -1,0 +1,79 @@
+{
+ "_note": "sre_playbook_enabled off(종전 HolmesGPT 경로) — playbook 키 없음 · briefing_lines는 저장소 render_briefing_lines 결과. 생성: make_fixtures.py(1단 _gen_sre.py — 가짜 콜러블·가짜 LLM·가짜 HolmesGPT) · 생산 코드 산출(손 편집 없음 · updated_at만 고정)",
+ "view": {
+  "status": "done",
+  "investigation_id": "inv-non_playbook",
+  "kind": "alarm",
+  "episode_id": null,
+  "briefing_lines": [
+   {
+    "label": "중요도",
+    "text": "경고(신뢰도 none) — 게이트 page"
+   },
+   {
+    "label": "요약",
+    "text": "원인: 업무 DB 커넥션 풀 고갈 ← apm_resource_pool"
+   },
+   {
+    "label": "타임라인",
+    "text": "원인: 업무 DB 커넥션 풀 고갈 ← apm_resource_pool\n타임라인: 09:40 p95 상승 → 09:50 풀 대기 12건 (apm_resource_pool)"
+   },
+   {
+    "label": "병목",
+    "text": "미확정(시그니처 매칭 없음)"
+   },
+   {
+    "label": "원인",
+    "text": "타임라인: 09:40 p95 상승 → 09:50 풀 대기 12건 (apm_resource_pool)"
+   },
+   {
+    "label": "권고",
+    "text": "조치 권고 없음(remediation_recommender off 또는 근거 시그니처 무매칭)\n※ 실행은 운영자 승인 후 수동 — 시스템은 제안만(자동 실행 경로 없음)"
+   },
+   {
+    "label": "한계",
+    "text": "프로세스·자원 스냅샷은 조사 시점 단면일 수 있음"
+   },
+   {
+    "label": "가설",
+    "text": "권고: 풀 점유 트랜잭션 확인"
+   }
+  ],
+  "cross_source": null,
+  "verdict_level": "경고",
+  "reason": null,
+  "updated_at": "2026-10-19T01:10:00+00:00",
+  "source": "api_poll",
+  "briefing": {
+   "severity": {
+    "level": "경고",
+    "confidence": "none",
+    "escalate": false,
+    "gate_tier": "page",
+    "signals": [],
+    "evidence_insufficient": false
+   },
+   "summary": "원인: 업무 DB 커넥션 풀 고갈 ← apm_resource_pool",
+   "timeline": [
+    "원인: 업무 DB 커넥션 풀 고갈 ← apm_resource_pool",
+    "타임라인: 09:40 p95 상승 → 09:50 풀 대기 12건 (apm_resource_pool)"
+   ],
+   "bottleneck": "미확정(시그니처 매칭 없음)",
+   "cause": "타임라인: 09:40 p95 상승 → 09:50 풀 대기 12건 (apm_resource_pool)",
+   "root_cause_hypotheses": [],
+   "recommendation": {
+    "items": [
+     "조치 권고 없음(remediation_recommender off 또는 근거 시그니처 무매칭)"
+    ],
+    "note": "※ 실행은 운영자 승인 후 수동 — 시스템은 제안만(자동 실행 경로 없음)"
+   },
+   "limitations": [
+    "프로세스·자원 스냅샷은 조사 시점 단면일 수 있음"
+   ],
+   "citations_verified": true,
+   "hypotheses": [
+    "권고: 풀 점유 트랜잭션 확인"
+   ]
+  }
+ }
+}

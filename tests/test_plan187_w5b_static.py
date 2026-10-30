@@ -435,13 +435,13 @@ def test_drawer_new_tab_and_break_glass_detail() -> None:
 @pytest.mark.parametrize(
     "page, asset",
     [
-        ("index.html", "briefing-view.js?v=9"),
-        ("index.html", "app.js?v=43"),
-        ("index.html", "style.css?v=44"),
-        ("noise.html", "briefing-view.js?v=9"),
-        ("noise.html", "noise.js?v=26"),
-        ("admin/noise.html", "briefing-view.js?v=9"),
-        ("admin/noise.html", "noise.js?v=26"),
+        ("index.html", "briefing-view.js?v=11"),
+        ("index.html", "app.js?v=45"),
+        ("index.html", "style.css?v=46"),
+        ("noise.html", "briefing-view.js?v=11"),
+        ("noise.html", "noise.js?v=27"),
+        ("admin/noise.html", "briefing-view.js?v=11"),
+        ("admin/noise.html", "noise.js?v=27"),
     ],
 )
 def test_cache_versions_bumped(page: str, asset: str) -> None:

@@ -15,7 +15,10 @@ import pytest
 from holmes.core.models import ToolCallResult
 from holmes.core.tools import StructuredToolResult, StructuredToolResultStatus
 from holmes.utils.stream import StreamEvents, StreamMessage
-from sre_agent.application.investigation_dispatcher import InvestigationDispatcher
+from sre_agent.application.investigation_dispatcher import (
+    PLAYBOOK_TIMING_KEYS,
+    InvestigationDispatcher,
+)
 from sre_agent.application.investigation_jobs import JobStore
 from sre_agent.application.playbook_steps import StepContext
 from sre_agent.diagnosis import DiagnosisResult, ToolCallRecord, _StreamDrain
@@ -175,9 +178,13 @@ def diag_payload(n: int) -> dict:
     return {"question": f"q{n}", "server_name": f"srv-{n}"}
 
 
-def test_flag_off_by_default_and_activity_since_is_ignored(tmp_path) -> None:
-    settings = store_settings()
-    assert settings.sre_activity_log_enabled is False
+def test_flag_on_by_default() -> None:
+    # 기본 on(사용자 결정 2026-10-29) — 끄는 경로는 아래 off 테스트가 명시 False로 지킨다.
+    assert store_settings().sre_activity_log_enabled is True
+
+
+def test_flag_off_activity_since_is_ignored(tmp_path) -> None:
+    settings = store_settings(sre_activity_log_enabled=False)
     store = JobStore(settings, audit_path=tmp_path / "a.jsonl")
     mcp = create_service(settings, job_store=store)
     iid = store.submit_diagnosis("q")["investigation_id"]
@@ -279,7 +286,7 @@ def test_concurrency_two_third_job_is_queued_then_runs(tmp_path) -> None:
 
 
 def test_flag_off_dispatcher_calls_diagnose_without_activity(tmp_path) -> None:
-    settings = store_settings(gemini_api_key="k")
+    settings = store_settings(sre_activity_log_enabled=False, gemini_api_key="k")
     seen: list[dict] = []
 
     def diagnose(job: Any, **kwargs: Any) -> DiagnosisResult:
@@ -373,9 +380,13 @@ def test_default_diagnose_fn_passes_activity_to_agent_ask() -> None:
 
 
 def _untimed(value: Any) -> Any:
-    """소요 시간 칸(`elapsed_ms`·`timings`)을 뺀 사본."""
+    """소요 시간 칸(`elapsed_ms`·`timings`·플레이북 실행 시간 계측 — plans/200 I-0)을 뺀 사본.
+
+    `opinion_wait_s`는 단계 끝 해석 실행기(실행 기록 on)가 있을 때만 값이 있어 on/off가 다르다.
+    """
     if isinstance(value, dict):
-        return {k: _untimed(v) for k, v in value.items() if k not in ("elapsed_ms", "timings")}
+        return {k: _untimed(v) for k, v in value.items()
+                if k not in ("elapsed_ms", "timings", *PLAYBOOK_TIMING_KEYS)}
     if isinstance(value, list):
         return [_untimed(v) for v in value]
     return value

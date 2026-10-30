@@ -4460,6 +4460,7 @@
 
     // 목록에서 고른 질의는 **입력창에 채우기만** 한다. 즉시 보내지 않는 이유는
     // 옛 질의가 지금도 유효하다는 보장이 없고(존 개명·서버 폐기), 오전송은 되돌릴 수 없어서다.
+    // (D-192 — 확인 바를 띄우는 stageAlarmPrompt·stageInvestigationPrompt(plans/195)와 계약이 다르다. 따라 고치지 않는다.)
     function reuseHistoryQuery(query) {
         if (!promptEl) return;
         promptEl.value = query;
@@ -4792,7 +4793,9 @@
     // ─── 조사 대화 (plans/187 W5b · §5.6.1 1단계 · D-341 ⑪⑫) ───
     // 조사 브리핑 상세형을 새 대화의 **첫 고정 카드**로 그린다. 이 카드는 LLM 대화 문맥이 아니다 —
     // 파이프라인은 브리핑을 모르므로(1단계) 「이 서버」 같은 지시어는 풀리지 않는다고 안내한다.
-    // 추천 칩은 내지 않는다(W0 대조에서 골드셋 동형 문구 3종 모두 없음 — §2.3 · D-192).
+    // 알람 추천 칩(stageAlarmPrompt)은 내지 않는다(W0 대조에서 골드셋 동형 문구 3종 모두 없음 — §2.3 · D-192).
+    // (plans/195 W3 · D-341 부기 21) 대신 서버가 골드셋·제니퍼 벤치 동형 템플릿으로 만든 「질의응답에서 확인」 문장
+    // (응답 `requery`)을 고정 카드 아래에 보이고, [조사 대화에서 조회]는 stageInvestigationPrompt로 이 탭에 채운다.
     var INVESTIGATION_ID_RE = /^[A-Za-z0-9._:-]{1,128}$/;
     var INVESTIGATION_PROMPT_HINT = "추가 질의 — 「이 서버」·「그 시간대」 같은 지시어는 풀리지 않습니다. 서버·인스턴스 이름과 시각을 직접 적으세요.";
 
@@ -5027,6 +5030,10 @@
         investigationPinPanel = window.BriefingView.attach(el.querySelector(".investigation-pin-body"), {
             limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
             render: { mode: "detail" },
+            // (plans/199 W1) 「한눈에 보기」 카드 — 기능 조회가 참일 때만(렌더할 때마다 읽는다)
+            summaryView: function () {
+                return !!(alarmCapabilities && alarmCapabilities.investigation_summary_view_enabled === true);
+            },
             // plans/187 FE-2 — 추가 조사(W10) · 알려진 문제 피드백(W8) · KB 초안·포스트모템(W9).
             // 기능이 꺼지면 서버가 404를 돌려주고 공용 렌더가 버튼을 숨기거나 막는다.
             followup: {
@@ -5075,6 +5082,11 @@
                 var detail = body && body.detail;
                 if (detail && typeof detail === "object") detail = detail.reason || detail.message || JSON.stringify(detail);
                 return { ok: resp.ok, status: resp.status, detail: detail };
+            },
+            // (plans/195 W3) 「조회한 것」 줄 · 「질의응답에서 확인」 묶음 — 조회는 이 조사 대화에 채우고 확인 바
+            requery: {
+                stage: function (prompt) { stageInvestigationPrompt(investigationId, prompt); },
+                busy: function () { return isProcessing; },
             },
             onView: function (view) {
                 if (scoped) return;
@@ -5232,6 +5244,9 @@
             linkHost: function (investigationId, body) {
                 return bvRequest("/api/v1/alarm/investigations/" + encodeURIComponent(investigationId) + "/host-link", "POST", body);
             },
+            // (plans/195 W3) 「질의응답에서 확인」 [조사 대화에서 조회] — 그 조사의 조사 대화를 열고 채운 뒤 확인 바(자동 전송 0)
+            stagePrompt: stageInvestigationPrompt,
+            busy: function () { return isProcessing; },
             // (plans/198 W0 I-1) 「실제 원인」 라벨 저장 — 조회 404(기능 꺼짐)면 화면이 이 경로를 부르지 않는다
             saveCauseLabel: function (investigationId, body) {
                 return bvRequest("/api/v1/alarm/investigations/" + encodeURIComponent(investigationId) + "/cause-label", "POST", body);
@@ -5243,6 +5258,10 @@
             // (plans/198 W7 I-8) 비슷한 과거 조사 조회 — 기능 조회 `investigation_memory_enabled`가 참일 때만
             similar: function () {
                 return !!(alarmCapabilities && alarmCapabilities.investigation_memory_enabled === true);
+            },
+            // (plans/199 W1 · D-352) 「한눈에 보기」 카드 — 중간 결과·조사 결과 공용 렌더에 넘긴다
+            summaryView: function () {
+                return !!(alarmCapabilities && alarmCapabilities.investigation_summary_view_enabled === true);
             },
         }).catch(function (err) {
             console.warn("[diagnosis] 장애 진단 초기화 실패:", err);
@@ -5549,6 +5568,10 @@
             var panel = window.BriefingView.attach(card.querySelector(".chat-inv-body"), {
                 limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
                 render: { mode: "summary" },
+                // (plans/199 W1) 「한눈에 보기」 카드 — 기능 조회가 참일 때만(렌더할 때마다 읽는다)
+                summaryView: function () {
+                    return !!(alarmCapabilities && alarmCapabilities.investigation_summary_view_enabled === true);
+                },
                 load: function () { return loadInvestigationView(id); },
             });
             chatInvestigationPanels.push(panel);
@@ -6112,6 +6135,10 @@
             // (plans/194 W5 · U3) 대기 중이면 「대기 중 · 순번 N」 칩 + 동시 조사 수 · 자동 시작 안내
             render: entryRender({ mode: "summary", openConversation: true, busy: function () { return isProcessing; },
                 queue: alarmQueueDisplay }),
+            // (plans/199 W1) 「한눈에 보기」 카드 — 기능 조회가 참일 때만(렌더할 때마다 읽는다)
+            summaryView: function () {
+                return !!(alarmCapabilities && alarmCapabilities.investigation_summary_view_enabled === true);
+            },
             // plans/192 P4: 남은 요약형 버튼도 클릭 시점의 진단 여부를 따른다 · P8: 「이전 분석」 행도 같은 진입
             onOpenConversation: function (id) { openInvestigationEntry(id, data.alarm_id); },
             onOpenPrevious: function (id) { openInvestigationEntry(id, data.alarm_id); },
@@ -6248,6 +6275,8 @@
     // 자동 전송하지 않는 이유: 시스템이 만든 문장을 사용자가 읽지도 않고 보내는 일이 없어야 한다.
     // (질의 이력 재사용 reuseHistoryQuery는 확인 바 없이 채우기만 한다 — 그쪽 계약은 D-183이고,
     //  여기를 고칠 때 저쪽을 "일관성 있게" 따라 고치면 안 된다. 두 경로는 의도가 다르다.)
+    // (plans/195 W3) 조사 질의는 세 번째 인계 stageInvestigationPrompt가 맡는다 — 질의응답 탭으로 옮기지 않고
+    //  조사 대화 탭에 채운다. 셋은 계약이 서로 다르니 하나를 고칠 때 나머지를 따라 고치지 않는다.
     function stageAlarmPrompt(text) {
         if (!text || !promptEl) return;
         setActiveView("chat");
@@ -6268,6 +6297,35 @@
 
     function hidePromptConfirm() {
         if (promptConfirm) promptConfirm.style.display = "none";
+    }
+
+    // (plans/195 W3 · D-192 세 번째 인계) 조사의 「질의응답에서 확인」 문장을 **조사 대화 탭에 머문 채** 입력창에
+    // 올리고 확인 바 [이대로 조회]/[수정]을 띄운다 — 전송은 확인 바가 handleSend() 단일 진입점으로만 한다(자동 전송 0).
+    // 조사 대화에서 보내야 첫 턴에 조사 id가 실려(X-Investigation-Ref) 이력에 그 조사와 묶인다.
+    //  - stageAlarmPrompt(알람 추천 · 질의응답 탭으로 옮기고 확인 바)·reuseHistoryQuery(질의 이력 · 채우기만 · D-183)와
+    //    계약이 다르다. 셋 중 하나를 고칠 때 나머지를 따라 고치지 않는다.
+    //  - 지금 조사 대화 탭이면(고정 카드의 버튼) 그 대화에 채운다. 다른 탭(장애 진단)이면 그 조사의 조사 대화가
+    //    이미 열려 있을 때는 그 탭으로 옮기고, 아니면 openInvestigationConversation으로 새로 연다 — 열기는 동기이고
+    //    고정 카드는 뒤에 따로 읽으므로 열린 직후에 채운다. 답변 중이라 옮기거나 열지 못하면 채우지 않는다(사유는 열기 쪽이 보인다).
+    function stageInvestigationPrompt(investigationId, text) {
+        var id = String(investigationId || "");
+        if (!text || !promptEl || !INVESTIGATION_ID_RE.test(id)) return false;
+        if (activeView !== "investigation") {
+            // 열린 조사 대화 = 새로고침 복원 저장값(열기·복원 때 남기고 탭을 닫으면 지운다) · 대화가 어느 슬롯에든 있다
+            var conv = storedInvestigationConversation();
+            var mounted = conversationSlot === "investigation" || !!parkedConversation;
+            if (conv && conv.id === id && mounted) {
+                setActiveView("investigation");
+                if (activeView !== "investigation") return false;
+            } else if (!openInvestigationConversation(id)) {
+                return false;
+            }
+        }
+        promptEl.value = text;
+        autoResizeTextarea.call(promptEl);   // this 가 입력창이어야 한다(plans/116)
+        showPromptConfirm(text);
+        promptEl.focus();
+        return true;
     }
 
     // Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼 핸들러를 바인딩한다.
@@ -6657,6 +6715,10 @@
         var panel = window.BriefingView.attach(body, {
             limitSeconds: alarmCapabilities && alarmCapabilities.investigation_followup_timeout_seconds,
             render: entryRender({ mode: "summary", openConversation: true, busy: function () { return isProcessing; } }),
+            // (plans/199 W1) 「한눈에 보기」 카드 — 기능 조회가 참일 때만(렌더할 때마다 읽는다)
+            summaryView: function () {
+                return !!(alarmCapabilities && alarmCapabilities.investigation_summary_view_enabled === true);
+            },
             // plans/192 P4·P8 — 요약형 버튼과 「이전 분석」 행은 클릭 시점의 진단 여부를 따른다
             onOpenConversation: function (id) { openInvestigationEntry(id, item.alarm_id); },
             onOpenPrevious: function (id) { openInvestigationEntry(id, item.alarm_id); },

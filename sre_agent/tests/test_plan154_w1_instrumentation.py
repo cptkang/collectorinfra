@@ -54,6 +54,10 @@ _DONE_KEYS = {
     "model",
     "max_steps",
     "tool_calls",
+    # plans/200 I-0 턴 계측(가산)
+    "tool_batch_sizes",
+    "max_tools_per_turn",
+    "turns_n",
 }
 _LEGACY_DONE_KEYS = {
     "event",

@@ -14,6 +14,7 @@ import threading
 import time
 from typing import Any
 
+from sre_agent.application.investigation_dispatcher import PLAYBOOK_TIMING_KEYS
 from sre_agent.application.playbook_narrator import (
     NarratorLimits,
     PlaybookNarrator,
@@ -298,6 +299,8 @@ def test_activity_off_is_unchanged_path_and_same_final_response() -> None:
         s = _comparable(job)
         s.pop("phase", None)
         s.pop("queue_position", None)
+        for k in PLAYBOOK_TIMING_KEYS:  # 실행 시간 계측(plans/200 I-0) — 소요 시간만 다르다
+            s.pop(k, None)
         pb = s["briefing"]["playbook"]
         pb.pop("timings", None)  # 소요 시간만 다르다
         for sec in pb["sections"]:
