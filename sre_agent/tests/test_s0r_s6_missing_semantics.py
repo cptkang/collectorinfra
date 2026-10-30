@@ -120,3 +120,12 @@ def test_s6_tool_error_unchanged():
     res = process_top(_ctx(polestar=Fake(lambda t, a: {"error": "소스 db_gp의 프로세스 API 미설정"})))
     assert res.status == "missing"
     assert res.reason == f"{POLESTAR_PROCESS}: 소스 db_gp의 프로세스 API 미설정"
+
+
+def test_s6_zero_rows_reason_shows_resolved_hostname():
+    """MCP가 등록명을 OS 호스트명으로 바꿔 조회했으면 사유에 실제 조회 값과 해소 노트를 보인다."""
+    data = {"rows": [], "total_processes": 0, "captured_at": "2026-10-28 10:05:00",
+            "hostname": "yd-web01", "hostname_note": "폴스타 등록명 'srv01' → 호스트명 'yd-web01'로 조회"}
+    res = process_top(_ctx(polestar=Fake(lambda t, a: data)))
+    assert res.status == "missing"
+    assert "호스트 'yd-web01'" in res.reason and "→ 호스트명 'yd-web01'" in res.reason

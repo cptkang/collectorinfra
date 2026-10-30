@@ -89,7 +89,7 @@ def test_console_response_matches_golden(tmp_path: Path, case: str):
 def test_list_shape_and_operator_only_field(tmp_path: Path):
     body = _responses(tmp_path)
     for case in ("user_list", "operator_list"):
-        assert set(body[case]) == {"items", "total", "page", "size", "facets"}
+        assert set(body[case]) == {"items", "total", "page", "size", "facets", "solution_labels"}
         assert body[case]["total"] == 4
     # condition_log는 운영자 경로에서만(fail-closed · G-2 (c)).
     assert all("condition_log" not in item for item in body["user_list"]["items"])

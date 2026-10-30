@@ -48,6 +48,10 @@ _BUCKETS: dict[str, int] = {"5m": 300, "1h": 3600, "2h": 7200, "6h": 21600, "1d"
 # 판단 결과 4티어 — 목록의 `tier` 쉼표 복수값은 이 닫힌 집합 밖이면 400이다(plans/112 S2).
 _TIERS: tuple[str, ...] = ("page", "ticket", "dashboard", "suppress")
 
+# (D-351) 레지스트리로 솔루션을 못 푼 판단(db_id 기록 이전 · 미등록 db_id)의 필터 코드·표시 이름.
+_UNCLASSIFIED_SOLUTION = "unclassified"
+_UNCLASSIFIED_LABEL = "미분류"
+
 # 노이즈 게이트 설정의 env 접두 — `NoiseGateConfig`(`src/config.py`)의 `env_prefix`와 같아야 한다.
 # 정책 딥링크 키와 단계 활성 키가 **이 한 곳**에서 만들어진다(plans/112 F-1 — 종전
 # `NOISE_GATE_` 접두는 설정 카탈로그에 없는 키를 가리켰다).
@@ -222,6 +226,14 @@ class NoiseHealthResponse(BaseModel):
     last_event_age_seconds: Optional[float] = None
     window_seconds: int
     gate_enabled: bool
+    investigation_summary_view_enabled: bool = Field(
+        default=False,
+        description=(
+            "조사 결과 「한눈에 보기」 카드 — 거짓이면 break-glass 관제 서랍이 "
+            "종전 조사 화면을 그대로 그린다 (NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED · "
+            "plans/199 W6 · 사용자 토큰 세션은 기능 조회 값만 쓴다)"
+        ),
+    )
 
 
 class DecisionsResponse(BaseModel):
@@ -233,8 +245,13 @@ class DecisionsResponse(BaseModel):
         default_factory=dict,
         description=(
             "분포 칩용 건수 — tiers는 tier 필터만 뺀 집합(4키 항상), "
-            "stages는 stage 필터만 뺀 집합(0보다 큰 키만)"
+            "stages는 stage 필터만 뺀 집합(0보다 큰 키만), "
+            "solutions는 solution 필터만 뺀 집합(0보다 큰 키만 · 못 푼 출처는 unclassified)"
         ),
+    )
+    solution_labels: dict[str, str] = Field(
+        default_factory=dict,
+        description="facets.solutions 코드 → 표시 이름(결정 이력 「솔루션」 선택지)",
     )
 
 
@@ -560,6 +577,37 @@ def _attach_investigations(request: Request, items: list[dict[str, Any]]) -> Non
         }
 
 
+def _origin_resolver():  # noqa: ANN202 — Callable[[str], dict[str, str]]
+    """db_id → 알람 출처(솔루션·위치)를 요청 단위로 메모하는 함수를 만든다 (D-351).
+
+    분류 정본은 레지스트리(`alarm_origin_for`)다. 못 푼 db_id(기록 이전 판단 · 미등록)는
+    `_UNCLASSIFIED_SOLUTION`으로 모아 화면에서 사라지지 않게 한다. 메모는 목록 필터(저장소 분류
+    함수)와 행 라벨이 함께 쓴다 — 창 안 db_id마다 레지스트리 조회 1회.
+    """
+    from noise_gate.application.server_identity import alarm_origin_for
+
+    memo: dict[str, dict[str, str]] = {}
+
+    def resolve(db_id: str) -> dict[str, str]:
+        if db_id not in memo:
+            origin = alarm_origin_for(db_id)
+            memo[db_id] = {
+                "solution": origin["solution"] or _UNCLASSIFIED_SOLUTION,
+                "solution_label": origin["solution_label"] or _UNCLASSIFIED_LABEL,
+                "location_label": origin["location"],
+            }
+        return memo[db_id]
+
+    resolve.memo = memo  # type: ignore[attr-defined] — 선택지 라벨 수집용
+    return resolve
+
+
+def _attach_origins(items: list[dict[str, Any]], resolve) -> None:  # noqa: ANN001
+    """판정 행에 `solution`·`solution_label`·`location_label`을 단다(D-351 — 결정 이력 칸)."""
+    for item in items:
+        item.update(resolve(str(item.get("db_id") or "")))
+
+
 def _is_operator_path(request: Request) -> bool:
     """요청이 운영자 경로로 들어왔는지(`_mark_operator_path` 표시 여부)."""
     return bool(getattr(request.state, _OPERATOR_PATH_FLAG, False))
@@ -790,6 +838,11 @@ async def noise_health(
         last_event_age_seconds=agg["last_event_age_seconds"],
         window_seconds=window,
         gate_enabled=bool(ng.enable_noise_gate),
+        # (plans/199 W6) break-glass 운영자 토큰은 기능 조회(사용자 토큰 인가)를
+        # 못 부르므로 여기서 읽는다
+        investigation_summary_view_enabled=bool(
+            getattr(ng, "investigation_summary_view_enabled", True)
+        ),
     )
 
 
@@ -805,6 +858,8 @@ async def noise_health(
         "PAGE 티어는 즉시 통보 경로라 실시간 스트림에 실리지 않으므로, 피드의 완전성은 이 조회가 맡습니다."
         "<br/>`tier`는 쉼표 복수값(`page,ticket`)을 받고, `facets`는 분포 칩용 건수입니다. "
         "`related=true`면 상관·자가복구 행에 대표/원 발생 판단을 붙입니다.<br/>"
+        "각 행의 `solution`·`solution_label`·`location_label`은 db_id를 레지스트리로 푼 알람 출처"
+        "(솔루션·존 위치)이고, `solution`으로 거릅니다(못 푼 출처 = `unclassified`).<br/>"
         "각 행의 `investigation`은 그 알람의 가장 최근 거부 아닌 조사"
         "(`{investigation_id, status, queue_position}`) 또는 null"
         "(조사 안 됨 · 볼 권한 없음)입니다 — "
@@ -830,9 +885,15 @@ async def noise_decisions(
     server_q: str | None = Query(
         default=None, max_length=200, description="서버명·hostname 부분일치"
     ),
+    solution: str | None = Query(
+        default=None,
+        max_length=64,
+        description="솔루션 코드(레지스트리 solutions[].code · 못 푼 출처는 unclassified)",
+    ),
 ) -> DecisionsResponse:
     """결정 감사 목록을 필터·페이지로 돌려준다."""
     window = _resolve_range(range)
+    resolve = _origin_resolver()
     result = _decision_store(request).list_decisions(
         window_seconds=window,
         tier=_parse_tiers(tier),
@@ -848,8 +909,14 @@ async def noise_decisions(
         server_q=server_q,
         mask_fn=_mask_fn(request),
         operator_view=_is_operator_path(request),
+        solution=(solution or "").strip() or None,
+        solution_of=lambda db_id: resolve(db_id)["solution"],
     )
     _attach_investigations(request, result["items"])
+    _attach_origins(result["items"], resolve)
+    result["solution_labels"] = {
+        origin["solution"]: origin["solution_label"] for origin in resolve.memo.values()
+    }
     return DecisionsResponse(**result)
 
 
@@ -876,6 +943,7 @@ async def noise_decision_trace(
     )
     if decision is None:
         raise HTTPException(status_code=404, detail="해당 알람의 발송 판단이 없습니다.")
+    _attach_origins([decision], _origin_resolver())
     # (plans/153 W2) 자동 조사 요약 — 조사 레코드가 있을 때만 키를 더한다(없으면 응답 비트 동일).
     investigation = _investigation_block(request, alarm_id)
     if investigation is not None:

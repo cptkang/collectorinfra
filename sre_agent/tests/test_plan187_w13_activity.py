@@ -178,9 +178,13 @@ def diag_payload(n: int) -> dict:
     return {"question": f"q{n}", "server_name": f"srv-{n}"}
 
 
-def test_flag_off_by_default_and_activity_since_is_ignored(tmp_path) -> None:
-    settings = store_settings()
-    assert settings.sre_activity_log_enabled is False
+def test_flag_on_by_default() -> None:
+    # 기본 on(사용자 결정 2026-10-29) — 끄는 경로는 아래 off 테스트가 명시 False로 지킨다.
+    assert store_settings().sre_activity_log_enabled is True
+
+
+def test_flag_off_activity_since_is_ignored(tmp_path) -> None:
+    settings = store_settings(sre_activity_log_enabled=False)
     store = JobStore(settings, audit_path=tmp_path / "a.jsonl")
     mcp = create_service(settings, job_store=store)
     iid = store.submit_diagnosis("q")["investigation_id"]
@@ -282,7 +286,7 @@ def test_concurrency_two_third_job_is_queued_then_runs(tmp_path) -> None:
 
 
 def test_flag_off_dispatcher_calls_diagnose_without_activity(tmp_path) -> None:
-    settings = store_settings(gemini_api_key="k")
+    settings = store_settings(sre_activity_log_enabled=False, gemini_api_key="k")
     seen: list[dict] = []
 
     def diagnose(job: Any, **kwargs: Any) -> DiagnosisResult:

@@ -1193,6 +1193,26 @@ body:has(.chat-layout.history-collapsed) {
 .rq-msg { font-size: 0.72rem; color: var(--text-muted); }
 .rq-why { font-size: 0.75rem; color: var(--warning); overflow-wrap: anywhere; }
 
+/* (plans/199 W5a · §3.10) 기능 켜짐 — 전환 탭 대신 세로 배치 · 접힘 섹션 머리 한 줄 · 실행 기록 전체 폭 */
+.dv-sum-box { margin: 6px 0 4px; }
+.dv-sum-box[hidden],
+.dv-log-bar[hidden],
+.dv-rows[hidden] { display: none; }
+.dv-sec { margin-top: 8px; }
+.dv-sec-bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 2px 0 4px; }
+.dv-sec-toggle {
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-size: 0.8125rem;
+    font-weight: 700;
+    color: var(--text);
+    cursor: pointer;
+}
+.dv-sec-caret { margin-left: 4px; color: var(--accent); }
+.dv-sec-info { font-size: 0.75rem; color: var(--text-muted); overflow-wrap: anywhere; }
+.dv-why-more { color: var(--text-secondary); }
+
 /* 알람 카드 [장애 진단에서 보기] · 관제 드로어 「장애 진단에서 보기」(공용 렌더 밖 진입 버튼) */
 .diagnosis-open,
 .cause-live-open {
@@ -3772,6 +3792,66 @@ body.auth-pending .auth-splash {
 .bv-engine-col .bv-item { grid-template-columns: 5.6em 1fr; }
 .bv-engine-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .bv-engine-choice .bv-meta, .bv-engine-choice .bv-note { flex-basis: 100%; }
+/* plans/199 W4 — [서술 보기] 4줄 요약 · 원문 안전 렌더(briefing-view.js renderMarkdownSafe) */
+.bv-md-sum { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+.bv-md-raw { margin-top: 4px; }
+.bv-md-raw > summary { cursor: pointer; font-size: 0.72rem; }
+.bv-md { display: flex; flex-direction: column; gap: 3px; font-size: 0.75rem; color: var(--text-secondary); overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
+/* 원문이 360px를 넘으면 flex 축소로 overflow 자식(표 감싸개)이 높이 0이 된다 — 자식은 줄이지 않고 바깥이 스크롤 */
+.bv-md > * { flex-shrink: 0; }
+.bv-md-h { font-weight: 700; color: var(--text); margin-top: 4px; }
+.bv-md ul, .bv-md ol { margin: 0; padding-left: 1.2em; }
+.bv-md ol { list-style: none; padding-left: 0.4em; }
+.bv-md code { font-family: var(--font-mono); font-size: 0.95em; padding: 0 3px; border-radius: 3px; background: var(--track); }
+.bv-md-tbl { overflow-x: auto; }
+.bv-md table { border-collapse: collapse; font-size: 0.7rem; }
+.bv-md th, .bv-md td { border: 1px solid var(--border); padding: 1px 6px; text-align: left; white-space: nowrap; }
+.bv-md-toc { padding: 3px 6px; border: 1px dashed var(--border); border-radius: var(--radius-sm); }
+.bv-md-short { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+
+/* plans/199 W1 · D-352 — 「한눈에 보기」 카드(briefing-view.js summaryCardHtml) · 테마 토큰만 쓴다 */
+.bv-sum {
+    display: flex; flex-direction: column; gap: 4px; padding: 6px 8px;
+    border: 1px solid var(--accent-dim); border-radius: var(--radius-sm); background: var(--surface);
+}
+.bv-sum-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.bv-sum-title { font-weight: 700; font-size: 0.76rem; margin-right: auto; }
+.bv-sum-rows { display: flex; flex-direction: column; gap: 3px; }
+.bv-sum-row { display: grid; grid-template-columns: 5.6em 1fr; gap: 8px; }
+.bv-sum-alt { font-size: 0.7rem; color: var(--warning); }
+.bv-sum-must { margin: 0; padding: 0; list-style: none; }
+.bv-sum-must-item--warn::before { content: "\26A0  "; color: var(--warning); }
+.bv-sum-must-item--info::before { content: "\24D8  "; color: var(--info); }
+.bv-sum-must-item--run::before { content: "\25CC  "; color: var(--info); }
+.bv-sum-must-item--more { color: var(--text-muted); }
+.bv-sum-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.bv-sum-actions:empty { display: none; }
+/* plans/199 W2 — [전달문 복사] · 「원문 포함」(운영자 화면) · [전달문 보기] 읽기 전용 미리보기(펼치면 한 줄 전체) */
+.bv-handoff > summary { display: inline-block; list-style: none; }
+.bv-handoff > summary::-webkit-details-marker { display: none; }
+.bv-handoff > summary::after { content: " \25BE"; }
+.bv-handoff[open] { flex-basis: 100%; text-align: right; }
+.bv-handoff-text { text-align: left; user-select: text; }
+.bv-handoff-raw {
+    align-self: center; padding: 0 4px; font-size: 0.68rem; color: var(--warning);
+    border: 1px solid var(--warning); border-radius: var(--radius-sm);
+}
+/* plans/199 W3 — 상세형 ② 근거 요약 · ③ 상세(접힘 단) · 단계 스트립 · 미니 타임라인(인라인 SVG) · 테마 토큰만 */
+.bv-ev { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 8px; }
+.bv-ev > .bv-ev-head { cursor: pointer; font-weight: 700; font-size: 0.74rem; }
+.bv-ev-body { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.bv-ev-hypo { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+.bv-ev-hcol { display: flex; flex-direction: column; gap: 3px; }
+.bv-ev-hlist { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.bv-ev-hitem { overflow-wrap: anywhere; }
+.bv-strip-chip { cursor: pointer; font-family: inherit; }
+.bv-strip-no { font-size: 0.85em; opacity: 0.7; font-family: var(--font-mono); }
+.bv-tl { width: 100%; max-width: 600px; height: auto; color: var(--text-muted); }
+.bv-tl-lane { stroke: var(--border); }
+.bv-tl-zero { stroke: var(--warning); stroke-dasharray: 3 2; }
+.bv-tl-label, .bv-tl-tick { fill: currentColor; font-size: 10px; }
+.bv-tl-dot--infra { fill: var(--tone-sky); }
+.bv-tl-dot--apm { fill: var(--tone-amber); }
 
 /* plans/187 FE-2 — 추가 조사 · 이 알람 분석 · 알려진 문제 피드백 · KB 꼬리 */
 .bv-pre {

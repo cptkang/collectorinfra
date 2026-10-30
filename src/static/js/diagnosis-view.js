@@ -26,10 +26,17 @@
  *     app.js의 `similar` 옵션(기능 조회 값)이 참일 때만 조회하고, 조회 404·403이면 그리지 않는다
  *     (`NOISE_INVESTIGATION_MEMORY_ENABLED` 기본 off = 종전 화면). 결론은 라벨 붙은 조사만(서버 판정).
  *     두 상자는 응답이 다 온 뒤 「실제 원인」 → 「비슷한 과거 조사」 순으로 붙는다.
+ *   - (plans/199 W1 · D-352) `summaryView` 옵션(기능 조회 값 · 불리언 또는 함수)이 참이면 중간 결과·조사 결과
+ *     머리 아래에 공용 렌더의 「한눈에 보기」 카드가 붙는다(`NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED` 기본 off = 종전 화면).
+ *   - (plans/199 W5a · §3.10 A안 · D-352 ⑥ · G-50 개정) 같은 옵션이 참이면 「조사 흐름」·「실행 기록」 전환 탭 없이
+ *     한 화면 세로 배치다 — 진행 중: 한눈에 보기(진척형) → 조사 흐름(펼침) → [근거 보기] 중간 결과(접힘) →
+ *     실행 기록(접힘) · 종결: 조사 결과 → 조사 흐름(접힘) → 실행 기록(접힘). 실행 기록 머리 한 줄에 건수·0건 사유·
+ *     잘림·보관 표지를 싣고, 펼침은 브라우저 저장소(`dv.expand.log`·`dv.expand.partial`)에 기억한다.
+ *     머리 「조사 이유」 여러 줄은 첫 줄만 보이고 나머지는 접는다. 거짓이면 종전 골격(전환 탭 · dv-grid) 그대로다.
  *
  * 보안: 화면은 읽기만 한다 — 조사 취소·명령 실행 버튼이 없다(D-003). 한 줄·발췌·AI 메모는 서버
- * 텍스트라 `textContent`로만 넣는다. `innerHTML`은 공용 렌더(`BriefingView.renderBody` — 자체
- * 이스케이프) 출력에만 쓴다.
+ * 텍스트라 `textContent`로만 넣는다. `innerHTML`은 공용 렌더(`BriefingView.renderBody`·`summaryCardHtml` —
+ * 자체 이스케이프) 출력에만 쓴다.
  *
  * 전역은 `window.DiagnosisView` 하나다. 순수 함수(행 변환·병합·watch·연결 문구)와 의존성 주입형
  * 컨트롤러(`create`)를 node로 시험한다(`tests/test_api/test_ui_plan187_w15_diagnosis.py`).
@@ -164,6 +171,18 @@
         // (plans/187 W20 · §5.6.4 · G-50) 「조사 흐름」 — 단계 카드(왜 → 조회 → 결과 → 해석)
         modeFlow: "조사 흐름",
         modeLog: "실행 기록",
+        // (plans/199 W5a · §3.10) 기능 켜짐 — 접힘 섹션 머리 · 실행 기록 건수·0건 사유·표지 · 「조사 이유」 접기
+        evidenceBtn: "근거 보기",
+        logCount: "실행 기록 ({n}건)",
+        logWait: "아직 기록 없음",
+        logOff: "조사 서비스 실행 기록 꺼짐",
+        logWaitLine: "아직 실행 기록이 없습니다.",
+        logOffLine: "조사 서비스의 실행 기록(SRE_ACTIVITY_LOG_ENABLED)이 꺼져 있어 이 조사의 실행 기록이 쌓이지 않습니다.",
+        logMarks: { truncated: "오래된 기록 일부 빠짐", clipped: "300행 넘는 오래된 행 접음", archive: "보관 요약" },
+        secOpened: "▾",
+        secClosed: "▸",
+        whyMore: "외 {n}줄 ▸",
+        whyLess: "외 {n}줄 ▾",
         flowEmpty: "아직 조사 단계가 없습니다. 단계가 시작되면 카드가 쌓입니다.",
         sofarHead: "지금까지",
         sofarChecking: "{title} 확인 중 ⟳",
@@ -280,6 +299,9 @@
         queued: "대기", collecting: "수집", narrating: "서술", deep_dive: "심층 조사", finalizing: "브리핑 조립",
     };
     var PHASE_UNKNOWN = "진행 중";
+    // (plans/199 W5a · §3.7·§3.10) 접힘 섹션 펼침 기억 — 브라우저 저장소 키(값 "1" = 펼침). 조사 흐름은 상태별
+    // 기본(진행 중 펼침 · 종결 뒤 접힘 — §3.8)이라 기억하지 않고 탭 안에서만 유지한다.
+    var EXPAND_KEYS = { log: "dv.expand.log", partial: "dv.expand.partial" };
 
     function fill(template, values) {
         return String(template).replace(/\{(\w+)\}/g, function (_m, key) {
@@ -421,6 +443,21 @@
         return String(label || "")
             .replace(/^플레이북 fallback 선택$/, "플레이북 공통 점검 선택")
             .replace(/ — (parallel|conditional)$/, function (_m, k) { return " — " + DEEP_MODE_LABELS[k]; });
+    }
+
+    /**
+     * (plans/199 W5a · §3.8) 머리 「조사 이유」 여러 줄(경로 선택 사유 · 플레이북 선택 · 심층 조사 시작)은 첫 줄만
+     * 남기고 나머지를 그 줄의 `more`로 접는다 — 같은 내용(플레이북·대상·증상)이 표현만 달리 되풀이되는 것을 줄인다.
+     * 다른 머리 줄은 그대로 · 순수 함수(줄 객체는 렌더마다 새로 만든다).
+     */
+    function foldWhy(lines) {
+        var first = null;
+        return asList(lines).filter(function (line) {
+            if (line.head !== TEXT.whyHead) return true;
+            if (!first) { first = line; return true; }
+            (first.more = first.more || []).push(line.text);
+            return false;
+        });
     }
 
     /** 스텝 id → 그 스텝의 목적(`step_start` purpose) — 도구 행의 마우스 올림 설명에 쓴다. */
@@ -1201,9 +1238,33 @@
         var searchOn = false;       // (W18) /active `event_search` — 알람 다시 분석 접수가 켜졌는지
         var serviceLoad = null;     // (plans/194 W5 · U3) /active·summary 최상위 `service_load`(없으면 null)
         var firstLoad = null;
+        var local;                  // (plans/199 W5a) 펼침 기억 저장소 — 기능 켜짐 화면에서 처음 쓸 때 잡는다
 
         function safeSession() {
             try { return root.sessionStorage || null; } catch (_) { return null; }
+        }
+
+        // (plans/199 W5a · §3.7) 펼침 기억 — 읽기·쓰기 모두 실패하면 기본 접힘(사생활 모드·차단 등)
+        function localStore() {
+            if (local === undefined) {
+                try { local = deps.localStorage !== undefined ? deps.localStorage : (root.localStorage || null); }
+                catch (_) { local = null; }
+            }
+            return local;
+        }
+
+        function expandRead(key) {
+            try {
+                var s = localStore();
+                return !!s && s.getItem(key) === "1";
+            } catch (_) { return false; }
+        }
+
+        function expandWrite(key, on) {
+            try {
+                var s = localStore();
+                if (s) s.setItem(key, on ? "1" : "0");
+            } catch (_) { /* 저장 불가 — 이번 화면에서만 유지 */ }
         }
 
         function el(tag, cls, text) {
@@ -1585,6 +1646,8 @@
                 autoScroll: true, expanded: {}, finalPanel: null, dom: null,
                 // (W20) 조사 흐름 — 같은 이벤트를 두 보기로 그린다(연결·커서는 하나)
                 mode: "flow", flow: { events: [], seen: {} }, flowOpen: {},
+                // (plans/199 W5a) 기능 켜짐 화면의 접힘 섹션 펼침(flow·partial·log — 없으면 기본값)
+                secOpen: {},
             };
         }
 
@@ -1668,7 +1731,8 @@
             var grid = el("div", "dv-grid");
             var logBox = el("section", "dv-log");
             var logBar = el("div", "dv-log-bar");
-            logBar.appendChild(el("span", "dv-label", TEXT.logHead));
+            var logLabel = el("span", "dv-label", TEXT.logHead);
+            logBar.appendChild(logLabel);
             var filters = el("span", "dv-filters");
             logBar.appendChild(filters);
             var autoLabel = el("label", "dv-check");
@@ -1686,7 +1750,8 @@
             logBox.appendChild(rows);
             grid.appendChild(logBox);
             var partBox = el("section", "dv-partial");
-            partBox.appendChild(el("div", "dv-label", TEXT.partialHead));
+            var partLabel = el("div", "dv-label", TEXT.partialHead);
+            partBox.appendChild(partLabel);
             var partBody = el("div", "dv-partial-body", TEXT.loading);
             partBox.appendChild(partBody);
             grid.appendChild(partBox);
@@ -1709,9 +1774,127 @@
             tab.dom = { wrap: wrap, btn: btn, label: label, state: state, panel: panel, title: title, target: target, meta: meta,
                 warn: warn, filters: filters, logNote: logNote, rows: rows, partBox: partBox, partBody: partBody,
                 finalBox: finalBox, finalBody: finalBody, grid: grid, modeBtns: modeBtns, flowBox: flowBox,
-                sofar: sofar, sofarText: sofarText, sofarAi: sofarAi, flowBody: flowBody };
+                sofar: sofar, sofarText: sofarText, sofarAi: sofarAi, flowBody: flowBody,
+                // (plans/199 W5a) 기능 켜짐 배치용 — 꺼짐이면 붙이지 않는다(종전 골격 그대로)
+                layout: "off", modes: modes, logBox: logBox, logBar: logBar, logLabel: logLabel, partLabel: partLabel,
+                // `bv` — 조사 결과 안 카드와 같은 글자 크기·줄 간격(공용 `.bv` 토큰). 숨김은 `.dv-sum-box[hidden]`이 이긴다
+                sumBox: el("section", "dv-sum-box bv"),
+                secs: {
+                    flow: secNode(tab, "flow", TEXT.modeFlow, flowBox),
+                    partial: secNode(tab, "partial", TEXT.evidenceBtn, partBox),
+                    log: secNode(tab, "log", fill(TEXT.logCount, { n: 0 }), logBox),
+                } };
+            tab.dom.sumBox.hidden = true;
+            tab.dom.secs.partial.info.textContent = TEXT.partialHead;
             setMode(tab, tab.mode);
+            applyLayout(tab);
             renderTabButton(tab);
+        }
+
+        // ── (plans/199 W5a · §3.10 A안) 기능 켜짐 배치 ──
+        // 진행 중: 한눈에 보기(진척형) → 조사 흐름(펼침) → [근거 보기] 중간 결과(접힘) → 실행 기록(접힘)
+        // 종결: 조사 결과 → 조사 흐름(접힘) → 실행 기록(접힘). 꺼짐이면 종전 골격(전환 탭 · dv-grid) 그대로.
+        // 기능 조회가 늦게 와도 맞도록 렌더 때마다 묻고, 배치가 바뀔 때만 노드를 옮긴다(스트림·커서와 무관).
+        // 배치가 바뀌었으면 true.
+        function applyLayout(tab) {
+            var d = tab.dom;
+            if (!d) return false;
+            var key = optOn(opts.summaryView) ? (tab.done ? "done" : "run") : "off";
+            if (d.layout === key) return false;
+            d.layout = key;
+            [d.modes, d.flowBox, d.grid, d.sumBox, d.secs.flow.wrap, d.secs.partial.wrap, d.secs.log.wrap, d.finalBox]
+                .forEach(function (n) { if (n.parentNode) n.parentNode.removeChild(n); });
+            var on = key !== "off";
+            d.logLabel.hidden = on;     // 섹션 머리가 같은 이름을 진다
+            d.partLabel.hidden = on;
+            if (!on) {
+                d.grid.appendChild(d.logBox);
+                d.grid.appendChild(d.partBox);
+                d.logBox.hidden = false;
+                d.logBar.hidden = false;
+                d.rows.hidden = false;
+                d.partBox.hidden = !!tab.finalPanel;
+                [d.modes, d.flowBox, d.grid, d.finalBox].forEach(function (n) { d.panel.appendChild(n); });
+                setMode(tab, tab.mode);
+                return true;
+            }
+            ["flow", "partial", "log"].forEach(function (name) {
+                var s = d.secs[name];
+                s.wrap.appendChild(s.body);
+                paintSec(tab, name);
+            });
+            if (key === "done") { d.sumBox.textContent = ""; d.sumBox.hidden = true; }   // 카드는 조사 결과 안에 1장
+            var order = key === "run"
+                ? [d.sumBox, d.secs.flow.wrap, d.secs.partial.wrap, d.secs.log.wrap, d.finalBox]
+                : [d.finalBox, d.secs.flow.wrap, d.secs.log.wrap];
+            order.forEach(function (n) { d.panel.appendChild(n); });
+            paintLog(tab);
+            return true;
+        }
+
+        // 접힘 섹션 — 머리 한 줄(제목 ▸/▾ 버튼 + 상태 표지) · 본문은 배치 때 옮겨 붙인다
+        function secNode(tab, name, title, body) {
+            var wrap = el("section", "dv-sec dv-sec--" + name);
+            var bar = el("div", "dv-sec-bar");
+            var btn = el("button", "dv-sec-toggle");
+            btn.type = "button";
+            var t = el("span", "dv-sec-title", title);
+            var caret = el("span", "dv-sec-caret");
+            btn.appendChild(t);
+            btn.appendChild(caret);
+            btn.addEventListener("click", function () { toggleSec(tab, name); });
+            var info = el("span", "dv-sec-info");
+            bar.appendChild(btn);
+            bar.appendChild(info);
+            wrap.appendChild(bar);
+            return { wrap: wrap, btn: btn, title: t, caret: caret, info: info, body: body };
+        }
+
+        // 펼침 — 사용자가 고른 값(탭 안) → 없으면 조사 흐름은 진행 중 펼침·종결 뒤 접힘, 나머지는 저장소(첫 1회)
+        function secOpen(tab, name) {
+            var v = tab.secOpen[name];
+            if (v !== undefined) return v;
+            if (name === "flow") return !tab.done;
+            v = expandRead(EXPAND_KEYS[name]);
+            tab.secOpen[name] = v;
+            return v;
+        }
+
+        function paintSec(tab, name) {
+            var s = tab.dom.secs[name];
+            var on = secOpen(tab, name);
+            s.body.hidden = !on;
+            s.caret.textContent = on ? TEXT.secOpened : TEXT.secClosed;
+            s.btn.setAttribute("aria-expanded", on ? "true" : "false");
+        }
+
+        function toggleSec(tab, name) {
+            var on = !secOpen(tab, name);
+            tab.secOpen[name] = on;
+            if (EXPAND_KEYS[name]) expandWrite(EXPAND_KEYS[name], on);
+            paintSec(tab, name);
+            if (name === "log" && on && tab.autoScroll) tab.dom.rows.scrollTop = 0;   // 자동 스크롤은 펼쳤을 때만
+        }
+
+        // 실행 기록 섹션 머리 한 줄(건수 · 0건 사유 · 잘림·보관 표지)과 펼친 본문 안내 —
+        // 0건이면 필터 줄·목록을 숨겨 큰 빈 칸 없이 안내 한 줄만 남긴다.
+        // 「꺼짐」 판정: 허브 `source`가 "none"(조사 서비스 응답에 `activity` 키가 없었다 — 기록 꺼짐·구버전)이고
+        // 갱신 실패가 아닐 때만. 첫 프레임 전("")·"live"·갱신 실패는 「아직 기록 없음」.
+        function paintLog(tab) {
+            var d = tab.dom;
+            var n = tab.log.rows.length;
+            var off = !n && tab.source === "none" && !tab.pollError;
+            var marks = [];
+            var notes = [];
+            if (!n) notes.push(off ? TEXT.logOffLine : TEXT.logWaitLine);
+            if (tab.truncated) { marks.push(TEXT.logMarks.truncated); notes.push(TEXT.truncated); }
+            if (tab.log.clipped) { marks.push(TEXT.logMarks.clipped); notes.push(TEXT.clipped); }
+            if (tab.source === "archive") { marks.push(TEXT.logMarks.archive); notes.push(TEXT.archive); }
+            d.secs.log.title.textContent = fill(TEXT.logCount, { n: n });
+            d.secs.log.info.textContent = (n ? [] : [off ? TEXT.logOff : TEXT.logWait]).concat(marks).join(" · ");
+            d.logNote.textContent = notes.join(" ");
+            d.logBar.hidden = !n;
+            d.rows.hidden = !n;
         }
 
         // ── (W20) 조사 흐름 ──
@@ -1767,11 +1950,14 @@
             return btn;
         }
 
+        // (plans/199 W5b) 기능 켜짐이면 열 머리·지표 이름 등을 공용 렌더의 용어 표로(모르는 열·값은 원문 · 꺼짐은 종전 그대로)
         function tableNode(table) {
             var t = el("table", "dv-card-table");
             var cols = table.columns.map(String);
+            var bv = root.BriefingView;
+            var terms = optOn(opts.summaryView) && bv && typeof bv.termColumn === "function" ? bv : null;
             var hr = el("tr");
-            cols.forEach(function (c) { hr.appendChild(el("th", null, c)); });
+            cols.forEach(function (c) { hr.appendChild(el("th", null, terms ? terms.termColumn(c) : c)); });
             var thead = el("thead");
             thead.appendChild(hr);
             t.appendChild(thead);
@@ -1780,9 +1966,9 @@
                 if (isObj(row)) row = cols.map(function (c) { return row[c]; });
                 if (!Array.isArray(row)) return;
                 var tr = el("tr");
-                row.forEach(function (v) {
+                row.forEach(function (v, i) {
                     var text = v === null || v === undefined ? "—" : typeof v === "object" ? JSON.stringify(v) : String(v);
-                    tr.appendChild(el("td", null, text));
+                    tr.appendChild(el("td", null, (terms && terms.termValue(cols[i], v)) || text));
                 });
                 body.appendChild(tr);
             });
@@ -2138,6 +2324,8 @@
 
         function renderTabHead(tab) {
             if (!tab.dom) return;
+            // (plans/199 W5a) 기능 조회가 늦게 와도 다음 머리 갱신(5초 틱·탭 선택)에서 배치를 맞춘다
+            if (applyLayout(tab)) renderPartial(tab);
             var v = tab.view || {};
             tab.dom.title.textContent = tabLabel(tab);
             renderTarget(tab);
@@ -2155,6 +2343,9 @@
             var warn = tab.denied || tab.error || (tab.pollError ? fill(TEXT.pollError, { reason: tab.pollError }) : "");
             tab.dom.warn.textContent = warn;
             tab.dom.warn.hidden = !warn;
+            // (plans/199 W5a) 갱신 실패 표지는 SSE `poll_error`·목록 항목(`summary`·15초 강등 조회의 `/active`)으로도
+            // 바뀐다 — 실행 기록 머리의 「꺼짐」 판정(paintLog)이 머리 갱신마다 따라가게 한다(꺼짐 배치는 종전 그대로)
+            if (tab.dom.layout !== "off") paintLog(tab);
         }
 
         // (plans/187 W17) 어떤 알람·대상을 왜 조사하는지 — 알람 요약 · 채팅 경로 · 플레이북 선택/HolmesGPT 이유
@@ -2166,12 +2357,23 @@
                 lines.push({ head: TEXT.alarmHead, text: TEXT.alarmUnknown });
             }
             tab.why.forEach(function (w) { lines.push({ head: TEXT.whyHead, text: w.text }); });
+            if (tab.dom.layout !== "off") lines = foldWhy(lines);   // (plans/199 W5a · §3.8) 「조사 이유」 1줄
             box.textContent = "";
             lines.forEach(function (line) {
                 box.appendChild(el("dt", null, line.head));
-                box.appendChild(el("dd", null, line.text));
+                var dd = box.appendChild(el("dd", null, line.text));
+                if (line.more) whyMoreNode(tab, dd, line.more);
             });
             box.hidden = !lines.length;
+        }
+
+        // 접힌 「조사 이유」 나머지 줄 — [외 n줄 ▸]로 펼친다(펼침은 탭 안에서 유지)
+        function whyMoreNode(tab, dd, more) {
+            var rest = el("div", "dv-why-more");
+            more.forEach(function (text) { rest.appendChild(el("div", null, text)); });
+            var n = { n: more.length };
+            dd.appendChild(toggler(tab, "why", fill(TEXT.whyMore, n), fill(TEXT.whyLess, n), rest));
+            dd.appendChild(rest);
         }
 
         function renderFilters(tab) {
@@ -2230,6 +2432,7 @@
 
         function renderRows(tab) {
             if (!tab.dom) return;
+            applyLayout(tab);
             var list = tab.dom.rows;
             var keep = list.scrollTop;
             list.textContent = "";
@@ -2238,6 +2441,13 @@
                 return tab.filter[r.engine] !== false;
             });
             shown.forEach(function (r) { list.appendChild(rowNode(tab, r)); });
+            if (tab.dom.layout !== "off") {
+                // (plans/199 W5a) 접혀 있어도 행·건수는 늘 갱신한다 — 자동 스크롤만 펼쳤을 때
+                paintLog(tab);
+                list.scrollTop = tab.autoScroll && secOpen(tab, "log") ? 0 : keep;
+                renderFilters(tab);
+                return;
+            }
             var notes = [];
             if (!tab.log.rows.length) notes.push(TEXT.logEmpty);
             if (tab.truncated) notes.push(TEXT.truncated);
@@ -2250,21 +2460,32 @@
 
         function renderPartial(tab) {
             if (!tab.dom || tab.done) return;
+            applyLayout(tab);
             var bv = root.BriefingView;
             var body = tab.dom.partBody;
+            // (plans/199 W1·W5a) 기능 켜짐이면 진척형 「한눈에 보기」는 맨 위 자기 칸에 1번만 — 중간 결과 칸은 카드 없이 상세형
+            var sum = tab.dom.layout !== "off" ? tab.dom.sumBox : null;
             if (bv && bv.hasPlaybook({ partial_briefing: tab.partial })) {
-                // 공용 상세형 렌더(자체 이스케이프) — 끝난 단계부터 그린다(새 렌더 0)
-                body.innerHTML = bv.renderBody({
+                var partView = {
                     status: tab.status || "running", investigation_id: tab.id,
                     partial_briefing: tab.partial, progress: tab.progress,
-                }, { mode: "detail", runningText: TEXT.partialRunning });
+                };
+                if (sum) {
+                    sum.innerHTML = bv.summaryCardHtml(bv.summaryModel(partView));   // 공용 렌더(자체 이스케이프)
+                    sum.hidden = !sum.innerHTML;
+                }
+                // 공용 상세형 렌더(자체 이스케이프) — 끝난 단계부터 그린다(새 렌더 0)
+                body.innerHTML = bv.renderBody(partView, { mode: "detail", runningText: TEXT.partialRunning });
                 return;
             }
+            if (sum) { sum.textContent = ""; sum.hidden = true; }
             body.textContent = tab.engines.playbook ? TEXT.partialEmpty : fill(TEXT.toolsOnly, { n: tab.log.tools });
         }
 
         function renderFinal(tab, view) {
-            if (!tab.dom || tab.finalPanel) return;
+            if (!tab.dom) return;
+            applyLayout(tab);
+            if (tab.finalPanel) return;
             var bv = root.BriefingView;
             tab.dom.partBox.hidden = true;
             tab.dom.finalBox.hidden = false;
@@ -2275,6 +2496,7 @@
                 render: { mode: "detail" },
                 onOpenConversation: opts.onOpenConversation,
                 analyze: opts.analyzeFor ? opts.analyzeFor(tab.id, view, tab.alarmId) : null,
+                summaryView: opts.summaryView,   // (plans/199 W1) 함수면 렌더 시점에 평가된다
             });
             tab.finalPanel.open();
             if (view.status === "done") loadFinalExtras(tab);
@@ -2829,6 +3051,7 @@
         eventRow: eventRow,
         mergeEvents: mergeEvents,
         whyLines: whyLines,
+        foldWhy: foldWhy,
         searchQuery: searchQuery,
         stepPurposes: stepPurposes,
         targetLines: targetLines,

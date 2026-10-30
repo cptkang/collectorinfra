@@ -749,6 +749,8 @@ var document = { createElement: function (t) {
 var IS_BREAK_GLASS = false;
 var liveViewOn = false;
 function liveViewNow() { return liveViewOn; }  // (plans/193 W1) liveView 인자 없음 = 종전
+var summaryViewOn = false;
+function summaryViewNow() { return summaryViewOn; }  // (plans/199 W1) 한눈에 보기 거짓 = 종전
 var opts = {};  // (plans/193 W4) mount 인자 생략 = 독립 페이지 → 「(새 탭)」 표지
 var investigationHead = { kids: [],
     querySelector: function () { return this.kids[0] || null; },
@@ -814,6 +816,8 @@ window.BriefingView = Object.assign({}, BVreal, {
 var IS_BREAK_GLASS = false;
 var liveViewOn = false;
 function liveViewNow() { return liveViewOn; }  // (plans/193 W1) liveView 인자 없음 = 종전
+var summaryViewOn = false;
+function summaryViewNow() { return summaryViewOn; }  // (plans/199 W1) 한눈에 보기 거짓 = 종전
 var opts = {};  // (plans/193 W4) mount 인자 생략 = 독립 페이지 → 「(새 탭)」 표지
 var manualOnlyMode = Promise.resolve(false);
 var investigationPanel = null;

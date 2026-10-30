@@ -56,9 +56,13 @@ def make_job(
 
 
 def fake_diagnose(answer="원인 서술 ← journalctl", tokens=0, cost=0.0, raw=None):
-    """고정 DiagnosisResult를 반환하는 fake diagnose_fn을 만든다."""
+    """고정 DiagnosisResult를 반환하는 fake diagnose_fn을 만든다.
 
-    def _fn(job):
+    `activity`는 실 조사 함수와 같은 선택 인자다 — 실행 기록 기본 on(2026-10-29)이라 JobStore 경유
+    잡은 dispatcher가 이 인자를 묶어 부른다.
+    """
+
+    def _fn(job, activity=None):
         outputs = [ToolCallRecord("journalctl", "로그 조회", "success", raw or "clean")]
         return DiagnosisResult(
             answer=answer,

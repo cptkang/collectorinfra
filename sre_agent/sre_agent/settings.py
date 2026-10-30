@@ -395,12 +395,13 @@ class AgentSettings(BaseSettings):
     sre_playbook_polestar_source_map: dict[str, str] = Field(default_factory=dict)
 
     # ── 조사 잡 실행 기록(plans/187 W13 · §5.6.3 ⓑ · D-341 부기 4 ㉘) ──
-    # 기본 off = 기록 자체를 하지 않고 `sre_get_investigation(activity_since=…)`를 무시해 응답이
-    # 비트 동일. 켜면 접수된 잡마다 메모리 링 버퍼(이벤트 300 · 발췌·AI 메모 1건 2KB · 잡당 256KB)에
-    # 동시 상한 대기·스텝·도구 호출·소견 LLM·HolmesGPT 스트림(도구·판단 회차·AI 메모)을 남기고,
-    # `activity_since ≥ 0` 조회에 `activity`·`phase`·`queue_position`·`elapsed_s`를 더한다.
+    # 기본 on(사용자 결정 2026-10-29 · D-341 부기). 켜져 있으면 접수된 잡마다 메모리 링 버퍼
+    # (이벤트 300 · 발췌·AI 메모 1건 2KB · 잡당 256KB)에 동시 상한 대기·스텝·도구 호출·소견 LLM·
+    # HolmesGPT 스트림(도구·판단 회차·AI 메모)을 남기고, `activity_since ≥ 0` 조회에
+    # `activity`·`phase`·`queue_position`·`elapsed_s`를 더한다(`activity_since` 미지정 응답은 불변).
     # 한 줄·발췌·메모는 버퍼에 넣기 전에 비밀값을 가린다(G-36). 잡 TTL(1시간)과 함께 사라진다.
-    sre_activity_log_enabled: bool = False
+    # 끄면(`SRE_ACTIVITY_LOG_ENABLED=false`) 기록 0 — `activity_since`를 무시해 응답이 비트 동일.
+    sre_activity_log_enabled: bool = True
 
 
 def timechain_warnings(

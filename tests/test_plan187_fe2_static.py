@@ -534,10 +534,10 @@ def test_renderer_still_assigns_markup_only_in_attach() -> None:
 
 def test_cache_versions_bumped() -> None:
     pages = {
-        "index.html": ("style.css?v=45", "briefing-view.js?v=10", "app.js?v=44"),
-        "noise.html": ("style.css?v=20", "briefing-view.js?v=10", "noise.js?v=24"),
-        "admin/noise.html": ("style.css?v=18", "briefing-view.js?v=10", "noise.js?v=24"),
-        "admin/dashboard.html": ("style.css?v=25", "admin-incident-kb.js?v=1"),
+        "index.html": ("style.css?v=46", "briefing-view.js?v=11", "app.js?v=45"),
+        "noise.html": ("style.css?v=21", "briefing-view.js?v=11", "noise.js?v=27"),
+        "admin/noise.html": ("style.css?v=19", "briefing-view.js?v=11", "noise.js?v=27"),
+        "admin/dashboard.html": ("style.css?v=26", "admin-incident-kb.js?v=1"),
     }
     for page, assets in pages.items():
         text = (_STATIC / page).read_text(encoding="utf-8")

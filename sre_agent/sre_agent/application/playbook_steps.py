@@ -2100,11 +2100,14 @@ def process_top(ctx: StepContext) -> StepResult:
     )
     if not rows:
         # 기동 중인 호스트에 프로세스가 0개일 수는 없다 — 다른 폴스타로 갔거나 호스트명 불일치
+        # MCP가 등록명을 OS 호스트명으로 바꿔 조회했으면 실제 조회 값을 보인다
+        queried = data.get("hostname") or ctx.scope.polestar_server
         res = _missing(
             [POLESTAR_PROCESS],
-            f"{POLESTAR_PROCESS}: 0건 — 프로세스 API가 호스트 '{ctx.scope.polestar_server}'의"
+            f"{POLESTAR_PROCESS}: 0건 — 프로세스 API가 호스트 '{queried}'의"
             f" 프로세스를 돌려주지 않음(소스 {ctx.scope.polestar_source} · 존별 프로세스 API 설정"
-            " 또는 호스트명 불일치 확인)",
+            " 또는 호스트명 불일치 확인)"
+            + (f" · {data['hostname_note']}" if data.get("hostname_note") else ""),
         )
         res.data = {"rows": [], "total_processes": data.get("total_processes"),
                     "captured_at": data.get("captured_at")}

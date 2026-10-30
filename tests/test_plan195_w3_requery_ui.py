@@ -557,6 +557,6 @@ def test_wiring_and_d183_d192_contracts_unchanged() -> None:
     assert "busy: function () { return isProcessing; }" in pin
     init = _js_function_body(src, "initDiagnosisView")
     assert "stagePrompt: stageInvestigationPrompt" in init
-    # 고친 주석(D-341 부기 22)
+    # 고친 주석(D-341 부기 24)
     assert "추천 칩은 내지 않는다(W0" not in src
     assert "질의응답에서 확인" in src[src.index("// ─── 조사 대화 (plans/187 W5b") :][:900]

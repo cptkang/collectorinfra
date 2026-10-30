@@ -244,6 +244,8 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_INVESTIGATION_LIVE_POLL_SECONDS": "자동 장애 조사",
     # (plans/195 W2) 조사 응답의 「질의응답에서 확인할 질의」
     "NOISE_INVESTIGATION_REQUERY_ENABLED": "자동 장애 조사",
+    # (plans/199 W1 · D-352) 조사 결과 「한눈에 보기」 카드
+    "NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED": "자동 장애 조사",
     "NOISE_FAULT_DIAGNOSIS_ENABLED": "자동 장애 조사",
     "NOISE_FAULT_ESCALATION_ENABLED": "자동 장애 조사",
     # (plans/87 J4) APM 게이트웨이 fatal 이벤트로 폴스타 알람 승격(app_impact)

@@ -294,15 +294,55 @@ def _src() -> str:
     return _NOISE_JS.read_text(encoding="utf-8")
 
 
-def test_stream_and_resync_keep_analysis_fields():
+def test_feed_ai_line_comes_only_from_stored_record():
+    """(D-325 부기) 피드 카드의 AI 추정은 저장된 레코드 값만 — 스트림 서술(실패 표시·마스킹 없음)은 쓰지 않는다."""
     src = _src()
     on_message = _js_function_body(src, "onStreamMessage")
-    assert "analysis: streamAnalysis(payload)" in on_message
-    stream_analysis = _js_function_body(src, "streamAnalysis")
+    assert "analysis: null" in on_message
     for key in ("summary", "probable_cause", "recommended_action"):
-        assert f"payload.{key}" in stream_analysis
+        assert f"payload.{key}" not in on_message
+    assert "function streamAnalysis" not in src
     assert "analysis: item.analysis" in _js_function_body(src, "resyncFeed")
-    assert "causeShort(item)" in _js_function_body(src, "renderFeed")
+    render_feed = _js_function_body(src, "renderFeed")
+    assert "causeShort(item)" in render_feed
+    assert "openDrawer(item.alarm_id, node, item)" in render_feed
+
+
+def test_drawer_fetch_fills_feed_row_with_stored_analysis():
+    src = _src()
+    assert "adoptStoredAnalysis(feedItem, data.decision)" in _js_function_body(src, "openDrawer")
+    adopt = _js_function_body(src, "adoptStoredAnalysis")
+    assert "record.alarm_id !== feedItem.alarm_id" in adopt  # 다른 알람 레코드로 덮지 않는다
+    assert "analysisOf(record)" in adopt
+    assert "renderFeed()" in adopt
+
+
+def test_adopt_stored_analysis_runs_only_for_same_alarm_with_value():
+    if shutil.which("node") is None:
+        pytest.skip("node 미설치 — JS 순수 함수 실행 테스트 생략")
+    src = _src()
+    script = "\n".join([
+        "var renders = 0; function renderFeed() { renders += 1; }",
+        _js_function_body(src, "analysisOf"),
+        _js_function_body(src, "adoptStoredAnalysis"),
+        "var a = {summary: 's', probable_cause: 'c', recommended_action: 'r', failed: false};",
+        "var row = {alarm_id: 'A1', analysis: null};",
+        "adoptStoredAnalysis(row, {alarm_id: 'B9', analysis: a});",  # 다른 알람
+        "var afterOther = row.analysis;",
+        "adoptStoredAnalysis(row, {alarm_id: 'A1'});",  # 저장 안 된 레코드(플래그 off)
+        "var afterMissing = row.analysis;",
+        "adoptStoredAnalysis(row, {alarm_id: 'A1', analysis: a});",
+        "adoptStoredAnalysis(row, {alarm_id: 'A1', analysis: a});",  # 같은 값 — 다시 그리지 않는다
+        "adoptStoredAnalysis(null, {alarm_id: 'A1', analysis: a});",  # 재동기화 행(피드 행 없음)
+        "process.stdout.write(JSON.stringify({other: afterOther, missing: afterMissing,",
+        "  cause: row.analysis && row.analysis.probable_cause, renders: renders}));",
+    ])
+    done = subprocess.run(
+        ["node", "-e", script], capture_output=True, text=True, timeout=30, check=False
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads(done.stdout)
+    assert out == {"other": None, "missing": None, "cause": "c", "renders": 1}
 
 
 def test_suppress_and_dashboard_profiles_include_new_columns():
