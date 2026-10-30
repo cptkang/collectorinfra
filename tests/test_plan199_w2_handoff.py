@@ -1,4 +1,4 @@
-"""plans/199 W2 — 담당자 전달문(`handoffText`) · [전달문 보기] · [전달문 복사] · D-351 ④.
+"""plans/199 W2 — 담당자 전달문(`handoffText`) · [전달문 보기] · [전달문 복사] · D-352 ④.
 
 `BriefingView.handoffText`(고정 양식 순수 함수)·`isRawView`(운영자 뷰 판정)·카드 버튼·`attach`
 복사 처리를 node로 실행해 검사한다. W0 화면 픽스처(`tests/fixtures/plan199/`)는 읽기만 하고,

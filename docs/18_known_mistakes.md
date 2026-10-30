@@ -2334,3 +2334,8 @@
 - **실수**: `F=$(grep -rl 'settings_help' tests/ --include=*.py …); pytest $F -q`를 실행했다. zsh가 따옴표 없는 `--include=*.py`를 글롭으로 펼치려다 `no matches found`로 grep 자체를 실행하지 않았고, `$F`가 빈 문자열이 되어 인자 없는 `pytest`가 저장소 전체를 수집해 돌았다. 전체 회귀는 사용자 요청 때만 돌린다는 규칙(D-303)을 어겼다. 300초 타임아웃으로 백그라운드로 넘어간 뒤 ps로 찾아 종료했다. 작업 트리 변화는 없었고, 실 LLM 테스트는 `RUN_LOCAL_LLM`·`RUN_E2E` 가드로 건너뛰어 과금 호출도 없었다.
 - **원인**: zsh는 따옴표 없는 글롭이 맞지 않으면 명령을 실행하지 않는다. 명령 치환 결과가 비었는지 확인하지 않고 그 값을 pytest 인자로 넘겼다.
 - **방지책**: grep `--include`·find `-name`의 글롭은 항상 따옴표로 감싼다(`--include='*.py'`). 테스트 목록은 먼저 파일로 써서 줄 수를 확인하고, 0이면 실행하지 않는다(`[ -s list ] && pytest $(cat list)`). 모듈 회귀가 비Python 파일(YAML·MD)에 테스트를 고르지 않을 때는 대상 테스트 파일을 이름으로 직접 적는다.
+
+### 2026-10-30 · (plans/199 · 메인) 새 D-번호를 로컬 색인 최댓값으로만 채번해 origin/main에 먼저 푸시된 같은 번호(D-351)와 충돌했다
+- **실수**: plans/199 결정을 D-351로 등재·커밋했는데(`c2a3180f`), 같은 날 다른 개발자가 브랜치 `improve_noise_canceling`에서 D-351(노이즈 관제 결정 이력)을 만들어 origin/main에 먼저 푸시해 두었다. main 병합 직전에야 발견해 이쪽을 D-352로 재부여했다(26개 파일 참조 동반 수정).
+- **원인**: 채번 확인(`ls docs/decisions/ | tail -3`)이 로컬 작업 트리만 본다. 다른 클론·다른 개발자의 브랜치는 `git fetch` 전에는 보이지 않는다.
+- **방지책**: 새 D-번호·계획 번호를 등재하기 직전(그리고 커밋 직전)에 `git fetch origin` 뒤 `git ls-tree --name-only origin/main docs/decisions/ plans/ | tail`로 원격 최댓값도 본다. 병합 전에는 `git diff --name-only <base> origin/main`과 내 변경의 교집합에서 `docs/decisions/D-*.md`·`plans/NNN-*` 신규 파일 이름이 겹치는지 먼저 확인한다. 충돌하면 이미 푸시된 쪽이 정본이다.

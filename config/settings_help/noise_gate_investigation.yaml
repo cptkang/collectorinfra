@@ -1160,7 +1160,7 @@ settings:
       조사 브리핑에 이미 있는 구조화 필드(엔진 비교 계층·가설·대응 제안·단계 상태·알려진 문제)를
       정해진 규칙으로 조립해 보인다(LLM 추가 호출 없음). 판정·저장 형식·가림 처리·노출 범위는
       바꾸지 않는다. 화면은 기능 조회(/alarm/capabilities)의 값으로 켜고 끈다 — 운영자(break-glass)
-      토큰으로 연 관제는 운영자 헬스 조회(/admin/noise/health)의 같은 값을 쓴다(D-351).
+      토큰으로 연 관제는 운영자 헬스 조회(/admin/noise/health)의 같은 값을 쓴다(D-352).
     options:
       - value: "true"
         label: 기본

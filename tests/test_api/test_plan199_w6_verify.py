@@ -156,7 +156,7 @@ def test_health_rejects_expired_unsigned_and_inactive(tmp_path: Path, token: str
 
 
 def test_noise_gate_config_default_is_on_without_env() -> None:
-    """코드 기본값 on(D-351 부기 2) — 클래스 필드 기본값으로 본다(.env 미독)."""
+    """코드 기본값 on(D-352 부기 2) — 클래스 필드 기본값으로 본다(.env 미독)."""
     assert NoiseGateConfig.model_fields[FIELD].default is True
 
 
@@ -402,7 +402,7 @@ def test_break_glass_drawer_no_portal_entry_and_link_is_text_only(name: str) -> 
 def test_break_glass_drawer_flag_off_is_byte_identical_to_pre_w1(name: str) -> None:
     """꺼짐(헬스 값 거짓 · 첫 응답 전) = summaryView 옵션 없는 렌더와 바이트 동일.
 
-    D-351 · D-162 — W6 이전 break-glass 서랍(summaryViewOn 늘 거짓)과도 같다.
+    D-352 · D-162 — W6 이전 break-glass 서랍(summaryViewOn 늘 거짓)과도 같다.
     """
     view = _view(name)
     off = _bg_render(view, False)

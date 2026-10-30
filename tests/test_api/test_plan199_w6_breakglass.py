@@ -1,4 +1,4 @@
-"""plans/199 W6 — break-glass 관제 서랍의 「한눈에 보기」 카드(D-351 · 사용자 결정 2026-10-30).
+"""plans/199 W6 — break-glass 관제 서랍의 「한눈에 보기」 카드(D-352 · 사용자 결정 2026-10-30).
 
 break-glass 운영자 토큰은 기능 조회(`/alarm/capabilities` — 사용자 토큰 인가)를 못 부르므로,
 운영자 관제가 이미 부르는 `GET /admin/noise/health` 응답에 설정 플래그 1개
@@ -108,7 +108,7 @@ def _client(tmp_path: Path, **ng_over: Any) -> TestClient:
 def test_health_field_defaults_true_for_break_glass(tmp_path: Path) -> None:
     """설정 대역에 키가 없으면(구 설정) 코드 기본값과 같은 True.
 
-    NoiseGateConfig 기본 on(D-351 부기 2)과 같다.
+    NoiseGateConfig 기본 on(D-352 부기 2)과 같다.
     """
     res = _client(tmp_path).get(HEALTH, headers=_bearer(_break_glass()))
     assert res.status_code == 200, res.text

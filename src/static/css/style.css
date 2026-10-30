@@ -3779,7 +3779,7 @@ body.auth-pending .auth-splash {
 .bv-md-toc { padding: 3px 6px; border: 1px dashed var(--border); border-radius: var(--radius-sm); }
 .bv-md-short { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
 
-/* plans/199 W1 · D-351 — 「한눈에 보기」 카드(briefing-view.js summaryCardHtml) · 테마 토큰만 쓴다 */
+/* plans/199 W1 · D-352 — 「한눈에 보기」 카드(briefing-view.js summaryCardHtml) · 테마 토큰만 쓴다 */
 .bv-sum {
     display: flex; flex-direction: column; gap: 4px; padding: 6px 8px;
     border: 1px solid var(--accent-dim); border-radius: var(--radius-sm); background: var(--surface);

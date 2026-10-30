@@ -539,6 +539,6 @@ class AlarmCapabilitiesResponse(BaseModel):
         default=False,
         description=(
             "조사 결과 「한눈에 보기」 카드 — 거짓이면 웹이 종전 조사 화면을 그대로 그린다 "
-            "(NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED · plans/199 W1 · D-351 부기 2 기본 on)"
+            "(NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED · plans/199 W1 · D-352 부기 2 기본 on)"
         ),
     )

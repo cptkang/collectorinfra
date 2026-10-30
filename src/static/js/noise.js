@@ -1982,7 +1982,7 @@ function mount(mountRoot, opts) {
     // `investigation_manual_enabled === true && investigation_auto_enabled === false`일 때만 참이고, 키가 없거나
     // 조회가 실패하면 거짓(종전 표시). 기능 조회는 사용자 토큰 인가라 break-glass 운영자 토큰이면 부르지 않는다
     // (401 → 로그아웃을 피해 apiRequest를 거치지 않는다).
-    // (plans/199 W1 · D-351) 같은 기능 조회의 `investigation_summary_view_enabled` — 참이면 ⓒ 칸 공용 렌더에
+    // (plans/199 W1 · D-352) 같은 기능 조회의 `investigation_summary_view_enabled` — 참이면 ⓒ 칸 공용 렌더에
     // 「한눈에 보기」 카드를 붙인다(조회 전·실패면 거짓 = 종전 화면). 렌더할 때마다 읽는다.
     // (plans/199 W6) break-glass 운영자 토큰 세션은 기능 조회를 부르지 않으므로 운영자 헬스 응답
     // (`loadHealth` · 첫 로드와 60초마다)의 같은 키로 정한다 — 첫 성공 응답 전(실패 포함)·키 없음이면 거짓, 그 뒤

@@ -1,4 +1,4 @@
-"""plans/199 독립 검증(verifier) — 기존 W0~W5 테스트가 덮지 못한 엣지 케이스 · D-351.
+"""plans/199 독립 검증(verifier) — 기존 W0~W5 테스트가 덮지 못한 엣지 케이스 · D-352.
 
 - 장애 진단 플래그 off: 계획 시작 SHA의 `diagnosis-view.js`
   (+ 그때의 `briefing-view.js`)와 DOM 전체 대조

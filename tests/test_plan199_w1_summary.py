@@ -1,4 +1,4 @@
-"""plans/199 W1 — 조사 결과 「한눈에 보기」 카드 · D-351.
+"""plans/199 W1 — 조사 결과 「한눈에 보기」 카드 · D-352.
 
 `BriefingView.summaryModel`(순수 모델)·`summaryCardHtml`(카드 HTML)·`renderBody`·`attach`를
 검사한다. W0 화면 픽스처(`tests/fixtures/plan199/`)를 node로 공용 렌더에 넣어
@@ -608,7 +608,7 @@ def test_pages_pass_capability_to_shared_render() -> None:
 
 
 def test_capability_schema_and_config_default_on(monkeypatch: pytest.MonkeyPatch) -> None:
-    """코드 기본 on(사용자 결정 2026-10-29 · D-351 부기 2) · env false로 끈다."""
+    """코드 기본 on(사용자 결정 2026-10-29 · D-352 부기 2) · env false로 끈다."""
     # 응답 스키마 기본값은 거짓 — 라우트가 늘 명시한다(investigation_manual_enabled 관례)
     field = AlarmCapabilitiesResponse.model_fields["investigation_summary_view_enabled"]
     assert field.default is False

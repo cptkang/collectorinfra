@@ -364,7 +364,7 @@
     };
     var VERDICT_CELLS = { degraded: "이상", normal: "정상", no_was: "WAS 아님" };
 
-    // ── plans/199 W5b · D-351 §3.9: 용어 정리(표시 문구만) ───────────────────────────────────
+    // ── plans/199 W5b · D-352 §3.9: 용어 정리(표시 문구만) ───────────────────────────────────
     // `extra.summaryView`가 참일 때만 쓴다(거짓이면 위 표 그대로 · 비트 동일). 내부 키·저장값은 바꾸지 않고, 모르는 열·값은
     // 원문 그대로 보인다(침묵 금지). 뜻·단위는 생산 코드 기준 — 단계 표는 sre_agent `playbook_steps.py`, 지표 이름은 같은
     // 파일의 지표 행과 apm_gateway 중립 지표 이름(`adapters/jennifer/fields.py`)이다.
@@ -572,7 +572,7 @@
         return chipHtml(hit[0], hit[1]);
     }
 
-    // ── plans/199 W1 · D-351: 「한눈에 보기」 카드(요약형·상세형·비플레이북 공통) ─────────────────
+    // ── plans/199 W1 · D-352: 「한눈에 보기」 카드(요약형·상세형·비플레이북 공통) ─────────────────
     // `summaryModel(view)`은 브리핑에 이미 있는 구조화 필드만 결정적으로 고른다(새 LLM 호출 0 · D-035).
     // 판정·가설 순위·원인 계층은 바꾸지 않는다 — 계층 판정 정본은 sre_agent `engine_agreement.py`이고 화면은
     // enum → 문구 표만 가진다(모르는 enum은 원문 그대로 · 침묵 금지). 카드는 `extra.summaryView`가 참일 때만
@@ -825,7 +825,7 @@
      * `{status:{code,kind,text,at}, area:{layer,label,certainty,alt?:{layer,label}}, conclusion:{text,source,progress},
      *   target:{name,symptom,at}|null, scope:[문자열], actions:[문자열 ≤2], mustSee:[{kind,text}], owner:null}`
      * certainty = 「확정」·「추정」·「미확정」 · conclusion.source = "playbook"|"deep"|null ·
-     * mustSee.kind = run|warn|info|more. `owner`(담당자)는 자리만 둔다(ITAM 등 별도 조회 — 범위 밖 · D-351 ⑧).
+     * mustSee.kind = run|warn|info|more. `owner`(담당자)는 자리만 둔다(ITAM 등 별도 조회 — 범위 밖 · D-352 ⑧).
      */
     function summaryModel(view) {
         view = view || { status: "none" };
@@ -849,7 +849,7 @@
         return '<div class="bv-sum-row"><div class="bv-label">' + escapeHtml(label) + '</div><div class="bv-text">' + html + '</div></div>';
     }
 
-    // ── plans/199 W2 · D-351 ④: 전달문 — 고정 양식 미리보기 + [전달문 복사] ──────────────────────
+    // ── plans/199 W2 · D-352 ④: 전달문 — 고정 양식 미리보기 + [전달문 복사] ──────────────────────
     // 카드와 같은 `summaryModel`만 읽는다(새 계산·LLM 호출 0). 시스템이 메신저·문자로 직접 보내지 않는다.
     var HANDOFF_TEXT = {
         head: "[장애 전달]",
@@ -917,9 +917,9 @@
     }
 
     /**
-     * (plans/199 W2 · D-351 ④) 「한눈에 보기」 모델 → 담당자 전달문(고정 양식 평문 · 순수 함수). 없는 항목의 줄은 뺀다.
+     * (plans/199 W2 · D-352 ④) 「한눈에 보기」 모델 → 담당자 전달문(고정 양식 평문 · 순수 함수). 없는 항목의 줄은 뺀다.
      * opts: `{id: 조사 id, link: 포털 주소}`(둘 다 선택). 문자열은 모델 값 그대로다(줄바꿈만 공백으로 접는다 — `oneLine`)
-     * — 사용자 뷰는 서버가 가린 값이 그대로 실리고, 이 함수는 가리지도 풀지도 않는다. 담당자 줄은 `model.owner`가 있을 때만(지금은 자리만 · D-351 ⑧).
+     * — 사용자 뷰는 서버가 가린 값이 그대로 실리고, 이 함수는 가리지도 풀지도 않는다. 담당자 줄은 `model.owner`가 있을 때만(지금은 자리만 · D-352 ⑧).
      */
     function handoffText(model, opts) {
         if (!isObj(model) || !isObj(model.area) || !isObj(model.conclusion)) return "";
@@ -1647,7 +1647,7 @@
         return items.map(function (x) { return '<div>' + escapeHtml(x) + '</div>'; }).join("");
     }
 
-    // ── plans/199 W3 · D-351 ①: 상세형 3단 — ① 한눈에 보기(카드) → ② 근거 요약(접힘) → ③ 상세(접힘) ────────────
+    // ── plans/199 W3 · D-352 ①: 상세형 3단 — ① 한눈에 보기(카드) → ② 근거 요약(접힘) → ③ 상세(접힘) ────────────
     // `extra.summaryView`가 참일 때만 상세형을 이 배치로 그린다(거짓이면 종전 renderPlaybookDetail 그대로 · 비트 동일).
     // 블록은 지우지 않고 ②·③으로 내려 접는다 — 같은 결론은 카드 한 곳만 펼친 채 보인다(§3.1 끝). 펼침은 누구나 하고,
     // 관리자 추가 항목(가설 코드)은 서버가 운영자 뷰를 보냈을 때만 그린다(`isRawView` — 응답 모양 · D-325 ③ 개정 없음).
@@ -1689,7 +1689,7 @@
         } catch (_) { /* 저장 불가 — 이 패널 안에서만 유지 */ }
     }
 
-    // ── plans/199 W4 · D-351 ⑤: [서술 보기] — 4줄 요약 먼저 · 원문은 다시 접어 안전 렌더 ─────────────────
+    // ── plans/199 W4 · D-352 ⑤: [서술 보기] — 4줄 요약 먼저 · 원문은 다시 접어 안전 렌더 ─────────────────
     // 원문(HolmesGPT 마크다운)은 줄마다 **escapeHtml 먼저** 하고 그 결과에 화이트리스트 변환만 한다 — 제목(#~####) →
     // 굵은 소제목 · 목록(-·*·1.) · **굵게** · `인라인 코드` · 파이프 표(둘째 줄이 구분 행일 때). 링크·이미지·원시 HTML·
     // 자동 링크는 변환하지 않는다(escape된 글자 그대로). 만드는 태그·class는 고정 문자열이고 속성값에 원문을 넣지 않는다.
@@ -1999,7 +1999,7 @@
 
     // (c) 가설 표 — 지지·판단 보류·반박 3칸(칸 안은 순위 순). 상태를 모르는 가설은 「판단 보류」 칸에 원 상태 배지와 함께
     // (단정 금지 · 침묵 금지). 가설 코드(`rule_id`)는 운영자 뷰에만. 198 I-3(가설 신뢰도)이 오면 이 자리
-    // (`data-bv-slot="hypothesis"`)를 그 카드로 바꾼다 — 점수·신뢰도는 여기서 만들지 않는다(D-351 ⑧).
+    // (`data-bv-slot="hypothesis"`)를 그 카드로 바꾼다 — 점수·신뢰도는 여기서 만들지 않는다(D-352 ⑧).
     var HYPO_STATUS_LABELS = { supported: "지지", inconclusive: "판단 보류", refuted: "반박" };
     function hypoLabel(h) {
         return String(h.status_label || HYPO_STATUS_LABELS[h.status] || "");

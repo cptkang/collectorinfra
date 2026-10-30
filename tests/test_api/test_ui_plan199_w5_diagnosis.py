@@ -1,4 +1,4 @@
-"""plans/199 W5a — 장애 진단 탭 배치(§3.10 A안 · §3.8 · D-351 ⑥ · G-50 개정).
+"""plans/199 W5a — 장애 진단 탭 배치(§3.10 A안 · §3.8 · D-352 ⑥ · G-50 개정).
 
 `diagnosis-view.js`를 node로 실제 실행한다
 (W15 하네스 재사용 · `summaryView` 옵션·`localStorage` 주입):

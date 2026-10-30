@@ -1,4 +1,4 @@
-"""plans/199 W4 — 엔진 비교 [서술 보기] · D-351 ⑤.
+"""plans/199 W4 — 엔진 비교 [서술 보기] · D-352 ⑤.
 
 `BriefingView.renderMarkdownSafe`(escape 먼저 · 화이트리스트 변환 나중)와 summaryView 켜짐의
 HolmesGPT 칸 4줄 요약 · 원문 접힘 · 플레이북 칸 안내를 node로 공용 렌더에 넣어 검사한다.

@@ -5248,7 +5248,7 @@
             similar: function () {
                 return !!(alarmCapabilities && alarmCapabilities.investigation_memory_enabled === true);
             },
-            // (plans/199 W1 · D-351) 「한눈에 보기」 카드 — 중간 결과·조사 결과 공용 렌더에 넘긴다
+            // (plans/199 W1 · D-352) 「한눈에 보기」 카드 — 중간 결과·조사 결과 공용 렌더에 넘긴다
             summaryView: function () {
                 return !!(alarmCapabilities && alarmCapabilities.investigation_summary_view_enabled === true);
             },
