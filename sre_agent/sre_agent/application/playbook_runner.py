@@ -167,6 +167,10 @@ _DISK_IO_WORDS = (
     "await",
 )
 _FS_WORDS = ("filesystem", "file system", "파일시스템", "volume", "inode", "mount", "용량")
+#: 파일시스템 계열 resourceType(소문자 비교) — 알람명에 표면어가 없어도 `filesystem`으로 본다(plans/204 후속).
+#: 정확 일치 값과, 표시 이름 부분 일치 표면어를 따로 둔다. 「디스크」(`server.Disks`)는 대상이 아니다.
+_FS_RESOURCE_TYPES = ("server.filesystem", "server.filesystems", "개별 파일시스템")
+_FS_RESOURCE_TYPE_WORDS = ("파일시스템",)
 
 #: 이벤트 유형(접두 `ERROR_`·`WARNING_` 제거 후 대문자) → 게이트웨이 시그니처 kind.
 #: **리터럴 사본** — 출처 `apm_gateway/apm_gateway/adapters/jennifer/fields.py` `EVENT_TYPE_SIGNALS`
@@ -228,6 +232,7 @@ def alarm_facts_from_payload(payload: Mapping[str, Any]) -> AlarmFacts:
     - kinds: 이벤트 유형(`meta.hints.event_type` · 알람명)이 응답시간·지연이면
       `latency`·`response_time`.
       디스크 알람은 I/O 표면어면 `disk_io`, 파일시스템 표면어면 `filesystem`으로 가른다.
+      I/O 표면어가 없고 resourceType이 파일시스템 계열(`_is_fs_resource_type`)이어도 `filesystem`이다.
     - WAS 시그니처 kind(W4): 게이트웨이가 준 kind(`meta.episode` 멤버의 `was_kinds`)가
       있으면 그것을, 없으면 이벤트 유형(`meta.hints.event_type` → 알람명)을 게이트웨이
       매핑 사본(`GATEWAY_EVENT_SIGNAL_KINDS`)으로 정규화한 kind를 더한다.
@@ -256,9 +261,17 @@ def alarm_facts_from_payload(payload: Mapping[str, Any]) -> AlarmFacts:
     if alarm_kind == "disk":
         if any(w in haystack for w in _DISK_IO_WORDS):
             kinds.append("disk_io")
-        elif any(w in haystack for w in _FS_WORDS):
+        elif any(w in haystack for w in _FS_WORDS) or _is_fs_resource_type(resource_type):
             kinds.append("filesystem")
     return AlarmFacts(resource_type=resource_type, alarm_kind=alarm_kind, kinds=tuple(kinds))
+
+
+def _is_fs_resource_type(resource_type: str | None) -> bool:
+    """resourceType이 파일시스템 계열인지(소문자 비교) — `server.FileSystem(s)`·「개별 파일시스템」 등."""
+    text = (resource_type or "").strip().lower()
+    if not text:
+        return False
+    return text in _FS_RESOURCE_TYPES or any(w in text for w in _FS_RESOURCE_TYPE_WORDS)
 
 
 # ── 시간창 · 범위 ───────────────────────────────────────────────────────────
