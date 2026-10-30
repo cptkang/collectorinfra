@@ -61,6 +61,35 @@ def duty_alarm_focus_meta() -> dict[str, Any]:
     }
 
 
+def duty_welcome_hints_enabled(request: Request) -> bool:
+    """이 기동에서 첫 화면 담당별 예시 질의가 켜졌는가(plans/201 W2 · 기동 시 1회 해석 · 없으면 off).
+
+    유효값은 `DUTY_AREA_ENABLED` AND `DUTY_WELCOME_HINTS_ENABLED`다(`create_app`이 둘을 함께 본다).
+    """
+    return bool(getattr(request.app.state, "duty_welcome_hints_enabled", False))
+
+
+#: 첫 화면 예시 질의 상한 — 영역당 · 전체(plans/201 §4.1).
+WELCOME_QUERIES_PER_AREA = 3
+WELCOME_QUERIES_TOTAL = 6
+
+
+def duty_welcome_queries(areas: list[str] | None) -> list[dict[str, str]]:
+    """`/auth/me` `duty_welcome_queries` — 사용자 담당 영역의 첫 화면 예시 질의(plans/201 W2).
+
+    어휘 선언 순서로 영역마다 최대 3개 · 전체 최대 6개 `[{area, area_label, label, query}]`. 검증 근거
+    (`verified_by`) 없는 문구는 로더가 이미 뺐다. 미지정·문구 없음은 빈 목록 — 화면은 현행 버튼을 유지한다.
+    """
+    return duty_area_vocabulary().select_welcome_queries(
+        areas, per_area=WELCOME_QUERIES_PER_AREA, total=WELCOME_QUERIES_TOTAL
+    )
+
+
+def welcome_guide_enabled(request: Request) -> bool:
+    """이 기동에서 첫 화면 상황 안내가 켜졌는가(plans/201 W2 P2 · 담당 업무와 독립 · 기동 시 1회 · 없으면 off)."""
+    return bool(getattr(request.app.state, "welcome_guide_enabled", False))
+
+
 #: 요청 `duty_areas` 목록 길이 상한 · 원소 길이 상한(무인증 가입 경로 남용 방지).
 MAX_DUTY_AREAS = 32
 MAX_DUTY_AREA_CODE_LENGTH = 64

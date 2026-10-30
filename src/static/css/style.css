@@ -2517,6 +2517,70 @@ body.auth-pending .auth-splash {
     color: var(--on-accent);
 }
 
+/* plans/201 W2 첫 화면 상황 안내(WELCOME_GUIDE_ENABLED) · 담당별 예시 제목(DUTY_WELCOME_HINTS_ENABLED).
+   둘 다 켠 기동에서 app.js가 붙일 때만 생긴다 — 끄면 이 규칙이 닿는 요소가 없다. */
+.chat-welcome-guide {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    max-width: 600px;
+    margin-top: 20px;
+    text-align: left;
+}
+
+.chat-welcome-guide-title,
+.chat-welcome-hints-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.chat-welcome-hints-title {
+    margin-top: 20px;
+    margin-bottom: -16px;
+}
+
+.chat-welcome-guide-item {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    align-items: baseline;
+    padding: 8px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.chat-welcome-guide-item:hover {
+    border-color: var(--border-accent);
+    background: var(--accent-glow);
+}
+
+.chat-welcome-guide-lead {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.chat-welcome-guide-item--disabled,
+.chat-welcome-guide-item--disabled:hover {
+    cursor: not-allowed;
+    opacity: 0.6;
+    background: var(--surface);
+    border-color: var(--border);
+}
+
+.chat-welcome-guide-reason {
+    flex-basis: 100%;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
 /* ─── Zone Clarification (Plan 75 §4 — 존 선택 역질문 체크박스) ─── */
 .zone-clarify {
     margin-top: 12px;

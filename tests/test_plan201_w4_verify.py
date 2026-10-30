@@ -322,7 +322,8 @@ def test_duty_view_domain_is_stdlib_plus_domain_only() -> None:
 @pytest.mark.parametrize("rel", [
     "sre_agent/sre_agent/domain/engine_agreement.py",
     "sre_agent/sre_agent/domain/playbook_hypotheses.py",
-    "config/duty_areas.yaml",
+    # config/duty_areas.yaml은 뺀다 — 뒤 Wave가 섹션을 추가하는 정본이다(plans/201 W2 welcome_queries).
+    # 영역 code·라벨 일치는 tests/test_plan201_w4_duty_contract.py가 지킨다.
 ])
 def test_source_tables_unchanged_since_base(rel: str) -> None:
     out = subprocess.run(["git", "diff", "--stat", BASE_SHA, "--", rel], cwd=_ROOT,

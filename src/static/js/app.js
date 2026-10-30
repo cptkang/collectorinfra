@@ -225,6 +225,130 @@
             .catch(function () { /* 안내는 부가 정보 — 실패해도 화면은 그대로 */ });
     }
 
+    // ─── plans/201 W2 첫 화면 시작 ───
+    // 상황 안내(P2 · `WELCOME_GUIDE_ENABLED` → `/auth/me` `welcome_guide`)와 담당별 예시 질의
+    // (`DUTY_WELCOME_HINTS_ENABLED` → `/auth/me` `duty_welcome_queries`). **키가 없으면 #chatWelcome을 전혀
+    // 건드리지 않는다** — 플래그 off면 첫 화면 DOM이 현행과 같다. 예시 문구는 서버 응답이고 정본은
+    // `config/duty_areas.yaml`이다(프론트 사본 없음). 출력은 createElement + textContent만(HTML 문자열 삽입 금지 — XSS 경계).
+    // 첫 화면은 새 대화·탭 복원 때 hidden만 토글되므로 한 번 바꾼 내용이 그대로 유지된다.
+
+    // 첫 화면 예시 버튼 처리기 — 입력창에 채우고(존 자리표시 「ㅇㅇ존」은 사용자가 고쳐 보낸다) 도움말 버튼만 바로 보낸다.
+    function bindHintButton(btn) {
+        btn.addEventListener("click", function () {
+            promptEl.value = btn.dataset.query;
+            autoResizeTextarea.call(promptEl);
+            promptEl.focus();
+            // 도움말 버튼은 예시와 달리 클릭 즉시 실행하여 채팅으로 안내를 전달한다.
+            if (btn.dataset.help) {
+                handleSend();
+            }
+        });
+    }
+
+    // 예시 질의 모델(순수) — `[{area, area_label, label, query}]`에서 형식이 아닌 항목은 버린다. 비면 null(현행 버튼 유지).
+    // 제목은 한 줄로 합친다(「이렇게 물어보세요 · <영역 이름> · <영역 이름> 담당 추천」) — 버튼 줄이 한 줄 흐름이고
+    // 「❓ 사용법」이 끝에 와야 해서 영역별 제목으로 줄을 나누지 않는다. 버튼 title에 영역 이름을 붙인다.
+    function dutyWelcomeHintsModel(list) {
+        if (!Array.isArray(list)) return null;
+        var items = [];
+        var areaLabels = [];
+        list.forEach(function (it) {
+            if (!it || typeof it.label !== "string" || typeof it.query !== "string") return;
+            var label = it.label.trim();
+            var query = it.query.trim();
+            if (!label || !query) return;
+            var areaLabel = typeof it.area_label === "string" ? it.area_label.trim() : "";
+            items.push({ label: label, query: query, areaLabel: areaLabel });
+            if (areaLabel && areaLabels.indexOf(areaLabel) < 0) areaLabels.push(areaLabel);
+        });
+        if (!items.length) return null;
+        var title = "이렇게 물어보세요" + (areaLabels.length ? " · " + areaLabels.join(" · ") + " 담당 추천" : "");
+        return { title: title, items: items };
+    }
+
+    // 상황 안내 줄 상태(순수) — 줄은 숨기지 않는다. 사용자에게 없는 탭으로 가는 줄은 비활성(사유는 index.html 정적 문구).
+    // 이벤트 알람 탭은 알람 수신 권한(관리자 · 알람 수신 지역 지정)이 있을 때만 보인다(`initAlarmSubscription`).
+    // 상황 안내는 인증 켠 기동의 로그인 사용자에게만 뜬다(로더 게이트 · plans/201 W2 팀 리드 결정).
+    function welcomeGuideLineState(target, caps) {
+        if (target === "alarm") return { disabled: !(caps && caps.alarm) };
+        return { disabled: false };
+    }
+
+    function runWelcomeGuide(target) {
+        if (target === "alarm") {
+            setActiveView("alarm");
+        } else if (target === "investigate") {
+            promptEl.focus();
+        } else if (target === "report") {
+            if (fileInput) fileInput.click();
+        }
+    }
+
+    // 상황 안내 붙이기 — `welcome_guide`가 true일 때만. index.html <template>을 복제해 예시 버튼 줄 위에 둔다.
+    function applyWelcomeGuide(me) {
+        if (!me || me.welcome_guide !== true || !chatWelcome) return false;
+        if (document.getElementById("chatWelcomeGuide")) return false;
+        var tpl = document.getElementById("welcomeGuideTemplate");
+        if (!tpl || !tpl.content) return false;
+        var box = tpl.content.cloneNode(true).querySelector(".chat-welcome-guide");
+        if (!box) return false;
+        var caps = { alarm: !!alarmCanReceive };
+        Array.prototype.forEach.call(box.querySelectorAll("[data-guide]"), function (btn) {
+            var target = btn.getAttribute("data-guide");
+            if (welcomeGuideLineState(target, caps).disabled) {
+                btn.disabled = true;
+                btn.setAttribute("aria-disabled", "true");
+                btn.classList.add("chat-welcome-guide-item--disabled");
+                var reason = document.createElement("span");
+                reason.className = "chat-welcome-guide-reason";
+                reason.textContent = btn.getAttribute("data-disabled-reason") || "";
+                btn.appendChild(reason);
+                return;
+            }
+            btn.addEventListener("click", function () { runWelcomeGuide(target); });
+        });
+        chatWelcome.insertBefore(box, chatWelcome.querySelector(".chat-welcome-hints"));
+        return true;
+    }
+
+    // 담당별 예시 질의로 버튼 교체 — `duty_welcome_queries` 키가 있고 비어 있지 않을 때만. 「❓ 사용법」은 그대로 끝에 남긴다.
+    function applyDutyWelcomeHints(me) {
+        if (!me || !Object.prototype.hasOwnProperty.call(me, "duty_welcome_queries") || !chatWelcome) return false;
+        var model = dutyWelcomeHintsModel(me.duty_welcome_queries);
+        if (!model) return false;
+        var box = chatWelcome.querySelector(".chat-welcome-hints");
+        if (!box || box.getAttribute("data-duty") === "1") return false;
+        var help = box.querySelector(".chat-welcome-hint--help");
+        Array.prototype.slice.call(box.querySelectorAll(".chat-welcome-hint")).forEach(function (b) {
+            if (b !== help) b.remove();
+        });
+        model.items.forEach(function (it) {
+            var b = document.createElement("button");
+            b.type = "button";
+            b.className = "chat-welcome-hint chat-welcome-hint--duty";
+            b.textContent = it.label;
+            b.title = (it.areaLabel ? it.areaLabel + " 담당 · " : "") + it.query;
+            b.dataset.query = it.query;
+            bindHintButton(b);
+            box.insertBefore(b, help || null);
+        });
+        var title = document.createElement("div");
+        title.className = "chat-welcome-hints-title";
+        title.textContent = model.title;
+        chatWelcome.insertBefore(title, box);
+        box.setAttribute("data-duty", "1");
+        return true;
+    }
+
+    // `/auth/me` 한 번(공유 조회)으로 두 요소를 판정한다 — 서로 독립(한쪽 실패가 다른 쪽을 막지 않는다).
+    function loadWelcomeEnhancements() {
+        fetchAuthMeOnce().then(function (me) {
+            try { applyWelcomeGuide(me); } catch (e) { /* 상황 안내는 부가 정보 — 첫 화면은 그대로 */ }
+            try { applyDutyWelcomeHints(me); } catch (e) { /* 예시 교체 실패 — 현행 버튼 그대로 */ }
+        });
+    }
+    // ─── plans/201 W2 첫 화면 끝 ───
+
     function checkAuthOnLoad() {
         fetch("/api/v1/auth/status", { headers: getAuthHeaders() })
             .then(function(res) {
@@ -284,6 +408,9 @@
                 if (data.auth_enabled && userInfo && userInfo.user_id) loadDutyAlarmFocus();
                 // plans/201 W4: 조사 결과 「영역별 점검 결과」 라벨·내 담당 — `duty_area_options` 키가 있을 때만
                 if (data.auth_enabled && userInfo && userInfo.user_id) loadDutyBriefingMeta();
+                // plans/201 W2: 첫 화면 상황 안내·담당별 예시 — 알람 수신 판정(initAlarmSubscription) 뒤에 둔다
+                // (이벤트 알람 줄의 비활성 판정). 키가 없으면 첫 화면을 건드리지 않는다.
+                if (data.auth_enabled && userInfo && userInfo.user_id) loadWelcomeEnhancements();
                 // plans/187 W5b: `/?investigation=<id>` 진입 — 인증 확정 뒤에만 조사 기록을 읽는다.
                 // (W15) 장애 진단 사전 게이트(/active)를 먼저 끝내야 진입을 진단 탭으로 보낼지 정할 수 있다.
                 initDiagnosisView().then(function () {
@@ -721,17 +848,8 @@
     fileInput.addEventListener("change", handleFileChange);
     removeFileBtn.addEventListener("click", clearFile);
 
-    hintButtons.forEach(function (btn) {
-        btn.addEventListener("click", function () {
-            promptEl.value = btn.dataset.query;
-            autoResizeTextarea.call(promptEl);
-            promptEl.focus();
-            // 도움말 버튼은 예시와 달리 클릭 즉시 실행하여 채팅으로 안내를 전달한다.
-            if (btn.dataset.help) {
-                handleSend();
-            }
-        });
-    });
+    // 첫 화면 예시 버튼 — 담당별 예시로 바꾼 버튼(plans/201 W2 `applyDutyWelcomeHints`)도 같은 처리기를 붙인다.
+    hintButtons.forEach(bindHintButton);
 
     // Panel toggle
     panelToggle.addEventListener("click", function () {

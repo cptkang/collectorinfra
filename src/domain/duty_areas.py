@@ -1,7 +1,8 @@
 """담당 업무 어휘 — 순수 판정 (plans/201 W1 · D-354).
 
 **무엇을 하나.** 담당 업무 영역(`server_os` 등)의 어휘 객체와, 그 어휘로 하는 결정적 판정
-(알람 자원 유형 → 영역 · 저장 값 검증·정규화 · 폐지 코드 걸러내기)만 둔다. 파일을 읽지 않는다 —
+(알람 자원 유형 → 영역 · 저장 값 검증·정규화 · 폐지 코드 걸러내기 · 첫 화면 예시 질의 검증·선별)만
+둔다. 파일을 읽지 않는다 —
 선언 파일(`config/duty_areas.yaml`) 로드는 `src.infrastructure.duty_area_vocabulary` 소관이다.
 
 **담당 업무는 권한이 아니다**(D-354). 무엇도 숨기지 않고 정렬·강조 순서만 바꾸는 중점이라,
@@ -18,6 +19,7 @@ import logging
 import re
 from collections.abc import Iterable, Mapping
 from dataclasses import dataclass, field
+from datetime import date
 from typing import Any
 
 logger = logging.getLogger(__name__)
@@ -113,6 +115,53 @@ class CauseHints:
 
 
 @dataclass(frozen=True)
+class WelcomeQuery:
+    """첫 화면 예시 질의 한 개(plans/201 W2) — 값은 전부 선언 파일에서 온다.
+
+    `verified_by`는 검증 근거(`is_valid_verified_by` 규약)다. 근거 없는 문구는 이 객체가 되지 못한다.
+    """
+
+    label: str
+    query: str
+    verified_by: str
+
+
+#: `verified_by` 규약(plans/201 W2 · D-354 부기 8 예정) — 접두마다 값 형식.
+#: `gold:<골드셋 파일 stem>/<항목 id>` · `assembler:<결정적 조립기 함수 이름>` · `sandbox:<db_id>` ·
+#: `mlx:local` · `closed_net:<YYYY-MM-DD>`(폐쇄망에서 사람이 실행 확인).
+#: 로더는 골드셋 파일을 읽지 않는다(폐쇄망 배포에 testdata가 없을 수 있다) — `gold:` 참조가 실제 항목으로
+#: 해석되는지와 `assembler:` 이름이 코드에 있는지는 테스트가 단언한다.
+_VERIFIED_BY_PATTERNS: tuple[re.Pattern[str], ...] = (
+    re.compile(r"gold:[A-Za-z0-9_\-]+/[A-Za-z0-9_.\-]+"),
+    re.compile(r"assembler:[A-Za-z_][A-Za-z0-9_]*"),
+    re.compile(r"sandbox:[a-z0-9_]+"),
+    re.compile(r"mlx:local"),
+    re.compile(r"closed_net:\d{4}-\d{2}-\d{2}"),
+)
+
+
+def is_valid_verified_by(value: object, *, today: date | None = None) -> bool:
+    """`verified_by` 값이 규약 안인가(형식 판정 · 순수).
+
+    `closed_net:`은 실제 달력 날짜여야 하고 기준일(`today`)보다 뒤일 수 없다 — 사람이 실행해 확인한 날이
+    미래일 수 없다. `today`를 생략하면 오늘 날짜를 기준으로 한다(결정적 판정은 호출자가 기준일을 넘긴다).
+    """
+    if not isinstance(value, str):
+        return False
+    text = value.strip()
+    if not any(p.fullmatch(text) for p in _VERIFIED_BY_PATTERNS):
+        return False
+    if text.startswith("closed_net:"):
+        try:
+            checked = date.fromisoformat(text[len("closed_net:"):])
+        except ValueError:
+            return False
+        if checked > (today if today is not None else date.today()):
+            return False
+    return True
+
+
+@dataclass(frozen=True)
 class DutyAreaVocabulary:
     """담당 업무 어휘 전체.
 
@@ -124,6 +173,8 @@ class DutyAreaVocabulary:
     sections: Mapping[str, Any] = field(default_factory=dict)
     # (plans/201 W3) `cause_hints` 섹션의 검증된 값 — 원문은 `sections["cause_hints"]`에도 남는다.
     cause_hints: CauseHints = field(default_factory=CauseHints)
+    # (plans/201 W2) `welcome_queries` 섹션의 검증된 값(영역 code → 선언 순서 문구) — 검증 근거 없는 문구는 없다.
+    welcome_queries: Mapping[str, tuple[WelcomeQuery, ...]] = field(default_factory=dict)
 
     def codes(self) -> tuple[str, ...]:
         """선언 순서의 영역 코드."""
@@ -164,6 +215,34 @@ class DutyAreaVocabulary:
         chosen = set(cleaned)
         result = [code for code in self.codes() if code in chosen]
         return result or None
+
+    def select_welcome_queries(
+        self,
+        areas: Iterable[str] | None,
+        *,
+        per_area: int = 3,
+        total: int = 6,
+    ) -> list[dict[str, str]]:
+        """사용자 담당 영역의 첫 화면 예시 질의를 고른다(plans/201 W2 §4.1 · 순수 · 결정적).
+
+        영역은 **어휘 선언 순서**로 돈다(입력 순서 무관 · 어휘 밖·중복 코드는 무시). 영역마다 파일 순서로 최대
+        `per_area`개, 전체 최대 `total`개. 미지정·문구 없음은 빈 목록이다.
+
+        Returns:
+            `[{area, area_label, label, query}]`
+        """
+        chosen = {str(a) for a in (areas or [])}
+        picked: list[dict[str, str]] = []
+        for area in self.areas:
+            if area.code not in chosen:
+                continue
+            for item in self.welcome_queries.get(area.code, ())[: max(0, per_area)]:
+                if len(picked) >= max(0, total):
+                    return picked
+                picked.append(
+                    {"area": area.code, "area_label": area.label, "label": item.label, "query": item.query}
+                )
+        return picked
 
     def split_known(self, values: Iterable[str] | None) -> tuple[list[str], list[str]]:
         """저장 값을 (어휘에 있는 코드 · 폐지된 코드)로 나눈다(읽을 때 · 선언 순서 정렬)."""
@@ -213,8 +292,12 @@ def parse_vocabulary(raw: Mapping[str, Any] | None) -> DutyAreaVocabulary:
             )
         )
     sections = {k: v for k, v in raw.items() if k != "areas"}
-    hints = parse_cause_hints(sections.get("cause_hints"), tuple(area.code for area in areas))
-    return DutyAreaVocabulary(areas=tuple(areas), sections=sections, cause_hints=hints)
+    known = tuple(area.code for area in areas)
+    hints = parse_cause_hints(sections.get("cause_hints"), known)
+    welcome = parse_welcome_queries(sections.get("welcome_queries"), known)
+    return DutyAreaVocabulary(
+        areas=tuple(areas), sections=sections, cause_hints=hints, welcome_queries=welcome
+    )
 
 
 def _hint_areas(value: Any, known: tuple[str, ...], where: str) -> tuple[str, ...]:
@@ -302,6 +385,71 @@ def parse_cause_hints(raw: Any, known_areas: tuple[str, ...]) -> CauseHints:
 
     return CauseHints(apm_event_types=apm, known_unmapped=tuple(unmapped), process_kinds=kinds)
 
+
+
+def parse_welcome_queries(
+    raw: Any, known_areas: tuple[str, ...], *, today: date | None = None
+) -> dict[str, tuple[WelcomeQuery, ...]]:
+    """`welcome_queries` 섹션 원문을 검증해 영역별 예시 질의로 바꾼다(순수 · 결정적 · plans/201 W2).
+
+    원문 형태: 영역 code → `[{label, query, verified_by}]`(선택 키 `pending`·`draft`는 기록용).
+    다음은 **로드 제외 + 경고 1줄**이다(침묵 금지 · 앱은 계속 뜬다): 어휘 밖 영역 code · 목록이 아닌 영역 값 ·
+    형식이 아닌 항목 · label/query 빈 값 · `verified_by` 없음·빈 값·규약 밖 값 · 같은 영역 같은 질의 중복.
+    `pending`(검증 대기 표기 — 예 `closed_net`)이 달린 문구는 `verified_by`와 무관하게 제외하고, 경고는
+    「검증 대기」로 따로 모아 1줄만 남긴다. 경고에는 문구 원문(query)을 싣지 않는다 — label만.
+    `closed_net:<날짜>`가 기준일(`today` · 생략 시 오늘)보다 뒤면 규약 밖이다.
+
+    Returns:
+        영역 code → 선언 순서 문구 튜플(어휘 선언 순서 · 문구가 하나도 없는 영역은 키 없음)
+    """
+    if raw is None:
+        return {}
+    ref_day = today if today is not None else date.today()
+    if not isinstance(raw, Mapping):
+        logger.warning("담당 업무 예시 질의: welcome_queries가 매핑이 아님 — 무시")
+        return {}
+    result: dict[str, list[WelcomeQuery]] = {}
+    pending: list[str] = []
+    for area_code, entries in raw.items():
+        code = str(area_code).strip()
+        if code not in known_areas:
+            logger.warning("담당 업무 예시 질의: 어휘 밖 영역 코드를 무시 — %r", code)
+            continue
+        if not isinstance(entries, list):
+            logger.warning("담당 업무 예시 질의(%s): 목록이 아님 — 무시", code)
+            continue
+        seen: set[str] = set()
+        for entry in entries:
+            if not isinstance(entry, Mapping):
+                logger.warning("담당 업무 예시 질의(%s): 형식이 아닌 항목을 건너뜀", code)
+                continue
+            label = str(entry.get("label") or "").strip()
+            query = str(entry.get("query") or "").strip()
+            if not label or not query:
+                logger.warning("담당 업무 예시 질의(%s): label·query 누락 항목을 건너뜀 — %r", code, label)
+                continue
+            if entry.get("pending"):
+                pending.append(f"{code}:{label}")
+                continue
+            verified_by = entry.get("verified_by")
+            if not is_valid_verified_by(verified_by, today=ref_day):
+                logger.warning(
+                    "담당 업무 예시 질의(%s): 검증 근거(verified_by) 없음 또는 규약 밖 — 제외 %r",
+                    code, label,
+                )
+                continue
+            if query in seen:
+                logger.warning("담당 업무 예시 질의(%s): 같은 질의 중복 — 제외 %r", code, label)
+                continue
+            seen.add(query)
+            result.setdefault(code, []).append(
+                WelcomeQuery(label=label, query=query, verified_by=str(verified_by).strip())
+            )
+    if pending:
+        logger.warning(
+            "담당 업무 예시 질의: 검증 대기(pending) %d개 제외 — %s", len(pending), ", ".join(pending)
+        )
+    return {code: tuple(result[code]) for code in known_areas if code in result}
 
 
 def unmapped_resource_types(

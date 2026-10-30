@@ -66,3 +66,50 @@ cause_hints:
     db:
       label: 이 서버에서 DB 엔진 실행 중
       kinds: [db2, mysql, mariadb, postgresql, oracle, tibero]
+
+# ── 첫 화면 예시 질의(plans/201 W2 §4.1~4.3 · 부록 A) — 담당 지정 사용자의 첫 화면 예시 버튼 ──
+# 영역 code → [{label, query, verified_by}]. 순서는 인지(지금) → 분석(추세·비교) → 점검이며 화면은 영역마다 앞에서 3개까지.
+# verified_by 필수(D-192 · D-341 ⑪) — 없거나 규약 밖이면 로더가 제외하고 경고한다(src/domain/duty_areas.py parse_welcome_queries).
+#   gold:<골드셋 파일 stem>/<항목 id> · assembler:<결정적 조립기 함수 이름> · sandbox:<db_id> · mlx:local · closed_net:<YYYY-MM-DD>
+# 골드셋 동형이 없어 폐쇄망에서만 확인할 수 있는 문구는 verified_by 없이 pending: closed_net으로 남긴다(로드 제외 · 「검증 대기」 경고).
+#   폐쇄망에서 실행해 답이 나오면 verified_by: closed_net:<날짜>를 적고 pending을 지운다.
+# draft = 부록 A 초안 원문(골드 동형에 맞춰 문구를 다듬은 경우만 · 기록용 — 로더는 읽지 않는다).
+# 「ㅇㅇ존」은 존 자리표시다(첫 화면 현행 버튼과 같은 규약 — 사용자가 존 이름으로 고쳐 보낸다).
+welcome_queries:
+  server_os:
+    # 동형 없음 — 실시간 사용률은 폴스타 실시간 API(폐쇄망) 경로이고 임계 조건 골드가 없다
+    - {label: CPU 80% 이상 서버, query: ㅇㅇ존 서버 중 지금 CPU 사용률이 80% 이상인 서버를 보여줘, pending: closed_net}
+    # 동형 없음 — 파일시스템 단위 임계 조회 골드가 없다(급증 조립기는 지난달 대비 차분 + 임계 형태만)
+    - {label: 파일시스템 90% 이상, query: ㅇㅇ존 서버 중 파일시스템 사용률이 90% 이상인 서버와 파일시스템을 보여줘, pending: closed_net}
+    # 동형 없음 — 급증 조립기는 파일시스템 전용이고 메모리 상승 골드가 없다(D-192)
+    - {label: 메모리 사용률 상승 서버, query: ㅇㅇ존에서 지난달 대비 메모리 사용률이 10%p 이상 오른 서버를 보여줘, pending: closed_net}
+    - label: 알람 많은 서버 상위 10
+      query: ㅇㅇ존에서 최근 3개월간 경고 이상 알람이 가장 많이 발생한 상위 10개 서버를 알려줘
+      verified_by: gold:gp/gp-015
+      draft: ㅇㅇ존 서버의 최근 24시간 알람 발생 건수 상위 10대를 보여줘
+    - label: CPU 평균 상위 10대
+      query: ㅇㅇ존 서버별 지난달 1개월 통계 기준 CPU 사용률 평균이 높은 상위 10대를 보여줘
+      verified_by: gold:syn/syn-e01   # 서버별 월 CPU 평균 상위 N(기간 표현은 gp-009 「지난달 1개월 통계 기준」)
+      draft: ㅇㅇ존 서버 중 지난 1개월 CPU 평균 사용률 상위 10대를 보여줘
+  was_mw:
+    # 아래 두 골드는 apm_bench heavy(전 함대 순회) 시나리오다. 대상 미지정 인스턴스형 비heavy 대안은 없다. 서비스·업무 단위 비heavy 전체 대상 후보(APM-SERVICE-all · APM-BIZ-all)는 있으며 피드백 교정 때 교체 후보다.
+    # 그래도 유지하는 근거: 버튼은 입력창 프리필만 하고 자동 전송하지 않는다 · 사용자가 직접 치는 같은 질의와 부하가 같다 · 게이트웨이 상한이 적용된다.
+    - label: WAS 응답시간 상태
+      query: 지금 WAS들 응답시간 상태 어때?
+      verified_by: gold:scenarios/APM-HEALTH-untargeted
+      draft: 지금 응답시간이 가장 나쁜 WAS 인스턴스 5개를 보여줘
+    - label: 실패율 기준 WAS 순위
+      query: 지난 1시간 실패율 기준으로 전체 WAS 순위 전부
+      verified_by: gold:scenarios/APM-RANK-failrate-full
+      draft: 최근 1시간 에러가 가장 많은 WAS 인스턴스를 보여줘
+    # 동형 없음 — 힙 순위 골드는 서비스 지정형뿐(전체 WAS 대상 형태 없음)
+    - {label: 힙 사용률 높은 WAS, query: 힙 사용률이 높은 WAS 인스턴스를 보여줘, pending: closed_net}
+    # 동형 없음 — 어제 응답시간 골드는 인스턴스 지정 URL 순위뿐(업무·서비스 순위 형태 없음)
+    - {label: 어제 응답 나빴던 업무, query: 어제 응답시간이 가장 나빴던 업무(서비스)를 보여줘, pending: closed_net}
+    # 동형 없음 — 존 전체 실시간 프로세스를 훑는 질의 경로가 없다(plans/201 부록 A v1.2 DB 제외 사유와 같음)
+    - {label: WAS·웹서버 실행 서버, query: ㅇㅇ존에서 실행 중인 WAS·웹서버 프로세스가 있는 서버 목록을 보여줘, pending: closed_net}
+  db:
+    # 동형 없음 — 전체 WAS 이벤트 골드는 OutOfMemory 오류형뿐(SQL 응답 지연 유형 대응 미확인)
+    - {label: SQL 응답 지연 WAS, query: 최근 1시간 SQL 응답 지연 이벤트가 난 WAS 인스턴스를 보여줘, pending: closed_net}
+    # 동형 없음 — 실행 중 요청 골드는 인스턴스 지정형뿐
+    - {label: 오래 걸리는 SQL 요청, query: 지금 실행 중인 SQL이 오래 걸리는 요청을 보여줘, pending: closed_net}

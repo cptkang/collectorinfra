@@ -1,4 +1,4 @@
-"""기타 서비스 설정 — 서버·관측(로그)·DRM·문서 RAG·결과 그래프·포탈 도움말·컴포넌트 설정 프록시.
+"""기타 서비스 설정 — 서버·관측(로그)·DRM·문서 RAG·결과 그래프·포탈 도움말·담당 업무·첫 화면 안내·컴포넌트 설정 프록시.
 
 plans/166 W2 I4 — 옛 `src/config.py`에서 클래스를 그대로 옮겼다. 공개 경로는 `src.config`
 그대로다(패키지 `__init__`이 이 모듈의 클래스를 재노출한다 · D-337 ①).
@@ -216,27 +216,64 @@ class DutyAreaConfig(BaseSettings):
         default=False,
         validation_alias="DUTY_ALARM_FOCUS_ENABLED",
     )
+    # (plans/201 W2) 첫 화면 담당별 예시 질의 — 담당 지정 사용자의 첫 화면 예시 버튼을 담당 영역 문구로 바꾼다
+    # (`/auth/me` `duty_welcome_queries`). 문구 정본은 `config/duty_areas.yaml` `welcome_queries`(검증 근거
+    # `verified_by` 있는 것만). 유효값 = `enabled` AND 이 값(`welcome_hints_effective`). env 이름은 이것 하나만.
+    # 기본 off = `/auth/me`·첫 화면 비트 동일.
+    welcome_hints_enabled: bool = Field(
+        default=False,
+        validation_alias="DUTY_WELCOME_HINTS_ENABLED",
+    )
 
     model_config = {"env_prefix": "DUTY_AREA_", "env_file": ".env", "extra": "ignore"}
 
     @model_validator(mode="before")
     @classmethod
     def _accept_alarm_focus_field_name(cls, data: Any) -> Any:
-        """생성자 필드명 인자 `alarm_focus_enabled=`를 env 이름으로 옮긴다(plans/201 W3 교정).
+        """생성자 필드명 인자(`alarm_focus_enabled=`·`welcome_hints_enabled=`)를 env 이름으로 옮긴다(plans/201 W3 교정 · W2).
 
-        env는 `DUTY_ALARM_FOCUS_ENABLED` 하나만 받아야 한다 — `AliasChoices`에 필드명을 넣으면 접두 없는 env
-        `ALARM_FOCUS_ENABLED`가, `populate_by_name`을 켜면 그룹 접두 이름 `DUTY_AREA_ALARM_FOCUS_ENABLED`가
-        함께 읽힌다. 필드명 키는 생성자 인자에서만 오므로 그것만 별칭 키로 옮긴다(생성자 인자가 env보다 우선).
+        env는 `DUTY_ALARM_FOCUS_ENABLED`·`DUTY_WELCOME_HINTS_ENABLED` 하나씩만 받아야 한다 — `AliasChoices`에
+        필드명을 넣으면 접두 없는 env(`ALARM_FOCUS_ENABLED`·`WELCOME_HINTS_ENABLED`)가, `populate_by_name`을 켜면
+        그룹 접두 이름(`DUTY_AREA_…`)이 함께 읽힌다. 필드명 키는 생성자 인자에서만 오므로 그것만 별칭 키로
+        옮긴다(생성자 인자가 env보다 우선).
         """
-        if isinstance(data, dict) and "alarm_focus_enabled" in data:
+        if isinstance(data, dict) and any(name in data for name in _DUTY_FIELD_ALIASES):
             data = dict(data)
-            data["DUTY_ALARM_FOCUS_ENABLED"] = data.pop("alarm_focus_enabled")
+            for name, alias in _DUTY_FIELD_ALIASES.items():
+                if name in data:
+                    data[alias] = data.pop(name)
         return data
 
     @property
     def alarm_focus_effective(self) -> bool:
         """알람 화면 담당 강조가 실제로 켜졌는가(`DUTY_AREA_ENABLED` AND `DUTY_ALARM_FOCUS_ENABLED`)."""
         return self.enabled is True and self.alarm_focus_enabled is True
+
+    @property
+    def welcome_hints_effective(self) -> bool:
+        """첫 화면 담당별 예시 질의가 실제로 켜졌는가(`DUTY_AREA_ENABLED` AND `DUTY_WELCOME_HINTS_ENABLED`)."""
+        return self.enabled is True and self.welcome_hints_enabled is True
+
+
+#: `DutyAreaConfig` 생성자 필드명 → env 별칭(필드명 인자 이관용 · 접두 없는 env는 받지 않는다).
+_DUTY_FIELD_ALIASES: dict[str, str] = {
+    "alarm_focus_enabled": "DUTY_ALARM_FOCUS_ENABLED",
+    "welcome_hints_enabled": "DUTY_WELCOME_HINTS_ENABLED",
+}
+
+
+class WelcomeGuideConfig(BaseSettings):
+    """첫 화면 상황 안내 `welcome_guide` 설정 (plans/201 W2 §4.0 P2 · D-354).
+
+    질의응답 첫 화면에 「이 화면에서 할 수 있는 일」 3줄(알람을 받았다면 · 원인을 찾고 있다면 · 보고 자료가
+    필요하다면)을 보인다. **담당 업무와 독립**이다 — 담당 지정(`DUTY_AREA_ENABLED`)이 꺼져 있어도 단독으로
+    켤 수 있고 로그인한 모든 사용자에게 같다(인증 켠 기동 한정 — 인증 꺼진 개발 기동에서는 뜨지 않는다). 기본 off(D-162) — 끄면 `/auth/me`에 키가 없고 첫 화면이 현행과 같다.
+    기동 시 1회 해석한다(재시작 반영).
+    """
+
+    enabled: bool = False
+
+    model_config = {"env_prefix": "WELCOME_GUIDE_", "env_file": ".env", "extra": "ignore"}
 
 
 #: 본체 프록시가 받는 분리 컴포넌트 이름(plans/191 · D-345). 이 밖의 이름은 설정에 있어도 무시한다.

@@ -866,6 +866,14 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     application.state.duty_alarm_focus_enabled = (
         getattr(duty_cfg, "alarm_focus_effective", False) is True
     )
+    # (plans/201 W2) 첫 화면 담당별 예시 질의 — 유효값 = DUTY_AREA_ENABLED AND DUTY_WELCOME_HINTS_ENABLED(기동 시 1회).
+    application.state.duty_welcome_hints_enabled = (
+        getattr(duty_cfg, "welcome_hints_effective", False) is True
+    )
+    # (plans/201 W2 P2) 첫 화면 상황 안내 — 담당 업무와 독립(기동 시 1회).
+    application.state.welcome_guide_enabled = (
+        getattr(getattr(config, "welcome_guide", None), "enabled", False) is True
+    )
 
     # CORS 설정 (환경변수에서 제어)
     application.add_middleware(

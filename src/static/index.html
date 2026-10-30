@@ -6,7 +6,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>KB AIOps 포탈</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=46">
+    <link rel="stylesheet" href="/static/css/style.css?v=47">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
 </head>
@@ -205,6 +205,29 @@
                     </div>
                 </div>
             </div>
+
+            <!-- plans/201 W2 §4.0 P2 첫 화면 상황 안내 — WELCOME_GUIDE_ENABLED 켠 기동(`/auth/me` welcome_guide)에서만
+                 app.js(applyWelcomeGuide)가 복제해 #chatWelcome의 예시 버튼 줄 위에 붙인다. <template>은 렌더되지 않는다
+                 — 끄면 첫 화면 DOM은 현행과 같다. 탭·버튼 이름은 화면·매뉴얼 용어 그대로 쓴다(바뀌면 함께 고친다).
+                 「원인을 찾고 있다면」은 상시 탭이 없다(「조사 대화」 탭은 「조사 대화로 열기」로만 열린다) — 질의응답 입력창으로 보낸다. -->
+            <template id="welcomeGuideTemplate">
+                <div class="chat-welcome-guide" id="chatWelcomeGuide">
+                    <div class="chat-welcome-guide-title">이 화면에서 할 수 있는 일</div>
+                    <button type="button" class="chat-welcome-guide-item" data-guide="alarm"
+                        data-disabled-reason="알람 수신 지역이 지정되지 않았습니다 — 관리자에게 요청하세요.">
+                        <span class="chat-welcome-guide-lead">🔔 알람을 받았다면</span>
+                        <span class="chat-welcome-guide-desc">이벤트 알람 탭에서 그 알람 카드를 먼저 보세요</span>
+                    </button>
+                    <button type="button" class="chat-welcome-guide-item" data-guide="investigate">
+                        <span class="chat-welcome-guide-lead">🔍 원인을 찾고 있다면</span>
+                        <span class="chat-welcome-guide-desc">아래 입력창에 서버 이름과 증상을 함께 적으세요 (예: web01 CPU 사용률 원인 분석해줘)</span>
+                    </button>
+                    <button type="button" class="chat-welcome-guide-item" data-guide="report">
+                        <span class="chat-welcome-guide-lead">📄 보고 자료가 필요하다면</span>
+                        <span class="chat-welcome-guide-desc">엑셀·워드 양식을 올리면 빈칸을 채워 드립니다</span>
+                    </button>
+                </div>
+            </template>
 
             <!-- DB connection warning banner -->
             <div class="db-warning-banner" id="dbWarningBanner">
@@ -435,7 +458,7 @@
     <script src="/static/js/diagnosis-view.js?v=16"></script>
     <script src="/static/vendor/chartjs/chart.umd.min.js?v=1"></script>
     <script src="/static/js/result-viz.js?v=4"></script>
-    <script src="/static/js/app.js?v=49"></script>
+    <script src="/static/js/app.js?v=50"></script>
 </body>
 
 </html>

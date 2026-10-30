@@ -8,6 +8,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-30 | D-354 | 부기 8 — `plans/201` W2 구현: `DUTY_WELCOME_HINTS_ENABLED`(유효 = `DUTY_AREA_ENABLED` AND)·`WELCOME_GUIDE_ENABLED`(독립) 기본 off 비트 동일 · `/auth/me` `duty_welcome_queries`·`welcome_guide` · `verified_by` 규약(gold·assembler·sandbox·mlx·closed_net) · 폐쇄망 전용은 `pending: closed_net` 로드 제외 · 로드 4/12(DB 0) · 계획 이탈 4건 |
 | 2026-10-30 | D-354 | 부기 7 — `plans/201` W4 구현: `SRE_DUTY_VIEW_ENABLED`(off 비트 동일 · 단계 없는 잡 키 없음) · 계층표·가설표 상태를 영역으로 옮겨 쓰기(커넥션 가설 우선 · external → was_mw 꼬리표 · 근거 없는 normal 0) · 매핑 `sre_agent/config/duty_area_layers.yaml` + 루트 계약 테스트 · R-E DB 엔진 시그니처 6종 이름 사본 · Q5 검토 생략(피드백으로 교정 · 사용자 결정) |
 | 2026-10-30 | D-354 | 부기 6 — `plans/201` W3 구현: `DUTY_ALARM_FOCUS_ENABLED`(off 비트 동일 · env 이름 하나만) · `cause_hints`(유형 11 · 알려진 미매핑 8 · 프로세스 kind) · DB 엔진 시그니처 6종 · SSE `apm_event_type`·`top_process_kinds`(분류 콜백 주입 — D-139 부기) · 티어 순서 불변·숨김 0 · 판정은 마스킹 전 원 항목(enricher · 원문 미보관) |
 | 2026-10-30 | D-354 | 부기 5 — `plans/201` W1 구현: 플래그 `DUTY_AREA_ENABLED`(off 비트 동일) · 인가 비참조 · 422·상한 · 공개 메타 · 현황 API(`mapping=false` · 스트리밍 집계) · 배지 = 미매핑 유형 가짓수(W3 `known_unmapped` 제외) · ALTER 실패 시 로그인 영향 배포 점검 |

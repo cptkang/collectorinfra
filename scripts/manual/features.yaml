@@ -46,6 +46,7 @@ user:
   - {id: U-16, title: 실패했을 때 다시 시도, anchors: ["다시 시도"], files: *IDX, captures: [], case_na: 오류 시에만 나타나는 버튼}
   - {id: U-17, title: 예시 질문 버튼, anchors: ["CPU 사용률 현황", "고사용 메모리 서버"], files: *IDX, captures: [main-welcome], case_na: "예시 문장의 「ㅇㅇ존」을 그대로 보내면 존 역질문 제어 화면이 뜬다 — U-25 화면 예시"}
   - {id: U-18, title: 사용법 묻기(❓ 사용법), anchors: ["❓ 사용법"], files: *IDX, captures: [main-welcome], case_na: "사용법 답변 샘플이 실제 데이터 원천과 맞지 않아 싣지 않는다(plans/116 §10.3 결함 보고)"}
+  - {id: U-78, title: "첫 화면 상황 안내 · 담당별 예시 질문", anchors: ["#welcomeGuideTemplate", "이 화면에서 할 수 있는 일", "알람을 받았다면", "원인을 찾고 있다면", "보고 자료가 필요하다면", "알람 수신 지역이 지정되지 않았습니다 — 관리자에게 요청하세요.", "이렇게 물어보세요", "담당 추천", "applyDutyWelcomeHints", "loadWelcomeEnhancements"], files: [src/static/index.html, src/static/js/app.js, config/duty_areas.yaml], captures: [], case_na: "관리자가 상황 안내(WELCOME_GUIDE_ENABLED)나 담당별 예시 질문(DUTY_AREA_ENABLED · DUTY_WELCOME_HINTS_ENABLED)을 켠 환경에서 로그인해야 보이는 첫 화면이라 녹화 사례·캡처를 만들 수 없다(캡처 대기) — 버튼이 채우는 질문은 U-17과 같이 동작한다", aliases: [담당별 예시 질문, 상황 안내, 첫 화면 안내]}
   - {id: U-19, title: 질문 잘 쓰는 법, anchors: ["#prompt"], files: *IDX, captures: [answer-table], cases: [Q-TOP-MEMORY, Q-SERVER-DETAIL, Q-CORE-FILTER, Q-CPU-MONTH, Q-MEM-OVER, Q-ALARM-HISTORY, Q-COMPOSITE, Q-GENERAL, Q-BAD-DELETE, Q-BAD-UPTIME, Q-BAD-TYPO]}
   - {id: U-53, title: 기간 표현과 「조회 기간」 안내, anchors: ["[조회 기간]"], files: [src/domain/disclosure.py], captures: [], case_na: "조회되는 기간이 질문을 보낸 시각에 따라 달라 녹화 사례 하나로 고정할 수 없다 — 본문에 기간 표현별 해석 표와 안내 문구 예를 싣는다", no_ui: true}
   # 4. 결과 읽기·내려받기

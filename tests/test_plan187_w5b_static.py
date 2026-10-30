@@ -436,8 +436,8 @@ def test_drawer_new_tab_and_break_glass_detail() -> None:
     "page, asset",
     [
         ("index.html", "briefing-view.js?v=12"),
-        ("index.html", "app.js?v=49"),
-        ("index.html", "style.css?v=46"),
+        ("index.html", "app.js?v=50"),
+        ("index.html", "style.css?v=47"),
         ("noise.html", "briefing-view.js?v=12"),
         ("noise.html", "noise.js?v=27"),
         ("admin/noise.html", "briefing-view.js?v=12"),

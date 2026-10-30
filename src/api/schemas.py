@@ -288,13 +288,19 @@ class UserInfoResponse(BaseModel):
     # (plans/201 W3) 알람 화면 담당 강조 메타 — `DUTY_ALARM_FOCUS_ENABLED`까지 켠 기동의 `/auth/me`에서만
     # 명시로 채운다(끄면 키 부재 · W1 응답과 같다). 인가 판정은 이 값을 읽지 않는다.
     duty_alarm_focus: dict[str, Any] | None = None
+    # (plans/201 W2) 첫 화면 담당별 예시 질의 `[{area, area_label, label, query}]` — `DUTY_WELCOME_HINTS_ENABLED`까지
+    # 켠 기동의 `/auth/me`에서만 명시로 채운다(끄면 키 부재). 미지정 사용자는 빈 목록(화면은 현행 버튼 유지).
+    duty_welcome_queries: list[dict[str, str]] | None = None
+    # (plans/201 W2 P2) 첫 화면 상황 안내 — `WELCOME_GUIDE_ENABLED` 켠 기동의 `/auth/me`에서만 `true`로 채운다
+    # (담당 업무와 독립 · 끄면 키 부재).
+    welcome_guide: bool | None = None
 
     # 반환 주석을 일부러 달지 않는다 — 달면 응답 OpenAPI 스키마가 필드 없는 dict로 바뀐다(실측).
     @model_serializer(mode="wrap")
     def _omit_unset_duty_fields(  # type: ignore[no-untyped-def]
         self, handler: SerializerFunctionWrapHandler
     ):
-        """담당 업무 키는 명시로 채운 경우에만 직렬화한다(플래그 off = 응답 키 부재)."""
+        """담당 업무·첫 화면 키는 명시로 채운 경우에만 직렬화한다(플래그 off = 응답 키 부재)."""
         data = handler(self)
         if isinstance(data, dict):
             for key in _DUTY_RESPONSE_KEYS:
@@ -303,8 +309,10 @@ class UserInfoResponse(BaseModel):
         return data
 
 
-#: 명시로 채울 때만 응답에 싣는 담당 업무 키(plans/201 W1).
-_DUTY_RESPONSE_KEYS: tuple[str, ...] = ("duty_areas", "duty_area_options", "duty_alarm_focus")
+#: 명시로 채울 때만 응답에 싣는 키(plans/201 W1 담당 업무 · W2 예시 질의·상황 안내).
+_DUTY_RESPONSE_KEYS: tuple[str, ...] = (
+    "duty_areas", "duty_area_options", "duty_alarm_focus", "duty_welcome_queries", "welcome_guide",
+)
 
 
 class AdminUserInfoResponse(UserInfoResponse):

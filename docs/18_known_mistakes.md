@@ -2394,3 +2394,8 @@
 - **실수**: 교정 중인 implementer의 파일 수정이 멎은 것(mtime)만 보고 `regress.py --base a289818f --files …`를 시작했는데, 실행 도중(18:43:44) implementer가 `duty_view.py`·`investigation_store.py`·테스트 1개를 더 고쳐 결과가 섞였다. 재실행 1회로 대체했다(시간 손실 · 결과 영향 없음).
 - **원인**: 완료 통지 대신 파일 시각으로 종료를 추정했다.
 - **방지책**: 계획 끝 회귀는 해당 implementer의 완료 보고(SubagentHandback)를 받은 뒤에만 시작한다. 기다리는 동안에는 기록·검토처럼 작업 트리를 읽기만 하는 일을 한다.
+
+### 2026-10-30 · (plans/201 W2 · 팀 리드 기록) 「기준 SHA 이후 파일 불변」 단언이 뒤 Wave의 정당한 정본 편집에 깨졌다 · node `-e` 명령줄이 Windows 한도를 넘었다
+- **실수**: ① W4 verifier가 만든 `tests/test_plan201_w4_verify.py::test_source_tables_unchanged_since_base[config/duty_areas.yaml]`는 계획 시작 SHA(`a289818f`) 대비 `git diff --stat`이 비어야 통과하는 시한부 단언이라, 커밋 이후 기준선에서도 실패하고 W2가 `welcome_queries` 섹션을 더하자 계속 깨졌다(파라미터에서 제외 · 영역 code·라벨 일치는 계약 테스트가 맡음). ② W2가 `checkAuthOnLoad`를 늘리자 `test_ui_plan192_w1_entry.py`의 `node -e <script>` 헬퍼가 Windows 명령줄 한도(32K)를 넘어 `WinError 206`으로 3건이 새로 실패했다(논리 무관 · stdin 전달로 교정 — 같은 헬퍼를 쓰던 기존 206 실패 2건도 함께 해소).
+- **원인**: ① 「이 Wave가 안 건드렸다」는 사실을 저장소 상태 단언으로 남겨, 여러 Wave가 같은 정본을 순차로 고치는 계획에서 수명이 Wave 하나뿐인 테스트가 됐다. ② 앱 함수 본문을 통째로 명령줄 인자로 넘기는 헬퍼는 대상 함수가 커질수록 플랫폼 한도에 걸린다(맥에서는 드러나지 않음).
+- **방지책**: Wave 범위 검증은 리뷰·diff로 하고, 테스트로 남길 때는 지켜야 할 **내용**(키 집합·섹션 값)을 단언한다 — SHA 대비 파일 불변 단언은 쓰지 않는다. node로 JS를 돌리는 테스트 헬퍼는 스크립트를 stdin(`["node","-"]` + `input=`)이나 임시 파일로 넘긴다.

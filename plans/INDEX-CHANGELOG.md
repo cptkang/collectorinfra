@@ -3,6 +3,7 @@
 > `plans/INDEX.md` 머리의 갱신 이력과, 2026-10-06(D-304) 축약 전의 긴 「상태」 칸 원문을 보존한다. **새 갱신 이력은 아래 「갱신 이력」 목록 맨 위에 한 줄씩 추가한다.** INDEX 머리에는 최종 갱신 날짜만 둔다.
 
 ## 갱신 이력
+- 2026-10-30 — 201 W2 완료(WIP 유지): 첫 화면 상황 안내(`WELCOME_GUIDE_ENABLED` · 알람 줄 권한 없으면 비활성+사유) · 담당별 예시 질문(`DUTY_WELCOME_HINTS_ENABLED` · 영역당 3·전체 6 · `verified_by` 없는 문구 로드 제외 · 로드 4/12 · DB 0) · app.js v=50 · css v=47 · 매뉴얼 U-78(캡처 대기) · verifier Critical·Major 0 · D-354 부기 8
 - 2026-10-30 — 204 후속(완료 유지): sre_agent `alarm_facts_from_payload`가 resource_type 파일시스템 계열(`server.FileSystem(s)`·「개별 파일시스템」)을 `filesystem`으로 판정 → 알람명 표면어 없어도 `host.fs` · I/O 우선 유지 · 새 결정 없음
 - 2026-10-30 — 201 W4 완료(WIP 유지): 조사 결과 「영역별 점검 결과」 표·인계 문구(`duty_view` · 판독 계층·가설 상태 옮겨 쓰기 · 근거 없는 normal 0) · `SRE_DUTY_VIEW_ENABLED` 기본 off · 매핑 `sre_agent/config/duty_area_layers.yaml` + 계약 테스트 · briefing-view v=12 · app.js v=49 · 매뉴얼 U-77(캡처 대기) · Q5 검토 생략(피드백 교정) · D-354 부기 7
 - 2026-10-30 — 201 W3 완료(WIP 유지): 알람 카드 「내 담당 · 발생/단서」 배지 · 「내 담당 먼저」(티어 순서 불변) · `cause_hints`·DB 엔진 시그니처 · SSE 키 2(플래그 뒤) · 현황 카드 제니퍼 유형 절 · `DUTY_ALARM_FOCUS_ENABLED` 기본 off · app.js v=48 · admin.js v=16 · 매뉴얼 U-76(캡처 대기) · D-354 부기 6

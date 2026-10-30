@@ -47,6 +47,7 @@ from src.config.services import PortalHelpConfig as PortalHelpConfig
 from src.config.services import RagConfig as RagConfig
 from src.config.services import ResultVizConfig as ResultVizConfig
 from src.config.services import ServerConfig as ServerConfig
+from src.config.services import WelcomeGuideConfig as WelcomeGuideConfig
 from src.config.text2sql import CompositeConfig as CompositeConfig
 from src.config.text2sql import IntentFrameConfig as IntentFrameConfig
 from src.config.text2sql import RouterConfig as RouterConfig
@@ -97,6 +98,8 @@ class AppConfig(BaseSettings):
     component_admin: ComponentAdminConfig = Field(default_factory=ComponentAdminConfig)
     # plans/201 W1: 담당 업무 지정(권한 아님 · D-354) — 기본 off
     duty_area: DutyAreaConfig = Field(default_factory=DutyAreaConfig)
+    # plans/201 W2: 첫 화면 상황 안내(담당 업무와 독립 · 모든 사용자) — 기본 off
+    welcome_guide: WelcomeGuideConfig = Field(default_factory=WelcomeGuideConfig)
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 
