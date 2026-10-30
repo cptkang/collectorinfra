@@ -219,7 +219,8 @@ def test_done_row_collects_segment_audit_and_phase(tmp_path: Path) -> None:
            "incomplete": False, "elapsed_s": 1.5, "prefetch_s": 0.2, "steps": 2,
            "tool_calls_n": 1, "model": "openai/fake-bench", "max_steps": 10,
            "tool_calls": [{"name": "polestar_metric_trend", "args_digest": "x",
-                           "status": "success"}]}
+                           "status": "success"}],
+           "tool_batch_sizes": [1], "max_tools_per_turn": 1, "turns_n": 2}
     replies = iter([{"investigation_id": "i1", "status": "accepted"}, {"status": "running"}, job])
     ctx = _ctx(tmp_path, [], replies, activate=activate)
     row = runner.execute_one(ctx, _KEY, _WORLDS["T01"], "u", audit, "neg.F-DIST")

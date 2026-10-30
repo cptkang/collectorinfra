@@ -13,7 +13,8 @@ dispatcher 배선은 W4다(이 모듈만으로는 기존 경로 무변경).
   기준선 창 = 사건창을 하루·이레 앞으로 옮긴 창(자정·주 경계는 `timedelta`로 넘는다).
 - 스텝은 YAML 순서대로 「단계(stage)」로 묶어 실행한다. 대상 확정 액션(S0·S0′)은 단독 단계이고,
   `when`이 같은 단계의 스텝을 참조하면 새 단계가 된다. 같은 단계의 스텝은 서로 독립이라
-  스레드풀로 병렬 실행하며, 결과는 YAML 순서로 모은다(결정적).
+  스레드풀로 병렬 실행하며, 결과는 YAML 순서로 모은다(결정적). `dag_scheduling`이면 단계 대신 스텝별
+  실행 의존(`playbook_schedule`)으로 준비된 스텝을 바로 제출한다(plans/200 I-2 · `_run_dag`).
 - 판독(R-A~R-H)은 단계마다 다시 계산해 `when` 문맥에 넣는다(판독 이름 · 스텝 ID 아래 보조 사실).
 - `when` 3값: TRUE 실행 · FALSE `skipped(when_false)` · UNKNOWN은 **실행**하고 사유를 남긴다.
 - 스텝마다 개별 try/except · 스텝 타임아웃 · 결손은 `missing` + 사유 · 남은 예산이 없으면 이후 스텝
@@ -26,7 +27,8 @@ dispatcher 배선은 W4다(이 모듈만으로는 기존 경로 무변경).
 from __future__ import annotations
 
 import logging
-import re
+import queue
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -42,6 +44,10 @@ from sre_agent.application.playbook_narrator import (
     PlaybookNarrator,
     StepNarration,
 )
+from sre_agent.application.playbook_schedule import ancestors, deps_of
+
+# 판독 참조 규칙의 정본은 스케줄 모듈이다(plans/200 W2 — 실행기 사본 제거 · 이름만 유지).
+from sre_agent.application.playbook_schedule import reading_refs as _reading_refs
 from sre_agent.application.playbook_steps import (
     ACTION_TITLES,
     POLESTAR_AXIS_ACTIONS,
@@ -74,7 +80,7 @@ from sre_agent.domain.known_error import (
     workaround_items,
 )
 from sre_agent.domain.playbook import AlarmFacts, Playbook, StepSpec, WindowSpec
-from sre_agent.domain.playbook_expr import READING_NAMES, Tri
+from sre_agent.domain.playbook_expr import Tri
 from sre_agent.domain.playbook_hypotheses import (
     REFUTED,
     Action,
@@ -453,17 +459,6 @@ def initial_scope(
     )
 
 
-_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
-_ROOT_NAME = re.compile(r"(?<![.\w])([A-Za-z_]\w*)")
-
-
-def _reading_refs(when: str | None) -> frozenset[str]:
-    """`when`이 경로 루트로 참조하는 판독 이름(따옴표 문자열 · `S2.scope` 같은 하위 경로 제외)."""
-    if not when:
-        return frozenset()
-    return frozenset(_ROOT_NAME.findall(_QUOTED.sub(" ", when))) & READING_NAMES
-
-
 def plan_stages(playbook: Playbook) -> list[list[StepSpec]]:
     """실행 단계 — YAML 순서를 지키며 서로 독립인 연속 스텝을 한 단계로 묶는다(S9 제외).
 
@@ -626,6 +621,8 @@ class PlaybookRun:
     known_errors: 브리핑 `playbook.known_errors[]`(W8 · §5.7.6 — 표시 상태 · 불일치 제외).
     discrimination: 판별 조회(plans/198 I-2) — 켜졌을 때만 실행기가 채운다(직렬화하지 않는다 —
                   실행 후 처리가 `hypotheses[].verification`으로 싣는다).
+    stage_wall_s: 단계별 벽시계 초(plans/200 I-0 — `plan_stages` 순서 · 실 단조 시계 · 재시도·판별
+                  조회 제외). 계측 전용이라 직렬화하지 않는다(`to_dict`·브리핑에 없다).
     """
 
     playbook_id: str
@@ -645,6 +642,7 @@ class PlaybookRun:
     runbook: dict[str, Any] | None = None
     known_errors: list[dict[str, Any]] = field(default_factory=list)
     discrimination: Discrimination | None = None
+    stage_wall_s: list[float] = field(default_factory=list, repr=False)
 
     def section(self, step_id: str) -> StepResult | None:
         return next((s for s in self.sections if s.step == step_id), None)
@@ -744,6 +742,8 @@ def run_playbook(
     on_skip: Callable[[StepResult, str], None] | None = None,
     retry_timed_out: bool = False,
     discriminate_top_n: int = 0,
+    dag_scheduling: bool = False,
+    axis_concurrency: bool = False,
 ) -> PlaybookRun:
     """플레이북을 실행한다. 예외를 내지 않는다 — 실패는 섹션의 상태·사유로 남긴다.
 
@@ -755,6 +755,7 @@ def run_playbook(
                      예산보다 길지 않고, 단계 제출 시각부터 잰다 · W21 P3). 타임아웃 스텝은
                      중단 신호(이후 새 호출 0)와 함께 missing + 진행 계수 사유(W21 P4).
     max_workers:     같은 단계 병렬 스레드 수(1이면 YAML 순서대로 하나씩 — 호출 순서 결정적).
+                     `dag_scheduling`이면 동시에 도는 스텝 수(슬롯).
     for_each_max:    `for_each: targets` 스텝이 도는 대상 수 상한(None = S0 대상 전원).
     polestar_source: 페이로드에 없을 때 쓸 폴스타 소스(호출자가 결정적으로 아는 경우만 — 없으면
     미확정).
@@ -779,6 +780,11 @@ def run_playbook(
                      보류 가설 이 수만큼 판별 스텝을 1회 돌린다(plans/198 I-2 ·
                      `Discrimination`). 재판정은 실행 후 처리가 한다. 재조회(plans/196)에서는
                      돌지 않는다. 기본 0 = 종전 동일.
+    dag_scheduling:  참이면 단계 장벽 대신 스텝별 실행 의존(`playbook_schedule`)으로 준비된 스텝을
+                     `max_workers` 슬롯에 바로 제출한다(plans/200 I-2 · `_run_dag`). 기본 거짓 =
+                     `plan_stages` 단계 실행(종전 동일).
+    axis_concurrency: 스텝 안 독립 축 동시 조회(plans/200 I-3 — `StepContext` 인자로 넘긴다).
+                     기본 거짓 = 축 순차(종전 동일).
     """
     started = clock()
     library = STEP_LIBRARY if steps is None else steps
@@ -807,6 +813,8 @@ def run_playbook(
             on_skip=on_skip,
             retry_timed_out=retry_timed_out,
             discriminate_top_n=discriminate_top_n,
+            dag_scheduling=dag_scheduling,
+            axis_concurrency=axis_concurrency,
         )
     finally:
         if own_cache:
@@ -981,6 +989,8 @@ def _run(
     on_skip: Callable[[StepResult, str], None] | None = None,
     retry_timed_out: bool = False,
     discriminate_top_n: int = 0,
+    dag_scheduling: bool = False,
+    axis_concurrency: bool = False,
 ) -> PlaybookRun:
     notes: list[str] = []
     source, source_reason = resolve_polestar_source(payload, polestar_source)
@@ -1025,8 +1035,25 @@ def _run(
     # 실행기는 단계마다 새로 만든다(W21 교정) — 타임아웃으로 중단된 스텝 스레드가 워커를 붙잡아
     # 다음 단계 스텝이 늦게 시작하지 않게 한다(중단된 스레드는 새 호출을 내지 않는다).
     executor: ThreadPoolExecutor | None = None
+    # 단계 시작 시각(plans/200 I-0 계측 — 단계 벽시계 = 다음 단계 시작까지 · 실 단조 시계)
+    stage_starts: list[float] = []
+    stages_end: float | None = None
+    dag_walls: list[float] | None = None
     try:
-        for stage in plan_stages(playbook):
+        if dag_scheduling:
+            # 의존 기반 실행(plans/200 I-2) — 단계 장벽 없이 준비된 스텝을 슬롯에 바로 제출한다.
+            # 재시도·판별·종합 자리·마감은 아래 현행 경로 그대로다.
+            scope, dag_walls = _run_dag(
+                payload, playbook, scope=scope, windows=windows, rerun=rerun,
+                polestar=polestar, apm=apm, clock=clock, now=now, started=started,
+                budget_s=budget_s, step_timeout_s=step_timeout_s, max_workers=max_workers,
+                for_each_max=for_each_max, library=library,
+                xview_confirm_over=xview_confirm_over, axis_concurrency=axis_concurrency,
+                activity=activity, on_skip=on_skip,
+                results=results, contexts=contexts, timed_out=timed_out,
+            )
+        for stage in [] if dag_scheduling else plan_stages(playbook):
+            stage_starts.append(time.monotonic())
             if rerun is not None:
                 # 재조회 — 폴스타 축이 아닌 단계는 부모 섹션 그대로(도구 호출 0 · plans/196 §5.2)
                 for step in stage:
@@ -1091,7 +1118,10 @@ def _run(
                     now=now,
                     prior=dict(results),
                     xview_confirm_over=xview_confirm_over,
+                    axis_concurrency=axis_concurrency,
                 )
+                # 실행 기록의 스텝 ID를 미리 단다(plans/200 — 래퍼가 액션별 대기열로 배정하지 않게)
+                ctx.step_id = step.id
                 contexts[step.id] = ctx
                 limit = step_wait_s(step, step_timeout_s, remaining)
                 submitted.append(
@@ -1117,6 +1147,7 @@ def _run(
                 new_scope = res.artifacts.get("scope") if step.action in SCOPE_ACTIONS else None
                 if isinstance(new_scope, RunScope):
                     scope = new_scope
+        stages_end = time.monotonic()
         if retry_timed_out and timed_out:
             for step in playbook.steps:
                 if step.id not in timed_out:
@@ -1131,7 +1162,7 @@ def _run(
                     targets=[name for name, _ in picked],
                     target_sources=[src for _, src in picked],
                     polestar=polestar, apm=apm, now=now, prior=dict(results),
-                    xview_confirm_over=xview_confirm_over,
+                    xview_confirm_over=xview_confirm_over, axis_concurrency=axis_concurrency,
                 )
                 ctx.step_id, ctx.retry_of = step.id, first
                 # 재시도마다 새 실행기 — 앞 재시도가 다시 타임아웃돼 중단된 스레드가 워커를
@@ -1159,6 +1190,7 @@ def _run(
             polestar=polestar, apm=apm, now=now, library=library, clock=clock, started=started,
             budget_s=budget_s, step_timeout_s=step_timeout_s, for_each_max=for_each_max,
             xview_confirm_over=xview_confirm_over, activity=activity, on_skip=on_skip,
+            axis_concurrency=axis_concurrency,
         )
 
     for step in playbook.steps:
@@ -1169,6 +1201,11 @@ def _run(
     run = _finish(
         playbook, matched_by, scope, windows, results, contexts, notes, clock, started, budget_s
     )
+    if dag_walls is not None:
+        run.stage_wall_s = dag_walls
+    elif stages_end is not None:
+        bounds = [*stage_starts[1:], stages_end]
+        run.stage_wall_s = [round(e - s, 3) for s, e in zip(stage_starts, bounds)]
     if disc is not None:
         run.discrimination = disc
         for sid, dctx in disc.contexts.items():
@@ -1176,6 +1213,237 @@ def _run(
             run.tool_calls.extend({"step": sid, "tool": t, "args": a} for t, a in dctx.calls)
             run.notes.extend(n for n in list(dctx.limits) if n not in run.notes)
     return run
+
+
+@dataclass
+class _DagSlot:
+    """DAG 실행기에서 도는 스텝 1개 — 슬롯 1개를 쓴다(타임아웃이면 즉시 반환)."""
+
+    step: StepSpec
+    ctx: StepContext
+    fut: Future[StepResult]
+    note: str | None
+    limit: float
+    budget_end: float
+
+    def deadline(self) -> float:
+        """대기 마감 — 시작 시각 + 상한과 제출 시점 예산 끝 중 이른 것(시작 전이면 예산 끝)."""
+        if self.ctx.started_at is None:
+            return self.budget_end
+        return min(self.ctx.started_at + self.limit, self.budget_end)
+
+
+def _dag_worker(
+    step: StepSpec,
+    ctx: StepContext,
+    library: Mapping[str, StepFn],
+    clock: Callable[[], float],
+    fut: Future[StepResult],
+    done: queue.SimpleQueue[str],
+) -> None:
+    """스텝 스레드 본체 — 결과를 `fut`에 싣고 완료를 알린다(취소된 자리면 시작하지 않는다)."""
+    if not fut.set_running_or_notify_cancel():
+        return
+    try:
+        fut.set_result(_exec_step(step, ctx, library, clock))
+    except BaseException as e:  # noqa: BLE001 — 실행기 스레드풀과 같게 결과 쪽으로 넘긴다
+        fut.set_exception(e)
+    finally:
+        done.put(step.id)
+
+
+def _run_dag(
+    payload: Mapping[str, Any],
+    playbook: Playbook,
+    *,
+    scope: RunScope,
+    windows: RunWindows,
+    rerun: RerunHint | None,
+    polestar: BatchCaller | None,
+    apm: BatchCaller | None,
+    clock: Callable[[], float],
+    now: Callable[[], datetime],
+    started: float,
+    budget_s: float,
+    step_timeout_s: float,
+    max_workers: int,
+    for_each_max: int | None,
+    library: Mapping[str, StepFn],
+    xview_confirm_over: int | None,
+    axis_concurrency: bool,
+    activity: ActivityLog | None,
+    on_skip: Callable[[StepResult, str], None] | None,
+    results: dict[str, StepResult],
+    contexts: dict[str, StepContext],
+    timed_out: dict[str, tuple[str, str | None]],
+) -> tuple[RunScope, list[float]]:
+    """의존 기반 수집(plans/200 I-2) — `results`·`contexts`·`timed_out`을 채우고 (최종 범위, 위상
+    레벨별 벽시계 초)를 돌려준다.
+
+    - 직접 의존(`deps_of`)이 모두 끝난 스텝이 준비된다. 준비된 스텝은 YAML 순서로 처리하고, 실행할
+      스텝은 빈 슬롯(`max_workers`)에 스텝별 스레드로 제출한다. 의존이 모두 YAML상 앞 스텝이라
+      슬롯 1개면 YAML 순서 실행과 같다.
+    - 결정성: `when` 문맥과 `prior`는 그 스텝의 조상(`ancestors`) 결과로만 만든다. 범위도 조상 중
+      YAML상 마지막 대상 확정 스텝이 낸 범위(없으면 초기 범위)다 — 완료 순서와 무관하다.
+    - 대기는 가장 이른 마감까지 완료 통지를 기다린다(바쁜 폴링 없음). 마감(시작 시각 + 스텝
+      상한 · 제출 시점 예산 끝 중 이른 것)을 넘긴 스텝은 `_timed_out`(중단 신호)으로 끝내고 슬롯을
+      즉시 돌려준다 — 그 스레드는 기다리지 않는다(W21 교정과 같은 의도).
+    - 예산은 제출 시점에 본다(`skipped(budget)`). `when` 거짓은 슬롯 없이 바로 건너뛴다. 재조회
+      힌트면 폴스타 축이 아닌 스텝은 준비된 즉시 부모 섹션을 쓴다(도구 0 · 슬롯 0).
+    - 끝나면 `results`·`contexts`를 YAML 순서로 다시 넣는다(섹션·호출 목록 순서가 단계 실행과 같게).
+    """
+    order = [st for st in playbook.steps if st.action != _SYNTHESIZE]
+    deps = {st.id: deps_of(st, playbook) for st in order}
+    anc = ancestors(playbook)
+    level: dict[str, int] = {}
+    for st in order:
+        level[st.id] = 1 + max((level[d] for d in deps[st.id]), default=-1)
+    initial = scope
+    waiting: list[StepSpec] = list(order)
+    #: `when`을 통과해 슬롯을 기다리는 스텝 → (메모, 조상 결과)
+    gated: dict[str, tuple[str | None, dict[str, StepResult]]] = {}
+    running: dict[str, _DagSlot] = {}
+    done: queue.SimpleQueue[str] = queue.SimpleQueue()
+    spans: dict[str, tuple[float, float]] = {}
+    begun: dict[str, float] = {}
+
+    def scope_of(sid: str) -> RunScope:
+        out = initial
+        for st in order:
+            if st.id in anc[sid] and st.action in SCOPE_ACTIONS:
+                new_scope = results[st.id].artifacts.get("scope")
+                if isinstance(new_scope, RunScope):
+                    out = new_scope
+        return out
+
+    def settle(step: StepSpec, res: StepResult) -> None:
+        results[step.id] = res
+        t = time.monotonic()
+        spans[step.id] = (begun.pop(step.id, t), t)
+        waiting.remove(step)
+
+    def budget_skip(step: StepSpec) -> None:
+        gated.pop(step.id, None)
+        settle(step, _placeholder(
+            step, "skipped", f"budget — 남은 예산 없음(예산 {budget_s:.0f}s 소진)"
+        ))
+        _notify_skip(results[step.id], BUDGET_SKIP, activity, on_skip)
+
+    def submit(step: StepSpec, note: str | None, prior: dict[str, StepResult],
+               remaining: float) -> None:
+        step_scope = scope_of(step.id)
+        picked = _step_targets(step, step_scope, for_each_max)
+        ctx = StepContext(
+            payload=payload, windows=windows, scope=step_scope, args=step.args,
+            targets=[name for name, _ in picked],
+            target_sources=[src for _, src in picked],
+            polestar=polestar, apm=apm, now=now, prior=prior,
+            xview_confirm_over=xview_confirm_over, axis_concurrency=axis_concurrency,
+        )
+        ctx.step_id = step.id
+        contexts[step.id] = ctx
+        # 실제 대기는 실시간 단조 시계로 잰다(`clock`은 주입된 가짜일 수 있다).
+        slot = _DagSlot(step, ctx, Future(), note, step_wait_s(step, step_timeout_s, remaining),
+                        time.monotonic() + remaining)
+        running[step.id] = slot
+        begun[step.id] = time.monotonic()
+        threading.Thread(
+            target=_dag_worker, args=(step, ctx, library, clock, slot.fut, done),
+            name=f"playbook-step-{step.id}", daemon=True,
+        ).start()
+        # 스레드는 곧바로 시작한다 — 시작 시각이 서야 마감(시작 + 상한)을 잴 수 있다.
+        ctx.started.wait(max(0.0, slot.budget_end - time.monotonic()))
+
+    def advance() -> None:
+        """준비된 스텝을 YAML 순서로 처리한다 — 즉시 끝나는 것(재사용·건너뜀)이 새 준비를 만들면
+        처음부터 다시 훑는다."""
+        changed = True
+        while changed:
+            changed = False
+            for step in list(waiting):
+                if step.id in running or not deps[step.id] <= results.keys():
+                    continue
+                if step.id not in gated:
+                    if rerun is not None and step.action not in POLESTAR_AXIS_ACTIONS:
+                        settle(step, _reused_section(
+                            step, rerun.sections.get(step.id), rerun.parent_investigation_id,
+                            scope=scope_of(step.id), prior_readings=rerun.readings,
+                        ))
+                        changed = True
+                        continue
+                    if budget_s - (clock() - started) <= 0:
+                        budget_skip(step)
+                        changed = True
+                        continue
+                    prior = {st.id: results[st.id] for st in order if st.id in anc[step.id]}
+                    when_ctx = _when_context(prior, _readings_of(playbook, prior))
+                    verdict = (
+                        step.when_expr.evaluate(when_ctx)
+                        if step.when_expr is not None else Tri.TRUE
+                    )
+                    if verdict is Tri.FALSE:
+                        settle(step, _placeholder(step, "skipped", f"when_false — {step.when}"))
+                        if activity is not None or on_skip is not None:
+                            assert step.when_expr is not None
+                            because = skip_because(step.when_expr, when_ctx, _titles(playbook))
+                            _notify_skip(results[step.id], because, activity, on_skip)
+                        changed = True
+                        continue
+                    # UNKNOWN은 실행한다(단계 실행과 같은 이유 — 결손이 진단 단계를 침묵 생략시키지
+                    # 않게).
+                    gated[step.id] = (
+                        f"when 판정 불가(결손) — 조건 `{step.when}` 무시하고 실행"
+                        if verdict is Tri.UNKNOWN else None,
+                        prior,
+                    )
+                if len(running) >= max_workers:
+                    continue
+                remaining = budget_s - (clock() - started)
+                if remaining <= 0:
+                    budget_skip(step)
+                    changed = True
+                    continue
+                note, prior = gated.pop(step.id)
+                submit(step, note, prior, remaining)
+
+    advance()
+    while running:
+        nearest = min(slot.deadline() for slot in running.values())
+        try:
+            done.get(timeout=max(0.0, nearest - time.monotonic()))
+        except queue.Empty:
+            pass
+        for step in [st for st in order if st.id in running]:
+            slot = running[step.id]
+            if slot.fut.done():
+                res = slot.fut.result()
+            elif time.monotonic() >= slot.deadline():
+                res = _timed_out(step, slot.fut, slot.ctx, slot.limit)
+                if (slot.ctx.abort_reason or "").startswith(STEP_TIMEOUT_PREFIX):
+                    timed_out[step.id] = (slot.ctx.abort_reason or "", slot.note)
+            else:
+                continue
+            del running[step.id]
+            res.reason = _join(slot.note, res.reason)
+            settle(step, res)
+        advance()
+
+    final = initial
+    for st in order:
+        new_scope = results[st.id].artifacts.get("scope") if st.action in SCOPE_ACTIONS else None
+        if isinstance(new_scope, RunScope):
+            final = new_scope
+    by_yaml = {st.id: results[st.id] for st in order}
+    results.clear()
+    results.update(by_yaml)
+    ctx_by_yaml = {st.id: contexts[st.id] for st in order if st.id in contexts}
+    contexts.clear()
+    contexts.update(ctx_by_yaml)
+    walls: list[float] = []
+    for lv in sorted({level[sid] for sid in spans}):
+        members = [spans[sid] for sid in spans if level[sid] == lv]
+        walls.append(round(max(e for _, e in members) - min(b for b, _ in members), 3))
+    return final, walls
 
 
 #: 판별 조회 사유(plans/198 I-2 · 결정적).
@@ -1204,6 +1472,7 @@ def _discriminate(
     xview_confirm_over: int | None,
     activity: ActivityLog | None = None,
     on_skip: Callable[[StepResult, str], None] | None = None,
+    axis_concurrency: bool = False,
 ) -> Discrimination:
     """판별 조회 1회(plans/198 I-2 · 결정적 · LLM 0) — 수집 결과로 가설을 1차 평가해 상위 `top_n`개
     판단 보류 가설의 판별 스텝을 순위 순서대로 하나씩 돈다.
@@ -1246,7 +1515,7 @@ def _discriminate(
                 targets=[name for name, _ in picked],
                 target_sources=[src for _, src in picked],
                 polestar=polestar, apm=apm, now=now, prior={**results, **disc.results},
-                xview_confirm_over=xview_confirm_over,
+                xview_confirm_over=xview_confirm_over, axis_concurrency=axis_concurrency,
             )
             sctx.step_id = d.step   # 실행 기록의 스텝 ID(래퍼가 액션 이름 대신 이 ID로 기록)
             limit = step_wait_s(spec, step_timeout_s, remaining)

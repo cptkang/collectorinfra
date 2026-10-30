@@ -15,7 +15,10 @@ import pytest
 from holmes.core.models import ToolCallResult
 from holmes.core.tools import StructuredToolResult, StructuredToolResultStatus
 from holmes.utils.stream import StreamEvents, StreamMessage
-from sre_agent.application.investigation_dispatcher import InvestigationDispatcher
+from sre_agent.application.investigation_dispatcher import (
+    PLAYBOOK_TIMING_KEYS,
+    InvestigationDispatcher,
+)
 from sre_agent.application.investigation_jobs import JobStore
 from sre_agent.application.playbook_steps import StepContext
 from sre_agent.diagnosis import DiagnosisResult, ToolCallRecord, _StreamDrain
@@ -373,9 +376,13 @@ def test_default_diagnose_fn_passes_activity_to_agent_ask() -> None:
 
 
 def _untimed(value: Any) -> Any:
-    """소요 시간 칸(`elapsed_ms`·`timings`)을 뺀 사본."""
+    """소요 시간 칸(`elapsed_ms`·`timings`·플레이북 실행 시간 계측 — plans/200 I-0)을 뺀 사본.
+
+    `opinion_wait_s`는 단계 끝 해석 실행기(실행 기록 on)가 있을 때만 값이 있어 on/off가 다르다.
+    """
     if isinstance(value, dict):
-        return {k: _untimed(v) for k, v in value.items() if k not in ("elapsed_ms", "timings")}
+        return {k: _untimed(v) for k, v in value.items()
+                if k not in ("elapsed_ms", "timings", *PLAYBOOK_TIMING_KEYS)}
     if isinstance(value, list):
         return [_untimed(v) for v in value]
     return value

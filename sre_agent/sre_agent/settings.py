@@ -339,6 +339,21 @@ class AgentSettings(BaseSettings):
     # 심층(HolmesGPT) 결과는 가설 상태를 바꾸지 않는다(D-341 ⑮ 그대로).
     sre_playbook_discriminator_enabled: bool = False
     sre_playbook_discriminator_top_n: int = Field(default=2, ge=1)
+    # ── 조사 실행 병렬화(plans/200 · D-353) ──
+    # 의존 기반 스텝 스케줄링(I-2). 기본 off = 종전 단계 실행(YAML 연속 구간 묶음)과 비트 동일.
+    # 켜면 의존(when 참조 · 판독 입력 · prior 입력 · 앞선 대상 확정)이 모두 끝난 스텝부터 시작한다.
+    # when 평가·prior·단계 끝 해석의 「앞 단계 결과」는 조상 스텝 결과로 한정한다(결정적 · Q2).
+    sre_playbook_dag_scheduling_enabled: bool = False
+    # 플레이북 스텝 동시 실행 수(단계 실행·의존 스케줄링 공통 · 1 = YAML 순서대로 하나씩).
+    # 기본 4 = 종전 실행기 기본값(`DEFAULT_MAX_WORKERS`)과 같다(Q3). 실제 상한은 전역 도구 동시
+    # 상한(`sre_tool_global_concurrency` · D-347)이다.
+    sre_playbook_max_workers: int = Field(default=4, ge=1, le=8)
+    # 스텝 안 독립 축 동시 조회(I-3 — S5 관련 알람 · S7 최근 변경). 기본 off = 축 순차(비트 동일).
+    # 켜도 호출 기록·도구 결과 순서·실행 기록 이벤트는 고정 축 순서다.
+    sre_playbook_axis_concurrency_enabled: bool = False
+    # 심층 조사(HolmesGPT) 지침의 순서형 문구를 「대상 확정 → 한 턴에 함께 요청」형으로 바꾼다(I-4).
+    # 기본 off = 지침 문자열 바이트 동일(KV 캐시·프롬프트 렌더 불변).
+    sre_guidance_parallel_tools_enabled: bool = False
     # SOP 앵커(plans/198 I-9 · D-341 ⑮ · 결정적 문구). 기본 off = 심층 지시 문자열 비트 동일.
     # 켜면 플레이북 모드 심층 조사(HolmesGPT) 지시에 그 플레이북의 스텝 순서(서술 초점 · 액션 ID ·
     # 조건부 표시)를 조사 계획 앵커로 넣는다 — 정적 지시만이며 실행 결과·판정은 넣지 않는다.

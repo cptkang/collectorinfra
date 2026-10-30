@@ -24,6 +24,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from statistics import mean
@@ -341,6 +342,11 @@ def parse_response(tool: str, args: dict, raw: str) -> ToolResponse:
 STEP_ABORTED = "스텝 타임아웃으로 중단"
 
 
+def _aborted(calls: Sequence[tuple[str, dict]]) -> list[ToolResponse]:
+    """중단된 스텝의 호출 — 부르지 않고(또는 기록하지 않고) 전부 `STEP_ABORTED` 오류 응답."""
+    return [ToolResponse(t, dict(a), None, STEP_ABORTED) for t, a in calls]
+
+
 class StepContext:
     """스텝 1회 실행 문맥. 스텝마다 새로 만든다(호출 기록이 스텝별).
 
@@ -364,6 +370,7 @@ class StepContext:
         adapters: AdapterRegistry | None = None,
         target_sources: Sequence[str | None] | None = None,
         xview_confirm_over: int | None = None,
+        axis_concurrency: bool = False,
     ) -> None:
         self.payload = payload
         self.windows = windows
@@ -383,6 +390,9 @@ class StepContext:
         )
         #: 브리핑 한계 문장(실행기가 `PlaybookRun.notes`로 모은다 · 순서 보존 · 중복 제거).
         self.limits: list[str] = []
+        #: 스텝 안 독립 축 동시 조회(plans/200 I-3 · `sre_playbook_axis_concurrency_enabled`).
+        #: False = 축 순차(종전 비트 동일).
+        self.axis_concurrency = bool(axis_concurrency)
         self.polestar = polestar
         self.apm = apm
         self.now = now
@@ -447,15 +457,92 @@ class StepContext:
         if not calls:
             return []
         if self.cancel.is_set():
-            return [ToolResponse(t, dict(a), None, STEP_ABORTED) for t, a in calls]
+            return _aborted(calls)
         caller = self.apm if axis == "apm" else self.polestar
         if caller is None:
-            msg = "APM 게이트웨이 미구성" if axis == "apm" else "폴스타 MCP 미구성"
-            out_missing = [ToolResponse(t, dict(a), None, msg) for t, a in calls]
-            for r in out_missing:
-                self._record_end(r, None, "error", None, msg)
-            return out_missing
+            return self._unconfigured(axis, calls)
         cached = self._record_start(caller, calls)
+        raws, elapsed_ms = self._invoke(caller, calls)
+        if self.cancel.is_set():
+            # 중단 뒤 돌아온 배치 — 계수만 갱신하고 기록·적재는 하지 않는다(W21 교정)
+            return _aborted(calls)
+        return self._store(calls, raws, cached, elapsed_ms)
+
+    def call_axes(
+        self, groups: Sequence[tuple[Axis, Sequence[tuple[str, dict]]]]
+    ) -> list[list[ToolResponse]]:
+        """서로 결과를 쓰지 않는 축별 호출 묶음을 부른다 — 결과는 `groups` 순서(plans/200 I-3).
+
+        `axis_concurrency`가 False면 축마다 `call()`을 차례로 부른다(종전 비트 동일). True면 축별
+        배치 콜러블 호출만 동시에(축 수만큼 스레드) 내고, 기록(`tools`·`calls`·`outputs`·
+        `tool_end`)은 모두 돌아온 뒤 `groups` 순서로 한다 — 결과·적재 순서가 off와 같다. 실행
+        기록 개수도 같고, 순서만 `tool_start`(축 순서 · 호출 전) → `tool_end`(축 순서 · 전부 반환
+        뒤)로 실제 동시성을 따른다. 배치 동시·전역 상한(D-347)은 콜러블 안의 것이라 그대로다.
+        중단은 호출 전·전부 반환 뒤에 본다(`call()`과 같은 의미). 한 축 콜러블이 예외를 내면 다른
+        축을 기다린 뒤 축 순서상 첫 예외를 다시 낸다. 그 전에 실제로 호출한 축은 모두 기록한다 —
+        돌아온 축은 적재·`tool_end`, 예외 축은 `tool_end(status=error)`만(「진행 중」이 남지
+        않게). 앞 축이 예외면 off(뒤 축을 부르지 않음)와 달리 뒤 축 호출이 `calls`에 실린다(on
+        전용 차이). 호출하지 않은 미구성 축은 첫 예외 뒤로는 기록하지 않는다.
+        """
+        if not self.axis_concurrency:
+            return [self.call(axis, calls) for axis, calls in groups]
+        # 호출 전 판정은 축 순서로 — 확정 결과(빈 호출·중단) · 미구성(기록은 뒤에서) · 호출 대상
+        done: dict[int, list[ToolResponse]] = {}
+        live: dict[int, tuple[BatchCaller, list[bool]]] = {}
+        for i, (axis, calls) in enumerate(groups):
+            if not calls:
+                done[i] = []
+            elif self.cancel.is_set():
+                done[i] = _aborted(calls)
+            else:
+                caller = self.apm if axis == "apm" else self.polestar
+                if caller is not None:
+                    live[i] = (caller, self._record_start(caller, calls))
+        futures: dict[int, Future[tuple[list[str], int]]] = {}
+        if live:
+            with ThreadPoolExecutor(
+                max_workers=len(live), thread_name_prefix="playbook-axis"
+            ) as pool:
+                for i, (caller, _) in live.items():
+                    futures[i] = pool.submit(self._invoke, caller, groups[i][1])
+        out: list[list[ToolResponse]] = []
+        first_exc: BaseException | None = None
+        for i, (axis, calls) in enumerate(groups):
+            if i not in live:
+                if first_exc is None:
+                    out.append(done[i] if i in done else self._unconfigured(axis, calls))
+                continue
+            exc = futures[i].exception()
+            if self.cancel.is_set():
+                # 중단 뒤 돌아온 배치 — 기록·적재하지 않는다(`call()`과 같은 의미)
+                out.append(_aborted(calls))
+            elif exc is not None:
+                msg = f"{type(exc).__name__}: {exc}"
+                for t, a in calls:
+                    self._record_end(ToolResponse(t, dict(a), None, msg), None, "error", None, msg)
+            else:
+                raws, elapsed_ms = futures[i].result()
+                out.append(self._store(calls, raws, live[i][1], elapsed_ms))
+            if exc is not None and first_exc is None:
+                first_exc = exc
+        if first_exc is not None:
+            raise first_exc
+        return out
+
+    def _unconfigured(self, axis: Axis, calls: Sequence[tuple[str, dict]]) -> list[ToolResponse]:
+        """콜러블이 없는 축 — 부르지 않고 전부 미구성 오류 응답(`tool_end`만 남긴다)."""
+        msg = "APM 게이트웨이 미구성" if axis == "apm" else "폴스타 MCP 미구성"
+        out_missing = [ToolResponse(t, dict(a), None, msg) for t, a in calls]
+        for r in out_missing:
+            self._record_end(r, None, "error", None, msg)
+        return out_missing
+
+    def _invoke(
+        self, caller: BatchCaller, calls: Sequence[tuple[str, dict]]
+    ) -> tuple[list[str], int]:
+        """배치 콜러블 1회 호출 — 진행 계수를 갱신하고 `(원시 응답들, 소요 ms)`를 돌려준다.
+
+        예외는 그대로 낸다(대기 목록에서는 빼고, 완료 계수는 올리지 않는다)."""
         names = [t for t, _ in calls]
         with self._progress_lock:
             self.requested += len(calls)
@@ -469,10 +556,16 @@ class StepContext:
                     self.inflight.remove(name)
         with self._progress_lock:
             self.completed += len(calls)
-        if self.cancel.is_set():
-            # 중단 뒤 돌아온 배치 — 계수만 갱신하고 기록·적재는 하지 않는다(W21 교정)
-            return [ToolResponse(t, dict(a), None, STEP_ABORTED) for t, a in calls]
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return raws, int((time.monotonic() - t0) * 1000)
+
+    def _store(
+        self,
+        calls: Sequence[tuple[str, dict]],
+        raws: list[str],
+        cached: Sequence[bool],
+        elapsed_ms: int,
+    ) -> list[ToolResponse]:
+        """돌아온 배치를 기록·적재한다(응답 누락 패딩 · `tools`·`calls`·`outputs` · `tool_end`)."""
         if len(raws) < len(calls):
             raws += [json.dumps({"error": "응답 누락"})] * (len(calls) - len(raws))
         out: list[ToolResponse] = []
@@ -1826,6 +1919,35 @@ def related_alarms(ctx: StepContext) -> StepResult:
     alarms = []
     polestar_ok = False
     blocked = _polestar_reason(ctx)
+    instance, src = ctx.target_items()[0] if ctx.targets else (ctx.scope.alarm_instance, None)
+    pol_calls = [] if blocked else [build_calls(_evidence_scope(ctx))[0]]
+
+    def _apm_calls() -> list[tuple[str, dict]]:
+        if ctx.apm is None or not instance:
+            return []
+        return [
+            (
+                APM_EVENTS,
+                _apm_args(
+                    ctx,
+                    APM_EVENTS,
+                    src,
+                    instance_name=instance,
+                    reference_time=ctx.windows.reference_time,
+                    lookback_minutes=ctx.windows.lookback_minutes,
+                ),
+            )
+        ]
+
+    if ctx.axis_concurrency:
+        # 두 축은 서로의 결과를 쓰지 않는다(제니퍼 인스턴스는 대상·범위에서) — 한 번에 부른다(I-3)
+        apm_calls = _apm_calls()
+        pol_resps, apm_resps = ctx.call_axes([("polestar", pol_calls), ("apm", apm_calls)])
+    else:
+        # 종전 순서 그대로 — 폴스타 호출 뒤에 제니퍼 인자(`_apm_args`의 한계 기록)를 만든다
+        pol_resps = ctx.call("polestar", pol_calls)
+        apm_calls = _apm_calls()
+        apm_resps = ctx.call("apm", apm_calls)
     pol_part: str
     if blocked:
         skipped = _polestar_skipped(ctx)
@@ -1834,8 +1956,7 @@ def related_alarms(ctx: StepContext) -> StepResult:
         axes["polestar"] = {"status": "skipped" if skipped else "missing", "reason": blocked}
         pol_part = _axis_failed(AXIS_LABELS["polestar"], blocked, True)
     else:
-        call = build_calls(_evidence_scope(ctx))[0]
-        resp = ctx.call_one("polestar", *call)
+        (resp,) = pol_resps
         if resp.ok:
             polestar_ok = True
             alarms = _alarms(resp.data or {}, notes)
@@ -1848,25 +1969,13 @@ def related_alarms(ctx: StepContext) -> StepResult:
     events: list[dict[str, Any]] = []
     points: list[EpisodePoint] = []
     apm_ok = False
-    instance, src = ctx.target_items()[0] if ctx.targets else (ctx.scope.alarm_instance, None)
-    if ctx.apm is None or not instance:
+    if not apm_calls:
         missing.append(APM_EVENTS)
         why = "APM 게이트웨이 미구성" if ctx.apm is None else "대상 인스턴스 없음"
         axes["apm"] = {"status": "missing", "reason": why}
         apm_part = _axis_failed(AXIS_LABELS["apm"], why, True)
     else:
-        ev = ctx.call_one(
-            "apm",
-            APM_EVENTS,
-            _apm_args(
-                ctx,
-                APM_EVENTS,
-                src,
-                instance_name=instance,
-                reference_time=ctx.windows.reference_time,
-                lookback_minutes=ctx.windows.lookback_minutes,
-            ),
-        )
+        (ev,) = apm_resps
         if ev.ok:
             apm_ok = True
             for row in (ev.data or {}).get("rows") or []:
@@ -2043,7 +2152,32 @@ def recent_changes(ctx: StepContext) -> StepResult:
             )
 
     parts: dict[str, str] = {}  # 축별 결정적 요약(plans/196 D4)
-    if ctx.apm is None or not instance:
+    # 두 축은 서로의 결과를 쓰지 않는다(제니퍼 인스턴스는 대상·범위에서) — 한 번에 부른다(I-3)
+    apm_calls: list[tuple[str, dict]] = []
+    if ctx.apm is not None and instance:
+        args = {"instance_name": instance, "reference_time": ctx.windows.reference_time}
+        apm_calls = [
+            (APM_SOURCE_CHANGES, _apm_args(ctx, APM_SOURCE_CHANGES, src, **args)),
+            (APM_CHANGE_IMPACT, _apm_args(ctx, APM_CHANGE_IMPACT, src, **args)),
+        ]
+    blocked = _polestar_reason(ctx)
+    link_skipped = bool(blocked) and _polestar_skipped(ctx)
+    pol_calls: list[tuple[str, dict]] = []
+    if not blocked:
+        scope = _evidence_scope(ctx)
+        pol_calls = [
+            (
+                TOOL_CHANGES,
+                {
+                    "source": scope.source,
+                    "server_name": scope.server_name,
+                    "reference_time": ctx.windows.reference_time,
+                    "lookback_minutes": hours * 60,
+                },
+            )
+        ]
+    apm_resps, pol_resps = ctx.call_axes([("apm", apm_calls), ("polestar", pol_calls)])
+    if not apm_calls:
         axes["apm"] = {
             "status": "missing",
             "reason": "APM 게이트웨이 미구성" if ctx.apm is None else "대상 인스턴스 없음",
@@ -2051,14 +2185,7 @@ def recent_changes(ctx: StepContext) -> StepResult:
         missing += [APM_SOURCE_CHANGES, APM_CHANGE_IMPACT]
         parts["apm"] = _axis_failed(AXIS_LABELS["apm"], axes["apm"]["reason"], True)
     else:
-        args = {"instance_name": instance, "reference_time": ctx.windows.reference_time}
-        sc, ci = ctx.call(
-            "apm",
-            [
-                (APM_SOURCE_CHANGES, _apm_args(ctx, APM_SOURCE_CHANGES, src, **args)),
-                (APM_CHANGE_IMPACT, _apm_args(ctx, APM_CHANGE_IMPACT, src, **args)),
-            ],
-        )
+        sc, ci = apm_resps
         for r in (sc, ci):
             if not r.ok:
                 missing.append(r.tool)
@@ -2083,8 +2210,6 @@ def recent_changes(ctx: StepContext) -> StepResult:
                 parts["apm"] += f"(일부 조회 못 함 — {axes['apm']['reason']})"
         else:
             parts["apm"] = _axis_failed(AXIS_LABELS["apm"], axes["apm"]["reason"], False)
-    blocked = _polestar_reason(ctx)
-    link_skipped = bool(blocked) and _polestar_skipped(ctx)
     if blocked:
         if link_skipped:  # 연결 힌트로 생략 — 결손이 아니다(plans/196 §5.2)
             axes["polestar"] = {"status": "skipped", "reason": blocked}
@@ -2093,17 +2218,7 @@ def recent_changes(ctx: StepContext) -> StepResult:
             missing.append(TOOL_CHANGES)
         parts["polestar"] = _axis_failed(AXIS_LABELS["polestar"], blocked, True)
     else:
-        scope = _evidence_scope(ctx)
-        pc = ctx.call_one(
-            "polestar",
-            TOOL_CHANGES,
-            {
-                "source": scope.source,
-                "server_name": scope.server_name,
-                "reference_time": ctx.windows.reference_time,
-                "lookback_minutes": hours * 60,
-            },
-        )
+        (pc,) = pol_resps
         if not pc.ok:
             axes["polestar"] = {"status": "missing", "reason": pc.error}
             missing.append(TOOL_CHANGES)
@@ -2437,6 +2552,15 @@ STEP_LIBRARY: dict[str, StepFn] = {
 #: 대상 확정 액션 — 실행기가 결과의 `artifacts["scope"]`로 범위를 갱신한다.
 SCOPE_ACTIONS = frozenset({"scope.resolve_was_targets", "scope.host_to_was"})
 
+#: 액션 → 그 스텝 함수가 `ctx.prior`(앞 결과)에서 읽는 액션(plans/200 I-1 · 실행 의존 계산용).
+#: 표에 없는 액션은 앞 결과를 읽지 않는다. 가드: `tests/test_plan200_w1_deps.py`.
+PRIOR_INPUTS: Mapping[str, frozenset[str]] = {
+    # `target: was_cpu_top` — 앞 S2의 프로세스 CPU 최대 인스턴스(`_was_cpu_top`)
+    "apm.active_services": frozenset({"apm.runtime_and_pool"}),
+    # 앞 단계 실행 중 요청(S3a) 중 CPU 시간 상위
+    "apm.active_sql": frozenset({"apm.active_services"}),
+}
+
 
 __all__ = [
     "ACTION_AXIS",
@@ -2459,6 +2583,7 @@ __all__ = [
     "POLESTAR_UNRESOLVED",
     "RunScope",
     "RunWindows",
+    "PRIOR_INPUTS",
     "SCOPE_ACTIONS",
     "scope_polestar_reason",
     "section_axis_status",

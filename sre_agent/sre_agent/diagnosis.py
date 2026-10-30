@@ -151,6 +151,11 @@ class DiagnosisResult:
     # 정체 가드(plans/198 I-10 · `stall_stop_enabled`)로 조사를 멈춘 사유 1줄. 값이 있으면
     # `incomplete=True`다. None이면 종전과 같다(플래그 off면 늘 None).
     stalled: str | None = None
+    # 턴 계측(plans/200 I-0 · 가산) — `_StreamDrain`이 센 값. `tool_batch_sizes`는 도구를 요청한
+    # 턴마다 그 턴의 도구 수(요청 순 · 도구 0인 턴은 넣지 않는다), `turns_n`은 드레인이 시작한
+    # LLM 턴 수(도구 0인 결론 턴 포함). 드레인을 거치지 않은 결과는 None.
+    tool_batch_sizes: list[int] | None = None
+    turns_n: int | None = None
 
 
 class InvestigationStalledError(Exception):
@@ -326,6 +331,9 @@ class _StreamDrain:
     (`TOOL_RESULT`·`TOKEN_COUNT`)에 대화가 실리지 않아 실행 중 대화에 결론 지시를 넣을 공개
     통로가 없다 — 그래서 주입 대신 협조적으로 멈추고, 결론은
     dispatcher의 부분 브리핑(원장 기반 · 결정적)이 낸다. 없으면 판정 0(종전 그대로).
+
+    턴 계측(plans/200 I-0)은 인스턴스 속성 `tool_batch_sizes`·`turns_n`에만 남긴다 — 결과
+    조립(`LLMResult`)은 바뀌지 않는다(위 동등성 테스트 그대로).
     """
 
     def __init__(self, llm: ToolCallingLLM, activity: ActivityLog | None = None,
@@ -347,6 +355,10 @@ class _StreamDrain:
         self._judge_round = 0
         self._judge_t0: float | None = None
         self._tool_t0: dict[str, float] = {}
+        # 턴 계측(plans/200 I-0) — 도구를 요청한 턴의 도구 수(요청 순) · 시작한 LLM 턴 수.
+        # 결과 조립(`LLMResult`)에는 넣지 않는다 — `ask()`가 `DiagnosisResult`에 옮긴다.
+        self.tool_batch_sizes: list[int] = []
+        self.turns_n = 0
 
     # ── 실행 기록 훅(plans/187 W13 — activity 없으면 무동작) ──
 
@@ -429,6 +441,7 @@ class _StreamDrain:
             start_tool_count = 0
             saw_tool_results = False
             stream_steps = 0  # 이 스트림에서 끝난 도구 묶음 수(정체 중단 시 step 수)
+            self.turns_n += 1
             self._judge_start()
             for event in stream:
                 self._check_cancelled()
@@ -438,6 +451,7 @@ class _StreamDrain:
                     saw_tool_results = False
                     stream_steps += 1
                     self._check_stalled(self.num_llm_calls + stream_steps)
+                    self.turns_n += 1
                     self._judge_start()  # 도구 묶음이 끝났다 — 다음 판단 회차
                 self._record(event)
                 if event.event == StreamEvents.START_TOOL:
@@ -451,6 +465,9 @@ class _StreamDrain:
                         display_logger.info(
                             f"The AI requested [bold]{start_tool_count}[/bold] tool call(s)."
                         )
+                        # holmes는 한 턴의 START_TOOL을 모두 낸 뒤 결과를 낸다 — 첫 결과 시점의
+                        # 개수가 그 턴의 도구 수다(plans/200 I-0).
+                        self.tool_batch_sizes.append(start_tool_count)
                         start_tool_count = 0
                 elif event.event == StreamEvents.TOKEN_COUNT:
                     # `call()`에 없는 유일한 분기 — 라운드 누적 비용을 붙든다(상한 예외 회수용).
@@ -552,6 +569,16 @@ class _StreamDrain:
         for tc in self.tool_calls:
             deduped[tc.get("tool_call_id", id(tc))] = tc
         return list(deduped.values())
+
+
+def _turn_metrics(drain: _StreamDrain) -> dict[str, Any]:
+    """드레인의 턴 계측 → `DiagnosisResult` 가산 필드(plans/200 I-0 — 사본).
+
+    계측 속성이 없는 드레인 대역(테스트 가짜 등)이면 None — 종전 결과 그대로다.
+    """
+    sizes = getattr(drain, "tool_batch_sizes", None)
+    return {"tool_batch_sizes": list(sizes) if sizes is not None else None,
+            "turns_n": getattr(drain, "turns_n", None)}
 
 
 def _steps_from_error(msg: str, fallback: int) -> int:
@@ -752,6 +779,7 @@ class DiagnosisAgent:
                 incomplete=True,
                 steps=partial.num_llm_calls,
                 stalled=stalled.reason,
+                **_turn_metrics(drain),
             )
         except Exception as exc:  # noqa: BLE001 — holmes는 전용 예외 클래스 없이 plain Exception
             drain._judge_end("error")  # 열린 판단 회차가 있으면 실패로 닫는다(기록 없으면 무동작)
@@ -770,6 +798,7 @@ class DiagnosisAgent:
                     total_cost=partial.total_cost,
                     incomplete=True,
                     steps=partial.num_llm_calls,
+                    **_turn_metrics(drain),
                 )
             raise
         return DiagnosisResult(
@@ -779,4 +808,5 @@ class DiagnosisAgent:
             total_tokens=result.total_tokens,
             total_cost=result.total_cost,
             steps=result.num_llm_calls,
+            **_turn_metrics(drain),
         )

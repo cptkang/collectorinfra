@@ -83,6 +83,7 @@ from sre_agent.application.playbook_runner import (
     step_finding,
     step_narration_request,
 )
+from sre_agent.application.playbook_schedule import ancestors, narration_basis
 from sre_agent.application.playbook_steps import (
     ACTION_TITLES,
     STEP_LIBRARY,
@@ -153,7 +154,11 @@ _MAX_DEDUP_KEYS = 4096
 #: 이 키를 빼고 종전 키와 비교한다(키 이름의 단일 출처).
 INSTRUMENTATION_KEYS: tuple[str, ...] = (
     "incomplete", "elapsed_s", "prefetch_s", "steps", "tool_calls_n", "model", "max_steps",
-    "tool_calls",
+    "tool_calls", "tool_batch_sizes", "max_tools_per_turn", "turns_n",
+)
+#: 플레이북 모드 `done` 잡·감사의 실행 시간 가산 키(plans/200 I-0 — 플레이북 경로에서만).
+PLAYBOOK_TIMING_KEYS: tuple[str, ...] = (
+    "stage_wall_s", "collect_s", "opinion_wait_s", "synthesis_s", "deep_dive_wait_s",
 )
 
 
@@ -272,6 +277,8 @@ class _FlowHooks:
     on_skip: Callable[[StepResult, str], None] | None = None
     #: 실행기를 만들지 못한 실제 사유(예: 남은 시간 부족) — None이면 LLM 미배선(「소견기 미구성」).
     no_stream_reason: str | None = None
+    #: 미룬 단계 끝 처리 전부 실행(plans/200 W2 — 의존 기반 실행에서만 채운다 · 수집 직후 호출).
+    flush: Callable[[], None] | None = None
 
 
 def _opinion_view(op: Opinion) -> dict[str, Any]:
@@ -1404,12 +1411,18 @@ class InvestigationDispatcher:
         """SOP 앵커 플래그(plans/198 I-9) — 설정 대역에 필드가 없으면 off(종전 그대로)."""
         return bool(getattr(self._settings, "sop_anchor_enabled", False))
 
+    def _parallel_tools(self) -> bool:
+        """턴당 다중 도구 호출 지시 플래그(plans/200 I-4) — 필드가 없으면 off(종전 그대로)."""
+        return bool(getattr(self._settings, "sre_guidance_parallel_tools_enabled", False))
+
     @staticmethod
     def _deep_job(job: JobLike, pb: Playbook, prior_findings: dict | None,
-                  cache: ToolResultCache, *, sop_anchor: bool = False) -> JobLike:
+                  cache: ToolResultCache, *, sop_anchor: bool = False,
+                  parallel_tools: bool = False) -> JobLike:
         """심층 조사 입력 — 잡 사본에 정적 지시(+ conditional이면 판정 요약)만 싣는다.
 
         `sop_anchor`(plans/198 I-9)면 플레이북 스텝 순서를 조사 계획 앵커로 더한다(정적 지시만).
+        `parallel_tools`(plans/200 I-4)면 턴당 다중 도구 호출 지시를 더한다(정적 지시만).
 
         `correlation`은 비운다 — 플레이북 결과(S4·S5 상관)는 `prior_findings` 요약으로만 넘기고,
         `parallel`이면 아무 결과도 넘기지 않는다(독립된 두 번째 의견 · §5.0.1 2번).
@@ -1425,6 +1438,7 @@ class InvestigationDispatcher:
             focus=pb.deep_dive.focus,
             prior_findings=prior_findings,
             sop_steps=pb.steps if sop_anchor else None,
+            parallel_tools=parallel_tools,
         )
         return deep_job
 
@@ -1504,6 +1518,18 @@ class InvestigationDispatcher:
         # 첫 시도의 늦은 결과는 0건이다.
         ended: set[tuple[str, int]] = set()
         last: dict[str, str | None] = {"current": None}
+        # 의존 기반 실행(plans/200 I-2 · Q2)이면 단계 끝 해석의 앞 단계 결과·「왜」를 조상
+        # 스텝으로, 판독을 해석 기준(`narration_basis` = 조상 + 자기 판독 입력)으로 한정한다 —
+        # 완료 순서에 따라 문장·LLM 입력이 흔들리지 않게. off면 None(끝난 것 전부 · 종전).
+        dag = bool(getattr(self._settings, "sre_playbook_dag_scheduling_enabled", False))
+        dag_anc = ancestors(pb) if dag else None
+        dag_basis = narration_basis(pb) if dag else None
+        # 해석 기준이 아직 정착하지 않은 스텝의 단계 끝 처리 묶음(DAG + 실행 기록일 때만 쓴다).
+        # 정착 = 단계 끝을 낸 완료(ok·missing·중단) · 건너뜀. 묶음은 기준이 모두 정착하고 조상
+        # 묶음이 모두 끝나면 마지막으로 정착시킨 스레드가 실행한다(워커는 기다리지 않는다).
+        settled: set[str] = set()
+        resolved: set[str] = set()  # 묶음을 실행했거나 건너뛴 스텝(조상 결과 한 줄이 정해짐)
+        deferred: dict[str, Callable[[], None]] = {}
         event = job.payload.get("event") if isinstance(job.payload, Mapping) else None
         alarm_name = (
             str(event.get("alarmName") or "").strip() or None
@@ -1535,8 +1561,9 @@ class InvestigationDispatcher:
                 with lock:
                     preset = getattr(ctx, "step_id", None)
                     if preset:
-                        # 재시도(W22)·판별 스텝(plans/198 재검토 Minor6) — 실행기가 단 스텝 ID
-                        # (sid 재배정 없음 · 판별 스텝은 플레이북 밖 ID — 액션 이름으로 뭉개지 않게)
+                        # 실행기가 단 스텝 ID(plans/200 — 첫 시도·재시도(W22)·판별 스텝(plans/198
+                        # 재검토 Minor6) 모두 · sid 재배정 없음 — 동시 실행에서 액션별 대기열 순서가
+                        # 뒤바뀌지 않게 · 판별 스텝은 플레이북 밖 ID라 액션 이름으로 뭉개지 않게)
                         sid = preset
                     else:
                         ids = pending.get(action) or [action]
@@ -1556,10 +1583,12 @@ class InvestigationDispatcher:
                                 label=f"{label} (재시도)" if retry_of is not None else label,
                                 purpose=focus.get(sid), because=because)
 
-                def step_end(status: str, finding: str | None = None) -> None:
+                def step_end(status: str, finding: str | None = None,
+                             end: float | None = None) -> None:
                     if log is not None:
+                        elapsed = (self._clock() if end is None else end) - t0
                         safe_append(log, "step_end", engine="playbook", step=sid, label=label,
-                                    status=status, elapsed_ms=int((self._clock() - t0) * 1000),
+                                    status=status, elapsed_ms=int(elapsed * 1000),
                                     purpose=focus.get(sid), finding=finding)
 
                 def claim() -> bool:
@@ -1575,15 +1604,28 @@ class InvestigationDispatcher:
                     if not claim():
                         return
                     out = StepResult(status="missing", reason=reason)
+                    entry = {
+                        "step": sid, "action": action,
+                        "title": ACTION_TITLES.get(action, action), "status": "missing",
+                        "reason": reason, "tools": list(ctx.tools),
+                        **_queries_entry(ctx),
+                    }
+                    if defers(sid, retry):
+                        end = self._clock()
+                        snapshot = record(sid, action, out)
+
+                        def bundle() -> None:
+                            finding = judge(sid, snapshot, retry)[0]
+                            step_end("missing", finding, end)
+                            with lock:
+                                done[sid] = add_flow(sid, entry, finding, "missing")
+                                publish(sid)
+
+                        settle(sid, bundle)
+                        return
                     finding = finish(sid, action, out, retry)[0] if flow else None
                     step_end("missing", finding)
                     with lock:
-                        entry = {
-                            "step": sid, "action": action,
-                            "title": ACTION_TITLES.get(action, action), "status": "missing",
-                            "reason": reason, "tools": list(ctx.tools),
-                            **_queries_entry(ctx),
-                        }
                         done[sid] = add_flow(sid, entry, finding, "missing")
                         publish(sid)
 
@@ -1608,42 +1650,64 @@ class InvestigationDispatcher:
                     if not claim():
                         raise
                     reason = f"스텝 실패 — {type(e).__name__}: {e}"
-                    finding = (
-                        finish(sid, action, StepResult(status="missing", reason=reason), retry)[0]
-                        if flow else None
-                    )
+                    failed = StepResult(status="missing", reason=reason)
+                    entry = {
+                        "step": sid, "action": action,
+                        "title": ACTION_TITLES.get(action, action), "status": "missing",
+                        # 재시도 실패는 최종 섹션과 같은 사유(W22 — 실행기 `retry_reason`)
+                        "reason": reason if retry_of is None
+                        else retry_reason(action, "missing", retry_of, reason),
+                        "tools": list(ctx.tools),
+                        **_queries_entry(ctx),
+                    }
+                    if defers(sid, retry):
+                        end = self._clock()
+                        snapshot = record(sid, action, failed)
+
+                        def failed_bundle() -> None:
+                            finding = judge(sid, snapshot, retry)[0]
+                            step_end("missing", finding, end)
+                            with lock:
+                                done[sid] = add_flow(sid, entry, finding, "missing")
+                                publish(sid)
+
+                        settle(sid, failed_bundle)
+                        raise
+                    finding = finish(sid, action, failed, retry)[0] if flow else None
                     step_end("missing", finding)
                     with lock:
-                        entry = {
-                            "step": sid, "action": action,
-                            "title": ACTION_TITLES.get(action, action), "status": "missing",
-                            # 재시도 실패는 최종 섹션과 같은 사유(W22 — 실행기 `retry_reason`)
-                            "reason": reason if retry_of is None
-                            else retry_reason(action, "missing", retry_of, reason),
-                            "tools": list(ctx.tools),
-                            **_queries_entry(ctx),
-                        }
                         done[sid] = add_flow(sid, entry, finding, "missing")
                         publish(sid)
                     raise
                 if not claim():
                     return res  # 타임아웃으로 이미 끝난 스텝 — 늦은 결과는 기록·해석하지 않는다
+                entry = {
+                    **res.to_dict(include_data=False), "step": sid, "action": action,
+                    "title": ACTION_TITLES.get(action, action), "tools": list(ctx.tools),
+                    **_queries_entry(ctx),
+                }
+                if retry_of is not None:  # 재시도 결과 — 최종 섹션과 같은 사유(W22)
+                    entry["reason"] = retry_reason(action, str(res.status), retry_of, res.reason)
+                if defers(sid, retry):
+                    end = self._clock()
+                    snapshot = record(sid, action, res)
+
+                    def ok_bundle() -> None:
+                        finding, request = judge(sid, snapshot, retry)
+                        step_end(str(res.status), finding, end)
+                        with lock:
+                            done[sid] = add_flow(sid, entry, finding, str(res.status))
+                            publish(sid)
+                        submit_opinion(sid, request)
+
+                    settle(sid, ok_bundle)  # 결과는 곧바로 실행기로(해석만 미룬다)
+                    return res
                 finding, request = finish(sid, action, res, retry) if flow else (None, None)
                 step_end(str(res.status), finding)
                 with lock:
-                    entry = {
-                        **res.to_dict(include_data=False), "step": sid, "action": action,
-                        "title": ACTION_TITLES.get(action, action), "tools": list(ctx.tools),
-                        **_queries_entry(ctx),
-                    }
-                    if retry_of is not None:  # 재시도 결과 — 최종 섹션과 같은 사유(W22)
-                        entry["reason"] = retry_reason(action, str(res.status), retry_of,
-                                                       res.reason)
                     done[sid] = add_flow(sid, entry, finding, str(res.status))
                     publish(sid)
-                # 단계 끝 해석 — 락 밖에서 제출한다(통지가 이 락을 잡는다 · 다음 단계를 막지 않음)
-                if flow is not None and flow.stream is not None and request is not None:
-                    flow.stream.submit(request, functools.partial(on_opinion, sid))
+                submit_opinion(sid, request)
                 return res
 
             return run
@@ -1653,8 +1717,12 @@ class InvestigationDispatcher:
             spec = specs.get(sid)
             if flow is None or spec is None:
                 return None
+            keep = dag_anc.get(sid) if dag_anc is not None else None
             with lock:
                 snap, quotes = dict(finished), dict(findings)
+            if keep is not None:  # DAG — 조상 스텝만(Q2)
+                snap = {s: r for s, r in snap.items() if s in keep}
+                quotes = {s: q for s, q in quotes.items() if s in keep}
             try:
                 return step_because(pb, spec, snap, quotes, alarm_name=alarm_name)
             except Exception as e:  # noqa: BLE001 — 문장 실패가 스텝을 막지 않는다
@@ -1668,14 +1736,31 @@ class InvestigationDispatcher:
             `retry`(W22 결손 스텝 재시도)면 그 사이 끝난 뒤 단계 결과가 섞이지 않게 YAML 순서상
             이 스텝 앞의 결과만 판독·앞 단계 결과 한 줄에 넣는다(「이 단계까지의 근거」).
             """
+            return judge(sid, record(sid, action, res), retry)
+
+        def record(sid: str, action: str, res: StepResult) -> StepResult:
+            """끝난 스텝 결과를 판독 재료로 남긴다(단계 끝 계산 전 · 미룬 해석도 이 값을 쓴다)."""
             snapshot = dataclasses.replace(
                 res, step=sid, action=action, title=ACTION_TITLES.get(action, action)
             )
-            before = set(order[: order.index(sid)]) if retry and sid in order else None
             with lock:
                 finished[sid] = snapshot
-                snap = dict(finished) if before is None else {
-                    s: r for s, r in finished.items() if s in before or s == sid
+            return snapshot
+
+        def judge(sid: str, snapshot: StepResult, retry: bool) -> tuple[str | None, Any]:
+            """결과 한 줄·해석 요청 계산 — 판독 범위와 앞 단계 결과 범위를 정해 계산한다.
+
+            off: 끝난 것 전부. 재시도: YAML상 앞 스텝(종전). DAG: 판독은 해석 기준 ∪ 자신,
+            앞 단계 결과 줄은 조상만(Q2).
+            """
+            before = set(order[: order.index(sid)]) if retry and sid in order else None
+            readable = before
+            if before is None and dag_anc is not None and dag_basis is not None \
+                    and sid in dag_anc:
+                before, readable = set(dag_anc[sid]), set(dag_basis[sid])
+            with lock:
+                snap = dict(finished) if readable is None else {
+                    s: r for s, r in finished.items() if s in readable or s == sid
                 }
                 prior = [f"{s} {ACTION_TITLES.get(specs[s].action, s)}: {findings[s]}"
                          for s in order if s in findings and s != sid and s in specs
@@ -1697,6 +1782,60 @@ class InvestigationDispatcher:
                 with lock:
                     findings[sid] = finding
             return finding, request
+
+        def submit_opinion(sid: str, request: Any) -> None:
+            """단계 끝 해석 제출 — 락 밖에서(통지가 이 락을 잡는다 · 다음 단계를 막지 않음)."""
+            if flow is not None and flow.stream is not None and request is not None:
+                flow.stream.submit(request, functools.partial(on_opinion, sid))
+
+        def defers(sid: str, retry: bool) -> bool:
+            """단계 끝 처리를 해석 기준 정착에 맞춰 미루는가 — DAG + 실행 기록 + 플레이북 스텝
+            첫 시도만(재시도·판별 스텝은 종전처럼 즉시 · 그 전에 남은 묶음을 모두 실행한다)."""
+            if flow is None or dag_basis is None:
+                return False
+            if retry or sid not in dag_basis:
+                flush()
+                return False
+            return True
+
+        def ready(sid: str) -> bool:
+            assert dag_basis is not None and dag_anc is not None
+            return dag_basis[sid] <= settled and dag_anc[sid] <= resolved
+
+        def settle(sid: str, bundle: Callable[[], None] | None) -> None:
+            """정착 1건 — 묶음을 대기열에 넣고, 실행 가능해진 묶음을 YAML 순서로 이 스레드에서
+            실행한다(락 밖 · 묶음이 다른 묶음을 풀면 다시 훑는다)."""
+            with lock:
+                settled.add(sid)
+                if bundle is None:
+                    resolved.add(sid)
+                else:
+                    deferred[sid] = bundle
+            run_ready(force=False)
+
+        def run_ready(force: bool) -> None:
+            while True:
+                with lock:
+                    pick = next(
+                        (s for s in order if s in deferred and (force or ready(s))), None
+                    )
+                    job_ = deferred.pop(pick) if pick is not None else None
+                if pick is None or job_ is None:
+                    return
+                try:
+                    job_()
+                except Exception as e:  # noqa: BLE001 — 기록 실패가 수집을 막지 않는다
+                    logger.warning("미룬 단계 끝 처리 실패(무시) %s: %s: %s",
+                                   pick, type(e).__name__, e)
+                with lock:
+                    resolved.add(pick)
+
+        def flush() -> None:
+            """남은 묶음 전부를 YAML 순서로 실행한다(수집 직후 · 재시도·판별 스텝 직전).
+
+            재조회 재사용 스텝처럼 정착 신호가 오지 않는 기준이 있어도 교착하지 않는다. 그때는
+            모든 첫 시도가 끝나 있어 스냅숏(끝난 기준·조상만)이 결정적이다."""
+            run_ready(force=True)
 
         def add_flow(sid: str, entry: dict[str, Any], finding: str | None,
                      status: str) -> dict[str, Any]:
@@ -1732,9 +1871,13 @@ class InvestigationDispatcher:
                     "status": "skipped", "because": mask_activity_text(because),
                 }
                 publish(last["current"])
+            if dag_basis is not None and res.step in dag_basis:
+                settle(res.step, None)  # 건너뜀도 정착(미룬 해석을 풀 수 있다)
 
         if flow is not None:
             flow.on_skip = on_skip
+            if dag_basis is not None:
+                flow.flush = flush
         with lock:
             publish(None)
         return {action: wrap(action, fn) for action, fn in STEP_LIBRARY.items()}
@@ -1764,13 +1907,19 @@ class InvestigationDispatcher:
     def _collect_playbook(self, job: JobLike, pb: Playbook, matched_by: str,
                           cache: ToolResultCache, deadline: float,
                           library: Mapping[str, StepFn], stop: threading.Event,
-                          hooks: _FlowHooks | None = None) -> PlaybookRun:
+                          hooks: _FlowHooks | None = None,
+                          walls: dict[str, float | None] | None = None) -> PlaybookRun:
         """플레이북 수집(≤ `sre_playbook_budget_s`) → 남은 시간으로 소견·종합.
 
         `stop`이 서 있으면(잡 종료 뒤) 소견기·종합을 부르지 않고 수집 결과만 돌려준다.
         `hooks.stream`(W20 단계 끝 해석)이 있으면 마지막 단계 해석까지 기다린 뒤 그 소견을
         그대로 쓰고(재호출 0) 종합만 1회 부른다.
+
+        `walls`(plans/200 I-0)를 주면 실제 단조 시계로 잰 구간 초를 넣는다 — `collect_s`(수집),
+        `opinion_wait_s`(단계 끝 해석 대기 · 해석 실행기 없으면 None), `synthesis_s`(소견·종합).
+        주입 시계(`self._clock`)는 부르지 않는다(가짜 시계 테스트의 호출 순서 불변).
         """
+        walls = {} if walls is None else walls
         wiring = self._playbook
         assert wiring is not None
         remaining = max(0.0, deadline - self._clock())
@@ -1781,6 +1930,7 @@ class InvestigationDispatcher:
         mapped, basis = mapped_polestar_source(
             job.payload or {}, self._settings.sre_playbook_polestar_source_map
         )
+        t_collect = time.monotonic()
         run = run_playbook(
             job.payload or {}, pb, matched_by=matched_by,
             polestar=wiring.polestar, apm=wiring.apm, clock=self._clock,
@@ -1794,7 +1944,16 @@ class InvestigationDispatcher:
                 if self._settings.sre_playbook_discriminator_enabled
                 else 0
             ),
+            # plans/200 I-2·I-3 — 기본값(4 · off · off)은 종전 실행기 기본값과 같다
+            max_workers=int(self._settings.sre_playbook_max_workers),
+            dag_scheduling=bool(self._settings.sre_playbook_dag_scheduling_enabled),
+            axis_concurrency=bool(self._settings.sre_playbook_axis_concurrency_enabled),
         )
+        if hooks is not None and hooks.flush is not None:
+            # 미룬 단계 끝 처리(의존 기반 실행 · 해석 기준이 정착하지 않은 것)를 YAML 순서로 마저
+            # 낸다 — 해석 대기·종료 분기보다 먼저(plans/200 W2).
+            hooks.flush()
+        walls["collect_s"] = round(time.monotonic() - t_collect, 3)
         stream = hooks.stream if hooks is not None else None
         if wiring.rejected_files:
             run.notes.append(REJECTED_FILES_NOTE.format(
@@ -1807,7 +1966,10 @@ class InvestigationDispatcher:
         log = _activity(job)
         if log is not None:
             log.set_phase("narrating")
+        t_wait = time.monotonic()
         step_opinions = stream.drain() if stream is not None else None
+        walls["opinion_wait_s"] = (
+            round(time.monotonic() - t_wait, 3) if stream is not None else None)
         narrator, note = self._narrator(deadline - self._clock(), log)
         if note:
             run.notes.append(note)
@@ -1815,11 +1977,14 @@ class InvestigationDispatcher:
             # 같은 소견기로 종합 — 호출 수(`llm_calls`)가 단계 끝 해석까지 센다.
             stream.narrator.limits = narrator.limits
             narrator = stream.narrator
-        return finalize_playbook_run(
+        t_synth = time.monotonic()
+        done = finalize_playbook_run(
             run, pb, narrator=narrator, clock=self._clock,
             known_errors=wiring.known_errors, payload=job.payload or {},
             step_opinions=step_opinions,
         )
+        walls["synthesis_s"] = round(time.monotonic() - t_synth, 3)
+        return done
 
     @staticmethod
     def _playbook_tool_outputs(run: PlaybookRun) -> list[_ToolText]:
@@ -1903,7 +2068,8 @@ class InvestigationDispatcher:
         cache = ToolResultCache(wait_timeout_s=self._timeout)
         if mode == "parallel":
             deep = self._start_deep(job, self._deep_job(
-                job, pb, None, cache, sop_anchor=self._sop_anchor()), mode)
+                job, pb, None, cache, sop_anchor=self._sop_anchor(),
+                parallel_tools=self._parallel_tools()), mode)
             deep_state["status"] = "running"
         stop = threading.Event()
         hooks = self._flow_hooks(job, deadline)
@@ -1938,9 +2104,10 @@ class InvestigationDispatcher:
                             library: Mapping[str, StepFn], cache: ToolResultCache,
                             stop: threading.Event, hooks: _FlowHooks | None = None) -> None:
         """플레이북 수집·종합 → (모드별) 심층 대기·시작 → 종결."""
+        walls: dict[str, float | None] = {}  # 실행 시간 계측(plans/200 I-0)
         collector = _Background(
             lambda j: self._collect_playbook(j, pb, matched_by, cache, deadline, library, stop,
-                                             hooks=hooks),
+                                             hooks=hooks, walls=walls),
             job, f"sre-playbook-{str(job.investigation_id)[:8]}",
         )
         self._track(job, collector.finished)
@@ -1980,7 +2147,8 @@ class InvestigationDispatcher:
             else:
                 deep = self._start_deep(
                     job, self._deep_job(job, pb, self._prior_findings(run, block), cache,
-                                        sop_anchor=self._sop_anchor()), mode
+                                        sop_anchor=self._sop_anchor(),
+                                        parallel_tools=self._parallel_tools()), mode
                 )
                 status = "running"
         if deep is not None and status == "running":
@@ -2005,7 +2173,10 @@ class InvestigationDispatcher:
             log = _activity(job)
             if log is not None:
                 log.set_phase("deep_dive")
-            if not deep.wait(deadline - self._clock()):
+            t_deep = time.monotonic()
+            deep_done = deep.wait(deadline - self._clock())
+            walls["deep_dive_wait_s"] = round(time.monotonic() - t_deep, 3)
+            if not deep_done:
                 status, reason = "timeout", (
                     "심층 조사 타임아웃 — 전체 예산 "
                     f"investigation_timeout_seconds({self._timeout}s) 소진"
@@ -2020,14 +2191,20 @@ class InvestigationDispatcher:
                             label=f"심층 조사(HolmesGPT) 종료 — {step_status_label(status)}")
         result = deep.result if (deep is not None and status == "done") else None
         self._finish_playbook(job, started, run, block, pb, mode, status, reason,
-                              degrade, result, pb_outputs, cache, gate_severity, gate_tier)
+                              degrade, result, pb_outputs, cache, gate_severity, gate_tier,
+                              walls=walls)
 
     def _finish_playbook(self, job: JobLike, started: float, run: PlaybookRun, block: dict,
                          pb: Playbook, mode: str, status: str, reason: str | None,
                          degrade: str | None, result: Any, pb_outputs: list[_ToolText],
                          cache: ToolResultCache, gate_severity: int,
-                         gate_tier: str | None) -> None:
-        """판정(두 엔진 도구 출력 합집합 · G-25) → 플레이북 브리핑 → 잡 종결 · 감사."""
+                         gate_tier: str | None,
+                         walls: Mapping[str, float | None] | None = None) -> None:
+        """판정(두 엔진 도구 출력 합집합 · G-25) → 플레이북 브리핑 → 잡 종결 · 감사.
+
+        계측에는 `PLAYBOOK_TIMING_KEYS`(plans/200 I-0)를 가산한다 — `stage_wall_s`는 실행기
+        단계별 벽시계(`PlaybookRun.stage_wall_s`), 나머지는 `walls`(없는 구간은 None).
+        """
         log = _activity(job)
         if log is not None:
             log.set_phase("finalizing")
@@ -2069,7 +2246,13 @@ class InvestigationDispatcher:
             job.instrumentation = {
                 "incomplete": False, **self._run_meta(started), "prefetch_s": 0.0, "steps": None,
                 "tool_calls_n": 0, "tool_calls": [],
+                "tool_batch_sizes": None, "max_tools_per_turn": None, "turns_n": None,
             }
+        walls = walls or {}
+        job.instrumentation.update({
+            k: list(run.stage_wall_s) if k == "stage_wall_s" else walls.get(k)
+            for k in PLAYBOOK_TIMING_KEYS
+        })
         job.progress = {"done": len(pb.steps), "total": len(pb.steps), "current_step": None}
         job.partial_briefing = None
         job.updated_at = self._wall_clock()
@@ -2135,7 +2318,14 @@ class InvestigationDispatcher:
         크기·민감도 때문에 넣지 않는다. `args_digest`는 정체 가드와 같은 인자 표기
         (키 정렬 JSON — 없으면 holmes 호출 요약)의 sha256 앞 12자라, 같은 인자면 같고 다르면 다르다.
         `steps`는 결과가 실을 때만 값이 있다(없으면 None).
+
+        턴 계측(plans/200 I-0)도 결과가 실을 때만 값이 있다(없으면 None):
+        `tool_batch_sizes`는 HolmesGPT가 도구를 요청한 턴마다 그 턴의 도구 수(요청 순 — **도구 0인
+        턴은 넣지 않는다**), `max_tools_per_turn`은 그 최댓값(도구 요청 턴이 없으면 0),
+        `turns_n`은 시작한 LLM 턴 수(도구 0인 결론 턴 포함 — `turns_n - len(tool_batch_sizes)`가
+        도구 없는 턴 수).
         """
+        sizes = getattr(result, "tool_batch_sizes", None)
         calls = [
             {
                 "name": name,
@@ -2151,6 +2341,9 @@ class InvestigationDispatcher:
             "steps": getattr(result, "steps", None),
             "tool_calls_n": len(result.tool_outputs),
             "tool_calls": calls,
+            "tool_batch_sizes": list(sizes) if sizes is not None else None,
+            "max_tools_per_turn": max(sizes, default=0) if sizes is not None else None,
+            "turns_n": getattr(result, "turns_n", None),
         }
 
     def _episode_audit(self, job: JobLike) -> dict:
@@ -2362,6 +2555,7 @@ __all__ = [
     "PlaybookWiring",
     "DEEP_DIVE_LABEL",
     "INSTRUMENTATION_KEYS",
+    "PLAYBOOK_TIMING_KEYS",
     "GUARD_TARGET_UNAVAILABLE",
     "GUARD_QUEUE_FULL",
     "GUARD_SERVICE_OVERLOADED",
