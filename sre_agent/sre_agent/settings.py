@@ -403,6 +403,13 @@ class AgentSettings(BaseSettings):
     # 끄면(`SRE_ACTIVITY_LOG_ENABLED=false`) 기록 0 — `activity_since`를 무시해 응답이 비트 동일.
     sre_activity_log_enabled: bool = True
 
+    # ── 조사 결과 영역별 판정(plans/201 W4 §6.4 · D-354) ──
+    # 켜면 플레이북 조사 브리핑에 선택 키 `duty_view`(서버/OS·WAS/미들웨어·DB 영역별 상태 4값 · 근거 ·
+    # 인계 문구)를 더한다. 플레이북 판독·가설 상태를 영역으로 옮겨 쓰기만 한다(새 판정·LLM 호출 없음 ·
+    # 매핑 `config/duty_area_layers.yaml`). 기동 시 1회 읽는다. 기본 off = 브리핑 비트 동일(키 없음).
+    # 단계가 없는 조사(HolmesGPT 단독 등)는 켜져 있어도 키를 싣지 않는다.
+    sre_duty_view_enabled: bool = False
+
 
 def timechain_warnings(
     settings: AgentSettings, *, step_default_s: float, max_step_timeout_s: float | None

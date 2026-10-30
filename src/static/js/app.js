@@ -154,6 +154,77 @@
         document.body.classList.remove("auth-pending");
     }
 
+    // plans/201 W1 §3.5 — 담당 업무 미지정 안내(질의응답 탭 상단 · 닫으면 localStorage에 기억).
+    // 플래그 판정은 `/auth/me` 응답에 `duty_area_options` 키가 있는지로만 한다 — 끈 기동은 키가 없어
+    // 안내를 그리지 않는다(현행 동일). 본인 변경 경로는 없다 — 안내는 관리자 요청만 말한다(D-354 부기 4 ①).
+    var DUTY_AREA_NOTICE_TEXT = "담당 업무를 지정하면 예시 질문·알람·조사 결과가 담당 영역 중심으로 정리됩니다. " +
+        "담당 업무는 관리자가 지정합니다 — 관리자에게 요청하세요.";
+
+    function dutyAreaNoticeKey(userId) {
+        return "duty_area_notice_dismissed:" + (userId || "");
+    }
+
+    function showDutyAreaNotice(userId) {
+        var chatMessages = document.getElementById("chatMessages");
+        if (!chatMessages || !chatMessages.parentNode || document.getElementById("dutyAreaNotice")) return;
+        var box = document.createElement("div");
+        box.id = "dutyAreaNotice";
+        box.setAttribute("role", "status");
+        box.style.cssText = "display:flex;align-items:center;gap:10px;margin:8px 16px 0;padding:8px 12px;" +
+            "border:1px solid var(--border);border-radius:6px;background:var(--bg-secondary);" +
+            "color:var(--text-secondary);font-size:0.8125rem";
+        var text = document.createElement("span");
+        text.style.flex = "1";
+        text.textContent = DUTY_AREA_NOTICE_TEXT;
+        var close = document.createElement("button");
+        close.type = "button";
+        close.className = "btn btn-secondary btn-sm";
+        close.textContent = "닫기";
+        close.addEventListener("click", function () {
+            try { localStorage.setItem(dutyAreaNoticeKey(userId), "1"); } catch (e) { /* 저장 불가면 이번만 닫는다 */ }
+            if (box.parentNode) box.parentNode.removeChild(box);
+        });
+        box.appendChild(text);
+        box.appendChild(close);
+        chatMessages.parentNode.insertBefore(box, chatMessages);
+    }
+
+    // `/auth/me` 조회를 한 번만 한다 — 담당 업무 안내(W1)와 알람 담당 강조 메타(W3)가 같은 응답을 나눠 읽는다.
+    var authMePromise = null;
+    function fetchAuthMeOnce() {
+        if (!authMePromise) {
+            authMePromise = fetch("/api/v1/auth/me", { headers: getAuthHeaders() })
+                .then(function (res) { return res.ok ? res.json() : null; })
+                .catch(function () { return null; });
+        }
+        return authMePromise;
+    }
+
+    // plans/201 W4 — 조사 결과 표의 영역 라벨·「내 담당」은 `/auth/me` 메타로만 준다(프론트 어휘 사본 없음).
+    // 키 부재(DUTY_AREA_ENABLED off)면 부르지 않는다 — 표는 브리핑 행 라벨 · 선언 순서로 그린다.
+    function loadDutyBriefingMeta() {
+        fetchAuthMeOnce().then(function (me) {
+            if (!me || !Object.prototype.hasOwnProperty.call(me, "duty_area_options")) return;
+            if (window.BriefingView && window.BriefingView.setDutyMeta) {
+                window.BriefingView.setDutyMeta({ options: me.duty_area_options, mine: me.duty_areas });
+            }
+        });
+    }
+
+    function loadDutyAreaNotice(userId) {
+        try {
+            if (localStorage.getItem(dutyAreaNoticeKey(userId)) === "1") return;
+        } catch (e) { /* localStorage 불가 — 안내는 그대로 판정한다 */ }
+        fetchAuthMeOnce()
+            .then(function (me) {
+                // 키 부재 = DUTY_AREA_ENABLED off → 아무것도 그리지 않는다
+                if (!me || !Object.prototype.hasOwnProperty.call(me, "duty_area_options")) return;
+                if (me.duty_areas && me.duty_areas.length) return;   // 지정됨
+                showDutyAreaNotice(userId);
+            })
+            .catch(function () { /* 안내는 부가 정보 — 실패해도 화면은 그대로 */ });
+    }
+
     function checkAuthOnLoad() {
         fetch("/api/v1/auth/status", { headers: getAuthHeaders() })
             .then(function(res) {
@@ -207,6 +278,12 @@
                 }
                 // Plan 59 §17: 알림 존 권한을 확정한 뒤 구독을 시작한다(권한 없으면 미구독).
                 initAlarmSubscription(userInfo, data.auth_enabled);
+                // plans/201 W1 §3.5: 로그인 사용자(인증 켬)에게만 담당 업무 미지정 안내를 판정한다
+                if (data.auth_enabled && userInfo && userInfo.user_id) loadDutyAreaNotice(userInfo.user_id);
+                // plans/201 W3: 알람 화면 담당 강조 메타 — 응답에 `duty_alarm_focus` 키가 있을 때만 켠다
+                if (data.auth_enabled && userInfo && userInfo.user_id) loadDutyAlarmFocus();
+                // plans/201 W4: 조사 결과 「영역별 점검 결과」 라벨·내 담당 — `duty_area_options` 키가 있을 때만
+                if (data.auth_enabled && userInfo && userInfo.user_id) loadDutyBriefingMeta();
                 // plans/187 W5b: `/?investigation=<id>` 진입 — 인증 확정 뒤에만 조사 기록을 읽는다.
                 // (W15) 장애 진단 사전 게이트(/active)를 먼저 끝내야 진입을 진단 탭으로 보낼지 정할 수 있다.
                 initDiagnosisView().then(function () {
@@ -4110,6 +4187,36 @@
         // server.Network는 골드셋에 동형이 없어 **일부러 비워 둔다** — 답변 가능성 실측(T7) 후 편입.
     };
 
+    // 폐쇄망 알람 payload의 resource_type은 코드값이 아니라 **한글 표시 이름**이다(plans/204 ·
+    // plans/201 §1.2 ①′ — 결정 기록 표본에서 코드값 0건). 표시 이름 → 축 키(코드값) 대응
+    // (cmm_resource_type.displayname 세 존 실측 · §1.2 ①″). 키는 소문자다 — 대조는 대소문자 무시.
+    // 표시 이름은 server.* 축으로만 옮긴다(「CPU」·「메모리」는 network·sap·DB 엔진형과 이름을 공유).
+    // 「프로세스」·「WebURL 감시」는 골드셋 동형이 없어 **일부러 넣지 않는다**(미매핑 → LLM 보강).
+    // 코드값 server.FileSystem(개별 파일시스템 · 단수)은 같은 파일시스템 축(server.FileSystems)으로 간다.
+    var ALARM_PROMPT_AXIS_ALIASES = {
+        "cpu": "server.Cpus",
+        "메모리": "server.Memory",
+        "디스크": "server.Disks",
+        "개별 파일시스템": "server.FileSystems",
+        "server.filesystem": "server.FileSystems",
+        "로그 모니터": "server.LogMonitor",
+        "서버": "server.Server"
+    };
+
+    // resource_type(코드값·표시 이름 · 대소문자 무관) → ALARM_PROMPT_AXES 키. 미매핑이면 "".
+    function alarmPromptAxisKey(resourceType) {
+        var lowered = String(resourceType || "").trim().toLowerCase();
+        if (!lowered) return "";
+        if (Object.prototype.hasOwnProperty.call(ALARM_PROMPT_AXIS_ALIASES, lowered)) {
+            return ALARM_PROMPT_AXIS_ALIASES[lowered];
+        }
+        for (var key in ALARM_PROMPT_AXES) {
+            if (Object.prototype.hasOwnProperty.call(ALARM_PROMPT_AXES, key) &&
+                key.toLowerCase() === lowered) return key;
+        }
+        return "";
+    }
+
     // 축과 무관한 공통 추천. 매핑된 축에만 덧붙인다 — 미매핑 축을 이것 하나로 채우면
     // "결정적 추천 0건"이 성립하지 않아 LLM 보강 경로(Plan 86 T5)가 영영 열리지 않는다.
     var ALARM_PROMPT_COMMON = { label: "사양·OS 정보", suffix: "서버의 사양과 OS 정보를 조회해줘" };
@@ -4131,8 +4238,9 @@
     function buildAlarmPrompts(data) {
         var name = alarmTargetName(data);
         if (!name) return [];                       // 주어 없는 질의는 만들지 않는다
-        var axis = (data && data.resource_type) || "";
-        var specs = ALARM_PROMPT_AXES[axis];
+        // 출력 axis는 축 키(코드값)다 — 표시 이름이 와도 하위 소비처가 보는 값은 그대로다.
+        var axis = alarmPromptAxisKey(data && data.resource_type);
+        var specs = axis ? ALARM_PROMPT_AXES[axis] : null;
         if (!specs || !specs.length) return [];     // 미매핑 — LLM 보강 대상
         specs = specs.slice();
         // 카드가 "급증"이라 말했는데 추천이 평상시 통계부터 내밀면 분석과 추천이 어긋난다.
@@ -4151,6 +4259,141 @@
         }
         return out;
     }
+
+    // ─── plans/201 W3 담당 강조 순수 함수 (DOM·네트워크·전역 상태를 만지지 않는다) ───
+    //
+    // 영역 매핑·단서 표는 서버 메타(`/auth/me` `duty_alarm_focus`)만 읽는다 — 어휘 사본을 두지 않는다.
+    // 단서는 원인 판정이 아니다 — 알람이 이미 싣고 온 정보(제니퍼 유형 · 영향 프로세스 종류)만 본다.
+
+    // 제니퍼 이벤트 유형 대조 정규화 — 서버 `normalize_apm_event_type`과 같은 규칙
+    // (strip → 대문자 → 연속 공백을 `_` 하나로 → `ERROR_`/`WARNING_` 접두 1회 제거).
+    var APM_EVENT_TYPE_PREFIXES = ["ERROR_", "WARNING_"];
+    function normalizeApmEventType(value) {
+        if (typeof value !== "string") return "";
+        var text = value.trim().toUpperCase().replace(/\s+/g, "_");
+        for (var i = 0; i < APM_EVENT_TYPE_PREFIXES.length; i++) {
+            if (text.indexOf(APM_EVENT_TYPE_PREFIXES[i]) === 0) {
+                text = text.slice(APM_EVENT_TYPE_PREFIXES[i].length);
+                break;
+            }
+        }
+        return text;
+    }
+
+    function dutyHasOwn(obj, key) {
+        return !!obj && Object.prototype.hasOwnProperty.call(obj, key);
+    }
+
+    // 알람의 발생 영역(코드 목록 · 메타 선언 순서). resource_type(코드값·표시 이름)을 대소문자 무시로 대조한다.
+    // 미상·메타 없음은 빈 목록(강조 안 함).
+    function dutyAreasOf(alarm, meta) {
+        var rt = String((alarm && alarm.resource_type) || "").trim().toLowerCase();
+        if (!rt || !meta || !Array.isArray(meta.areas)) return [];
+        var out = [];
+        meta.areas.forEach(function (area) {
+            var types = (area && Array.isArray(area.resource_types)) ? area.resource_types : [];
+            for (var i = 0; i < types.length; i++) {
+                if (String(types[i]).trim().toLowerCase() === rt) {
+                    if (out.indexOf(area.code) < 0) out.push(area.code);
+                    break;
+                }
+            }
+        });
+        return out;
+    }
+
+    // 알람의 원인 단서 → [{area, label, source: "apm"|"process", evidence}]. 단서가 없으면 빈 목록.
+    // evidence는 받은 값 그대로(제니퍼 유형 원값 · 프로세스 kind 이름)다.
+    function dutyCauseHintsOf(alarm, meta) {
+        var hints = (meta && meta.cause_hints) || {};
+        var out = [];
+        var seen = {};
+        function add(area, label, source, evidence) {
+            var key = area + "\u0000" + label + "\u0000" + source + "\u0000" + evidence;
+            if (seen[key]) return;
+            seen[key] = true;
+            out.push({ area: area, label: label, source: source, evidence: evidence });
+        }
+        var apmTable = hints.apm_event_types || {};
+        var rawType = alarm && typeof alarm.apm_event_type === "string" ? alarm.apm_event_type.trim() : "";
+        var typeKey = normalizeApmEventType(rawType);
+        if (typeKey && dutyHasOwn(apmTable, typeKey)) {
+            var apmHint = apmTable[typeKey] || {};
+            (Array.isArray(apmHint.areas) ? apmHint.areas : []).forEach(function (area) {
+                add(String(area), String(apmHint.label || ""), "apm", rawType);
+            });
+        }
+        var kindTable = hints.process_kinds || {};
+        var kinds = alarm && Array.isArray(alarm.top_process_kinds) ? alarm.top_process_kinds : [];
+        kinds.forEach(function (kind) {
+            var kindKey = String(kind || "").trim().toLowerCase();
+            if (!kindKey || !dutyHasOwn(kindTable, kindKey)) return;
+            var procHint = kindTable[kindKey] || {};
+            (Array.isArray(procHint.areas) ? procHint.areas : []).forEach(function (area) {
+                add(String(area), String(procHint.label || ""), "process", String(kind).trim());
+            });
+        });
+        return out;
+    }
+
+    function dutyIntersects(codes, userAreas) {
+        if (!Array.isArray(codes) || !Array.isArray(userAreas)) return false;
+        for (var i = 0; i < codes.length; i++) {
+            if (userAreas.indexOf(codes[i]) >= 0) return true;
+        }
+        return false;
+    }
+
+    // 카드 배지 판정 — 「내 담당 · 발생」(발생 영역) · 「내 담당 · 단서」(단서 영역)가 사용자 담당과 겹치는가.
+    function dutyBadgesOf(alarm, meta, userAreas) {
+        var hints = dutyCauseHintsOf(alarm, meta);
+        return {
+            occurrence: dutyIntersects(dutyAreasOf(alarm, meta), userAreas),
+            hint: dutyIntersects(hints.map(function (h) { return h.area; }), userAreas),
+            hints: hints
+        };
+    }
+
+    // 「내 담당 먼저」 정렬 — items[i] = {tier, duty}(지금 표시 순서). 반환은 새 순서의 원래 인덱스 목록.
+    // **각 자리의 티어는 그대로**다 — 같은 티어 카드끼리만 자리를 바꾸고(담당 먼저 · 안정 정렬),
+    // 다른 티어 카드와는 자리를 바꾸지 않는다. 숨김 없음(길이 동일).
+    function dutyFirstOrder(items) {
+        var list = Array.isArray(items) ? items : [];
+        var byTier = {};
+        list.forEach(function (item, idx) {
+            var tier = String((item && item.tier) || "");
+            if (!byTier[tier]) byTier[tier] = [];
+            byTier[tier].push(idx);
+        });
+        var queues = {};
+        Object.keys(byTier).forEach(function (tier) {
+            var idxs = byTier[tier];
+            var mine = idxs.filter(function (i) { return !!(list[i] && list[i].duty); });
+            var rest = idxs.filter(function (i) { return !(list[i] && list[i].duty); });
+            queues[tier] = mine.concat(rest);
+        });
+        var cursor = {};
+        return list.map(function (item) {
+            var tier = String((item && item.tier) || "");
+            cursor[tier] = (cursor[tier] || 0) + 1;
+            return queues[tier][cursor[tier] - 1];
+        });
+    }
+
+    // 추천 질의를 담당 축 우선으로 **재정렬만** 한다(개수·집합 불변 · 안정 정렬).
+    // 축(axis = 자원 유형 코드값)을 메타 resource_types로 영역에 대응시킨다.
+    function reorderPromptsForDuty(prompts, meta, userAreas) {
+        var list = Array.isArray(prompts) ? prompts : [];
+        if (!list.length || !Array.isArray(userAreas) || !userAreas.length) return list.slice();
+        var mine = [];
+        var rest = [];
+        list.forEach(function (p) {
+            var areas = dutyAreasOf({ resource_type: p && p.axis }, meta);
+            (dutyIntersects(areas, userAreas) ? mine : rest).push(p);
+        });
+        return mine.concat(rest);
+    }
+    // ─── plans/201 W3 순수 함수 끝 ───
 
     // Plan 47: 패턴 근거 표 렌더 헬퍼 — history_stats(결정적 통계)를 그대로 표시한다.
 
@@ -5827,6 +6070,130 @@
             '</div>';
     }
 
+    // ─── plans/201 W3 알람 화면 담당 강조 (메타가 없으면 이 블록은 아무것도 하지 않는다) ───
+    var dutyAlarmFocus = null;      // `/auth/me` duty_alarm_focus(플래그 off면 null — 현행 그대로)
+    var dutyUserAreas = [];         // 사용자 담당 코드
+    var dutyAreaLabels = {};        // code → label(`duty_area_options`)
+    var dutyCardSeq = 0;            // 카드 도착 순번(토글을 끌 때 최신순으로 되돌린다)
+    var DUTY_FIRST_STORAGE_KEY = "alarm_duty_first";
+    var DUTY_HINT_CAPTION = "단서 · 알람 정보만 봄(조사 전)";
+    var DUTY_BADGE_STYLE = "display:inline-block;padding:1px 8px;border:1px solid var(--border);" +
+        "border-radius:10px;font-size:0.75rem;font-weight:600;";
+
+    function loadDutyAlarmFocus() {
+        fetchAuthMeOnce().then(function (me) {
+            if (!me || !dutyHasOwn(me, "duty_alarm_focus") || !me.duty_alarm_focus) return;
+            dutyAlarmFocus = me.duty_alarm_focus;
+            dutyUserAreas = Array.isArray(me.duty_areas) ? me.duty_areas.slice() : [];
+            (Array.isArray(me.duty_area_options) ? me.duty_area_options : []).forEach(function (o) {
+                if (o && o.code) dutyAreaLabels[o.code] = o.label || o.code;
+            });
+            setupDutyFirstToggle();
+        });
+    }
+
+    function dutyFirstEnabled() {
+        try { return localStorage.getItem(DUTY_FIRST_STORAGE_KEY) === "1"; } catch (e) { return false; }
+    }
+
+    // 「내 담당 먼저」 토글 — 담당이 지정된 사용자에게만 보인다.
+    function setupDutyFirstToggle() {
+        if (!dutyAlarmFocus || !dutyUserAreas.length || !alarmTools) return;
+        if (document.getElementById("alarmDutyFirst")) return;
+        // 메타보다 먼저 도착한 카드도 순번을 받는다(아래가 먼저 온 것)
+        if (alarmList) {
+            for (var i = alarmList.children.length - 1; i >= 0; i--) {
+                var c = alarmList.children[i];
+                if (!c.dataset.dutySeq) c.dataset.dutySeq = String(++dutyCardSeq);
+            }
+        }
+        var label = document.createElement("label");
+        label.className = "alarm-duty-first";
+        label.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-size:0.75rem;" +
+            "color:var(--text-secondary);cursor:pointer;white-space:nowrap";
+        label.title = "같은 티어 안에서만 내 담당 알람을 앞에 둡니다 — 티어 순서는 그대로이고 숨기는 알람은 없습니다.";
+        var chk = document.createElement("input");
+        chk.type = "checkbox";
+        chk.id = "alarmDutyFirst";
+        chk.checked = dutyFirstEnabled();
+        chk.addEventListener("change", function () {
+            try { localStorage.setItem(DUTY_FIRST_STORAGE_KEY, chk.checked ? "1" : "0"); } catch (e) { /* 이번만 */ }
+            applyDutyAlarmOrder();
+        });
+        var text = document.createElement("span");
+        text.textContent = "내 담당 먼저";
+        label.appendChild(chk);
+        label.appendChild(text);
+        alarmTools.appendChild(label);
+        if (chk.checked) applyDutyAlarmOrder();
+    }
+
+    // 목록 순서 적용 — 켜면 같은 티어 안에서 담당 카드 먼저, 끄면 최신순(도착 역순)으로 되돌린다.
+    function applyDutyAlarmOrder() {
+        if (!dutyAlarmFocus || !alarmList) return;
+        var cards = Array.prototype.slice.call(alarmList.children);
+        cards.sort(function (a, b) {
+            return Number(b.dataset.dutySeq || 0) - Number(a.dataset.dutySeq || 0);
+        });
+        var ordered = cards;
+        if (dutyFirstEnabled()) {
+            var order = dutyFirstOrder(cards.map(function (c) {
+                return { tier: c.dataset.tier || "", duty: c.dataset.dutyMine === "1" };
+            }));
+            ordered = order.map(function (i) { return cards[i]; });
+        }
+        ordered.forEach(function (c) { alarmList.appendChild(c); });
+    }
+
+    // 카드 상단 담당 강조 줄 — 배지(겹칠 때만) + 단서 줄(단서가 있을 때만). 전부 textContent로 쓴다.
+    function decorateDutyAlarmCard(el, data) {
+        var badges = dutyBadgesOf(data, dutyAlarmFocus, dutyUserAreas);
+        el.dataset.tier = data.tier || "";
+        el.dataset.dutySeq = String(++dutyCardSeq);
+        el.dataset.dutyMine = (badges.occurrence || badges.hint) ? "1" : "0";
+        if (!badges.occurrence && !badges.hint && !badges.hints.length) return;
+        var box = document.createElement("div");
+        box.className = "alarm-section alarm-duty-section";
+        if (badges.occurrence || badges.hint) {
+            var row = document.createElement("div");
+            row.className = "alarm-duty-badges";
+            row.style.cssText = "display:flex;gap:6px;flex-wrap:wrap";
+            if (badges.occurrence) {
+                var b1 = document.createElement("span");
+                b1.className = "alarm-duty-badge alarm-duty-badge--occurrence";
+                b1.style.cssText = DUTY_BADGE_STYLE + "border-color:var(--primary,#2563eb);color:var(--primary,#2563eb)";
+                b1.textContent = "내 담당 · 발생";
+                row.appendChild(b1);
+            }
+            if (badges.hint) {
+                var b2 = document.createElement("span");
+                b2.className = "alarm-duty-badge alarm-duty-badge--hint";
+                b2.style.cssText = DUTY_BADGE_STYLE + "border-style:dashed;color:var(--text-secondary)";
+                b2.textContent = "내 담당 · 단서";
+                row.appendChild(b2);
+            }
+            box.appendChild(row);
+        }
+        if (badges.hints.length) {
+            var line = document.createElement("p");
+            line.className = "alarm-duty-hint";
+            var caption = document.createElement("span");
+            caption.className = "alarm-section-label";
+            caption.textContent = DUTY_HINT_CAPTION;
+            line.appendChild(caption);
+            var parts = badges.hints.map(function (h) {
+                return (dutyAreaLabels[h.area] || h.area) + ": " + h.label + " (" + h.evidence + ")";
+            });
+            var body = document.createElement("span");
+            body.textContent = " " + parts.join(" · ");
+            line.appendChild(body);
+            box.appendChild(line);
+        }
+        var bubble = el.querySelector(".message-bubble");
+        if (bubble && bubble.firstChild) bubble.insertBefore(box, bubble.firstChild.nextSibling);
+        else if (bubble) bubble.appendChild(box);
+    }
+
     function renderAlarmMessage(data) {
         var el = document.createElement("div");
         el.className = "message message--alarm";
@@ -5838,6 +6205,8 @@
         // Plan 86: 추천 질의. 노이즈 게이트가 "일상적 반복"으로 판정한 알람은 섹션을 접어 둔다 —
         // 게이트의 판단을 UI가 뒤집어 조회를 권하지 않는다.
         var alarmPrompts = buildAlarmPrompts(data);
+        // plans/201 W3: 담당 축 우선 재정렬(개수·집합 불변) — 메타가 없으면 진입하지 않는다
+        if (dutyAlarmFocus) alarmPrompts = reorderPromptsForDuty(alarmPrompts, dutyAlarmFocus, dutyUserAreas);
         var promptHtml = renderAlarmPromptSection(alarmPrompts, data.is_routine === true);
         var alarmSvg = '<svg viewBox="0 0 24 24"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>';
 
@@ -5949,7 +6318,12 @@
         // 알람은 질의응답 스트림이 아니라 알람 뷰에 최신순(맨 위)으로 쌓는다.
         // 채팅 웰컴 화면은 건드리지 않는다 — 알람 도착이 대화 시작으로 보이면 안 된다.
         if (!alarmList) return;
+        // plans/201 W3: 담당 강조(배지·단서) — 메타가 없으면 진입하지 않는다(현행 그대로)
+        if (dutyAlarmFocus) decorateDutyAlarmCard(el, data);
         alarmList.insertBefore(el, alarmList.firstChild);
+        if (dutyAlarmFocus && dutyFirstEnabled() && document.getElementById("alarmDutyFirst")) {
+            applyDutyAlarmOrder();
+        }
 
         // D-049: ack 버튼 이벤트 바인딩(closure로 incident_id 캡처 — 인라인 onclick 미사용)
         if (data.incident_id) {

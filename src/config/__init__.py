@@ -41,6 +41,7 @@ from src.config.security import SecurityConfig as SecurityConfig
 from src.config.services import COMPONENT_ADMIN_NAMES as COMPONENT_ADMIN_NAMES
 from src.config.services import ComponentAdminConfig as ComponentAdminConfig
 from src.config.services import DrmConfig as DrmConfig
+from src.config.services import DutyAreaConfig as DutyAreaConfig
 from src.config.services import ObservabilityConfig as ObservabilityConfig
 from src.config.services import PortalHelpConfig as PortalHelpConfig
 from src.config.services import RagConfig as RagConfig
@@ -94,6 +95,8 @@ class AppConfig(BaseSettings):
     portal_help: PortalHelpConfig = Field(default_factory=PortalHelpConfig)
     # plans/191: 분리 컴포넌트 설정 관리 프록시 — endpoints 미입력 = off(설정 탭 대상 선택 없음)
     component_admin: ComponentAdminConfig = Field(default_factory=ComponentAdminConfig)
+    # plans/201 W1: 담당 업무 지정(권한 아님 · D-354) — 기본 off
+    duty_area: DutyAreaConfig = Field(default_factory=DutyAreaConfig)
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 

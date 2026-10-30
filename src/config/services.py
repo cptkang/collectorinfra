@@ -9,7 +9,9 @@ plans/166 W2 I4 — 옛 `src/config.py`에서 클래스를 그대로 옮겼다. 
 
 from __future__ import annotations
 
-from pydantic import Field, SecretStr
+from typing import Any
+
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -195,6 +197,46 @@ class PortalHelpConfig(BaseSettings):
     enabled: bool = True
 
     model_config = {"env_prefix": "PORTAL_HELP_", "env_file": ".env", "extra": "ignore"}
+
+
+class DutyAreaConfig(BaseSettings):
+    """담당 업무 지정 `duty_area` 설정 (plans/201 W1 · D-354).
+
+    담당 업무는 **권한이 아니라 중점**이다 — 무엇도 숨기지 않고, 인가 판정은 이 값을 읽지 않는다.
+    어휘 정본은 `config/duty_areas.yaml`이다. 기본 off(D-162) — 끄면 가입·관리 화면에 담당 선택이
+    없고 사용자 응답 JSON에 담당 키가 실리지 않아 현행과 같다. 기동 시 1회 해석한다(재시작 반영).
+    """
+
+    enabled: bool = False
+    # (plans/201 W3) 알람 화면 담당 강조 — 카드 배지(발생·단서)·「내 담당 먼저」 정렬·추천 질의 재정렬,
+    # notifier SSE 키(`apm_event_type`·`top_process_kinds`), `/auth/me` 메타(`duty_alarm_focus`).
+    # 유효값 = `enabled` AND 이 값(`alarm_focus_effective`). env 이름은 계획서 확정값(접두 없음).
+    # 기본 off = SSE payload·`/auth/me`·화면 비트 동일.
+    alarm_focus_enabled: bool = Field(
+        default=False,
+        validation_alias="DUTY_ALARM_FOCUS_ENABLED",
+    )
+
+    model_config = {"env_prefix": "DUTY_AREA_", "env_file": ".env", "extra": "ignore"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_alarm_focus_field_name(cls, data: Any) -> Any:
+        """생성자 필드명 인자 `alarm_focus_enabled=`를 env 이름으로 옮긴다(plans/201 W3 교정).
+
+        env는 `DUTY_ALARM_FOCUS_ENABLED` 하나만 받아야 한다 — `AliasChoices`에 필드명을 넣으면 접두 없는 env
+        `ALARM_FOCUS_ENABLED`가, `populate_by_name`을 켜면 그룹 접두 이름 `DUTY_AREA_ALARM_FOCUS_ENABLED`가
+        함께 읽힌다. 필드명 키는 생성자 인자에서만 오므로 그것만 별칭 키로 옮긴다(생성자 인자가 env보다 우선).
+        """
+        if isinstance(data, dict) and "alarm_focus_enabled" in data:
+            data = dict(data)
+            data["DUTY_ALARM_FOCUS_ENABLED"] = data.pop("alarm_focus_enabled")
+        return data
+
+    @property
+    def alarm_focus_effective(self) -> bool:
+        """알람 화면 담당 강조가 실제로 켜졌는가(`DUTY_AREA_ENABLED` AND `DUTY_ALARM_FOCUS_ENABLED`)."""
+        return self.enabled is True and self.alarm_focus_enabled is True
 
 
 #: 본체 프록시가 받는 분리 컴포넌트 이름(plans/191 · D-345). 이 밖의 이름은 설정에 있어도 무시한다.

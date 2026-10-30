@@ -12,6 +12,7 @@ CREATE TABLE IF NOT EXISTS auth_users (
     status          VARCHAR(20) NOT NULL DEFAULT 'active',
     department      VARCHAR(100),
     allowed_db_ids  TEXT[],
+    duty_areas      TEXT[],          -- 담당 업무(plans/201 · 권한 아님)
     auth_method     VARCHAR(20) NOT NULL DEFAULT 'local',
     login_fail_count INTEGER NOT NULL DEFAULT 0,
     last_login_at   TIMESTAMPTZ,

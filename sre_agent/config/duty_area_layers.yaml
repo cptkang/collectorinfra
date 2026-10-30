@@ -1,0 +1,148 @@
+# 조사 결과 영역별 판정 매핑 (plans/201 W4 §6.1 · D-354) — 브리핑 선택 키 `duty_view`의 원천.
+#
+# **옮겨 쓰기만 한다.** 플레이북이 이미 만든 판독 계층(engine_agreement.READING_LAYERS)과 가설 규칙표
+# (playbook_hypotheses.HYPOTHESIS_RULES)의 상태를 담당 영역으로 옮긴다 — 새 판정 규칙·LLM 호출 없음.
+# 영역 코드·라벨·선언 순서는 본체 정본 `config/duty_areas.yaml`과 같아야 한다(양방향 import 0 · D-139 —
+# 루트 `tests/test_plan201_w4_duty_contract.py`가 두 파일을 파일로 읽어 대조한다).
+# 문구에는 조직·사람 이름을 넣지 않는다(R&R은 이 시스템이 정하지 않는다 · plans/201 §13).
+version: 1
+
+# 선언 순서 = 담당 미지정 사용자의 표 순서. no_step_reason = 이 영역을 말할 판독이 이 조사에 없을 때의 사유.
+areas:
+  - code: server_os
+    label: 서버/OS
+    no_step_reason: 이 조사는 호스트(서버 자원) 판독을 하지 않음
+  - code: was_mw
+    label: WAS/미들웨어
+    no_step_reason: 이 조사는 WAS 판독을 하지 않음
+  - code: db
+    label: DB
+    no_step_reason: 이 조사는 SQL 구간 판독을 하지 않음
+
+# 상태 4값의 표시 이름(화면은 이 값을 그대로 쓴다 — 프론트에 어휘 사본을 두지 않는다).
+status_labels:
+  abnormal: 이상
+  suspect: 의심 · 확인 필요
+  normal: 정상
+  unverified: 확인 안 됨
+
+# 판독 계층(engine_agreement LAYERS) → 영역. external은 아래 external 절의 근거 문구를 함께 단다.
+layers:
+  db: db
+  external: was_mw
+  cpu: was_mw
+  gc: was_mw
+  host_resource: server_os
+
+# 판독이 「정상」을 말할 수 있는 영역 — 판독이 돌았고(근거 단계 있음) 그 값이 이 영역을 가리키지 않으면
+# 그 영역의 정상 근거다(도구 인용이 있을 때만). 표에 없는 판독(scope·load_mode 등)은 영역 판정에 쓰지 않는다.
+# cpu_owner는 WAS만 말한다 — 서버/OS 정상은 host_saturation이 맡는다(R-E `none`은 호스트 CPU가 이상인데
+# 귀속 기준을 못 넘은 경우도 포함한다). 증거 `host_cpu_anomalous`가 참이면 cpu_owner는 어느 영역의 정상
+# 근거도 아니다(cpu_owner_anomalous 절).
+reading_areas:
+  dominant: [db]
+  db_split: [db]
+  heap_shape: [was_mw]
+  cpu_owner: [was_mw]
+  host_saturation: [server_os]
+
+# 근거 문구의 판독 이름(값은 판독 enum 그대로 붙인다).
+reading_labels:
+  dominant: 응답 지배 구간
+  db_split: 커넥션 획득·실행 구분
+  heap_shape: 힙 추세 모양
+  cpu_owner: CPU 귀속
+  host_saturation: 호스트 자원 포화
+
+# 커넥션 풀·DB 연결 계열 가설 — 계층표보다 먼저 본다(§6.1 표 · §12 Q7). 이 계열이 하나라도(반박 제외) 있으면
+# db 계층 판독은 계층표로 다시 옮기지 않는다. 1순위가 지지면 그 영역 하나 · 판단 보류면 inconclusive 절.
+connection_hypotheses:
+  H-POOL-INSTANCE: was_mw
+  H-DB-POOL-CHAIN: db
+  H-DB-SHARED: db
+  H-DB-INSTANCE: db
+connection_inconclusive:
+  areas: [was_mw, db]
+  # reason은 커넥션 획득·실행 구분 판독(db_split)이 n/a·미결정일 때만 — 그 밖의 판단 보류는 general_reason
+  reason: 획득·실행 구분 정보 없음
+  general_reason: 커넥션 가설 판단 보류
+# 커넥션 계열 가설이 판정에 쓰여 db 계층 판독을 계층표로 옮기지 않았을 때의 db 행 사유(이상·의심이면 싣지 않는다).
+connection_handled_reason: 커넥션 가설 판정으로 이관
+
+# 호스트 CPU는 이상(R-E 증거 host_cpu_anomalous)인데 CPU 귀속이 기준 미달 — cpu_owner를 어느 영역의 정상 근거로도
+# 쓰지 않고, area(서버/OS)는 다른 정상 근거(host_saturation none 등)가 있어도 「정상」으로 두지 않는다(원칙 7).
+cpu_owner_anomalous:
+  area: server_os
+  reason: 호스트 CPU 이상 — CPU 귀속 미확정
+
+# 커넥션 계열 밖 가설 → 영역(지지일 때만 그 영역을 「이상」으로 올린다). `process`는 R-E 상위 프로세스 종류로 정한다.
+# H-LOAD(트래픽 급증)·H-CHANGE(최근 변경)는 영역 원인이 아니라 두지 않는다.
+hypothesis_areas:
+  H-EXT-SHARED: was_mw
+  H-EXT-INSTANCE-SINGLE: was_mw
+  H-EXT-INSTANCE-MANY: was_mw
+  H-GC-LEAK: was_mw
+  H-HEAP-PERIODIC: was_mw
+  H-HEAP-UNDERSIZED: was_mw
+  H-CPU-LOGIC-CHANGE: was_mw
+  H-CPU-LOGIC: was_mw
+  H-CPU-LOAD: was_mw
+  H-CPU-OTHER: process
+  H-HOST-CPU: server_os
+  H-HOST-MEMORY: server_os
+  H-HOST-FS: server_os
+  H-HOST-SCOPE: server_os
+
+# 외부 연계 원인(§12 Q12) — was_mw가 받되 근거 문구를 고정하고 표시에 꼬리표를 붙인다(「WAS 문제」 오독 방지).
+# label은 본체 `config/duty_areas.yaml` cause_hints의 외부 연계 라벨과 같아야 한다(계약 테스트).
+external:
+  label: 외부 연계 — 상대 시스템 확인 필요
+  tag: 외부 연계
+  hypotheses: [H-EXT-SHARED, H-EXT-INSTANCE-SINGLE, H-EXT-INSTANCE-MANY]
+
+# R-E `other_process`(WAS 밖 프로세스가 CPU 점유) — 상위 프로세스의 미들웨어 kind로 영역을 정한다.
+# 판독 증거에는 프로세스 **이름**만 있다(`top_process.name` — 인자 없음). 그래서 이름만으로 잡히는
+# DB 엔진 시그니처만 사본으로 둔다(아래 process_signatures). WAS·웹서버 시그니처는 인자(cmdline)로 잡는
+# 규칙이라(`org.apache.catalina…`·`nginx: master process`·`/httpd`) 이름만으로는 판정할 수 없어 사본을
+# 두지 않는다 — 판정하지 못한 프로세스는 default_area(서버/OS)로 두되 근거에 「종류 미식별」을 밝힌다.
+process:
+  default_area: server_os
+  unidentified_note: 상위 프로세스 종류 미식별(이름 기준 DB 엔진 아님 · WAS·웹서버 여부는 이름만으로 판정 불가)
+  missing_note: 상위 프로세스 이름 없음
+  kind_areas:
+    was_mw: [tomcat, jboss-wildfly, weblogic, websphere, jeus, nginx, apache-httpd, webtob]
+    db: [db2, mysql, mariadb, postgresql, oracle, tibero]
+
+# DB 엔진 시그니처 최소 사본 — 본체 `config/middleware_signatures.yaml`의 같은 kind `match_regex`와 글자까지
+# 같아야 한다(계약 테스트). 실행 파일 이름 경계 정규식이라 프로세스 이름에 그대로 맞는다.
+process_signatures:
+  - kind: db2
+    match_regex: '^(?:\S*/)?db2sysc(?=\s|$)'
+  - kind: mysql
+    match_regex: '^(?:\S*/)?mysqld(?=\s|$)'
+  - kind: mariadb
+    match_regex: '^(?:\S*/)?mariadbd(?=\s|$)'
+  - kind: postgresql
+    match_regex: '^(?:\S*/)?(?:postgres|postmaster)(?=\s|:|$)'
+  - kind: oracle
+    match_regex: '^(?:ora_pmon_\w+|(?:\S*/)?oracle(?!asm(?=\s|$))[A-Za-z0-9]*)(?=\s|$)'
+  - kind: tibero
+    match_regex: '^(?:\S*/)?tbsvr(?:_[A-Z]+[0-9]*)?(?=\s|$)'
+
+# OS 원인 확인은 WAS 서버의 폴스타 연결이 있어야 한다(D-348 · D-355) — 조사 범위에 폴스타 소스가 없으면 이 사유.
+polestar_unlinked:
+  area: server_os
+  reason: WAS 서버의 폴스타 연결 없음
+
+# 근거 단계는 돌았으나 도구 인용이 없을 때의 사유(근거 없는 「정상」을 내지 않는다 — 원칙 7).
+uncited_reason: 판독 근거 단계에 도구 인용 없음
+
+# 인계 문구 — 이상·의심 영역 목록으로 결정적으로 고른다. {areas} = 영역 라벨(꼬리표 포함)을 「·」로 이은 것.
+handoff:
+  single: "{signal} 영역은 {areas}입니다 — {areas} 담당의 확인이 필요합니다."
+  multi: "{signal} 영역은 {areas}입니다 — {count}개 영역 담당의 확인이 필요합니다."
+  none_all_checked: 영역별 점검에서 이상 신호를 찾지 못했습니다.
+  none_with_unverified: 확인한 영역에서는 이상 신호를 찾지 못했습니다 — 「확인 안 됨」 영역은 사유를 보고 따로 확인하세요.
+  signal_words:
+    abnormal: 이상 신호가 있는
+    suspect: 의심 신호가 있는

@@ -13,6 +13,15 @@ import jwt
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 
 from src.api.dependencies import get_current_user, require_user
+from src.api.duty_area_support import (
+    duty_alarm_focus_enabled,
+    duty_alarm_focus_meta,
+    duty_area_enabled,
+    duty_area_options,
+    duty_response_fields,
+    effective_duty_areas,
+    validate_duty_areas,
+)
 from src.api.schemas import (
     AuthStatusResponse,
     ChangePasswordRequest,
@@ -195,6 +204,11 @@ async def register(
             detail=f"비밀번호는 최소 {config.auth.password_min_length}자 이상이어야 합니다.",
         )
 
+    # 담당 업무(plans/201 W1 · D-354) — 선택 · 권한 아님. off면 받아도 저장하지 않는다(현행 동일).
+    # 어휘 밖 코드는 생성 전에 422로 거부한다(조용히 버리지 않는다).
+    duty_on = duty_area_enabled(request)
+    duty_areas = validate_duty_areas(body.duty_areas) if duty_on else None
+
     # 중복 확인
     if await user_repo.exists(body.user_id):
         raise HTTPException(status_code=409, detail="이미 존재하는 사용자 ID입니다.")
@@ -215,15 +229,19 @@ async def register(
         # 관측 소스(APM 등)도 같은 규칙 — `AUTH_DEFAULT_ALLOWED_SOURCES`
         # (빈 값이면 없음 · plans/125 A-7)
         allowed_sources=parse_allowed_sources(config.auth.default_allowed_sources),
+        duty_areas=duty_areas,
         auth_method="local",
     )
     await user_repo.create(user)
 
-    # 감사 로그
+    # 감사 로그 — 담당 업무는 켠 기동에서만 싣는다(off = 현행 detail 그대로)
+    register_detail: dict[str, object] = {"username": body.username, "department": body.department}
+    if duty_on:
+        register_detail["duty_areas"] = duty_areas
     await _log_audit_event(request, {
         "event_type": AuditEvent.REGISTER.value,
         "user_id": body.user_id,
-        "detail": {"username": body.username, "department": body.department},
+        "detail": register_detail,
         "ip_address": _get_client_ip(request),
     })
 
@@ -236,6 +254,7 @@ async def register(
         department=user.department,
         allowed_db_ids=user.allowed_db_ids,
         status=user.status.value,
+        **duty_response_fields(request, user),
     )
 
 
@@ -381,9 +400,36 @@ async def logout(
     response_model=UserInfoResponse,
 )
 async def get_me(
+    request: Request,
     current_user: dict = Depends(require_user),
 ) -> UserInfoResponse:
-    """현재 로그인된 사용자 정보를 반환한다."""
+    """현재 로그인된 사용자 정보를 반환한다.
+
+    담당 업무(plans/201 W1 · D-354)는 켠 기동에서만 `duty_areas`·`duty_area_options`로 싣는다.
+    값은 인가 dict(`current_user`)가 아니라 저장소에서 다시 읽는다 — 담당 업무는 권한이
+    아니라 인가 dict에 싣지 않는다(`User.to_auth_dict`). 저장소에 없는 사용자
+    (개발 모드 anonymous)는 미지정.
+    """
+    duty: dict[str, object] = {}
+    if duty_area_enabled(request):
+        stored = None
+        user_repo = getattr(request.app.state, "user_repo", None)
+        sub = current_user.get("sub", "")
+        if user_repo and sub and sub != "anonymous":
+            # 담당 업무는 부가 정보 — 저장소 조회가 실패해도 500이 아니라 미지정으로 답한다
+            try:
+                user = await user_repo.get_by_user_id(sub)
+                stored = user.duty_areas if user else None
+            except Exception as exc:  # noqa: BLE001
+                logger.warning("담당 업무 조회 실패(미지정으로 응답 · user=%s): %s", sub, exc)
+                stored = None
+        duty = {
+            "duty_areas": effective_duty_areas(sub, stored),
+            "duty_area_options": duty_area_options(),
+        }
+        # (plans/201 W3) 알람 화면 담당 강조 메타 — 켠 기동에서만 키(끄면 W1 응답과 같다)
+        if duty_alarm_focus_enabled(request):
+            duty["duty_alarm_focus"] = duty_alarm_focus_meta()
     return UserInfoResponse(
         user_id=current_user.get("sub", ""),
         username=current_user.get("name", ""),
@@ -391,6 +437,7 @@ async def get_me(
         department=current_user.get("department"),
         allowed_db_ids=current_user.get("allowed_db_ids"),
         alarm_zones=current_user.get("alarm_zones"),
+        **duty,
     )
 
 

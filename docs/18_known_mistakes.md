@@ -2369,3 +2369,28 @@
 - **실수**: plans/202 §2.1은 「캐시 60초 초과 시 재조회」·「조회 상한 5초」만 적었다. 구현자는 실패를 기록하지 않아 같은 도메인의 새 이벤트마다 로그인+목록 조회를 다시 했고, 전송 오류는 차단기에도 세지 않아 상한이 없었다(verifier Major · strict xfail로 재현). 이번에 함께 Windows에서 `regress.py`가 pytest-xdist 부재로 rc=4로 멈췄고, 기준 사본 실패 귀속이 「사본에서 수집 안 됨」으로만 나와 팀 리드가 기준 worktree에서 실패 ID를 직접 대조했다
 - **원인**: 외부 호출 정책을 「성공 경로의 신선도」로만 설계하고 실패 경로의 호출 빈도·대기 누적을 수용 기준에 넣지 않았다. 회귀 도구는 xdist·패키지 venv를 전제한다(2026-10-12 항목과 같은 환경 원인)
 - **방지책**: 동기 경로(폴러·요청 처리)에 외부 호출을 넣는 계획은 수용 기준에 「실패가 연속될 때 호출 수·누적 대기 상한」을 적는다(실패 상태 재사용·소스 단위 백오프). xdist 없는 환경은 `regress.split_workers`를 `(0, 0)`으로 바꾼 직렬 래퍼로 돌리고, 「사본에서 수집 안 됨」이면 `git worktree add --detach`한 기준 사본에서 실패 ID를 직접 돌려 대조한다(sre_agent `미실행` 패키지도 같은 방식)
+
+### 2026-10-30 · (plans/199 W6 테스트 · plans/201 W1 팀 리드가 발견) parametrize 값에 시각 의존 JWT를 넣어 xdist 수집이 워커마다 달라져 regress 본체 레인 전체가 0건 실행으로 끝남
+- **실수**: `tests/test_api/test_plan199_w6_breakglass.py::test_user_path_health_is_not_registered`가 `@pytest.mark.parametrize("token", [_break_glass(), _user_token(...)])`로 수집 시점에 `exp`가 든 JWT를 만든다. 워커마다 수집 시각(초)이 달라 테스트 ID가 달라지고 pytest-xdist가 「Different tests were collected between gw0 and gwN」로 워커 4개를 에러 처리 — `regress.py`(plans/201 W1 교정분)가 통과 0 · 에러 4로 끝났다. 기준선(a289818f)부터 있는 결함이다.
+- **원인**: parametrize 인자를 결정적 값이 아니라 시각에 따라 바뀌는 객체로 만들었고 `ids=`를 주지 않았다. xdist는 워커 간 수집 ID 동일을 전제한다.
+- **방지책**: parametrize에는 결정적 값(토큰 종류 문자열 등)과 `ids=`를 쓰고, 시각·난수 의존 값은 테스트 본문에서 만든다. 임시 대응: regress 래퍼로 해당 노드를 `--deselect`하고 그 파일은 직렬로 따로 돌린다(이 파일 수정은 plans/199 소유 — 후속 정리 대상).
+
+### 2026-10-30 · (plans/201 W1 · 팀 리드) 실패 귀속 대조 스크립트의 파일 목록이 빈 값이 되어 맨 `pytest`가 두 트리에서 전체 스위트로 돌았다(전체 회귀 금지 위반 · 50분×2)
+- **실수**: `failed_ids.txt`에서 파일명을 뽑는 `sed` 식에 탭·백슬래시 이스케이프를 섞어 「unterminated s command」로 실패했고, 빈 `$FILES`로 `python -m pytest`가 루트 기본 수집(본체+noise_gate 전체)을 현재 트리와 기준선 worktree에서 각각 실행했다. 사용자 요청 없는 전체 실행이다(D-303).
+- **원인**: 파이프라인 중간 단계 실패를 검사하지 않고(`set -e`·빈 값 가드 없음) 결과 변수를 그대로 pytest 인자로 넘겼다.
+- **방지책**: 대조용 파일 목록은 python으로 만들고, pytest 호출 전에 목록이 비어 있으면 중단한다(`[ -n "$FILES" ] || exit 1`). 맨 `pytest`에 가변 인자를 넘길 때는 항상 이 가드를 둔다.
+
+### 2026-10-30 · (plans/201 W3 · implementer — 팀 리드 대리 기록) 프로세스 kind 판정 테스트를 절단 전 cmdline으로만 써서 실 스냅샷 경로의 Java WAS 미탐을 못 잡았다
+- **실수**: `classify_process_kind` 테스트가 완전한 Tomcat cmdline만 넣어 통과했다. 실제 입력인 `ProcessInfo.args`는 `mask_args`가 120자로 자르므로 `org.apache.catalina.startup.Bootstrap` 같은 뒤쪽 표식이 빠지고, 이름 폴백도 `java`라 판정이 None이 된다(verifier 재현 · xfail 고정).
+- **원인**: 판정 함수의 입력을 원천(폴스타 cmdline) 형태로 가정하고, 실제 호출 경로가 넘기는 값(마스킹·절단 후 `ProcessInfo`)의 shape로 픽스처를 만들지 않았다(「mock 통과 ≠ 프로덕션」 원칙 위반).
+- **방지책**: 판정·분류 함수 테스트는 실제 호출부가 넘기는 가공 단계(마스킹·절단·정규화)를 거친 값으로 최소 1건을 쓴다. 가공이 정보를 지우는 경우는 가공 전 판정을 설계하거나 한계를 xfail·문서로 고정한다. (같은 날 교정: enricher가 마스킹 전 원 항목으로 판정 · kind만 상태에 싣는다)
+
+### 2026-10-30 · (plans/201 W4 · 팀 리드 기록) 브리핑 선택 키가 사용자 뷰 허용 목록(`PLAYBOOK_VIEW_KEYS`)에 없으면 저장 단계에서 조용히 빠진다
+- **실수**: W4가 sre_agent 브리핑에 선택 키 `duty_view`를 더했으나, noise_gate `investigation_store.py`의 사용자 뷰 투영은 `PLAYBOOK_VIEW_KEYS`(`partial`·`playbook`·`deep_dive`·`engine_agreement`)만 남기고 나머지를 경고 없이 버린다. sre_agent 단위 테스트만으로는 통과하고 웹 화면에서는 표가 그려지지 않는 구조였다(implementer가 실 경로 추적으로 발견 · 같은 날 키 추가로 해소 · 프론트 `USER_BRIEFING_KEYS`도 같은 집합).
+- **원인**: 허용 목록 투영이 「모르는 키는 무음 제거」로 동작해(침묵 폴백) 생산자(sre_agent)·투영(noise_gate)·소비자(briefing-view.js) 세 곳의 키 집합이 따로 관리된다. 선택 키 추가 계약에 투영 목록 갱신이 명시돼 있지 않았다.
+- **방지책**: 브리핑에 선택 키를 더할 때는 `PLAYBOOK_VIEW_KEYS`·`_PLAYBOOK_ENUM_KEYS`(마스킹 예외)·프론트 `USER_BRIEFING_KEYS`를 함께 grep해 갱신하고, 저장 → 조회 → 렌더 왕복 테스트를 1건 둔다. 투영에서 모르는 키를 버릴 때 디버그 로그 1줄을 남기는 개선은 후속 후보.
+
+### 2026-10-30 · (plans/201 W4 · 팀 리드) implementer 완료 보고 전에 계획 끝 회귀를 돌려 실행 중 편집과 겹쳤다
+- **실수**: 교정 중인 implementer의 파일 수정이 멎은 것(mtime)만 보고 `regress.py --base a289818f --files …`를 시작했는데, 실행 도중(18:43:44) implementer가 `duty_view.py`·`investigation_store.py`·테스트 1개를 더 고쳐 결과가 섞였다. 재실행 1회로 대체했다(시간 손실 · 결과 영향 없음).
+- **원인**: 완료 통지 대신 파일 시각으로 종료를 추정했다.
+- **방지책**: 계획 끝 회귀는 해당 implementer의 완료 보고(SubagentHandback)를 받은 뒤에만 시작한다. 기다리는 동안에는 기록·검토처럼 작업 트리를 읽기만 하는 일을 한다.

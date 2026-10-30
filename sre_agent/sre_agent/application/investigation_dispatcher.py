@@ -113,6 +113,7 @@ from sre_agent.domain.investigation_limits import (
     repeated_calls,
     stall_limitation,
 )
+from sre_agent.domain.duty_view import DutyAreaMap
 from sre_agent.domain.engine_agreement import compare_engines
 from sre_agent.domain.evidence_ledger import build_ledger
 from sre_agent.domain.failure_guards import (
@@ -137,6 +138,7 @@ from sre_agent.domain.severity_signatures import (
     was_signals_from_outputs,
 )
 from sre_agent.infrastructure.activity_masking import mask_activity_text
+from sre_agent.infrastructure.duty_area_loader import load_duty_area_map
 from sre_agent.infrastructure.expected_sources_loader import load_expected_sources
 from sre_agent.infrastructure.tool_result_cache import (
     BatchCaller,
@@ -657,6 +659,14 @@ class InvestigationDispatcher:
         # kind별 기대 소스(plans/198 I-10) — 미조회 소스 표기가 켜졌을 때 처음 쓸 때 1회 읽는다.
         self._expected: ExpectedSources | None = None
         self._expected_loaded = False
+        # 조사 결과 영역별 판정(plans/201 W4 · D-354) — 플래그는 기동 시 1회. 끄면 매핑을 읽지 않고
+        # 브리핑에 `duty_view`를 싣지 않는다(비트 동일). 적재 실패는 경고 후 키 없음(조사 무영향).
+        self._duty_areas: DutyAreaMap | None = None
+        if bool(getattr(settings, "sre_duty_view_enabled", False)):
+            try:
+                self._duty_areas = load_duty_area_map()
+            except Exception as exc:  # noqa: BLE001 — 파일·형식·YAML 구문 오류(표시만 생략 · 조사 무영향)
+                logger.warning("영역별 판정 매핑 적재 실패 — duty_view 생략: %s", exc)
 
     # ── executor 진입점 ────────────────────────────────────────
 
@@ -2167,6 +2177,7 @@ class InvestigationDispatcher:
                     engine_agreement=compare_engines(
                         block["readings"], unavailable_reason=DEEP_NOT_COMPARABLE_PENDING
                     ),
+                    duty_areas=self._duty_areas,
                 ),
             }
             job.updated_at = self._wall_clock()
@@ -2229,7 +2240,7 @@ class InvestigationDispatcher:
             remediation=self._recommend_remediation(verdict), limitations=limits,
             correlation=run.correlation, deep_dive=deep_dive, engine_agreement=agreement,
             cross_source=xs, apm_tools_connected=bool(self._settings.apm_mcp_url),
-            tool_names=tool_names,
+            tool_names=tool_names, duty_areas=self._duty_areas,
         )
         self._log_finalize(job, started, "done")
         job.status = "done"

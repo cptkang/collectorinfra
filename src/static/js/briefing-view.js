@@ -871,7 +871,7 @@
         rawTitle: "운영자 화면 — 가리지 않은 원문이 그대로 복사됩니다",
     };
     // 사용자 뷰의 `briefing`에 실리는 키(noise_gate investigation_store.PLAYBOOK_VIEW_KEYS와 같은 집합)
-    var USER_BRIEFING_KEYS = { partial: true, playbook: true, deep_dive: true, engine_agreement: true };
+    var USER_BRIEFING_KEYS = { partial: true, playbook: true, deep_dive: true, engine_agreement: true, duty_view: true };
 
     /**
      * (plans/199 W2) 운영자 뷰(원문) 판정 — 서버가 정한 응답 모양으로만 본다(클라이언트 역할 값을 쓰지 않는다 · D-325 ③).
@@ -1472,7 +1472,7 @@
                 '<div class="bv-pb-line"><span class="bv-pb-key">' + escapeHtml(PB_TEXT.followupItemHead) + '</span> ' +
                 escapeHtml(labels[item.focus] || item.focus || "") +
                 (item.submitted_at ? ' <span class="bv-meta">' + escapeHtml(fmtTime(item.submitted_at)) + '</span>' : "") + '</div>' +
-                renderBody(item, {}) + '</div>';
+                renderBody(item, { noDuty: true }) + '</div>';
         }).join("") : '<div class="bv-note">' + escapeHtml(PB_TEXT.followupEmpty) + '</div>';
         return '<div class="bv-pb-block bv-followup">' + head + notes + form + msg + list + '</div>';
     }
@@ -2163,6 +2163,7 @@
         var qd = queueOf(view, extra);
         if (qd) { chip.kind = "hold"; chip.text = qd.chip; }
         var parts = [renderHead(view, chip, extra), summaryBlock(view, extra, extra.mode === "detail")];
+        parts.push(dutySlotHtml(view, extra));
         if (qd && qd.note) parts.push('<div class="bv-meta">' + escapeHtml(qd.note) + '</div>');
         if (chip.reason) {
             parts.push('<div class="bv-reason' + (chip.kind === "fail" ? " bv-reason--fail" : "") + '">' +
@@ -2246,7 +2247,7 @@
         if (view.updated_at) head += '<span class="bv-meta">' + escapeHtml(fmtTime(view.updated_at)) + '</span>';
         head += '</div>';
 
-        var parts = [head, summaryBlock(view, extra)];
+        var parts = [head, summaryBlock(view, extra), dutySlotHtml(view, extra)];
         if (qd && qd.note) parts.push('<div class="bv-meta">' + escapeHtml(qd.note) + '</div>');
         if (chip.reason) {
             parts.push('<div class="bv-reason' + (chip.kind === "fail" ? " bv-reason--fail" : "") + '">' +
@@ -2374,6 +2375,120 @@
         return asList(isObj(sec) ? sec.queries : null).filter(isObj).map(function (q) {
             return String(q.phrase || q.tool || "").trim();
         }).filter(Boolean);
+    }
+
+    // ─── (plans/201 W4 · D-354) 영역별 점검 결과 ───────────────────────────────────────────
+    // 영역 코드·라벨·상태 표시 이름은 이 파일에 사본을 두지 않는다 — 라벨은 `/auth/me`의 `duty_area_options`
+    // (setDutyMeta로 받는다), 메타가 없는 화면(관제 등)은 브리핑 행의 `label`(sre_agent 매핑 · 본체 정본과 같음을
+    // 계약 테스트가 고정)을 쓴다. 상태 이름은 행의 `status_label`을 그대로 쓴다.
+    var DUTY_TEXT = {
+        head: "영역별 점검 결과", mine: "내 담당", gotoStep: "단계 보기",
+        columns: ["영역", "상태", "근거", "단계", "확인 안 된 사유"],
+    };
+    var dutyMeta = null;
+
+    // app.js가 `/auth/me` 응답에 `duty_area_options` 키가 있을 때만 부른다 — 부르지 않으면 선언 순서 · 행 라벨
+    function setDutyMeta(meta) {
+        if (!isObj(meta)) { dutyMeta = null; return; }
+        var labels = {};
+        asList(meta.options).forEach(function (o) {
+            if (isObj(o) && o.code) labels[String(o.code)] = String(o.label || o.code);
+        });
+        dutyMeta = { labels: labels, mine: asList(meta.mine).map(String) };
+    }
+
+    // (plans/201 W4) 영역별 점검 결과 자리 — 브리핑에 `duty_view`가 있을 때만(없으면 빈 문자열 = 종전 렌더).
+    // 축소로 `playbook`이 빠진 사용자 뷰에도 그린다. 내용은 attach의 decorate가 textContent로만 채운다.
+    // 추가 조사 항목(`extra.noDuty` — followupHtml)은 채울 곳이 없어 자리를 그리지 않는다.
+    function dutySlotHtml(view, extra) {
+        if (!dutyViewOf(view) || (extra && extra.noDuty)) return "";
+        return '<div class="bv-pb-block bv-duty" data-bv-duty=""></div>';
+    }
+
+    function dutyViewOf(view) {
+        var b = isObj(view) ? view.briefing : null;
+        var dv = isObj(b) ? b.duty_view : null;
+        return isObj(dv) && Array.isArray(dv.areas) && dv.areas.length ? dv : null;
+    }
+
+    // 표 모델(순수) — 담당이 있으면 내 담당 영역을 먼저(그 안은 선언 순서), 나머지는 선언 순서
+    function dutyModel(view, meta) {
+        var dv = dutyViewOf(view);
+        if (!dv) return null;
+        meta = isObj(meta) ? meta : dutyMeta;
+        var labels = isObj(meta) && isObj(meta.labels) ? meta.labels : {};
+        var mine = isObj(meta) ? asList(meta.mine) : [];
+        var rows = dv.areas.filter(isObj).map(function (r, i) {
+            var code = String(r.code || "");
+            return {
+                code: code,
+                label: Object.prototype.hasOwnProperty.call(labels, code) ? labels[code] : String(r.label || code),
+                tag: r.tag ? String(r.tag) : "",
+                status: String(r.status || ""),
+                statusLabel: String(r.status_label || r.status || ""),
+                signals: asList(r.signals).map(String),
+                steps: asList(r.steps).map(String),
+                reason: r.reason ? String(r.reason) : "",
+                mine: mine.indexOf(code) >= 0,
+                order: i,
+            };
+        });
+        rows.sort(function (a, b) {
+            if (a.mine !== b.mine) return a.mine ? -1 : 1;
+            return a.order - b.order;
+        });
+        return { rows: rows, handoff: typeof dv.handoff === "string" ? dv.handoff : "" };
+    }
+
+    var DUTY_CHIP_KIND = { abnormal: "fail", suspect: "warn", normal: "ok", unverified: "none" };
+
+    // 자리(`[data-bv-duty]`)에 표를 채운다 — createElement·textContent만 쓴다(HTML 문자열 조립 없음)
+    function fillDutyView(container, view, meta) {
+        if (!container || !container.querySelector) return;
+        var slot = container.querySelector("[data-bv-duty]");
+        var model = dutyModel(view, meta);
+        if (!slot || !model) return;
+        var doc = container.ownerDocument || root.document;
+        while (slot.firstChild) slot.removeChild(slot.firstChild);
+        slot.appendChild(rqNode(doc, "div", "bv-label", DUTY_TEXT.head));
+        var wrap = rqNode(doc, "div", "bv-table-wrap");
+        var table = rqNode(doc, "table", "bv-cross-table bv-duty-table");
+        var head = rqNode(doc, "tr");
+        DUTY_TEXT.columns.forEach(function (c) { head.appendChild(rqNode(doc, "th", null, c)); });
+        var thead = rqNode(doc, "thead");
+        thead.appendChild(head);
+        table.appendChild(thead);
+        var tbody = rqNode(doc, "tbody");
+        model.rows.forEach(function (r) {
+            var tr = rqNode(doc, "tr", "bv-duty-row");
+            tr.setAttribute("data-duty-code", r.code);
+            var area = rqNode(doc, "td", "bv-duty-area", r.label + (r.tag ? "(" + r.tag + ")" : ""));
+            if (r.mine) area.appendChild(rqNode(doc, "span", "bv-src bv-duty-mine", " " + DUTY_TEXT.mine));
+            tr.appendChild(area);
+            var st = rqNode(doc, "td", "bv-duty-status");
+            st.appendChild(rqNode(doc, "span", "bv-chip bv-chip--" + (DUTY_CHIP_KIND[r.status] || "none"), r.statusLabel));
+            tr.appendChild(st);
+            tr.appendChild(rqNode(doc, "td", "bv-duty-signal", r.signals.length ? r.signals[0] : ""));
+            var go = rqNode(doc, "td", "bv-duty-step");
+            // 단계 ID는 영숫자·_·-만 — 정리 전후가 다르면 버튼을 달지 않는다(대상 판정과 속성 값을 같게)
+            var step = r.steps.filter(function (sn) {
+                return /^[A-Za-z0-9_-]+$/.test(sn) && !!container.querySelector('[data-bv-step="' + sn + '"]');
+            })[0];
+            if (step) {
+                var btn = rqNode(doc, "button", "bv-choice", DUTY_TEXT.gotoStep);
+                btn.setAttribute("type", "button");
+                btn.setAttribute("data-bv-action", "goto-step");
+                btn.setAttribute("data-step", step);
+                go.appendChild(btn);
+            }
+            tr.appendChild(go);
+            tr.appendChild(rqNode(doc, "td", "bv-duty-reason bv-meta", r.reason));
+            tbody.appendChild(tr);
+        });
+        table.appendChild(tbody);
+        wrap.appendChild(table);
+        slot.appendChild(wrap);
+        if (model.handoff) slot.appendChild(rqNode(doc, "div", "bv-meta bv-duty-handoff", model.handoff));
     }
 
     function rqNode(doc, tag, cls, text) {
@@ -2841,6 +2956,8 @@
 
         // (plans/195 W3) 그린 뒤 덧붙인다 — 단계 섹션(<details class="bv-step">)은 stepSections 순서와 같다
         function decorate(view) {
+            // (plans/201 W4) 영역별 점검 결과 — 자리가 그려졌을 때만 채운다(키가 없으면 자리도 없다)
+            fillDutyView(container, view);
             if (!opts.requery || !container.querySelectorAll) return;
             var doc = container.ownerDocument || root.document;
             var ctx = playbookContext(view);
@@ -3053,6 +3170,11 @@
             return ctx && isObj(ctx.pb.scope) ? ctx.pb.scope : null;
         },
         setBusy: setBusy,
+        // (plans/201 W4) 영역별 점검 결과 — 메타 주입 · 표 모델(순수) · 채우기 · 문구
+        DUTY_TEXT: DUTY_TEXT,
+        setDutyMeta: setDutyMeta,
+        dutyModel: dutyModel,
+        fillDutyView: fillDutyView,
         // (plans/195 W3) 「질의응답에서 확인」 — 장애 진단 단계 카드도 같은 노드를 쓴다
         RQ_TEXT: RQ_TEXT,
         requeryItems: requeryItems,

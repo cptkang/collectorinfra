@@ -1,0 +1,68 @@
+# 담당 업무 어휘 정본(D-354). 권한이 아니라 중점 — 무엇도 숨기지 않는다.
+# 코드는 이 파일의 code만 안다. 영역 추가는 이 파일 + 매뉴얼 + 계약 테스트(plans/201 §6.3)로 한다.
+areas:
+  - code: server_os
+    label: 서버/OS
+    description: CPU·메모리·파일시스템·프로세스 등 서버 자원
+    # 코드값 + 표시 이름(plans/201 W0 §1.2 ①″ — 세 존 동일). 대조는 대소문자 무시
+    resource_types: [server.Server, 서버, server.Cpus, CPU, server.Memory, 메모리, server.FileSystem, server.FileSystems, 개별 파일시스템,
+                     server.Disks, 디스크, server.Process, 프로세스, server.LogMonitor, 로그 모니터]
+    alarm_kinds: [cpu, memory, disk, process, log]
+    playbook_prefixes: [host.]
+  - code: was_mw
+    label: WAS/미들웨어
+    description: WAS 인스턴스 응답·에러·힙·풀, 미들웨어 프로세스
+    resource_types: [apm.Instance, weburl.WebURLMonitor, server.WebURLMonitor, WebURL 감시]   # WebURL 감시 = 서비스 접점(§12 Q9)
+    alarm_kinds: [apm]
+    playbook_prefixes: [was.]
+  - code: db
+    label: DB
+    description: DB 서버 자원과 애플리케이션이 본 SQL 지연(DB 내부 지표는 미수집)
+    # 엔진형 유형은 정의만 있고 30일 알람 0건(세 존 · §1.2 ①). 코드값만 적는다 — 표시 이름(메모리·프로세스)은 server.*와 같아 못 가른다
+    resource_types: [db2.Memory, mariadb.Memory, mssql.Memory, mysql.Memory, tibero.Memory,
+                     mariadb.Process, mssql.Process, mysql.Process, oracle.Process, postgresql.Process, sybase.Process, tibero.Process]
+    alarm_kinds: []
+    playbook_prefixes: [was.sql]  # SQL 패턴 플레이북은 WAS와 DB 양쪽 영역
+# 각 Wave가 섹션을 더한다: welcome_queries(W2) · alarm_prompt_priority · cause_hints(W3) · checklists(W5).
+
+# ── 원인 단서(plans/201 W3 §5.3) — 조사 없이 알람이 이미 싣고 온 정보만으로 담당 영역을 가리킨다 ──
+# 단서는 원인 판정이 아니다. 화면은 「단서 · 알람 정보만 봄(조사 전)」과 근거(label · 유형 · 프로세스 종류)를 함께 보인다.
+# 어휘 밖 영역 코드·근거 문구 없는 항목은 로더가 경고 후 무시한다(src/domain/duty_areas.py parse_cause_hints).
+cause_hints:
+  # 제니퍼 정규화 유형(알람 SSE apm_event_type) → 단서 영역. 대조는 strip·대문자·연속 공백→_·ERROR_/WARNING_ 접두 1회 제거.
+  # 유형 리터럴은 여기에만 둔다(게이트웨이 EVENT_TYPE_SIGNALS·sre_agent SQL_EVENT_TYPES는 고치지 않는다).
+  apm_event_types:
+    BAD_RESPONSE_TIME_SQL: {areas: [db], label: SQL 응답 지연}
+    SQL_TOOMANY_FETCH: {areas: [was_mw, db], label: 대량 조회}            # 앱 쿼리 설계 몫이 커서 양쪽
+    DB_CONN_UNCLOSED: {areas: [was_mw], label: DB 연결 미반납}            # 앱 누수(§12 Q7 ②)
+    DB_CONNECTION_FAIL: {areas: [was_mw, db], label: DB 연결 실패}        # 어느 쪽인지 유형만으론 못 가름(Q7 ②)
+    JDBC_CONNECTION_FAIL: {areas: [was_mw, db], label: DB 연결 실패}
+    MAYBE_GC_TIME_DELAY: {areas: [was_mw], label: GC·힙}
+    OUTOFMEMORY: {areas: [was_mw], label: GC·힙}
+    JVM_HEAP_MEM_HIGH: {areas: [was_mw], label: GC·힙}
+    # 외부 연계 원인은 was_mw — 근거 문구 고정(§12 Q12 · 애플리케이션 영역 개설 시 이전)
+    BAD_RESPONSE_TIME_EXTERNAL_CALL: {areas: [was_mw], label: 외부 연계 — 상대 시스템 확인 필요}
+    HTTP_IO_EXCEPTION: {areas: [was_mw], label: 외부 연계 — 상대 시스템 확인 필요}
+    SOCKET_EXCEPTION: {areas: [was_mw], label: 외부 연계 — 상대 시스템 확인 필요}
+  # 유형만으로 원인 영역을 못 가르는 것으로 알려진 유형 — 단서 없음 · 관리자 매핑 점검 배지에서 뺀다(접어서 보인다).
+  known_unmapped:
+    - BAD_RESPONSE_TIME_APPLICATION   # 응답 지연(일반)
+    - SERVICE_EXCEPTION
+    - AGENT_STOP
+    - METRICS_EVENT                   # 폐쇄망 원값 「METRICS EVENT」(공백 포함)
+    # 아래 4종은 계획 표에 없다 — 게이트웨이 신호 유형이지만 유형만으로 원인 영역(앱·DB·외부)을 못 가르므로
+    # 보수적으로 단서 없이 둔다(근거가 생기면 apm_event_types로 옮긴다).
+    - SERVICE_QUEUING
+    - PLC_REJECTED
+    - HIGH_RATE_REJECT
+    - HIGH_RATE_FAIL
+  # 영향 프로세스(알람 SSE top_process_kinds — config/middleware_signatures.yaml kind) → 단서 영역.
+  # 폴스타 CPU/메모리 알람의 실시간 프로세스 스냅샷에만 있다. 여기 없는 kind(redis·kafka 등)는 단서 없음 —
+  # 그 알람의 발생 영역(server_os)이 이미 덮는다.
+  process_kinds:
+    was_mw:
+      label: WAS·웹서버 프로세스
+      kinds: [tomcat, jboss-wildfly, weblogic, websphere, jeus, nginx, apache-httpd, webtob]
+    db:
+      label: 이 서버에서 DB 엔진 실행 중
+      kinds: [db2, mysql, mariadb, postgresql, oracle, tibero]

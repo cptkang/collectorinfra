@@ -339,6 +339,9 @@
                         <!-- plans/125 A-7: DB가 없는 관측 소스(APM 등)는 「조회 가능 소스」로 따로 정한다(신규 가입자 = AUTH_DEFAULT_ALLOWED_SOURCES). -->
                         「조회 가능 소스」는 DB가 없는 관측 소스(예: WAS 모니터링)의 조회 권한입니다 — 관리자 역할은 이것도 전체 허용입니다.
                     </p>
+                    <!-- plans/201 W1 §3.7: 「담당 업무 현황」(지정률 · 미지정만 보기 · 일괄 지정 · 매핑 점검).
+                         DUTY_AREA_ENABLED off면 admin.js가 채우지 않아 숨은 채로 남는다 -->
+                    <div id="dutyAreaStatusCard" hidden style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:16px"></div>
                     <div id="usersLoading" class="loading active">
                         <div class="spinner"></div>
                         <div class="loading-text">사용자 목록을 불러오는 중...</div>
@@ -895,7 +898,7 @@
 
     <div class="footer"><img class="brand-mark" src="/static/img/kb-mark.svg" alt="">KB AIOps 포탈 v1.0 &mdash; ADMIN</div>
 
-    <script src="/static/js/admin.js?v=14"></script>
+    <script src="/static/js/admin.js?v=16"></script>
     <script src="/static/js/admin-components.js?v=1"></script>
     <script src="/static/js/admin-db-structure.js?v=1"></script>
     <script src="/static/js/admin-rag-docs.js?v=3"></script>

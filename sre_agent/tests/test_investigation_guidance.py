@@ -185,6 +185,9 @@ from sre_agent.application.investigation_guidance import (  # noqa: E402
     ("server.Memory", "Memory Utilization", "memory"),
     ("server.FileSystem", "FS Util 90%", "disk"),
     ("server.Disk", "Disk IO", "disk"),
+    # plans/204 — 폐쇄망 payload resource_type은 한글 표시 이름이다(게이트 사본과 동형).
+    ("개별 파일시스템", "사용률 임계 초과", "disk"),
+    ("CPU", "사용률 임계 초과", "cpu"),
     ("server.NetworkInterface", "traffic burst", "network"),
     ("server.ProcessMonitor", "ntpd down", "process"),
     ("server.LogMonitor", "log pattern", "log"),

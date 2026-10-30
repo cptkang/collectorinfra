@@ -787,6 +787,58 @@ class DecisionStore:
             return []
         return records
 
+    def count_recent_values(self, window_seconds: int, field: str) -> tuple[dict[str, int], int]:
+        """최근 `window_seconds` 안 결정 레코드의 `field` 값별 건수를 센다(읽기 전용 · 스트리밍).
+
+        (plans/201 W1) 관리자 매핑 점검용 — 레코드를 메모리에 쌓지 않고 값별 수만 남긴다.
+        `recent_decisions`와 같은 규칙(비-decision `type` 레코드·손상 줄 제외 · 시간 창)이다.
+        값은 앞뒤 공백을 지운 문자열이고, 빈 값·키 없음은 두 번째 반환값으로 따로 센다.
+        파일 부재·비활성·읽기 실패는 `({}, 0)`이다(읽기 실패는 경고 1줄).
+
+        (plans/201 W3) `field`에 점(`.`)이 있으면 중첩 경로다(예 `stage_evidence.apm_policy.event_type_norm`)
+        — 중간이 dict가 아니거나 키가 없으면 빈 값으로 센다. 점 없는 이름은 종전과 같다(최상위 필드).
+        """
+        if not self.enabled or not self.path.exists():
+            return {}, 0
+        path = field.split(".") if "." in field else None
+        cutoff_ts = datetime.now(UTC).timestamp() - window_seconds
+        counts: dict[str, int] = {}
+        empty = 0
+        try:
+            with self.path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(rec, dict) or rec.get("type"):
+                        continue
+                    if not self._within_window(rec, cutoff_ts):
+                        continue
+                    raw = rec.get(field) if path is None else self._nested_value(rec, path)
+                    value = str(raw or "").strip()
+                    if value:
+                        counts[value] = counts.get(value, 0) + 1
+                    else:
+                        empty += 1
+        except OSError as exc:
+            logger.warning("결정 기록 값 집계 읽기 실패(무시): %s", exc)
+            return {}, 0
+        return counts, empty
+
+    @staticmethod
+    def _nested_value(rec: dict[str, Any], path: list[str]) -> Any:
+        """점 경로로 중첩 값을 꺼낸다(중간이 dict가 아니면 None · plans/201 W3)."""
+        node: Any = rec
+        for key in path:
+            if not isinstance(node, dict):
+                return None
+            node = node.get(key)
+        return node
+
     @staticmethod
     def _stage_of(rec: dict) -> str:
         """레코드의 결정 단계를 돌려준다(구 레코드는 사유 접두로 폴백)."""

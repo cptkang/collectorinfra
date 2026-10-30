@@ -5,7 +5,7 @@ version: 1
 match:
   alarm_kind: disk
   any_kind: [filesystem, inode]          # 디스크 알람 중 파일시스템(용량·inode)
-  surface_terms: [디스크 용량, 디스크 사용률, filesystem]   # classify_alarm_kind 정합(「파일시스템」 단독은 disk로 분류되지 않는다)
+  surface_terms: [디스크 용량, 디스크 사용률, filesystem]   # classify_alarm_kind 정합(「파일시스템」도 disk로 분류된다 — plans/204)
   priority: 130
 window: {before_min: 30, after_min: 10, baseline: [prev_day, prev_week]}   # §4.0
 steps:

@@ -169,7 +169,7 @@ def test_dashboard_summary_box_sits_above_settings_list() -> None:
     box = html.index('id="investigationSummary"')
     assert html.index('id="settingsSearch"') < box < html.index('id="settingsAccordion"')
     assert ".inv-summary {" in html
-    assert "admin.js?v=14" in html
+    assert "admin.js?v=16" in html
 
 
 # ── U5 노이즈 관제 수동 조사 모드 ──
