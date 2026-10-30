@@ -80,6 +80,7 @@ def test_capabilities_expose_no_paths_or_secrets():
         "noise_console_portal_tab",      # plans/193 W2 — 불리언(포털 노이즈 관제 탭)
         "investigation_label_enabled",   # plans/198 교정 — 불리언(실제 원인 입력)
         "investigation_memory_enabled",  # plans/198 교정 — 불리언(비슷한 과거 조사)
+        "investigation_summary_view_enabled",  # plans/199 W1 — 불리언(한눈에 보기 카드)
     }
     for value in body.values():
         assert isinstance(value, (bool, int, float)), value

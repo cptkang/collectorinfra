@@ -2319,3 +2319,23 @@
 - **실수**: plans/198 커밋 전 「커밋 없음」 표기를 지우려고 `plans/INDEX.md`·`docs/02_decision.md` 전체에 `str.replace`를 돌려 무관한 D-310·D-313 등 16행·계획 12행의 상태 칸까지 고쳤다(diff로 발견해 HEAD 원문으로 행 단위 복원).
 - **원인**: 대상 행(198·D-350)을 한정하지 않고 파일 전체에 치환했다.
 - **방지책**: 공용 색인·INDEX는 대상 행(`| D-NNN |`·`| NNN |`)을 찾아 그 행만 고친다. 일괄 치환 뒤에는 `git diff -U0 <파일> | grep '^[-+]|'`로 바뀐 행이 대상뿐인지 확인한다.
+
+### 2026-10-29 · (plans/199 W4·W5a · implementer) 정적 테스트만 통과시킨 화면 변경이 캡처에서야 레이아웃 결함 2건으로 드러남
+- **실수**: W4는 [서술 보기] 원문 상자 `.bv-md`(세로 flex·높이 상한·스크롤) 안의 표가 넘침 상황에서 높이 0으로 찌그러지는 것을, W5a는 장애 진단 진척 카드 칸(`dv-sum-box`)에 공용 `.bv` 래퍼가 없어 카드 글자가 바깥 크기로 커지는 것을 놓쳤다. 둘 다 node 정적·DOM 테스트는 통과했고 W5c 매뉴얼 캡처를 본 뒤에야 발견해 교정(`.bv-md > * { flex-shrink: 0; }` · `class="dv-sum-box bv"`)과 캡처 재촬영 라운드가 더 들었다.
+- **원인**: 화면 Wave의 검증을 마크업 문자열·DOM 단언으로만 했다. 기존 렌더 함수(`renderBody`)가 붙여 주던 공용 래퍼를 새 진입점이 우회하는지, flex 컨테이너 안에 새로 넣은 블록 요소가 줄어드는지는 문자열 단언으로 드러나지 않는다.
+- **방지책**: 새 마크업을 공용 렌더 함수 밖에서 끼울 때는 그 함수가 붙이던 래퍼 클래스를 grep으로 확인하고 단언한다. flex·grid 컨테이너에 표·긴 블록을 넣으면 `flex-shrink`·`min-height`를 명시한다. 화면 Wave는 캡처 Wave보다 먼저 대표 장면 1장을 헤드리스로 찍어 눈으로 확인한다(캡처 도구 재사용 · 서버는 자기 PID만 종료).
+
+### 2026-10-29 · (plans/199 W1 · 팀 리드 위임 누락 · 재발) 새 설정 `NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED`를 넣으면서 관리자 설정 카탈로그 구획·도움말·키 개수 단언을 갱신하지 않아 전체 회귀에서야 드러났다
+- **실수**: W1이 `src/config/alarm.py`에 필드 1개를 추가했는데 `src/api/settings_catalog.py` `SECTION_BY_KEY`·`config/settings_help/noise_gate_investigation.yaml` 큐레이션·`tests/test_api/test_settings_catalog.py`의 키 개수(453)를 그대로 두었다. 모듈 단위 회귀(2회 · 2,624·2,867 통과)는 이 테스트들을 고르지 않았고, 사용자 요청 전체 회귀에서 `test_t1_schema_endpoint_returns_catalog`·`test_t2_group_and_field_counts`가 「이번 변경 탓」으로, 구획·도움말 그물 테스트는 원래 실패 목록에 우리 키가 더해진 꼴로 나왔다. 2026-10-19 항목(plans/187)과 같은 실수의 재발이다.
+- **원인**: 팀 리드가 W1 위임 프롬프트에 「새 설정 필드 = 카탈로그 구획·도움말·개수 단언 동반」을 넣지 않았다. 앞 항목의 방지책이 implementer 쪽 지식으로만 남아 위임 템플릿에 반영되지 않았다.
+- **방지책**: `src/config/`에 필드를 추가하는 위임에는 ① `SECTION_BY_KEY` 등재 ② `config/settings_help/*.yaml` 큐레이션 ③ `test_settings_catalog.py` 개수 갱신 ④ `pytest tests/test_api/test_settings_catalog.py tests/test_api/test_settings_catalog_sections.py tests/test_api/test_settings_help.py`를 자기 테스트로 명시한다(뒤 둘은 다른 계획의 원래 실패가 있으니 실패 메시지에 자기 키가 없는지로 판정).
+
+### 2026-10-30 · (plans/199 W6 · 팀 리드) zsh 글롭 불일치로 테스트 목록이 비어 맨 `pytest`(전체 수집)가 돌았다 — 약 5분 뒤 발견해 종료
+- **실수**: `F=$(grep -rl 'settings_help' tests/ --include=*.py …); pytest $F -q`를 실행했다. zsh가 따옴표 없는 `--include=*.py`를 글롭으로 펼치려다 `no matches found`로 grep 자체를 실행하지 않았고, `$F`가 빈 문자열이 되어 인자 없는 `pytest`가 저장소 전체를 수집해 돌았다. 전체 회귀는 사용자 요청 때만 돌린다는 규칙(D-303)을 어겼다. 300초 타임아웃으로 백그라운드로 넘어간 뒤 ps로 찾아 종료했다. 작업 트리 변화는 없었고, 실 LLM 테스트는 `RUN_LOCAL_LLM`·`RUN_E2E` 가드로 건너뛰어 과금 호출도 없었다.
+- **원인**: zsh는 따옴표 없는 글롭이 맞지 않으면 명령을 실행하지 않는다. 명령 치환 결과가 비었는지 확인하지 않고 그 값을 pytest 인자로 넘겼다.
+- **방지책**: grep `--include`·find `-name`의 글롭은 항상 따옴표로 감싼다(`--include='*.py'`). 테스트 목록은 먼저 파일로 써서 줄 수를 확인하고, 0이면 실행하지 않는다(`[ -s list ] && pytest $(cat list)`). 모듈 회귀가 비Python 파일(YAML·MD)에 테스트를 고르지 않을 때는 대상 테스트 파일을 이름으로 직접 적는다.
+
+### 2026-10-30 · (plans/199 · 메인) 새 D-번호를 로컬 색인 최댓값으로만 채번해 origin/main에 먼저 푸시된 같은 번호(D-351)와 충돌했다
+- **실수**: plans/199 결정을 D-351로 등재·커밋했는데(`c2a3180f`), 같은 날 다른 개발자가 브랜치 `improve_noise_canceling`에서 D-351(노이즈 관제 결정 이력)을 만들어 origin/main에 먼저 푸시해 두었다. main 병합 직전에야 발견해 이쪽을 D-352로 재부여했다(26개 파일 참조 동반 수정).
+- **원인**: 채번 확인(`ls docs/decisions/ | tail -3`)이 로컬 작업 트리만 본다. 다른 클론·다른 개발자의 브랜치는 `git fetch` 전에는 보이지 않는다.
+- **방지책**: 새 D-번호·계획 번호를 등재하기 직전(그리고 커밋 직전)에 `git fetch origin` 뒤 `git ls-tree --name-only origin/main docs/decisions/ plans/ | tail`로 원격 최댓값도 본다. 병합 전에는 `git diff --name-only <base> origin/main`과 내 변경의 교집합에서 `docs/decisions/D-*.md`·`plans/NNN-*` 신규 파일 이름이 겹치는지 먼저 확인한다. 충돌하면 이미 푸시된 쪽이 정본이다.

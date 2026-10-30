@@ -399,7 +399,7 @@ captures:
       - wait: 600
     clip: "#alarmList .message--alarm:has(.alarm-briefing-section)"
     pad: 8
-    callouts: [[1, "#alarmList .alarm-briefing-toggle"], [2, "#alarmList .bv-chip"], [3, "#alarmList .bv-badge--hypo"], [4, "#alarmList .bv-item--limit"], [5, "#alarmList .bv-gated"]]
+    callouts: [[1, "#alarmList .alarm-briefing-toggle"], [2, "#alarmList .bv-chip"], [3, "#alarmList .bv-sum"], [4, "#alarmList .bv-badge--hypo"], [5, "#alarmList .bv-item--limit"], [6, "#alarmList .bv-lines .bv-gated"]]
   - id: noise-user
     login: user
     steps:
@@ -423,17 +423,246 @@ captures:
   # 장애 진단 탭·조사 대화(plans/187 U-70·U-63) — 실시간 화면을 켠 capture-diag 서버에서만 탭이 보인다.
   # 예시 조사·실행 기록 요약은 손으로 만든 것(fixtures/alarms/briefing.json · 모두 종결 — 조사 서비스 호출 0)
   # 장애 진단 탭은 조사 흐름 예시(inv-manual-flow · plans/187 W20)를 연다
+  # (plans/199 · U-70) 「한눈에 보기」 켜짐 배치 — 표시 전용 기능 조회 값만 켜고(서버 설정 불변) 접힌 조사 흐름을 펼쳐 찍는다
   - id: diagnosis-tab
     server: capture-diag
     login: admin
     height: 2300
+    routes:
+      - {url: "**/api/v1/alarm/capabilities", merge: {investigation_summary_view_enabled: true}}
     steps:
       - goto: /?diagnosis=inv-manual-flow
       - wait: "#diagnosisView .dv-subtab"
-      - wait: "#diagnosisView .dv-flow .dv-card"
       - wait: "#diagnosisView .dv-final-body .bv--playbook"
+      - wait: "#diagnosisView .dv-sec--flow .dv-sec-toggle"
       - wait: 800
-    callouts: [[1, ".view-tab[data-view='diagnosis']"], [2, "#diagnosisView .dv-tab--list"], [3, "#diagnosisView .dv-subtab"], [4, "#diagnosisView .dv-target"], [5, "#diagnosisView .dv-modes"], [6, "#diagnosisView .dv-flow"], [7, "#diagnosisView .dv-open-conv"]]
+      - click: "#diagnosisView .dv-sec--flow .dv-sec-toggle"
+      - wait: "#diagnosisView .dv-flow .dv-card"
+      - wait: 600
+    callouts: [[1, ".view-tab[data-view='diagnosis']"], [2, "#diagnosisView .dv-tab--list"], [3, "#diagnosisView .dv-subtab"], [4, "#diagnosisView .dv-target"], [5, "#diagnosisView .dv-final-body .bv-sum"], [6, "#diagnosisView .dv-open-conv"], [7, "#diagnosisView .dv-sec--flow .dv-sec-bar"], [8, "#diagnosisView .dv-flow"], [9, "#diagnosisView .dv-sec--log .dv-sec-bar"]]
+  # 조사 결과 「한눈에 보기」(plans/199 · U-74 · U-70) — 표시 전용 기능 조회 값만 켠다(서버 설정·다른 장면 불변 —
+  # noise-portal-tab 과 같은 방식). 종결 예시는 inv-manual-sum(fixtures/alarms/briefing.json · 플레이북 부분은 W0 픽스처
+  # confirmed_cpu_ke 에서 서버 이름만 바꿈), 진행 중 예시는 조회·스트림 응답을 가로챈 inv-manual-run(응답 계약 모양 ·
+  # 부분 브리핑은 W0 픽스처 running_collect) — 조사 서비스 호출 0 · LLM 0
+  - id: inv-summary-card
+    server: capture-diag
+    login: admin
+    height: 1400
+    routes:
+      - {url: "**/api/v1/alarm/capabilities", merge: {investigation_summary_view_enabled: true}}
+    steps:
+      - goto: /?diagnosis=inv-manual-sum
+      - wait: "#diagnosisView .dv-final-body .bv-sum"
+      - wait: 800
+    clip: "#diagnosisView .dv-final-body .bv-sum"
+    pad: 8
+    callouts: [[1, "#diagnosisView .dv-final-body .bv-sum-row:nth-child(1) .bv-chip"], [2, "#diagnosisView .dv-final-body .bv-sum-row:nth-child(2) .bv-text"], [3, "#diagnosisView .dv-final-body .bv-sum-row:nth-child(3) .bv-text"], [4, "#diagnosisView .dv-final-body .bv-sum .bv-gated"], [5, "#diagnosisView .dv-final-body .bv-sum-must"], [6, "#diagnosisView .dv-final-body [data-bv-action='handoff-copy']"], [7, "#diagnosisView .dv-final-body [data-bv-target='evidence']"]]
+  - id: inv-summary-handoff
+    server: capture-diag
+    login: admin
+    height: 1400
+    routes:
+      - {url: "**/api/v1/alarm/capabilities", merge: {investigation_summary_view_enabled: true}}
+    steps:
+      - goto: /?diagnosis=inv-manual-sum
+      - wait: "#diagnosisView .dv-final-body .bv-sum details.bv-handoff > summary"
+      - wait: 600
+      - click: "#diagnosisView .dv-final-body .bv-sum details.bv-handoff > summary"
+      - wait: "#diagnosisView .dv-final-body .bv-handoff-text"
+      - wait: 400
+    clip: "#diagnosisView .dv-final-body .bv-sum"
+    pad: 8
+    callouts: [[1, "#diagnosisView .dv-final-body [data-bv-action='handoff-copy']"], [2, "#diagnosisView .dv-final-body .bv-handoff-raw"], [3, "#diagnosisView .dv-final-body details.bv-handoff > summary"], [4, "#diagnosisView .dv-final-body .bv-handoff-text"]]
+  - id: inv-summary-evidence
+    server: capture-diag
+    login: admin
+    height: 2600
+    routes:
+      - {url: "**/api/v1/alarm/capabilities", merge: {investigation_summary_view_enabled: true}}
+    steps:
+      - goto: /?diagnosis=inv-manual-sum
+      - wait: "#diagnosisView .dv-final-body [data-bv-target='evidence']"
+      - wait: 600
+      - click: "#diagnosisView .dv-final-body [data-bv-target='evidence']"
+      - wait: "#diagnosisView .dv-final-body details[data-bv-key='evidence'][open] .bv-strip"
+      - wait: 600
+      - scroll: "#diagnosisView .dv-final-body details[data-bv-key='evidence']"
+    clip: "#diagnosisView .dv-final-body details[data-bv-key='evidence']"
+    pad: 8
+    callouts: [[1, "#diagnosisView .dv-final-body details[data-bv-key='evidence'] > summary"], [2, "#diagnosisView .dv-final-body .bv-strip"], [3, "#diagnosisView .dv-final-body .bv-tl"], [4, "#diagnosisView .dv-final-body [data-bv-slot='hypothesis'] .bv-ev-hypo"], [5, "#diagnosisView .dv-final-body .bv-engine-head"], [6, "#diagnosisView .dv-final-body .bv-ev-must"]]
+  - id: inv-summary-narrative
+    server: capture-diag
+    login: admin
+    height: 2600
+    routes:
+      - {url: "**/api/v1/alarm/capabilities", merge: {investigation_summary_view_enabled: true}}
+    steps:
+      - goto: /?diagnosis=inv-manual-sum
+      - wait: "#diagnosisView .dv-final-body [data-bv-target='evidence']"
+      - wait: 600
+      - click: "#diagnosisView .dv-final-body [data-bv-target='evidence']"
+      - wait: "#diagnosisView .dv-final-body details[data-bv-key='narr-hg'] > summary"
+      - click: "#diagnosisView .dv-final-body details[data-bv-key='narr-hg'] > summary"
+      - wait: "#diagnosisView .dv-final-body details[data-bv-key='narr-hg-raw'] > summary"
+      - click: "#diagnosisView .dv-final-body details[data-bv-key='narr-hg-raw'] > summary"
+      - wait: "#diagnosisView .dv-final-body .bv-md-toc"
+      - wait: 400
+      - scroll: "#diagnosisView .dv-final-body .bv-engine"
+    clip: "#diagnosisView .dv-final-body .bv-engine"
+    pad: 8
+    callouts: [[1, "#diagnosisView .dv-final-body details[data-bv-key='narr-hg'] > summary"], [2, "#diagnosisView .dv-final-body .bv-md-sum"], [3, "#diagnosisView .dv-final-body details[data-bv-key='narr-hg-raw'] > summary"], [4, "#diagnosisView .dv-final-body .bv-md-toc"], [5, "#diagnosisView .dv-final-body .bv-md-tbl"], [6, "#diagnosisView .dv-final-body .bv-engine-grid > .bv-engine-col:first-child > .bv-meta"]]
+  - id: diagnosis-running
+    server: capture-diag
+    login: admin
+    height: 1500
+    routes:
+      - {url: "**/api/v1/alarm/capabilities", merge: {investigation_summary_view_enabled: true}}
+      - {url: "**/api/v1/alarm/investigations/stream*", sse: alarms/sse_idle.json}
+      - url: "**/api/v1/alarm/investigations/inv-manual-run*"
+        method: GET
+        json:
+          investigation_id: inv-manual-run
+          kind: diagnosis
+          origin: chat
+          status: running
+          source: chat
+          subject: {server_name: svr-was-04, reference_time: null, route_label: 플레이북 was.latency, route_reason: 대상 WAS svr-was-04와
+              증상 「응답 지연」이 규칙으로 정해짐}
+          briefing_lines: []
+          verdict_level: null
+          phase: collecting
+          queue_position: null
+          elapsed_s: 95
+          progress: {done: 4, total: 10, current_step: S5}
+          partial_briefing:
+            partial: true
+            playbook:
+              id: was.latency
+              version: 3
+              matched_by: match:resource_type+any_kind
+              sections:
+              - step: S0
+                action: scope.resolve_was_targets
+                title: 대상 확정 · 범위 비교
+                status: ok
+                verdict: degraded
+                verdict_source: playbook_rule
+                table:
+                  columns: [instance, host, tps, p95_ms, baseline_p95_ms, error_rate, verdict, verdict_source]
+                  rows:
+                  - [A1, svr-was-04, 9.792, 6200.0, 865.0, 0.000851063829787234, degraded, playbook_rule]
+                  - [A2, svr-was-04, 9.583, 5600.0, null, 0.0008695652173913044, degraded, playbook_rule]
+                  - [B1, svr-was-05, 9.5, 5400.0, null, 0.0008771929824561404, degraded, playbook_rule]
+                badges: []
+                tools: [apm_instance_map, apm_app_health]
+                missing: []
+                reason: null
+                elapsed_ms: 0
+              - step: S1
+                action: apm.golden_signals
+                title: WAS 골든 시그널
+                status: ok
+                verdict: degraded
+                verdict_source: playbook_rule
+                table:
+                  columns: [instance, metric, incident, prev_day, prev_week, change_pct_prev_day, change_pct_prev_week]
+                  rows:
+                  - [A1, p95_ms, 6200.0, 850.0, 880.0, 629.4, 604.5]
+                  - [A1, tps, 9.792, 10.0, 9.917, -2.1, -1.3]
+                  - [A1, error_rate, 0.000851063829787234, 0.0008333333333333334, 0.0008403361344537816, 2.1, 1.3]
+                  - [A1, calls, 23500, 24000, 23800, -2.1, -1.3]
+                  - [A1, avg_response_ms, 2400.0, 340.0, 330.0, 605.9, 627.3]
+                badges: []
+                tools: [apm_app_health, apm_period_compare]
+                missing: []
+                reason: null
+                elapsed_ms: 0
+              - step: S2
+                action: apm.runtime_and_pool
+                title: JVM 런타임 · DB 커넥션 풀
+                status: ok
+                verdict: normal
+                verdict_source: apm_gateway
+                table:
+                  columns: [instance, metric, min, max, last, note]
+                  rows:
+                  - [A1, heap_used_mb, 900.0, 980.0, 940.0, 추세]
+                  - [A1, heap_committed_mb, 2048.0, 2048.0, 2048.0, 추세]
+                  - [A1, gc_time_usage_pct, 0.9, 1.3, 1.0, 추세]
+                  - [A1, process_cpu_pct, 16.0, 16.0, 16.0, 추세]
+                  - [A1, active_services, 5.0, 24.0, 22.0, 추세]
+                badges: [현재값 · 알람 후 12분]
+                tools: [apm_runtime_health, apm_resource_pool]
+                missing: []
+                reason: null
+                elapsed_ms: 0
+              - step: S3
+                action: apm.slow_tx_breakdown
+                title: 느린 트랜잭션 Top 시간 분해
+                status: ok
+                verdict: degraded
+                verdict_source: apm_gateway
+                table:
+                  columns: [application, response_time_ms, sql_ms, fetch_ms, external_ms, cpu_ms, network_ms, txid]
+                  rows:
+                  - [/acct/inquiry, 6800, 6100, 300, 20, 60, 10, '770000']
+                  - [/acct/history, 6100, 5400, 280, 30, 50, 10, '770001']
+                  - [/acct/balance, 5900, 5200, 300, 40, 40, 10, '770002']
+                  - [/acct/inquiry, 5600, 4900, 320, 20, 60, 10, '770003']
+                  - [/acct/transfer/check, 5200, 4500, 260, 60, 70, 10, '770004']
+                badges: []
+                tools: [apm_slow_transactions, apm_transaction_profile]
+                missing: []
+                reason: null
+                elapsed_ms: 0
+            deep_dive: {status: pending, mode: 'off', reason: null, label: 심층 조사(HolmesGPT · 가설)}
+          activity:
+            next_seq: 15
+            truncated: false
+            source: live
+            events:
+            - {seq: 1, at: '2026-10-29T10:00:00+09:00', engine: playbook, kind: started, label: 플레이북 was.latency 선택, status: ok,
+              purpose: 증상 「응답 지연」 — 대상 WAS svr-was-04}
+            - {seq: 2, at: '2026-10-29T10:00:02+09:00', engine: playbook, kind: step_start, step: S0, label: S0 대상 확정 · 범위
+                비교, because: 알람 「응답 지연」 — 어느 WAS 인스턴스가 느린지부터 본다}
+            - {seq: 3, at: '2026-10-29T10:00:10+09:00', engine: playbook, kind: tool_end, step: S0, tool: apm_instance_map,
+              label: 'apm_instance_map {host: svr-was-04}', phrase: 제니퍼 · svr-was-04의 WAS 인스턴스 목록과 응답 시간(사건창), status: ok,
+              elapsed_ms: 800, rows: 3}
+            - {seq: 4, at: '2026-10-29T10:00:12+09:00', engine: playbook, kind: step_end, step: S0, label: S0 대상 확정 · 범위 비교,
+              status: ok, elapsed_ms: 1200, finding: '인스턴스 3개 모두 느림 — A1 p95 6,200ms(기준선 865ms의 7.2배)'}
+            - {seq: 5, at: '2026-10-29T10:00:14+09:00', engine: playbook, kind: step_start, step: S1, label: S1 WAS 골든 시그널,
+              because: 모든 인스턴스가 느림 → 응답·처리량·오류율을 전일·전주와 비교}
+            - {seq: 6, at: '2026-10-29T10:00:30+09:00', engine: playbook, kind: tool_end, step: S1, tool: apm_period_compare,
+              label: 'apm_period_compare {instance: A1}', phrase: 제니퍼 · A1 응답 시간·TPS·오류율(사건창 · 전일·전주 같은 시간 비교), status: ok,
+              elapsed_ms: 1500, rows: 5}
+            - {seq: 7, at: '2026-10-29T10:00:32+09:00', engine: playbook, kind: step_end, step: S1, label: S1 WAS 골든 시그널,
+              status: ok, elapsed_ms: 1800, finding: p95 응답 전일의 7.3배 · TPS·오류율은 평소 수준}
+            - {seq: 8, at: '2026-10-29T10:00:34+09:00', engine: playbook, kind: step_start, step: S2, label: S2 JVM 런타임 ·
+                DB 커넥션 풀, because: 처리량은 그대로인데 느림 → JVM·DB 커넥션 풀 포화 여부 확인}
+            - {seq: 9, at: '2026-10-29T10:00:50+09:00', engine: playbook, kind: tool_end, step: S2, tool: apm_runtime_health,
+              label: 'apm_runtime_health {instance: A1}', phrase: 제니퍼 · A1 힙·GC·스레드·DB 풀(사건창), status: ok, elapsed_ms: 1400,
+              rows: 11}
+            - {seq: 10, at: '2026-10-29T10:00:52+09:00', engine: playbook, kind: step_end, step: S2, label: S2 JVM 런타임 · DB
+                커넥션 풀, status: ok, elapsed_ms: 1700, finding: GC 시간 비율 1% 안팎 · DB 풀 사용률 0.73 — 포화 아님}
+            - {seq: 11, at: '2026-10-29T10:00:54+09:00', engine: playbook, kind: step_start, step: S3, label: S3 느린 트랜잭션 Top
+                시간 분해, because: JVM·풀은 정상 → 느린 트랜잭션이 어디서 시간을 쓰는지 나눠 본다}
+            - {seq: 12, at: '2026-10-29T10:01:20+09:00', engine: playbook, kind: tool_end, step: S3, tool: apm_slow_transactions,
+              label: 'apm_slow_transactions {instance: A1}', phrase: 제니퍼 · 느린 트랜잭션 상위 5건의 구간별 시간, status: ok, elapsed_ms: 2400,
+              rows: 5}
+            - {seq: 13, at: '2026-10-29T10:01:22+09:00', engine: playbook, kind: step_end, step: S3, label: S3 느린 트랜잭션 Top
+                시간 분해, status: ok, elapsed_ms: 2700, finding: 느린 트랜잭션 5건 모두 SQL 구간이 응답의 87~90%}
+            - {seq: 14, at: '2026-10-29T10:01:24+09:00', engine: playbook, kind: step_start, step: S5, label: S5 전후 연관 알람,
+              because: SQL 구간이 대부분 → 같은 시간대 DB 쪽 알람 확인}
+            - {seq: 15, at: '2026-10-29T10:01:26+09:00', engine: playbook, kind: tool_start, step: S5, tool: polestar_alarm_history,
+              label: 'polestar_alarm_history {window: 60m}', phrase: 폴스타 · 알람 전후 60분 연관 알람}
+    steps:
+      - goto: /?diagnosis=inv-manual-run
+      - wait: "#diagnosisView .dv-sum-box .bv-sum"
+      - wait: "#diagnosisView .dv-flow .dv-card"
+      - wait: 800
+    clip: "#diagnosisView .dv-panel--tab:not([hidden])"
+    pad: 8
+    callouts: [[1, "#diagnosisView .dv-sum-box .bv-sum"], [2, "#diagnosisView .dv-sec--flow .dv-sec-bar"], [3, "#diagnosisView .dv-sec--partial .dv-sec-bar"], [4, "#diagnosisView .dv-sec--log .dv-sec-bar"]]
   - id: investigation-conversation
     server: capture-diag
     login: admin
@@ -494,7 +723,7 @@ captures:
       - wait: 600
     clip: "#alarmList .message--alarm"
     pad: 8
-    callouts: [[1, "#alarmList .alarm-briefing-body .bv-chip--hold"], [2, "#alarmList .alarm-briefing-body .bv-head + .bv-meta"], [3, "#alarmList .diagnosis-open"]]
+    callouts: [[1, "#alarmList .alarm-briefing-body .bv-head .bv-chip--hold"], [2, "#alarmList .alarm-briefing-body .bv-sum"], [3, "#alarmList .alarm-briefing-body .bv-head ~ .bv-meta"], [4, "#alarmList .diagnosis-open"]]
   - id: diagnosis-event-search
     server: capture-diag
     login: admin

@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-28 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-10-30 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -241,6 +241,7 @@
 | 196 | [`196-WIP-investigation-screen-defects.md`](./196-WIP-investigation-screen-defects.md) | 196. 장애 진단 조사 화면 결함 정리 — 폴스타 브리지 미구현 외 | **WIP** · W1~W4 + 잔여 라운드 구현(D-348 부기 1 · 플래그 기본 off · 커밋 없음) · Q2~Q7 권고 적용·사용자 확인 전 · 잔여 W0(D3 원인·SQL errorType·파드 노드·D8·Redis 영속) · 매뉴얼 캡처 2장(로컬 컨테이너 정지) | 2026-10-27 |
 | 197 | [`197-WIP-noise-gate-jennifer-and-maintenance-defects.md`](./197-WIP-noise-gate-jennifer-and-maintenance-defects.md) | 197. 노이즈 게이트 결함 정리 — 제니퍼 알람의 폴스타 경로 진입 · 여의도 `is_maintenance` 칼럼 없음 · 제니퍼 크로스호스트 억제 | **WIP** · W1 제니퍼 폴스타 조회 생략 · W2 PG 점검 → `cmm_resource_maintenance` JOIN(DB2 W0 대기) · W3 도메인 스코프+DASHBOARD 상한(D-349 · 기본 off) · Q1·Q2 권고 적용 · 잔여 W0·b0·PG 재생성 | 2026-10-27 |
 | 198 | [`198-WIP-investigation-rca-improvement.md`](./198-WIP-investigation-rca-improvement.md) | 198. 장애 조사·진단(RCA) 개선 — 현행 분석 · 상용 제품 조사 · 문헌 조사 · 개선 계획 | **WIP** · W0~W3·W5~W8 구현(플래그 전부 기본 off) · 모듈 회귀 통과 · verifier Critical 0 · 잔여 W4(195 선행)·I-4 화면·I-12·I-6(ITSM) · 채택은 154 W6 뒤 A/B · Q4~Q6·KEDB 운영자 한정 사용자 확정(D-350 부기 2) *(상세: 계획서 머리)* | 2026-10-28 |
+| 199 | [`199-investigation-result-summary-view.md`](./199-investigation-result-summary-view.md) | 199. 조사 결과(RCA) 표시 정리 — 관제 요원용 핵심 요약 · 담당자 전달문 · 펼쳐 보는 근거 · 서술 원문 가독성 | **완료(2026-10-30)** · W0~W6 구현 · 플래그 코드 기본 on(D-352 부기 2) · 조사 서비스 실행 기록 기본 on(D-341 부기 23) · break-glass 서랍 카드(운영자 헬스 응답 · D-352 부기 3) · 모듈·전체 회귀 · verifier Critical 0 *(상세: 계획서 머리·§10)* | 2026-10-30 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |

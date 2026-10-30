@@ -491,6 +491,13 @@ class NoiseGateConfig(BaseSettings):
     # investigation_kb_scan_max_lines를 같이 쓴다. 기본 off면 라우트 404 · 조사 화면·응답 비트 동일.
     investigation_memory_enabled: bool = False              # (198 I-8) 유사 과거 조사·KEDB 부트스트랩 옵트인
     investigation_kedb_min_count: int = 3                   # (198 I-8) 같은 지문+같은 확정 원인 N회 → 초안 [제안 값]
+    # ── plans/199 W1 · D-352: 조사 결과 「한눈에 보기」 카드(원인 영역·확실성·결론·영향 범위·할 일·꼭 확인) ──
+    # 표시 계층만 — 브리핑에 이미 있는 구조화 필드의 결정적 조립(새 LLM 호출 0). 판정·저장 스키마·마스킹·
+    # 노출 범위(D-325 ③) 불변. 웹은 기능 조회 `investigation_summary_view_enabled`로 읽는다 — break-glass 관제만
+    # 운영자 헬스 응답(`/admin/noise/health`)의 같은 키(W6 · 기능 조회가 사용자 토큰 인가라서).
+    # 기본 on — 신규 플래그 기본 off 원칙의 예외: 사용자 결정 2026-10-29 · 내부망 확인 생략 · D-352 부기 2.
+    # 끄면(false) 조사 화면 비트 동일(D-162).
+    investigation_summary_view_enabled: bool = True         # (199 W1) 한눈에 보기 카드 · 기본 on · D-352
     # ── plans/187 W14 · D-341 ㉙㉚㉛ (G-39·G-41·G-42): 조사 진행 실시간 허브·SSE ──
     # 본체 in-process 허브(`alarm_bus`와 같은 단일 프로세스 전제)가 미종결 조사마다 폴러 1개로 sre_agent에
     # `sre_get_investigation(activity_since)`를 묻고(보는 사람 수와 무관) 실행 기록을 SSE
