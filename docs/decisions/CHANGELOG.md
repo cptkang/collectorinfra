@@ -8,10 +8,28 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-10-30 | D-354 | 부기 11 — `plans/201` W7 사례 매뉴얼(U-82~84 · 가상 예시 · 캡처 대기 · 판정 조합 실 경로 테스트 · 절 공유 별칭 금지 · 잔여·후속 후보 기록) |
+| 2026-10-30 | D-354 | 부기 10 — `plans/201` W6 구현: `DUTY_DAILY_SUMMARY_ENABLED`(유효 = `DUTY_AREA_ENABLED` AND) 기본 off 비트 동일 · `/auth/me` `duty_daily_summary` · `GET /auth/duty-areas/daily-summary`(존·억제는 `event_visible_to` 재사용 · 비관리자 suppress 키 없음) · `duty_overlap` · `iter_recent_decisions` 역방향 집계 · verifier Major(전량 읽기·중단 미작동) 교정 |
+| 2026-10-30 | D-354 | 부기 9 — `plans/201` W5 구현: `DUTY_ACTION_ASSIST_ENABLED`(유효 = `DUTY_AREA_ENABLED` AND)·`ALARM_CARD_FLOW_ENABLED`(독립) 기본 off 비트 동일 · `/auth/me` `duty_action_assist` · capabilities `card_flow_enabled` · `checklists`(플레이북 id 키) · 인계 요약(조회 0 · 마스킹 뷰) · 카드 3묶음 + 진행 표시(localStorage) |
+| 2026-10-30 | D-354 | 부기 8 — `plans/201` W2 구현: `DUTY_WELCOME_HINTS_ENABLED`(유효 = `DUTY_AREA_ENABLED` AND)·`WELCOME_GUIDE_ENABLED`(독립) 기본 off 비트 동일 · `/auth/me` `duty_welcome_queries`·`welcome_guide` · `verified_by` 규약(gold·assembler·sandbox·mlx·closed_net) · 폐쇄망 전용은 `pending: closed_net` 로드 제외 · 로드 4/12(DB 0) · 계획 이탈 4건 |
+| 2026-10-30 | D-354 | 부기 7 — `plans/201` W4 구현: `SRE_DUTY_VIEW_ENABLED`(off 비트 동일 · 단계 없는 잡 키 없음) · 계층표·가설표 상태를 영역으로 옮겨 쓰기(커넥션 가설 우선 · external → was_mw 꼬리표 · 근거 없는 normal 0) · 매핑 `sre_agent/config/duty_area_layers.yaml` + 루트 계약 테스트 · R-E DB 엔진 시그니처 6종 이름 사본 · Q5 검토 생략(피드백으로 교정 · 사용자 결정) |
+| 2026-10-30 | D-354 | 부기 6 — `plans/201` W3 구현: `DUTY_ALARM_FOCUS_ENABLED`(off 비트 동일 · env 이름 하나만) · `cause_hints`(유형 11 · 알려진 미매핑 8 · 프로세스 kind) · DB 엔진 시그니처 6종 · SSE `apm_event_type`·`top_process_kinds`(분류 콜백 주입 — D-139 부기) · 티어 순서 불변·숨김 0 · 판정은 마스킹 전 원 항목(enricher · 원문 미보관) |
+| 2026-10-30 | D-354 | 부기 5 — `plans/201` W1 구현: 플래그 `DUTY_AREA_ENABLED`(off 비트 동일) · 인가 비참조 · 422·상한 · 공개 메타 · 현황 API(`mapping=false` · 스트리밍 집계) · 배지 = 미매핑 유형 가짓수(W3 `known_unmapped` 제외) · ALTER 실패 시 로그인 영향 배포 점검 |
+| 2026-10-30 | D-263 | 부기 2 — 노이즈 관제 사용자 경로·`/alarm/metrics` 전 존 공개를 당분간 유지(`plans/203` 보류 · 필요 시 존 스코프) |
+| 2026-10-30 | D-354 | 부기 4 — `plans/201` v1.2 전체 검토: Q1 개정(본인 변경 없음 · 가입 선택 + 관리자) · Q12 외부 연계 → was_mw · Q13 관리자 담당 업무 현황 카드 · DB 시그니처 실시간 프로세스 한정 |
+| 2026-10-30 | D-354 | 부기 3 — W0 폐쇄망 2차(표시 이름 매핑·세 존 동일) · Q7~Q11 권고 적용(SQL 단서 1차 편입 · WebURL → was_mw · `plans/203`·`plans/204` 분리) |
+| 2026-10-30 | D-354 · D-355 | origin/main `36ce5f1` 병합 재부여 — 원격이 D-352(조사 결과 표시 3단)·D-353(조사 실행 병렬화)을 먼저 푸시해 이쪽 미푸시 D-352(제니퍼 파드 노드 연결) → **D-355**(`plans/199` → `plans/202`), D-353(담당 업무) → **D-354**(`plans/200` → `plans/201`)로 옮김 |
+| 2026-10-30 | D-354 | 부기 2 — 발생/원인 영역 분리(조사 판독 계층 재사용) · 원인 단서(조사 없이 알람 정보만) · W4 수동 조사 알람 한정(D-347 유지) · Q7 WAS·DB 둘 다(확인 전) · 첫 화면 안내·카드 재배치·24시간 요약·사례 매뉴얼 편입 |
+| 2026-10-30 | D-354 | 부기 1 — Q1~Q6 권고안 확정(본인 변경·복수 선택 허용 · 노이즈 관제 필터 보류 · 판정표 미지정 사용자에게도 표시 · 영역별 담당자 문안 검토 · 가입 화면 노출) · P1 후순위 · P6 제외 |
+| 2026-10-30 | D-354 | 신규 — 사용자 담당 업무 `duty_areas`(server_os·was_mw·db) · 권한 아님·숨김 없음·선택사항 · 서버 저장 · R&R 미정의 · `plans/201` 계획 |
+| 2026-10-30 | D-355 | 부기 2 — 일부 존 조회 실패여도 나머지 존 1대 일치면 연결(종전 `node_unchecked`) · 근거 문장에 「일부 존 확인 못 함(db_id)」 · 사용자 판단(존 간 중복 등록 거의 없음) |
 | 2026-10-30 | D-341 | origin/main 병합 재부여 — origin/main `plans/199`가 부기 22·23을 먼저 써서 이쪽 `plans/195` 부기 22 → **부기 24**, `plans/200` 부기 23 → **부기 25**로 옮김(본문·색인·참조 동시 갱신) |
 | 2026-10-30 | D-353 · D-341 | D-353 신규(`plans/200`) — 플레이북 의존 기반(DAG) 스케줄링 · S5·S7 축 동시 · HolmesGPT 턴당 다중 도구 지침 변형 · 계측 가산 키 · 전부 기본 off(비트 동일) · D-347 상한·㊹ 시간 사슬 불변 / D-341 부기 25(실행기 조항 개정) |
 | 2026-10-30 | D-352 · D-341 | D-351 → D-352 번호 재부여 — origin/main에 같은 번호 D-351(노이즈 관제 결정 이력 솔루션·존 칸)이 먼저 푸시돼 그쪽을 정본으로 두고 이 결정(조사 결과 표시 3단 · `plans/199`)을 옮김 · D-341 부기 22·23 참조 동반 수정 (D-352 부기 4) |
 | 2026-10-30 | D-352 | 부기 3 — 사용자 결정: 「추정」 배지 유지 확정 · break-glass 관제 서랍에도 카드 — 운영자 헬스 `/admin/noise/health` 응답에 `investigation_summary_view_enabled` 가산(새 라우트·사용자 경로 변경 없음 · D-341 부기 18 유지) · 상태 구현 W0~W6 완료 (`plans/199`) |
+| 2026-10-29 | D-355 | 상태 → 확정 · 구현(`plans/202` W1~W4 · 커밋 없음) · 부기 1(구현 요지 · 일부 존 실패 시 `node_unchecked` · 파드 미확정은 폴스타 축 생략 · 잔여: 수동 재분석 경로·차단기 재기동 초기화) |
+| 2026-10-29 | D-355 | 신규 — 제니퍼 K8s 파드 노드 서버 연결(웹 세션 `hostAddress` · 1건 정확 일치 자동 · 파드 미확정 매핑 대체 금지 · VM 제외 · http 평문 위험 수용) · `plans/202` Q1~Q5 사용자 확정 |
+| 2026-10-29 | D-348 | 부기 2 — D-355 예외(파드 노드 주소 1건 정확 일치는 사람 확인 없이 자동 연결) · `plans/196` §5.2 순서 파드 한정 변경 |
 | 2026-10-29 | D-352 | 부기 2 ④·⑥ 보정 — 원인 영역 unknown이라도 확실성 「추정」이면 신호 유지(전달문 「원인 영역: 미확정 — 추정」 · 카드 「미확정」+[추정] 배지 · 겹침 제거는 「미확정」일 때만) · 대기 중 조사 카드에서 전달문 버튼 숨김 (`plans/199`) |
 | 2026-10-29 | D-352 | 부기 2 — 사용자 결정: 플래그 `NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED` 코드 기본 on(내부망 확인 생략 · 끄면 비트 동일) · 「중요도 경고」 확인 · 전달문 형식 확정 · 원인 영역 미확정 문구 겹침·「조사:」 시각 형식 교정 (`plans/199`) |
 | 2026-10-29 | D-341 | 부기 23 — 부기 4 ㉘ `SRE_ACTIVITY_LOG_ENABLED` 기본 off → **기본 on** 개정(사용자 결정) · 장애 진단 탭 `NOISE_INVESTIGATION_LIVE_VIEW_ENABLED`는 기본 off 그대로 · 발췌 가림 위험 유지(표본 확인은 기본 on 이후 내부망 첫 배포 때) |

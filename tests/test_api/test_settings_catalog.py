@@ -179,8 +179,9 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     response = await get_settings_schema(_ADMIN)
 
     # plans/107 intent_frame +1 · plans/126 rag +1 · plans/160 result_viz +1 ·
-    # plans/142 portal_help +1 · plans/191 component_admin +1
-    assert len(response.groups) == 29
+    # plans/142 portal_help +1 · plans/191 component_admin +1 · plans/201 duty_area +1 ·
+    # plans/201 W2 welcome_guide +1 · W5 alarm_card_flow +1
+    assert len(response.groups) == 32
     assert response.env_file_path == str(env_file)
     items = {
         item.env_key: item
@@ -224,7 +225,11 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/193 W2 NOISE_CONSOLE_PORTAL_TAB_ENABLED +1(noise_gate 기존 그룹)
     # plans/196 NOISE_HOST_LINK_ENABLED +1(기준선 미갱신분 — noise_gate 기존 그룹)
     # plans/195 W2 NOISE_INVESTIGATION_REQUERY_ENABLED +1(noise_gate 기존 그룹 — 그룹 수 불변)
-    assert len(items) == 455  # plans/198 W0 +1 · W8 +1 · W7 +2 · plans/199 W1 +1 · plans/195 W2 +1
+    # plans/201 W1 DUTY_AREA_ENABLED +1(신규 그룹 duty_area) · W3 DUTY_ALARM_FOCUS_ENABLED +1
+    # plans/201 W2 DUTY_WELCOME_HINTS_ENABLED +1(duty_area) · WELCOME_GUIDE_ENABLED +1(신규 그룹 welcome_guide)
+    # plans/201 W5 DUTY_ACTION_ASSIST_ENABLED +1(duty_area) · ALARM_CARD_FLOW_ENABLED +1(신규 그룹 alarm_card_flow)
+    # plans/201 W6 DUTY_DAILY_SUMMARY_ENABLED +1(duty_area — 그룹 수 불변)
+    assert len(items) == 462  # plans/198 W0 +1 · W8 +1 · W7 +2 · plans/199 W1 +1 · plans/195 W2 +1
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -363,7 +368,8 @@ def test_t2_group_and_field_counts():
     index = field_index()
     group_keys = {spec.group_key for spec in index.values()}
     # plans/160 W2 result_viz +1 · plans/142 W3 portal_help +1 · plans/191 W2 component_admin +1
-    assert len(group_keys) == 29
+    # plans/201 W1 duty_area +1 · W2 welcome_guide +1 · W5 alarm_card_flow +1
+    assert len(group_keys) == 32
     # plans/111 COMPOSITE_TASK_FRAME_ENABLED +1 · plans/103 TIER3_PLAN_LOOP_ENABLED +1 ·
     # plans/82 v7.1 API_SSE_GROUP_PREVIEW_ROWS +1 ·
     # plans/92 O4 OBS_METRICS_{ENDPOINT_ENABLED,BEARER_TOKEN} +2 ·
@@ -403,7 +409,11 @@ def test_t2_group_and_field_counts():
     # plans/193 W2 NOISE_CONSOLE_PORTAL_TAB_ENABLED +1(noise_gate 기존 그룹)
     # plans/196 NOISE_HOST_LINK_ENABLED +1(기준선 미갱신분 — noise_gate 기존 그룹)
     # plans/195 W2 NOISE_INVESTIGATION_REQUERY_ENABLED +1(noise_gate 기존 그룹 — 그룹 수 불변)
-    assert len(index) == 455  # plans/198 W0 +1 · W8 +1 · W7 +2 · plans/199 W1 +1 · plans/195 W2 +1
+    # plans/201 W1 DUTY_AREA_ENABLED +1(신규 그룹 duty_area) · W3 DUTY_ALARM_FOCUS_ENABLED +1
+    # plans/201 W2 DUTY_WELCOME_HINTS_ENABLED +1(duty_area) · WELCOME_GUIDE_ENABLED +1(신규 그룹 welcome_guide)
+    # plans/201 W5 DUTY_ACTION_ASSIST_ENABLED +1(duty_area) · ALARM_CARD_FLOW_ENABLED +1(신규 그룹 alarm_card_flow)
+    # plans/201 W6 DUTY_DAILY_SUMMARY_ENABLED +1(duty_area — 그룹 수 불변)
+    assert len(index) == 462  # plans/198 W0 +1 · W8 +1 · W7 +2 · plans/199 W1 +1 · plans/195 W2 +1
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 21
 

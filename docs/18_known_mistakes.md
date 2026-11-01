@@ -2364,3 +2364,43 @@
 - **실수**: `diagnosis.py`의 `_turn_metrics`가 drain 객체의 새 속성을 직접 읽어서, 그 속성이 없는 테스트 대역 `_FakeDrain`을 쓰는 기존 테스트가 깨졌다.
 - **원인**: 공개 결과 형태를 바꾸면서 같은 객체를 흉내 내는 테스트 대역을 grep하지 않았다.
 - **방지책**: 객체 속성을 새로 읽을 때는 저장소 전체에서 그 타입의 대역(`_Fake*`·`SimpleNamespace`)을 grep한다. 계측용 선택 속성은 `getattr(..., 기본값)`으로 읽는다.
+
+### 2026-10-29 · (plans/202 · 팀 리드) 계획서가 조회 「성공」의 재조회 간격만 정하고 「실패」 뒤 간격을 정하지 않아, 웹이 응답하지 않으면 폴러가 이벤트마다 5초씩 직렬로 밀리는 구현이 1차 검증까지 갔다
+- **실수**: plans/202 §2.1은 「캐시 60초 초과 시 재조회」·「조회 상한 5초」만 적었다. 구현자는 실패를 기록하지 않아 같은 도메인의 새 이벤트마다 로그인+목록 조회를 다시 했고, 전송 오류는 차단기에도 세지 않아 상한이 없었다(verifier Major · strict xfail로 재현). 이번에 함께 Windows에서 `regress.py`가 pytest-xdist 부재로 rc=4로 멈췄고, 기준 사본 실패 귀속이 「사본에서 수집 안 됨」으로만 나와 팀 리드가 기준 worktree에서 실패 ID를 직접 대조했다
+- **원인**: 외부 호출 정책을 「성공 경로의 신선도」로만 설계하고 실패 경로의 호출 빈도·대기 누적을 수용 기준에 넣지 않았다. 회귀 도구는 xdist·패키지 venv를 전제한다(2026-10-12 항목과 같은 환경 원인)
+- **방지책**: 동기 경로(폴러·요청 처리)에 외부 호출을 넣는 계획은 수용 기준에 「실패가 연속될 때 호출 수·누적 대기 상한」을 적는다(실패 상태 재사용·소스 단위 백오프). xdist 없는 환경은 `regress.split_workers`를 `(0, 0)`으로 바꾼 직렬 래퍼로 돌리고, 「사본에서 수집 안 됨」이면 `git worktree add --detach`한 기준 사본에서 실패 ID를 직접 돌려 대조한다(sre_agent `미실행` 패키지도 같은 방식)
+
+### 2026-10-30 · (plans/199 W6 테스트 · plans/201 W1 팀 리드가 발견) parametrize 값에 시각 의존 JWT를 넣어 xdist 수집이 워커마다 달라져 regress 본체 레인 전체가 0건 실행으로 끝남
+- **실수**: `tests/test_api/test_plan199_w6_breakglass.py::test_user_path_health_is_not_registered`가 `@pytest.mark.parametrize("token", [_break_glass(), _user_token(...)])`로 수집 시점에 `exp`가 든 JWT를 만든다. 워커마다 수집 시각(초)이 달라 테스트 ID가 달라지고 pytest-xdist가 「Different tests were collected between gw0 and gwN」로 워커 4개를 에러 처리 — `regress.py`(plans/201 W1 교정분)가 통과 0 · 에러 4로 끝났다. 기준선(a289818f)부터 있는 결함이다.
+- **원인**: parametrize 인자를 결정적 값이 아니라 시각에 따라 바뀌는 객체로 만들었고 `ids=`를 주지 않았다. xdist는 워커 간 수집 ID 동일을 전제한다.
+- **방지책**: parametrize에는 결정적 값(토큰 종류 문자열 등)과 `ids=`를 쓰고, 시각·난수 의존 값은 테스트 본문에서 만든다. 임시 대응: regress 래퍼로 해당 노드를 `--deselect`하고 그 파일은 직렬로 따로 돌린다(이 파일 수정은 plans/199 소유 — 후속 정리 대상).
+
+### 2026-10-30 · (plans/201 W1 · 팀 리드) 실패 귀속 대조 스크립트의 파일 목록이 빈 값이 되어 맨 `pytest`가 두 트리에서 전체 스위트로 돌았다(전체 회귀 금지 위반 · 50분×2)
+- **실수**: `failed_ids.txt`에서 파일명을 뽑는 `sed` 식에 탭·백슬래시 이스케이프를 섞어 「unterminated s command」로 실패했고, 빈 `$FILES`로 `python -m pytest`가 루트 기본 수집(본체+noise_gate 전체)을 현재 트리와 기준선 worktree에서 각각 실행했다. 사용자 요청 없는 전체 실행이다(D-303).
+- **원인**: 파이프라인 중간 단계 실패를 검사하지 않고(`set -e`·빈 값 가드 없음) 결과 변수를 그대로 pytest 인자로 넘겼다.
+- **방지책**: 대조용 파일 목록은 python으로 만들고, pytest 호출 전에 목록이 비어 있으면 중단한다(`[ -n "$FILES" ] || exit 1`). 맨 `pytest`에 가변 인자를 넘길 때는 항상 이 가드를 둔다.
+
+### 2026-10-30 · (plans/201 W3 · implementer — 팀 리드 대리 기록) 프로세스 kind 판정 테스트를 절단 전 cmdline으로만 써서 실 스냅샷 경로의 Java WAS 미탐을 못 잡았다
+- **실수**: `classify_process_kind` 테스트가 완전한 Tomcat cmdline만 넣어 통과했다. 실제 입력인 `ProcessInfo.args`는 `mask_args`가 120자로 자르므로 `org.apache.catalina.startup.Bootstrap` 같은 뒤쪽 표식이 빠지고, 이름 폴백도 `java`라 판정이 None이 된다(verifier 재현 · xfail 고정).
+- **원인**: 판정 함수의 입력을 원천(폴스타 cmdline) 형태로 가정하고, 실제 호출 경로가 넘기는 값(마스킹·절단 후 `ProcessInfo`)의 shape로 픽스처를 만들지 않았다(「mock 통과 ≠ 프로덕션」 원칙 위반).
+- **방지책**: 판정·분류 함수 테스트는 실제 호출부가 넘기는 가공 단계(마스킹·절단·정규화)를 거친 값으로 최소 1건을 쓴다. 가공이 정보를 지우는 경우는 가공 전 판정을 설계하거나 한계를 xfail·문서로 고정한다. (같은 날 교정: enricher가 마스킹 전 원 항목으로 판정 · kind만 상태에 싣는다)
+
+### 2026-10-30 · (plans/201 W4 · 팀 리드 기록) 브리핑 선택 키가 사용자 뷰 허용 목록(`PLAYBOOK_VIEW_KEYS`)에 없으면 저장 단계에서 조용히 빠진다
+- **실수**: W4가 sre_agent 브리핑에 선택 키 `duty_view`를 더했으나, noise_gate `investigation_store.py`의 사용자 뷰 투영은 `PLAYBOOK_VIEW_KEYS`(`partial`·`playbook`·`deep_dive`·`engine_agreement`)만 남기고 나머지를 경고 없이 버린다. sre_agent 단위 테스트만으로는 통과하고 웹 화면에서는 표가 그려지지 않는 구조였다(implementer가 실 경로 추적으로 발견 · 같은 날 키 추가로 해소 · 프론트 `USER_BRIEFING_KEYS`도 같은 집합).
+- **원인**: 허용 목록 투영이 「모르는 키는 무음 제거」로 동작해(침묵 폴백) 생산자(sre_agent)·투영(noise_gate)·소비자(briefing-view.js) 세 곳의 키 집합이 따로 관리된다. 선택 키 추가 계약에 투영 목록 갱신이 명시돼 있지 않았다.
+- **방지책**: 브리핑에 선택 키를 더할 때는 `PLAYBOOK_VIEW_KEYS`·`_PLAYBOOK_ENUM_KEYS`(마스킹 예외)·프론트 `USER_BRIEFING_KEYS`를 함께 grep해 갱신하고, 저장 → 조회 → 렌더 왕복 테스트를 1건 둔다. 투영에서 모르는 키를 버릴 때 디버그 로그 1줄을 남기는 개선은 후속 후보.
+
+### 2026-10-30 · (plans/201 W4 · 팀 리드) implementer 완료 보고 전에 계획 끝 회귀를 돌려 실행 중 편집과 겹쳤다
+- **실수**: 교정 중인 implementer의 파일 수정이 멎은 것(mtime)만 보고 `regress.py --base a289818f --files …`를 시작했는데, 실행 도중(18:43:44) implementer가 `duty_view.py`·`investigation_store.py`·테스트 1개를 더 고쳐 결과가 섞였다. 재실행 1회로 대체했다(시간 손실 · 결과 영향 없음).
+- **원인**: 완료 통지 대신 파일 시각으로 종료를 추정했다.
+- **방지책**: 계획 끝 회귀는 해당 implementer의 완료 보고(SubagentHandback)를 받은 뒤에만 시작한다. 기다리는 동안에는 기록·검토처럼 작업 트리를 읽기만 하는 일을 한다.
+
+### 2026-10-30 · (plans/201 W2 · 팀 리드 기록) 「기준 SHA 이후 파일 불변」 단언이 뒤 Wave의 정당한 정본 편집에 깨졌다 · node `-e` 명령줄이 Windows 한도를 넘었다
+- **실수**: ① W4 verifier가 만든 `tests/test_plan201_w4_verify.py::test_source_tables_unchanged_since_base[config/duty_areas.yaml]`는 계획 시작 SHA(`a289818f`) 대비 `git diff --stat`이 비어야 통과하는 시한부 단언이라, 커밋 이후 기준선에서도 실패하고 W2가 `welcome_queries` 섹션을 더하자 계속 깨졌다(파라미터에서 제외 · 영역 code·라벨 일치는 계약 테스트가 맡음). ② W2가 `checkAuthOnLoad`를 늘리자 `test_ui_plan192_w1_entry.py`의 `node -e <script>` 헬퍼가 Windows 명령줄 한도(32K)를 넘어 `WinError 206`으로 3건이 새로 실패했다(논리 무관 · stdin 전달로 교정 — 같은 헬퍼를 쓰던 기존 206 실패 2건도 함께 해소).
+- **원인**: ① 「이 Wave가 안 건드렸다」는 사실을 저장소 상태 단언으로 남겨, 여러 Wave가 같은 정본을 순차로 고치는 계획에서 수명이 Wave 하나뿐인 테스트가 됐다. ② 앱 함수 본문을 통째로 명령줄 인자로 넘기는 헬퍼는 대상 함수가 커질수록 플랫폼 한도에 걸린다(맥에서는 드러나지 않음).
+- **방지책**: Wave 범위 검증은 리뷰·diff로 하고, 테스트로 남길 때는 지켜야 할 **내용**(키 집합·섹션 값)을 단언한다 — SHA 대비 파일 불변 단언은 쓰지 않는다. node로 JS를 돌리는 테스트 헬퍼는 스크립트를 stdin(`["node","-"]` + `input=`)이나 임시 파일로 넘긴다.
+
+### 2026-10-30 · (plans/201 W6 · 팀 리드) 계획 끝 회귀를 verifier 검증과 병행으로 띄웠다가 교정 편집과 겹칠 위험 때문에 중단했다
+- **실수**: implementer 1차 완료 직후 verifier를 띄우면서 같은 시점에 `regress.py --base 5343f437 --files <W6 32>`를 백그라운드로 함께 돌렸다. verifier가 Major(M-1 · 결정 기록 전량 읽기)를 내 교정 편집이 확정되자, 돌고 있던 회귀가 편집 중인 파일과 겹치게 돼 자기 프로세스 트리를 직접 종료했다(결과 폐기 · 같은 회귀를 교정·재검증 뒤 다시 1회 돌림).
+- **원인**: 「verifier는 제품 코드를 안 고친다」는 것만 보고 회귀를 앞당겼다. 검증 라운드는 교정을 낳을 수 있으므로, 회귀가 재는 대상(작업 트리)이 아직 확정되지 않은 상태였다. 2026-10-30 W4 항목(완료 보고 전 회귀 금지)과 같은 계열이다.
+- **방지책**: 계획 끝 회귀는 **verifier 지적 0(교정 포함 재검증 완료) 뒤에만** 1회 돌린다 — 구현 → 검증 → 교정 → 재검증 → 회귀 순서를 지키고, 검증과 회귀를 병행하지 않는다. 기다리는 동안은 diff 검토·기록 초안처럼 작업 트리를 읽기만 하는 일을 한다.

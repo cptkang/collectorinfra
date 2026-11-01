@@ -51,6 +51,8 @@ from noise_gate.domain.enrichment_profile import (
 from noise_gate.domain.process_rank import (
     KIND_APM,
     classify_alarm_kind,
+    classify_top_process_kinds,
+    rank_raw_processes,
     select_top_processes,
 )
 from noise_gate.infrastructure.embedding_provider import build_event_text
@@ -315,12 +317,47 @@ async def enrich_processes(
     Returns:
         ProcessSnapshot (조회·선별 성공) 또는 None (게이팅 미충족/조회 불가).
     """
+    snapshot, _ = await _enrich_processes_core(event, alarm_cfg, process_client, None)
+    return snapshot
+
+
+def _top_process_kinds(
+    event: AlarmEvent,
+    raw_list: Any,
+    kind: str,
+    top_n: int,
+    process_kind_classifier: Any,
+) -> list[str]:
+    """스냅샷과 같은 상위 N **원 항목**(마스킹·절단 전)의 프로세스 종류 목록 (plans/201 W3 단서 ②).
+
+    마스킹된 `ProcessInfo.args`는 120자로 잘려 Java WAS 단서(`catalina.home`·`Bootstrap` 등)가 사라지므로
+    원문으로 판정한다. 원문은 판정에만 쓰고 반환·보관·로그하지 않는다 — 반환은 kind 이름뿐이다.
+    판정기 예외는 빈 목록(키 값 없음)으로 흡수하고, 로그에는 알람 ID만 남긴다(원문 금지).
+    """
+    try:
+        raw_top, _ = rank_raw_processes(raw_list, kind, top_n)
+        return classify_top_process_kinds(raw_top, process_kind_classifier)
+    except Exception:  # noqa: BLE001 — 담당 강조는 부가 정보 · 판정 실패가 스냅샷·분석을 막지 않는다
+        logger.warning("담당 강조 프로세스 종류 판정 실패(값 생략): alarm_id=%s", event.alarm_id)
+        return []
+
+
+async def _enrich_processes_core(
+    event: AlarmEvent,
+    alarm_cfg,  # noqa: ANN001 — AlarmConfig
+    process_client,  # noqa: ANN001 — PolestarProcessApiClient
+    process_kind_classifier: Any,  # Callable[[str, str], str | None] | None
+) -> tuple[Optional[ProcessSnapshot], Optional[list[str]]]:
+    """`enrich_processes` 본체 — 판정기가 있으면 같은 조회 결과로 프로세스 종류 목록도 만든다(plans/201 W3).
+
+    판정기가 없으면 두 번째 값은 항상 None이고 스냅샷은 종전과 같다(조회 1회 · 정렬·마스킹 동일).
+    """
     if not alarm_cfg.process_enrich_enabled:
-        return None
+        return None, None
     if process_client is None:
-        return None
+        return None, None
     if event.is_clear:
-        return None
+        return None, None
 
     # Plan 60 E6: classify_alarm_kind가 disk/network 등도 판정하게 확장됐으나, 이 함수
     # (process_enrich_enabled 경로)는 **현행처럼 cpu/memory만** 프로세스 조회한다(비트 동일).
@@ -332,7 +369,7 @@ async def enrich_processes(
             event.alarm_id,
             event.resource_type,
         )
-        return None
+        return None, None
 
     if process_client.get_base_url(event.db_id) is None:
         logger.debug(
@@ -340,21 +377,25 @@ async def enrich_processes(
             event.db_id,
             event.alarm_id,
         )
-        return None
+        return None, None
 
     # ★ 조회 키는 hostname (server_name 아님) — Plan 47-1 §2
     result = await process_client.list_by_hostname(event.db_id, event.hostname)
     if result is None:
-        return None
+        return None, None
 
     top, total = select_top_processes(result.processes, kind, alarm_cfg.process_top_n)
-    return ProcessSnapshot(
+    snapshot = ProcessSnapshot(
         alarm_kind=kind,
         captured_at=result.captured_at,
         top=top,
         total_count=total,
         source_host=event.hostname,
     )
+    if not callable(process_kind_classifier):
+        return snapshot, None
+    return snapshot, _top_process_kinds(event, result.processes, kind, alarm_cfg.process_top_n,
+                                        process_kind_classifier)
 
 
 async def _collect_host_snapshot(
@@ -513,6 +554,37 @@ async def _collect_processes(
             event.alarm_id,
         )
         return None
+
+
+async def _collect_processes_with_kinds(
+    event: AlarmEvent,
+    cfg: Any,
+    process_client: Any,
+    process_kind_classifier: Any,
+) -> tuple[ProcessSnapshot | None, list[str]]:
+    """(plans/201 W3) 판정기 주입 시의 영향 프로세스 수집 — `(스냅샷, 프로세스 종류 목록)`.
+
+    실패·게이팅 시 `(None, [])` (독립 degradation). 로그는 `_collect_processes`와 같다.
+    """
+    try:
+        snapshot, kinds = await _enrich_processes_core(
+            event, cfg.alarm, process_client, process_kind_classifier
+        )
+        if snapshot is not None:
+            logger.info(
+                "영향 프로세스 조회 완료: alarm_id=%s kind=%s top=%d/%d",
+                event.alarm_id,
+                snapshot.alarm_kind,
+                len(snapshot.top),
+                snapshot.total_count,
+            )
+        return snapshot, list(kinds or [])
+    except Exception:
+        logger.exception(
+            "영향 프로세스 조회 실패 — 프로세스 없이 분석 진행: alarm_id=%s",
+            event.alarm_id,
+        )
+        return None, []
 
 
 async def _collect_noise_context(
@@ -707,9 +779,17 @@ async def alarm_context_enricher_node(
     # 수집 태스크·반환 키를 동적 구성한다. gate off·message off면 키셋은 기존 2키
     # ({history_stats, process_snapshot})로 **비트 동일**(회귀 0). gate_on → noise_context,
     # message_on → enrichment 키를 추가한다. gather 순서·값은 기존과 동일하다.
+    # (plans/201 W3) 담당 강조 프로세스 종류 판정기 — 워커가 플래그 유효 on일 때만 주입한다.
+    # 미주입(기본)이면 아래 수집 태스크·반환 키가 종전 그대로다(비트 동일).
+    process_kind_classifier = configurable.get("process_kind_classifier")
+    kinds_on = callable(process_kind_classifier)
     tasks: list[Any] = [
         _collect_history(event, cfg, repo, redis_client),
-        _collect_processes(event, cfg, process_client),
+        (
+            _collect_processes_with_kinds(event, cfg, process_client, process_kind_classifier)
+            if kinds_on
+            else _collect_processes(event, cfg, process_client)
+        ),
     ]
     keys = ["history_stats", "process_snapshot"]
     if gate_on:
@@ -737,4 +817,12 @@ async def alarm_context_enricher_node(
         )
         keys.append("anomaly_severity")
 
-    return await _gather_with_timeout(event, cfg, tasks, keys)
+    out = await _gather_with_timeout(event, cfg, tasks, keys)
+    if kinds_on:
+        # 판정기 주입 시에만 `top_process_kinds` 키를 싣는다 — 값이 없어도 빈 목록으로 명시해
+        # 직전 알람 값이 남지 않게 한다. 타임아웃이면 process_snapshot이 None이다.
+        packed = out.get("process_snapshot")
+        snapshot, kinds = packed if isinstance(packed, tuple) else (None, [])
+        out["process_snapshot"] = snapshot
+        out["top_process_kinds"] = kinds
+    return out

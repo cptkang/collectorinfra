@@ -1,0 +1,218 @@
+# 담당 업무 어휘 정본(D-354). 권한이 아니라 중점 — 무엇도 숨기지 않는다.
+# 코드는 이 파일의 code만 안다. 영역 추가는 이 파일 + 매뉴얼 + 계약 테스트(plans/201 §6.3)로 한다.
+areas:
+  - code: server_os
+    label: 서버/OS
+    description: CPU·메모리·파일시스템·프로세스 등 서버 자원
+    # 코드값 + 표시 이름(plans/201 W0 §1.2 ①″ — 세 존 동일). 대조는 대소문자 무시
+    resource_types: [server.Server, 서버, server.Cpus, CPU, server.Memory, 메모리, server.FileSystem, server.FileSystems, 개별 파일시스템,
+                     server.Disks, 디스크, server.Process, 프로세스, server.LogMonitor, 로그 모니터]
+    alarm_kinds: [cpu, memory, disk, process, log]
+    playbook_prefixes: [host.]
+  - code: was_mw
+    label: WAS/미들웨어
+    description: WAS 인스턴스 응답·에러·힙·풀, 미들웨어 프로세스
+    resource_types: [apm.Instance, weburl.WebURLMonitor, server.WebURLMonitor, WebURL 감시]   # WebURL 감시 = 서비스 접점(§12 Q9)
+    alarm_kinds: [apm]
+    playbook_prefixes: [was.]
+  - code: db
+    label: DB
+    description: DB 서버 자원과 애플리케이션이 본 SQL 지연(DB 내부 지표는 미수집)
+    # 엔진형 유형은 정의만 있고 30일 알람 0건(세 존 · §1.2 ①). 코드값만 적는다 — 표시 이름(메모리·프로세스)은 server.*와 같아 못 가른다
+    resource_types: [db2.Memory, mariadb.Memory, mssql.Memory, mysql.Memory, tibero.Memory,
+                     mariadb.Process, mssql.Process, mysql.Process, oracle.Process, postgresql.Process, sybase.Process, tibero.Process]
+    alarm_kinds: []
+    playbook_prefixes: [was.sql]  # SQL 패턴 플레이북은 WAS와 DB 양쪽 영역
+# 각 Wave가 섹션을 더한다: welcome_queries(W2) · alarm_prompt_priority · cause_hints(W3) · requery_axes·checklists(W5).
+
+# ── 원인 단서(plans/201 W3 §5.3) — 조사 없이 알람이 이미 싣고 온 정보만으로 담당 영역을 가리킨다 ──
+# 단서는 원인 판정이 아니다. 화면은 「단서 · 알람 정보만 봄(조사 전)」과 근거(label · 유형 · 프로세스 종류)를 함께 보인다.
+# 어휘 밖 영역 코드·근거 문구 없는 항목은 로더가 경고 후 무시한다(src/domain/duty_areas.py parse_cause_hints).
+cause_hints:
+  # 제니퍼 정규화 유형(알람 SSE apm_event_type) → 단서 영역. 대조는 strip·대문자·연속 공백→_·ERROR_/WARNING_ 접두 1회 제거.
+  # 유형 리터럴은 여기에만 둔다(게이트웨이 EVENT_TYPE_SIGNALS·sre_agent SQL_EVENT_TYPES는 고치지 않는다).
+  apm_event_types:
+    BAD_RESPONSE_TIME_SQL: {areas: [db], label: SQL 응답 지연}
+    SQL_TOOMANY_FETCH: {areas: [was_mw, db], label: 대량 조회}            # 앱 쿼리 설계 몫이 커서 양쪽
+    DB_CONN_UNCLOSED: {areas: [was_mw], label: DB 연결 미반납}            # 앱 누수(§12 Q7 ②)
+    DB_CONNECTION_FAIL: {areas: [was_mw, db], label: DB 연결 실패}        # 어느 쪽인지 유형만으론 못 가름(Q7 ②)
+    JDBC_CONNECTION_FAIL: {areas: [was_mw, db], label: DB 연결 실패}
+    MAYBE_GC_TIME_DELAY: {areas: [was_mw], label: GC·힙}
+    OUTOFMEMORY: {areas: [was_mw], label: GC·힙}
+    JVM_HEAP_MEM_HIGH: {areas: [was_mw], label: GC·힙}
+    # 외부 연계 원인은 was_mw — 근거 문구 고정(§12 Q12 · 애플리케이션 영역 개설 시 이전)
+    BAD_RESPONSE_TIME_EXTERNAL_CALL: {areas: [was_mw], label: 외부 연계 — 상대 시스템 확인 필요}
+    HTTP_IO_EXCEPTION: {areas: [was_mw], label: 외부 연계 — 상대 시스템 확인 필요}
+    SOCKET_EXCEPTION: {areas: [was_mw], label: 외부 연계 — 상대 시스템 확인 필요}
+  # 유형만으로 원인 영역을 못 가르는 것으로 알려진 유형 — 단서 없음 · 관리자 매핑 점검 배지에서 뺀다(접어서 보인다).
+  known_unmapped:
+    - BAD_RESPONSE_TIME_APPLICATION   # 응답 지연(일반)
+    - SERVICE_EXCEPTION
+    - AGENT_STOP
+    - METRICS_EVENT                   # 폐쇄망 원값 「METRICS EVENT」(공백 포함)
+    # 아래 4종은 계획 표에 없다 — 게이트웨이 신호 유형이지만 유형만으로 원인 영역(앱·DB·외부)을 못 가르므로
+    # 보수적으로 단서 없이 둔다(근거가 생기면 apm_event_types로 옮긴다).
+    - SERVICE_QUEUING
+    - PLC_REJECTED
+    - HIGH_RATE_REJECT
+    - HIGH_RATE_FAIL
+  # 영향 프로세스(알람 SSE top_process_kinds — config/middleware_signatures.yaml kind) → 단서 영역.
+  # 폴스타 CPU/메모리 알람의 실시간 프로세스 스냅샷에만 있다. 여기 없는 kind(redis·kafka 등)는 단서 없음 —
+  # 그 알람의 발생 영역(server_os)이 이미 덮는다.
+  process_kinds:
+    was_mw:
+      label: WAS·웹서버 프로세스
+      kinds: [tomcat, jboss-wildfly, weblogic, websphere, jeus, nginx, apache-httpd, webtob]
+    db:
+      label: 이 서버에서 DB 엔진 실행 중
+      kinds: [db2, mysql, mariadb, postgresql, oracle, tibero]
+
+# ── 첫 화면 예시 질의(plans/201 W2 §4.1~4.3 · 부록 A) — 담당 지정 사용자의 첫 화면 예시 버튼 ──
+# 영역 code → [{label, query, verified_by}]. 순서는 인지(지금) → 분석(추세·비교) → 점검이며 화면은 영역마다 앞에서 3개까지.
+# verified_by 필수(D-192 · D-341 ⑪) — 없거나 규약 밖이면 로더가 제외하고 경고한다(src/domain/duty_areas.py parse_welcome_queries).
+#   gold:<골드셋 파일 stem>/<항목 id> · assembler:<결정적 조립기 함수 이름> · sandbox:<db_id> · mlx:local · closed_net:<YYYY-MM-DD>
+# 골드셋 동형이 없어 폐쇄망에서만 확인할 수 있는 문구는 verified_by 없이 pending: closed_net으로 남긴다(로드 제외 · 「검증 대기」 경고).
+#   폐쇄망에서 실행해 답이 나오면 verified_by: closed_net:<날짜>를 적고 pending을 지운다.
+# draft = 부록 A 초안 원문(골드 동형에 맞춰 문구를 다듬은 경우만 · 기록용 — 로더는 읽지 않는다).
+# 「ㅇㅇ존」은 존 자리표시다(첫 화면 현행 버튼과 같은 규약 — 사용자가 존 이름으로 고쳐 보낸다).
+welcome_queries:
+  server_os:
+    # 동형 없음 — 실시간 사용률은 폴스타 실시간 API(폐쇄망) 경로이고 임계 조건 골드가 없다
+    - {label: CPU 80% 이상 서버, query: ㅇㅇ존 서버 중 지금 CPU 사용률이 80% 이상인 서버를 보여줘, pending: closed_net}
+    # 동형 없음 — 파일시스템 단위 임계 조회 골드가 없다(급증 조립기는 지난달 대비 차분 + 임계 형태만)
+    - {label: 파일시스템 90% 이상, query: ㅇㅇ존 서버 중 파일시스템 사용률이 90% 이상인 서버와 파일시스템을 보여줘, pending: closed_net}
+    # 동형 없음 — 급증 조립기는 파일시스템 전용이고 메모리 상승 골드가 없다(D-192)
+    - {label: 메모리 사용률 상승 서버, query: ㅇㅇ존에서 지난달 대비 메모리 사용률이 10%p 이상 오른 서버를 보여줘, pending: closed_net}
+    - label: 알람 많은 서버 상위 10
+      query: ㅇㅇ존에서 최근 3개월간 경고 이상 알람이 가장 많이 발생한 상위 10개 서버를 알려줘
+      verified_by: gold:gp/gp-015
+      draft: ㅇㅇ존 서버의 최근 24시간 알람 발생 건수 상위 10대를 보여줘
+    - label: CPU 평균 상위 10대
+      query: ㅇㅇ존 서버별 지난달 1개월 통계 기준 CPU 사용률 평균이 높은 상위 10대를 보여줘
+      verified_by: gold:syn/syn-e01   # 서버별 월 CPU 평균 상위 N(기간 표현은 gp-009 「지난달 1개월 통계 기준」)
+      draft: ㅇㅇ존 서버 중 지난 1개월 CPU 평균 사용률 상위 10대를 보여줘
+  was_mw:
+    # 아래 두 골드는 apm_bench heavy(전 함대 순회) 시나리오다. 대상 미지정 인스턴스형 비heavy 대안은 없다. 서비스·업무 단위 비heavy 전체 대상 후보(APM-SERVICE-all · APM-BIZ-all)는 있으며 피드백 교정 때 교체 후보다.
+    # 그래도 유지하는 근거: 버튼은 입력창 프리필만 하고 자동 전송하지 않는다 · 사용자가 직접 치는 같은 질의와 부하가 같다 · 게이트웨이 상한이 적용된다.
+    - label: WAS 응답시간 상태
+      query: 지금 WAS들 응답시간 상태 어때?
+      verified_by: gold:scenarios/APM-HEALTH-untargeted
+      draft: 지금 응답시간이 가장 나쁜 WAS 인스턴스 5개를 보여줘
+    - label: 실패율 기준 WAS 순위
+      query: 지난 1시간 실패율 기준으로 전체 WAS 순위 전부
+      verified_by: gold:scenarios/APM-RANK-failrate-full
+      draft: 최근 1시간 에러가 가장 많은 WAS 인스턴스를 보여줘
+    # 동형 없음 — 힙 순위 골드는 서비스 지정형뿐(전체 WAS 대상 형태 없음)
+    - {label: 힙 사용률 높은 WAS, query: 힙 사용률이 높은 WAS 인스턴스를 보여줘, pending: closed_net}
+    # 동형 없음 — 어제 응답시간 골드는 인스턴스 지정 URL 순위뿐(업무·서비스 순위 형태 없음)
+    - {label: 어제 응답 나빴던 업무, query: 어제 응답시간이 가장 나빴던 업무(서비스)를 보여줘, pending: closed_net}
+    # 동형 없음 — 존 전체 실시간 프로세스를 훑는 질의 경로가 없다(plans/201 부록 A v1.2 DB 제외 사유와 같음)
+    - {label: WAS·웹서버 실행 서버, query: ㅇㅇ존에서 실행 중인 WAS·웹서버 프로세스가 있는 서버 목록을 보여줘, pending: closed_net}
+  db:
+    # 동형 없음 — 전체 WAS 이벤트 골드는 OutOfMemory 오류형뿐(SQL 응답 지연 유형 대응 미확인)
+    - {label: SQL 응답 지연 WAS, query: 최근 1시간 SQL 응답 지연 이벤트가 난 WAS 인스턴스를 보여줘, pending: closed_net}
+    # 동형 없음 — 실행 중 요청 골드는 인스턴스 지정형뿐
+    - {label: 오래 걸리는 SQL 요청, query: 지금 실행 중인 SQL이 오래 걸리는 요청을 보여줘, pending: closed_net}
+
+# ── 조사 「질의응답에서 확인」 축 → 영역(plans/201 W5 §7.1) ──
+# 조사 질의 항목(src/domain/investigation_requery.py build_requery)의 axis 값 → 담당 영역 code.
+# 담당 지정 사용자에게는 담당 영역 축의 질의를 앞에 두고 영역 이름으로 묶는다(개수·집합 불변 · 새 질의 없음).
+# apm = 제니퍼 인스턴스·서비스 조회(WAS) · polestar = 폴스타 등록 서버 자원 조회(서버/OS). 어휘 밖 영역은 로더가 경고 후 뺀다.
+requery_axes:
+  apm: was_mw
+  polestar: server_os
+
+# ── 영역별 점검 순서(plans/201 W5 §7.2) — 조사 브리핑 「권고」 아래 접힌 블록 ──
+# 초안 · 피드백으로 교정(Q5 담당자 검토 생략 — 2026-10-30 사용자 결정).
+# 키 = 플레이북 id(조사 브리핑 playbook.id — sre_agent/config/playbooks/*.yaml id) → 영역 code 또는 common → 문장 목록.
+# 화면은 담당 영역 것만 보인다(여러 영역이면 선언 순서) · 담당 미지정이거나 그 플레이북에 담당 영역 문안이 없으면 common 1벌 ·
+# common도 없으면 블록 없음. 플레이북 없이 끝난 조사(HolmesGPT 단독)에는 나오지 않는다.
+# 문장은 사람이 확인하는 순서다 — 시스템이 실행하지 않는다(D-011 · 화면이 human-gated 문구를 함께 붙인다).
+# 조직·사람 이름을 넣지 않는다. 영역당 8문장 · 문장당 200자까지(넘치면 로더가 경고 후 자른다·뺀다).
+checklists:
+  host.cpu:
+    server_os:
+      - 같은 시각 같은 업무의 다른 서버도 CPU가 높은지 확인
+      - 영향 프로세스 상위(CPU 점유 프로세스)와 그 실행 계정 확인
+      - 최근 배포·배치·설정 변경이 있었는지 확인
+      - 높은 상태가 얼마나 지속됐는지(일시 급증인지 지속인지) 확인
+    was_mw:
+      - 이 서버의 WAS 인스턴스 응답시간·처리량이 같은 시각에 변했는지 확인
+      - CPU 점유 프로세스가 WAS 프로세스인지 확인
+    db:
+      - CPU 점유 프로세스가 DB 엔진 프로세스인지 확인
+      - 같은 시각 오래 걸리는 SQL 요청이 늘었는지(애플리케이션이 본 SQL 지연) 확인
+    common:
+      - 같은 시각 다른 서버도 높은지 확인
+      - 상위 프로세스 확인
+      - 최근 변경 확인
+      - 지속 시간 확인
+  host.memory:
+    server_os:
+      - 메모리 상위 프로세스와 증가 추이 확인
+      - 스왑 사용이 함께 늘었는지 확인
+      - 최근 배포·재기동 이력 확인
+    was_mw:
+      - WAS 힙 사용률·GC 시간이 같은 시각에 늘었는지 확인
+    common:
+      - 메모리 상위 프로세스 확인
+      - 증가가 지속되는지 확인
+  host.fs:
+    server_os:
+      - 사용률이 오른 파일시스템과 증가 속도 확인
+      - 최근 크게 늘어난 디렉터리(로그·덤프·임시 파일) 확인
+      - 로그 순환·정리 작업이 정상 동작했는지 확인
+    common:
+      - 사용률이 오른 파일시스템 확인
+      - 증가 원인 파일 확인
+  was.heap:
+    was_mw:
+      - 힙 사용률이 GC 뒤에도 내려가지 않는지 확인
+      - 같은 시각 응답시간·에러가 늘었는지 확인
+      - 최근 배포·설정 변경 확인
+    server_os:
+      - 서버 메모리·스왑이 함께 부족한지 확인
+    common:
+      - 힙 추이 확인
+      - 응답시간 영향 확인
+  was.latency:
+    was_mw:
+      - 지연이 특정 서비스(URL)에 몰리는지 확인
+      - 지연 구간이 SQL·외부 호출·애플리케이션 중 어디가 큰지 확인
+      - 액티브 서비스·스레드가 쌓였는지 확인
+    db:
+      - 지연 구간 중 SQL 비중이 큰지(애플리케이션이 본 SQL 지연) 확인
+      - 같은 시각 오래 걸리는 SQL 요청이 늘었는지 확인
+    server_os:
+      - WAS 서버의 CPU·메모리가 같은 시각에 높은지 확인
+    common:
+      - 지연 서비스 확인
+      - 지연 구간 확인
+  was.pool:
+    was_mw:
+      - 커넥션 풀 사용이 최대치에 붙어 있는지 확인
+      - 반납되지 않은 연결(미반납) 이벤트가 있었는지 확인
+    db:
+      - 같은 시각 SQL 실행이 오래 걸렸는지 확인
+      - DB 연결 실패 이벤트가 있었는지 확인
+    common:
+      - 풀 사용 확인
+      - 연결 실패·미반납 이벤트 확인
+  was.sql:
+    db:
+      - 느린 SQL이 특정 문장에 몰리는지 확인
+      - 같은 시각 DB 서버 자원(CPU·메모리)이 높은지 확인
+    was_mw:
+      - 대량 조회(많은 행 반환) 요청이 있었는지 확인
+      - 느린 SQL을 부르는 서비스(URL) 확인
+    common:
+      - 느린 SQL 확인
+      - 호출 서비스 확인
+  was.error:
+    was_mw:
+      - 에러가 특정 서비스·예외 유형에 몰리는지 확인
+      - 외부 연계 오류라면 상대 시스템 상태 확인
+      - 최근 배포·설정 변경 확인
+    common:
+      - 에러 서비스 확인
+      - 최근 변경 확인

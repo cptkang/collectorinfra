@@ -62,7 +62,7 @@ INVESTIGATION_REF_KIND = "investigation_ref"
 KIND_KEYWORDS: tuple[tuple[str, tuple[str, ...]], ...] = (
     ("cpu", ("cpu",)),
     ("memory", ("memory", "메모리", "mem")),
-    ("disk", ("disk", "디스크", "volume", "filesystem", "inode")),
+    ("disk", ("disk", "디스크", "volume", "filesystem", "파일시스템", "inode")),
     ("network", ("network", "net", "traffic", "네트워크", "bandwidth")),
     ("process", ("process", "프로세스", "daemon", "service down", "프로세스다운")),
     ("log", ("log", "logmonitor", "로그")),

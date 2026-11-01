@@ -47,6 +47,9 @@ class User:
     alarm_zones: Optional[list[str]] = None
     # 보호 root 계정(Plan 59-a §9): True면 역할/상태 변경·PW초기화·삭제 불가(솔루션 상시 관리자 보장).
     is_protected: bool = False
+    # 담당 업무(plans/201 · D-354) — **권한이 아니라 중점**. 인가 판정은 이 값을 읽지 않는다
+    # (`to_auth_dict`에도 싣지 않는다). 값은 `config/duty_areas.yaml`의 code. None = 미지정.
+    duty_areas: list[str] | None = None
     auth_method: str = "local"
     login_fail_count: int = 0
     last_login_at: Optional[datetime] = None

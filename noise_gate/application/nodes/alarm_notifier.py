@@ -381,6 +381,54 @@ def manual_only_notice_html(web_base_url: str = "") -> str:
     return f"<br><br>{text}"
 
 
+#: (plans/201 W3) `top_process_kinds` 상한 · `apm_event_type` 길이 상한(SSE 직렬화 부담 · 비정상 값 방어).
+DUTY_TOP_PROCESS_KINDS_MAX = 5
+_DUTY_APM_EVENT_TYPE_MAX_CHARS = 64
+#: (plans/201 W3) 담당 강조 SSE 키 — `_merge_duty_focus`가 이 둘만 옮긴다.
+DUTY_FOCUS_SSE_KEYS: tuple[str, ...] = ("apm_event_type", "top_process_kinds")
+
+
+def duty_alarm_focus_on(cfg: Any) -> bool:
+    """알람 화면 담당 강조가 켜졌는가(`DUTY_AREA_ENABLED` AND `DUTY_ALARM_FOCUS_ENABLED` · plans/201 W3).
+
+    `app_config`는 기동 시 1회 읽은 값이다. 설정 객체가 없거나 값이 정확히 `True`가 아니면 off다
+    (테스트 대역 MagicMock이 켜진 것으로 읽히지 않게 `is True`로 본다).
+    """
+    duty = getattr(cfg, "duty_area", None)
+    return getattr(duty, "alarm_focus_effective", False) is True
+
+
+def duty_focus_sse_keys(
+    result: AlarmAnalysisResult,
+    top_process_kinds: Any = None,  # list[str] | None — 상태 `top_process_kinds`(enricher 판정)
+) -> dict[str, Any]:
+    """담당 강조용 SSE 키(plans/201 W3 §5.3 단서 ①②). 값 있을 때만 키 — 없으면 빈 dict.
+
+    - `apm_event_type`: 게이트웨이 정규화 유형 `raw_payload["apm"]["event_type_norm"]` **원값 문자열 그대로**
+      (앞뒤 공백만 뗀다). 대조 정규화(공백→`_` 등)는 소비처(프론트·`config/duty_areas.yaml` 대조)가 한 규칙으로
+      한다 — 근거로 보일 값은 원값이어야 운영자가 제니퍼 화면과 맞춰 볼 수 있다.
+    - `top_process_kinds`: enricher가 **마스킹·절단 전 원 프로세스 항목**으로 판정해 상태에 실은 kind 목록을
+      그대로 옮긴다(문자열만 · 고유 · 상한 5). 마스킹된 스냅샷 args(120자 절단)로 다시 판정하지 않는다 —
+      Java WAS 단서가 잘려 미탐하므로 단일 출처를 enricher로 둔다. 프로세스 이름·인자 원문·서버명·IP는 새 키에
+      넣지 않는다.
+    """
+    keys: dict[str, Any] = {}
+    raw = getattr(result.alarm_event, "raw_payload", None)
+    apm = raw.get("apm") if isinstance(raw, dict) else None
+    event_type = apm.get("event_type_norm") if isinstance(apm, dict) else None
+    if isinstance(event_type, str) and event_type.strip():
+        keys["apm_event_type"] = event_type.strip()[:_DUTY_APM_EVENT_TYPE_MAX_CHARS]
+    if isinstance(top_process_kinds, (list, tuple)):
+        kinds: list[str] = []
+        for kind in top_process_kinds:
+            if isinstance(kind, str) and kind and kind not in kinds:
+                kinds.append(kind)
+            if len(kinds) >= DUTY_TOP_PROCESS_KINDS_MAX:
+                break
+        if kinds:
+            keys["top_process_kinds"] = kinds
+    return keys
+
 async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> dict[str, Any]:
     """분석 결과를 알림 채널에 발송한다.
 
@@ -416,6 +464,10 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
     # (plans/144 W5) 크로스소스 사건 묶음 표시 — annotate·enforce에서 사건 소속일 때만 줄이 생긴다.
     # 빈 목록(off·shadow·미소속·게이트 off)이면 아래 어느 경로에도 넘기지 않는다(비트 동일).
     ep_lines = episode_lines(decision, state.get("episode_summary"))
+    # (plans/201 W3) 담당 강조 SSE 키 — 플래그 유효 off면 계산하지 않고 아무 경로에도 넘기지 않는다(비트 동일).
+    duty_keys: dict[str, Any] = {}
+    if decision is not None and duty_alarm_focus_on(cfg):
+        duty_keys = duty_focus_sse_keys(result, state.get("top_process_kinds"))
     if decision is not None and decision.tier in _NON_PAGE_TIERS:
         configurable = (config or {}).get("configurable", {})
         ticket_queue = configurable.get("ticket_queue")
@@ -431,6 +483,7 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
             # (Plan 83) SUPPRESS SSE 옵트인 — 게이트 설정 부재 시 False(현행 유지)
             suppress_sse=bool(getattr(gate_cfg, "sse_suppressed_enabled", False)),
             **({"episode_lines": ep_lines} if ep_lines else {}),
+            **({"duty_focus": duty_keys} if duty_keys else {}),
         )
         return {"analysis_result": result}
 
@@ -446,6 +499,7 @@ async def alarm_notifier_node(state: dict[str, Any], config: RunnableConfig) -> 
             decision,
             incident_publisher,
             **({"episode_lines": ep_lines} if ep_lines else {}),
+            **({"duty_focus": duty_keys} if duty_keys else {}),
         )
 
     # ── Plan 60 E6: 메시지 기반 L1 보강 블록 첨부(옵트인·티어 게이트) ──
@@ -949,12 +1003,14 @@ def _tier_sse_payload(
     result: AlarmAnalysisResult,
     decision: Any,  # NotificationDecision
     episode_lines: list[str] | None = None,
+    duty_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """티어 라우팅용 SSE 이벤트 payload를 생성한다(§7 · Phase E3).
 
     기존 `/alarm/notifications/stream`·analyze 경로의 publish 형식(alarm 필드 + 분석 결과)을
     그대로 따르고, 티어/근거(tier·tier_reason)를 추가해 일관성을 유지한다.
     episode_lines(plans/144 W5)가 있으면 `episode_lines` 키로 싣는다(없으면 키 없음 → 바이트 동일).
+    duty_focus(plans/201 W3 · `duty_focus_sse_keys`)가 있으면 그 키들을 덧붙인다(없으면 바이트 동일).
     """
     ev = result.alarm_event
     payload = {
@@ -995,7 +1051,18 @@ def _tier_sse_payload(
         payload["investigation_id"] = result.investigation_id
     if episode_lines:  # (plans/144 W5) 사건 묶음 표시 — 값 있을 때만 키
         payload["episode_lines"] = list(episode_lines)
+    _merge_duty_focus(payload, duty_focus)
     return payload
+
+
+def _merge_duty_focus(payload: dict[str, Any], duty_focus: dict[str, Any] | None) -> None:
+    """담당 강조 키(plans/201 W3)를 payload에 덧붙인다 — 정해진 두 키만 · 기존 키는 덮지 않는다."""
+    if not duty_focus:
+        return
+    for key in DUTY_FOCUS_SSE_KEYS:
+        value = duty_focus.get(key)
+        if value and key not in payload:
+            payload[key] = list(value) if isinstance(value, list) else value
 
 
 async def _route_non_page_tier(
@@ -1006,6 +1073,7 @@ async def _route_non_page_tier(
     sse_publisher=None,  # noqa: ANN001 — RedisSseBridgePublisher | None (덕 타이핑)
     suppress_sse: bool = False,
     episode_lines: list[str] | None = None,
+    duty_focus: dict[str, Any] | None = None,
 ) -> None:
     """PAGE 외 티어(TICKET/DASHBOARD/SUPPRESS)를 라우팅한다(발송 안 함, §7 · Phase E3).
 
@@ -1040,7 +1108,8 @@ async def _route_non_page_tier(
             except Exception:  # noqa: BLE001 — 큐 적재 실패가 파이프라인을 막지 않는다
                 logger.warning("TICKET 일배치 큐 적재 실패(무시): alarm_id=%s", alarm_id)
         await _publish_tier_sse(
-            result, decision, alarm_bus, sse_publisher, episode_lines=episode_lines
+            result, decision, alarm_bus, sse_publisher, episode_lines=episode_lines,
+            **({"duty_focus": duty_focus} if duty_focus else {}),
         )
         logger.info(
             "TICKET(저우선 — 일배치 큐 적재 + SSE 표시, 감사 기록됨): alarm_id=%s reason=%s",
@@ -1049,7 +1118,8 @@ async def _route_non_page_tier(
         )
     elif decision.tier == TIER_DASHBOARD:
         await _publish_tier_sse(
-            result, decision, alarm_bus, sse_publisher, episode_lines=episode_lines
+            result, decision, alarm_bus, sse_publisher, episode_lines=episode_lines,
+            **({"duty_focus": duty_focus} if duty_focus else {}),
         )
         logger.info(
             "DASHBOARD(UI 표시만 — SSE, 발송 안 함): alarm_id=%s reason=%s",
@@ -1061,7 +1131,8 @@ async def _route_non_page_tier(
         # 발송·큐는 여전히 없다(억제 판정 자체는 불변). 기본 off면 종전과 동일.
         if suppress_sse:
             await _publish_tier_sse(
-            result, decision, alarm_bus, sse_publisher, episode_lines=episode_lines
+            result, decision, alarm_bus, sse_publisher, episode_lines=episode_lines,
+            **({"duty_focus": duty_focus} if duty_focus else {}),
         )
         logger.info(
             "SUPPRESS(미통보 — 감사 기록만%s): alarm_id=%s reason=%s",
@@ -1077,6 +1148,7 @@ async def _publish_tier_sse(
     alarm_bus,  # noqa: ANN001 — AlarmNotificationBus | None
     sse_publisher=None,  # noqa: ANN001 — RedisSseBridgePublisher | None
     episode_lines: list[str] | None = None,
+    duty_focus: dict[str, Any] | None = None,
 ) -> None:
     """티어 SSE 이벤트를 publish한다(대상 없으면 로그 폴백, 실패는 graceful).
 
@@ -1092,7 +1164,12 @@ async def _publish_tier_sse(
         )
         return
     try:
-        await target.publish(_tier_sse_payload(result, decision, episode_lines))
+        await target.publish(
+            _tier_sse_payload(
+                result, decision, episode_lines,
+                **({"duty_focus": duty_focus} if duty_focus else {}),
+            )
+        )
     except Exception:  # noqa: BLE001 — SSE 실패가 파이프라인을 막지 않는다
         logger.warning(
             "티어 SSE publish 실패(무시): alarm_id=%s tier=%s",
@@ -1105,6 +1182,7 @@ def _incident_open_payload(
     result: AlarmAnalysisResult,
     decision: Any,  # NotificationDecision
     episode_lines: list[str] | None = None,
+    duty_focus: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """incident open 이벤트 payload를 생성한다(§5 양측 합의 스키마 + 카드 표시필드, D-049).
 
@@ -1158,6 +1236,7 @@ def _incident_open_payload(
         payload["late_promotion"] = dict(late)
     if episode_lines:  # (plans/144 W5) 사건 묶음 표시 — 값 있을 때만 키
         payload["episode_lines"] = list(episode_lines)
+    _merge_duty_focus(payload, duty_focus)  # (plans/201 W3) 티어 SSE와 대칭 — 값 있을 때만 키
     return payload
 
 
@@ -1166,6 +1245,7 @@ async def _publish_incident_open(
     decision,  # noqa: ANN001 — NotificationDecision
     incident_publisher=None,  # noqa: ANN001 — RedisIncidentPublisher | None (덕 타이핑)
     episode_lines: list[str] | None = None,
+    duty_focus: dict[str, Any] | None = None,
 ) -> None:
     """PAGE 결정 시 incident open 이벤트를 발행한다(미주입·실패는 graceful).
 
@@ -1176,7 +1256,12 @@ async def _publish_incident_open(
     if incident_publisher is None:
         return
     try:
-        await incident_publisher.publish(_incident_open_payload(result, decision, episode_lines))
+        await incident_publisher.publish(
+            _incident_open_payload(
+                result, decision, episode_lines,
+                **({"duty_focus": duty_focus} if duty_focus else {}),
+            )
+        )
     except Exception:  # noqa: BLE001 — incident 발행 실패가 발송을 막지 않는다
         logger.warning(
             "incident open 발행 실패(무시): alarm_id=%s",
@@ -1287,9 +1372,15 @@ async def send_late_promotion(
         evidence={**(getattr(decision, "evidence", None) or {}), "late_promotion": dict(promotion)},
     )
     sent = {"incident": False, "workb": False}
+    # (plans/201 W3) 담당 강조 키 대칭 — 플래그 유효 off면 계산하지 않는다(비트 동일). 사후 승격 시점에는 원 판정의
+    # 프로세스 스냅샷이 남아 있지 않아(`AlarmAnalysisResult`가 보관하지 않음) `top_process_kinds`는 실을 수 없고,
+    # 원 알람 payload에서 읽히는 `apm_event_type`만 싣는다.
+    duty_keys = duty_focus_sse_keys(result) if duty_alarm_focus_on(cfg) else {}
     if incident_publisher is not None:
         try:
-            await incident_publisher.publish(_incident_open_payload(result, promoted))
+            await incident_publisher.publish(
+                _incident_open_payload(result, promoted, **({"duty_focus": duty_keys} if duty_keys else {}))
+            )
             sent["incident"] = True
         except Exception:  # noqa: BLE001 — 발행 실패가 쪽지를 막지 않는다
             logger.warning(

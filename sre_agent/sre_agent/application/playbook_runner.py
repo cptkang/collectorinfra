@@ -26,6 +26,7 @@ dispatcher 배선은 W4다(이 모듈만으로는 기존 경로 무변경).
 
 from __future__ import annotations
 
+import json
 import logging
 import queue
 import threading
@@ -60,6 +61,7 @@ from sre_agent.application.playbook_steps import (
     StepContext,
     StepFn,
     StepResult,
+    polestar_unresolved_text,
     scope_polestar_reason,
     step_queries,
 )
@@ -165,6 +167,10 @@ _DISK_IO_WORDS = (
     "await",
 )
 _FS_WORDS = ("filesystem", "file system", "파일시스템", "volume", "inode", "mount", "용량")
+#: 파일시스템 계열 resourceType(소문자 비교) — 알람명에 표면어가 없어도 `filesystem`으로 본다(plans/204 후속).
+#: 정확 일치 값과, 표시 이름 부분 일치 표면어를 따로 둔다. 「디스크」(`server.Disks`)는 대상이 아니다.
+_FS_RESOURCE_TYPES = ("server.filesystem", "server.filesystems", "개별 파일시스템")
+_FS_RESOURCE_TYPE_WORDS = ("파일시스템",)
 
 #: 이벤트 유형(접두 `ERROR_`·`WARNING_` 제거 후 대문자) → 게이트웨이 시그니처 kind.
 #: **리터럴 사본** — 출처 `apm_gateway/apm_gateway/adapters/jennifer/fields.py` `EVENT_TYPE_SIGNALS`
@@ -226,6 +232,7 @@ def alarm_facts_from_payload(payload: Mapping[str, Any]) -> AlarmFacts:
     - kinds: 이벤트 유형(`meta.hints.event_type` · 알람명)이 응답시간·지연이면
       `latency`·`response_time`.
       디스크 알람은 I/O 표면어면 `disk_io`, 파일시스템 표면어면 `filesystem`으로 가른다.
+      I/O 표면어가 없고 resourceType이 파일시스템 계열(`_is_fs_resource_type`)이어도 `filesystem`이다.
     - WAS 시그니처 kind(W4): 게이트웨이가 준 kind(`meta.episode` 멤버의 `was_kinds`)가
       있으면 그것을, 없으면 이벤트 유형(`meta.hints.event_type` → 알람명)을 게이트웨이
       매핑 사본(`GATEWAY_EVENT_SIGNAL_KINDS`)으로 정규화한 kind를 더한다.
@@ -254,9 +261,17 @@ def alarm_facts_from_payload(payload: Mapping[str, Any]) -> AlarmFacts:
     if alarm_kind == "disk":
         if any(w in haystack for w in _DISK_IO_WORDS):
             kinds.append("disk_io")
-        elif any(w in haystack for w in _FS_WORDS):
+        elif any(w in haystack for w in _FS_WORDS) or _is_fs_resource_type(resource_type):
             kinds.append("filesystem")
     return AlarmFacts(resource_type=resource_type, alarm_kind=alarm_kind, kinds=tuple(kinds))
+
+
+def _is_fs_resource_type(resource_type: str | None) -> bool:
+    """resourceType이 파일시스템 계열인지(소문자 비교) — `server.FileSystem(s)`·「개별 파일시스템」 등."""
+    text = (resource_type or "").strip().lower()
+    if not text:
+        return False
+    return text in _FS_RESOURCE_TYPES or any(w in text for w in _FS_RESOURCE_TYPE_WORDS)
 
 
 # ── 시간창 · 범위 ───────────────────────────────────────────────────────────
@@ -307,7 +322,38 @@ POLESTAR_REASON_DETAILS: dict[str, str] = {
 POLESTAR_LINK_BASIS: dict[str, str] = {
     "previous_confirmed": "이전 확정 연결 — {by}·{at}",
     "user_selected": "사용자 선택으로 연결 — {by}·{at}",
+    # plans/202 · D-355 ② — 알람마다 판정하는 자동 연결(저장하지 않는다)
+    "node_address": "제니퍼 노드 주소 일치 — {host_address} (알람 시점 · 자동)",
 }
+#: 노드 주소 연결이 저장된 확정 연결과 다를 때 근거 뒤에 붙이는 문장(D-355 ③ — 둘 다 적는다).
+POLESTAR_LINK_PREVIOUS = "저장된 확정 연결 {server_name}({db_id})과 다름 — 노드 주소 우선"
+#: 일부 존 조회 실패 중 나머지 존 1대 일치로 연결했을 때 근거 뒤에 붙이는 문장(D-355 부기 2).
+POLESTAR_LINK_UNCHECKED = "일부 존 확인 못 함({db_ids}) — 나머지 존에서 1대 일치"
+#: 파드 미확정(D-355 ④) 사유 — 폴스타 축 생략 카드에 그대로 나오는 문장(「서버 선택 대기」 자리).
+#: 설정 매핑으로 대체하지 않는다. `{node}`는 「 10.0.0.1」 꼴.
+POLESTAR_POD_UNRESOLVED = f"{POLESTAR_UNRESOLVED} — K8s 파드(노드{{node}} — {{why}})"
+#: 연결 힌트 `reason` → 사유(`{why}`). `node_lookup_<상태>`는 `POLESTAR_POD_LOOKUP`이 정한다.
+POLESTAR_POD_REASONS: dict[str, str] = {
+    "node_not_registered": "노드 IP 폴스타 미등록",
+    "node_ambiguous": "노드 IP가 여러 서버에 일치",
+    "node_unchecked": "일부 존 확인 못 함",
+}
+POLESTAR_POD_LOOKUP_PREFIX = "node_lookup_"
+#: 노드 주소 조회 실패 상태(게이트웨이 `apm.host_address_status`) → 사유. 로그인·형태·시간 초과를
+#: 구분한다(`error`는 응답 형태 검증 실패와 시간 초과를 함께 담는다 — 게이트웨이 어휘).
+POLESTAR_POD_LOOKUP: dict[str, str] = {
+    "stale": "노드 주소 조회 실패(재조회 실패 — 오래된 값은 자동 연결 안 함)",
+    "not_found": "노드 주소 조회 실패(제니퍼 웹 목록에 인스턴스 없음)",
+    "disabled": "노드 주소 조회 실패(제니퍼 웹 조회 계정 미설정)",
+    "login_failed": "노드 주소 조회 실패(제니퍼 웹 로그인 실패)",
+    "login_blocked": "노드 주소 조회 실패(제니퍼 웹 로그인 연속 실패로 일시 정지)",
+    "error": "노드 주소 조회 실패(응답 형태 오류 또는 시간 초과)",
+}
+POLESTAR_POD_LOOKUP_OTHER = "노드 주소 조회 실패({status})"
+POLESTAR_POD_OTHER = "노드 미확정"
+_TRUE_WORDS = frozenset({"true", "1", "yes"})
+#: 평문 칸으로 옮기지 않는 힌트 키 — 파드 여부(`link["pod"] = "true"`로 정규화)·중첩 연결.
+_LINK_NESTED = frozenset({"pod", "previous_link"})
 #: 위 두 값 밖의 `basis` — 근거를 비우지 않는다(침묵 대체 금지).
 POLESTAR_LINK_BASIS_OTHER = "확정 연결 — {by}·{at}"
 POLESTAR_LINK_ABSENT = "폴스타 미등록(사용자 확인 · {by}·{at})"
@@ -328,15 +374,79 @@ def polestar_link(payload: Mapping[str, Any]) -> dict[str, str] | None:
     status = str(raw.get("status") or "").strip()
     if status not in _LINK_STATUSES:
         return None
-    link = {k: str(v).strip() for k, v in raw.items() if v is not None and str(v).strip()}
+    # 중첩 값(`previous_link`)·dict 값은 문자열로 바꾸지 않는다 — `polestar_previous_link`가 따로 읽는다
+    link = {
+        str(k): str(v).strip()
+        for k, v in raw.items()
+        if v is not None
+        and k not in _LINK_NESTED
+        and not isinstance(v, Mapping)
+        and str(v).strip()
+    }
     link["status"] = status
+    if _truthy(raw.get("pod")):  # bool True·문자열 "True"/"true" 모두 파드(plans/202)
+        link["pod"] = "true"
     if status == "linked" and not (link.get("db_id") and link.get("server_name")):
         return None
     return link
 
 
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in _TRUE_WORDS
+
+
+def polestar_previous_link(payload: Mapping[str, Any]) -> dict[str, str] | None:
+    """노드 주소 연결 힌트에 함께 실린 저장 확정 연결 `previous_link: {db_id, server_name}`
+    (plans/202 · D-355 ③). linked 힌트가 아니거나 두 값 중 하나라도 없으면 None. JSON 문자열로
+    직렬화돼 와도 읽는다."""
+    link = polestar_link(payload)
+    if link is None or link["status"] != "linked":
+        return None
+    raw = _hints(payload).get("polestar_link")
+    prev = raw.get("previous_link") if isinstance(raw, Mapping) else None
+    if isinstance(prev, str):
+        try:
+            prev = json.loads(prev)
+        except ValueError:
+            return None
+    if not isinstance(prev, Mapping):
+        return None
+    db_id = str(prev.get("db_id") or "").strip()
+    server = str(prev.get("server_name") or "").strip()
+    if not db_id or not server:
+        return None
+    return {"db_id": db_id, "server_name": server}
+
+
+def is_pod_unresolved(link: Mapping[str, str] | None) -> bool:
+    """파드로 판정됐는데 노드 서버를 정하지 못한 힌트인가(D-355 ④ — `unresolved` + `pod`)."""
+    return link is not None and link.get("status") == "unresolved" and link.get("pod") == "true"
+
+
+def pod_unresolved_reason(link: Mapping[str, str]) -> str:
+    """파드 미확정 사유 문장(「폴스타 서버 미확정 — K8s 파드(…)」) — 힌트 `reason`별로 다르다."""
+    reason = str(link.get("reason") or "").strip()
+    if reason.startswith(POLESTAR_POD_LOOKUP_PREFIX):
+        state = reason[len(POLESTAR_POD_LOOKUP_PREFIX):]
+        why = POLESTAR_POD_LOOKUP.get(state) or POLESTAR_POD_LOOKUP_OTHER.format(
+            status=state or _UNKNOWN
+        )
+    else:
+        why = POLESTAR_POD_REASONS.get(reason) or (
+            f"{POLESTAR_POD_OTHER}({reason})" if reason else POLESTAR_POD_OTHER
+        )
+    host = str(link.get("host_address") or "").strip()
+    return POLESTAR_POD_UNRESOLVED.format(node=f" {host}" if host else "", why=why)
+
+
 def _link_text(template: str, link: Mapping[str, str]) -> str:
-    return template.format(by=link.get("by") or _UNKNOWN, at=link.get("at") or _UNKNOWN)
+    return template.format(
+        by=link.get("by") or _UNKNOWN,
+        at=link.get("at") or _UNKNOWN,
+        host_address=link.get("host_address") or _UNKNOWN,
+    )
 
 
 def resolve_polestar_source(
@@ -346,7 +456,8 @@ def resolve_polestar_source(
     """폴스타 소스(db_id)와 미확정 사유(사용자 문장). 결정적으로 정할 수 없으면 (None, 사유).
 
     APM 트리거: `meta.episode.infra_db_ids[0]` → 연결 힌트 `meta.hints.polestar_link`가 linked면
-    그 `db_id` → absent면 미확정(미등록 사유) → 호출자가 명시한 `configured` → unresolved면
+    그 `db_id`(노드 주소 연결 포함 · plans/202) → absent면 미확정(미등록 사유) → unresolved +
+    `pod`면 미확정(파드 사유 — 설정 매핑 대체 금지 · D-355 ④) → 호출자가 명시한 `configured` → unresolved면
     미확정(선택 대기 사유) → 미확정(plans/196 §5.2 — 플래그를 켜도 현행보다 나빠지지 않게
     unresolved는 설정 매핑을 이기지 않는다).
     폴스타 알람: `event.dbId`(또는 pull 진단 `db_id`) → `configured` → 미확정.
@@ -361,6 +472,9 @@ def resolve_polestar_source(
             return link["db_id"], None
         if link is not None and status == "absent":
             return None, _link_text(POLESTAR_LINK_ABSENT, link)
+        if link is not None and is_pod_unresolved(link):
+            # 파드 미확정은 설정 매핑으로 대체하지 않는다(D-355 ④ — 틀린 존 0건이 미확인보다 나쁘다)
+            return None, pod_unresolved_reason(link)
         if configured:
             return configured, None
         if status == "unresolved":
@@ -439,6 +553,17 @@ def initial_scope(
                     link.get("basis") or "", POLESTAR_LINK_BASIS_OTHER
                 )
                 basis = _link_text(template, link)
+                previous = polestar_previous_link(payload)
+                if previous is not None and (
+                    previous["db_id"], previous["server_name"]
+                ) != (link["db_id"], link["server_name"]):
+                    # 노드 주소 연결이 저장 확정 연결과 다르다 — 둘 다 적는다(D-355 ③)
+                    basis = f"{basis} · {POLESTAR_LINK_PREVIOUS.format(**previous)}"
+                if link.get("unchecked_db_ids"):
+                    basis = (
+                        f"{basis} · "
+                        f"{POLESTAR_LINK_UNCHECKED.format(db_ids=link['unchecked_db_ids'])}"
+                    )
         elif link["status"] != "linked" and polestar_source is None:
             link_status = link["status"]
     return RunScope(
@@ -996,7 +1121,7 @@ def _run(
     source, source_reason = resolve_polestar_source(payload, polestar_source)
     scope = initial_scope(payload, source, source_reason)
     if source is None:
-        notes.append(f"폴스타 서버 미확정 — {source_reason}")
+        notes.append(polestar_unresolved_text(source_reason))
         if scope.polestar_reason_detail:  # 운영자 상세는 서버 로그로(D6)
             logger.info("폴스타 서버 미확정 상세: %s", scope.polestar_reason_detail)
     elif scope.polestar_basis:
@@ -2245,7 +2370,10 @@ __all__ = [
     "POLESTAR_BRIDGE_MISSING_DETAIL",
     "POLESTAR_LINK_ABSENT",
     "POLESTAR_LINK_BASIS",
+    "POLESTAR_LINK_PREVIOUS",
     "POLESTAR_LINK_UNRESOLVED",
+    "POLESTAR_POD_LOOKUP",
+    "POLESTAR_POD_REASONS",
     "PlaybookRun",
     "RerunHint",
     "SQL_EVENT_TYPES",
@@ -2255,9 +2383,12 @@ __all__ = [
     "finalize_playbook_run",
     "flow_readings",
     "initial_scope",
+    "is_pod_unresolved",
     "normalize_event_type",
     "plan_stages",
+    "pod_unresolved_reason",
     "polestar_link",
+    "polestar_previous_link",
     "rerun_hint",
     "resolve_polestar_source",
     "run_playbook",

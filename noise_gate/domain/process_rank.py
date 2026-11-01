@@ -14,6 +14,7 @@ Known Mistakes 2026-03-23: 데이터 모델 변환 함수는 모델이 있는 �
 from __future__ import annotations
 
 import re
+from collections.abc import Callable
 from typing import Any, Optional
 
 from noise_gate.domain.alarm import AlarmEvent, ProcessInfo
@@ -31,7 +32,8 @@ APM_RESOURCE_TYPE = "apm.instance"
 # cpu/memory를 최우선으로 검사해 기존 판정 결과를 보존한다(신규 키워드가 끼어들지 않음).
 _CPU_KEYWORDS = ("cpu",)
 _MEMORY_KEYWORDS = ("memory", "메모리", "mem")
-_DISK_KEYWORDS = ("disk", "디스크", "volume", "filesystem", "inode")
+# 「파일시스템」: 폐쇄망 payload resource_type은 표시 이름(「개별 파일시스템」)이다(plans/204).
+_DISK_KEYWORDS = ("disk", "디스크", "volume", "filesystem", "파일시스템", "inode")
 _NETWORK_KEYWORDS = ("network", "net", "traffic", "네트워크", "bandwidth")
 _PROCESS_KEYWORDS = ("process", "프로세스", "daemon", "service down", "프로세스다운")
 _LOG_KEYWORDS = ("log", "logmonitor", "로그")
@@ -186,8 +188,46 @@ def select_top_processes(
     Returns:
         (상위 N ProcessInfo 목록, 전체 프로세스 건수)
     """
+    ranked, total = rank_raw_processes(raw_list, alarm_kind, top_n)
+    return [_to_process_info(it) for it in ranked], total
+
+
+def rank_raw_processes(
+    raw_list: list[dict[str, Any]], alarm_kind: str, top_n: int
+) -> tuple[list[dict[str, Any]], int]:
+    """`select_top_processes`와 같은 정렬·선별 규칙으로 **원 항목(마스킹 전 dict)** 상위 N을 고른다.
+
+    plans/201 W3 — 프로세스 종류(kind) 판정은 마스킹·120자 절단 전 원본 cmdline으로 해야 Java WAS처럼
+    단서가 인자 뒤쪽에 있는 프로세스를 놓치지 않는다. 돌려준 원 항목은 판정에만 쓰고 보관·직렬화하지 않는다.
+
+    Returns:
+        (상위 N 원 항목 목록, 전체 프로세스 건수)
+    """
     items = [it for it in (raw_list or []) if isinstance(it, dict)]
-    total = len(items)
     ranked = sorted(items, key=lambda it: _sort_metric(it, alarm_kind), reverse=True)
-    top = [_to_process_info(it) for it in ranked[: max(0, top_n)]]
-    return top, total
+    return ranked[: max(0, top_n)], len(items)
+
+
+#: 담당 강조 프로세스 종류 상한(plans/201 W3 — notifier SSE `top_process_kinds`).
+TOP_PROCESS_KINDS_MAX = 5
+
+
+def classify_top_process_kinds(
+    raw_top: list[dict[str, Any]],
+    classifier: Callable[[str, str], Optional[str]],
+    limit: int = TOP_PROCESS_KINDS_MAX,
+) -> list[str]:
+    """원 항목의 이름·인자 원문을 주입 판정기로 분류해 kind 고유 목록(순서 유지 · 상한)을 만든다.
+
+    판정기는 본체가 주입한다(`src.domain.middleware.classify_process_kind` — D-139 부기로 noise_gate는
+    import하지 않는다). 결과는 kind 이름뿐이다 — 이름·인자 원문은 반환·보관하지 않는다. 판정기 예외는
+    호출부가 잡는다(키 생략).
+    """
+    kinds: list[str] = []
+    for item in raw_top:
+        if len(kinds) >= max(0, limit):
+            break
+        kind = classifier(str(item.get("name", "") or ""), str(item.get("args", "") or ""))
+        if isinstance(kind, str) and kind and kind not in kinds:
+            kinds.append(kind)
+    return kinds

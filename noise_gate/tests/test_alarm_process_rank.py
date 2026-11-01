@@ -42,6 +42,11 @@ class TestClassifyAlarmKind:
         ev = make_event(resource_type="server.Disks", alarm_name="filesystem usage high")
         assert classify_alarm_kind(ev) == "disk"
 
+    def test_disk_display_name_filesystem(self):
+        # plans/204 — 폐쇄망 payload resource_type은 한글 표시 이름이다. 알람명에 디스크 단어가 없어도 disk.
+        ev = make_event(resource_type="개별 파일시스템", alarm_name="사용률 임계 초과")
+        assert classify_alarm_kind(ev) == "disk"
+
     def test_network_kind(self):
         ev = make_event(resource_type="network.NMSNode", alarm_name="트래픽 임계 초과")
         assert classify_alarm_kind(ev) == "network"

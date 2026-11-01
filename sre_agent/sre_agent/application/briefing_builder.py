@@ -7,8 +7,8 @@ HolmesGPT의 서술(`answer`)과 severity_judge 판정(`ImportanceVerdict`)을 *
 - **한계 서술 강제**: 단면 데이터·미수집 신호·증거 불충분을 반드시 명시한다.
 - **조치는 권고만**: 실행 경로 없음(D-011). 권고 문자열에 human-gated 안내를 강제한다.
 
-계층: application. 순수 조립 로직으로 domain(severity_signatures · cross_source_episode)만
-참조하고 stdlib만 쓴다
+계층: application. 순수 조립 로직으로 domain(severity_signatures · cross_source_episode ·
+duty_view)만 참조하고 stdlib만 쓴다
 (도구 원시 출력 타입 등 application 세부는 dispatcher가 평문으로 넘긴다 — 결합 최소화).
 """
 
@@ -27,6 +27,7 @@ from sre_agent.domain.cross_source_episode import (
     EpisodeLink,
     episode_timeline,
 )
+from sre_agent.domain.duty_view import DutyAreaMap, build_duty_view
 from sre_agent.domain.engine_agreement import DIFFERENT_LAYER, LAYER_UNKNOWN, playbook_layer
 from sre_agent.domain.evidence_ledger import EvidenceLedger, check_claim, ledger_summary
 from sre_agent.domain.severity_signatures import ImportanceVerdict
@@ -757,6 +758,7 @@ def build_playbook_briefing(
     cross_source: EpisodeContext | None = None,
     apm_tools_connected: bool = False,
     tool_names: list[str] | None = None,
+    duty_areas: DutyAreaMap | None = None,
 ) -> dict:
     """플레이북 종합으로 6요소 브리핑을 조립한다(결정적 — LLM 서술은 `playbook` 안에만).
 
@@ -767,6 +769,10 @@ def build_playbook_briefing(
     선택 키: `playbook` · `deep_dive`(있을 때) · `engine_agreement`(있을 때) · `cross_source`(사건 ·
     `tool_names` = 두 엔진이 부른 도구 — APM 호출 수 집계).
     결론이 다르면(`different_layer`) 두 결론을 그대로 두고 한계에 「엔진 간 불일치」를 싣는다.
+    `duty_areas`(plans/201 W4 — `SRE_DUTY_VIEW_ENABLED`일 때만 dispatcher가 넘긴다): 선택 키
+    `duty_view`(영역별 판정 · 인계 문구)를 `summary` **바로 뒤에** 싣는다 — 저장 상한 축소(noise_gate
+    `clip_briefing`)가 키 순서대로 담으므로 뒤의 큰 값(`timeline`·`playbook` 등)보다 먼저 자리를 잡는다.
+    수집 단계가 없으면 싣지 않는다. None이면 종전과 같다(키 없음 · 나머지 키 순서 불변).
     """
     synthesis = playbook.get("synthesis") or {}
     hyps = list(synthesis.get("hypotheses") or [])
@@ -794,8 +800,18 @@ def build_playbook_briefing(
         ),
         "citations_verified": True,
         "hypotheses": [],
-        "playbook": playbook,
     }
+    duty_view = build_duty_view(playbook, duty_areas) if duty_areas is not None else None
+    if duty_view is not None:
+        # `summary` 바로 뒤에 끼운다(렌더 순서와 같고 저장 축소에서 앞선 큰 값보다 먼저 자리를 잡는다)
+        head = list(briefing)
+        cut = head.index("summary") + 1
+        briefing = {
+            **{k: briefing[k] for k in head[:cut]},
+            "duty_view": duty_view,
+            **{k: briefing[k] for k in head[cut:]},
+        }
+    briefing["playbook"] = playbook
     if deep_dive is not None:
         briefing["deep_dive"] = deep_dive
     if engine_agreement is not None:

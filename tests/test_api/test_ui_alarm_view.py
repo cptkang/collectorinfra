@@ -8,6 +8,9 @@
 
 from __future__ import annotations
 
+import json
+import shutil
+import subprocess
 from pathlib import Path
 
 import pytest
@@ -173,6 +176,73 @@ def test_prompt_axes_cover_mapped_resource_types(app_js: str) -> None:
     for rtype in ("server.Cpus", "server.Memory", "server.Disks",
                   "server.FileSystems", "server.LogMonitor", "server.Server"):
         assert f'"{rtype}"' in axes, rtype
+
+
+def test_prompt_axis_aliases_map_display_names(app_js: str) -> None:
+    """폐쇄망 payload `resource_type`은 한글 표시 이름이다(plans/204 · plans/201 §1.2 ①′).
+
+    대응표 키는 소문자(대조는 대소문자 무시)이고 값은 기존 축 키(코드값)다. 「프로세스」·
+    「WebURL 감시」는 골드셋 동형이 없어 넣지 않는다(D-192 — 미매핑 → LLM 보강).
+    """
+    aliases = app_js[app_js.index("var ALARM_PROMPT_AXIS_ALIASES = {"):]
+    aliases = aliases[: aliases.index("\n    };")]
+    for display, code in (("cpu", "server.Cpus"), ("메모리", "server.Memory"),
+                          ("디스크", "server.Disks"), ("개별 파일시스템", "server.FileSystems"),
+                          ("server.filesystem", "server.FileSystems"),
+                          ("로그 모니터", "server.LogMonitor"), ("서버", "server.Server")):
+        assert f'"{display}": "{code}"' in aliases, display
+    for unmapped in ("프로세스", "weburl 감시", "webURL 감시", "WebURL 감시"):
+        assert f'"{unmapped}"' not in aliases, unmapped
+
+
+def _run_prompt_builder(app_js: str, payloads: list[dict]) -> list[list[dict]]:
+    """app.js의 축 정의~`buildAlarmPrompts`를 잘라 node로 실제 실행한다(순수 함수라 DOM 불필요)."""
+    if shutil.which("node") is None:
+        pytest.skip("node 미설치")
+    start = app_js.index("var ALARM_PROMPT_AXES = {")
+    end = app_js.index("// Plan 47: 패턴 근거 표 렌더 헬퍼")
+    script = "\n".join([
+        app_js[start:end],
+        f"var PAYLOADS = {json.dumps(payloads, ensure_ascii=False)};",
+        "process.stdout.write(JSON.stringify(PAYLOADS.map(buildAlarmPrompts)));",
+    ])
+    done = subprocess.run(["node", "-e", script], capture_output=True, timeout=30, check=False)
+    assert done.returncode == 0, done.stderr.decode("utf-8", "replace")
+    return json.loads(done.stdout.decode("utf-8"))
+
+
+def test_builder_maps_display_names_to_code_axes(app_js: str) -> None:
+    """표시 이름(대소문자 무관)이 결정적 추천을 받고, 출력 `axis`는 기존 코드값 키를 유지한다."""
+    base = {"hostname": "web01"}
+    cpu, cpu_lower, fs, fs_code, code_lower = _run_prompt_builder(app_js, [
+        {**base, "resource_type": "CPU"},
+        {**base, "resource_type": "cpu"},
+        {**base, "resource_type": "개별 파일시스템"},
+        {**base, "resource_type": "server.FileSystem"},
+        {**base, "resource_type": "SERVER.CPUS"},
+    ])
+    assert cpu and cpu[0]["label"] == "1개월 CPU 사용률"
+    assert {p["axis"] for p in cpu} == {"server.Cpus"}
+    assert all(p["source"] == "deterministic" and p["text"].startswith("web01 ") for p in cpu)
+    assert cpu_lower == cpu
+    assert code_lower == cpu
+    # 개별 파일시스템(단수 코드 · 표시 이름) → 기존 server.FileSystems 축 문구
+    assert [p["label"] for p in fs] == ["파일시스템 사용률", "사용률 급증", "사양·OS 정보"]
+    assert {p["axis"] for p in fs} == {"server.FileSystems"}
+    assert fs_code == fs
+
+
+def test_builder_leaves_unverified_display_names_unmapped(app_js: str) -> None:
+    """골드셋 동형이 없는 「프로세스」·「WebURL 감시」·제니퍼는 빈 목록 — LLM 보강 경로로 간다."""
+    base = {"hostname": "web01"}
+    results = _run_prompt_builder(app_js, [
+        {**base, "resource_type": "프로세스"},
+        {**base, "resource_type": "WebURL 감시"},
+        {**base, "resource_type": "apm.Instance"},
+        {**base, "resource_type": ""},
+        {"resource_type": "CPU"},   # 주어 없음
+    ])
+    assert results == [[], [], [], [], []]
 
 
 def test_network_axis_stays_out_until_verified(app_js: str) -> None:

@@ -168,6 +168,46 @@ def test_disk_alarm_without_fs_or_io_words_falls_back(playbooks) -> None:
     assert select_playbook(facts, list(playbooks.values()))[0].id == FALLBACK_ID
 
 
+def _host_payload_rt(resource_type: str, alarm_name: str) -> dict:
+    payload = _host_payload(alarm_name)
+    payload["event"]["resourceType"] = resource_type
+    return payload
+
+
+# plans/204 후속 — resourceType 파일시스템 계열은 알람명에 표면어가 없어도 filesystem.
+def test_fs_resource_type_without_words_selects_host_fs(playbooks) -> None:
+    facts = alarm_facts_from_payload(_host_payload_rt("개별 파일시스템", "/data 사용률 임계 초과"))
+    assert facts.alarm_kind == "disk" and facts.kinds == ("filesystem",)
+    pb, matched_by = select_playbook(facts, list(playbooks.values()))
+    assert pb.id == "host.fs" and matched_by != "fallback"
+
+
+@pytest.mark.parametrize("resource_type", ["server.FileSystems", "SERVER.FILESYSTEM", "server.filesystems"])
+def test_fs_resource_type_case_insensitive(resource_type, playbooks) -> None:
+    facts = alarm_facts_from_payload(_host_payload_rt(resource_type, "/data 사용률 임계 초과"))
+    assert facts.kinds == ("filesystem",)
+    assert select_playbook(facts, list(playbooks.values()))[0].id == "host.fs"
+
+
+def test_fs_resource_type_io_words_keep_disk_io_priority(playbooks) -> None:
+    facts = alarm_facts_from_payload(_host_payload_rt("개별 파일시스템", "/data I/O busy 임계 초과"))
+    assert facts.kinds == ("disk_io",)
+    assert select_playbook(facts, list(playbooks.values()))[0].id == "host.disk_io"
+
+
+@pytest.mark.parametrize("resource_type", ["디스크", "server.Disks"])
+def test_disk_resource_type_without_words_keeps_no_kind(resource_type, playbooks) -> None:
+    facts = alarm_facts_from_payload(_host_payload_rt(resource_type, "/data 사용률 임계 초과"))
+    assert facts.alarm_kind == "disk" and facts.kinds == ()
+    assert select_playbook(facts, list(playbooks.values()))[0].id == FALLBACK_ID
+
+
+def test_non_disk_alarm_unchanged_by_fs_resource_rule(playbooks) -> None:
+    facts = alarm_facts_from_payload(_host_payload("CPU 사용률 임계 초과"))
+    assert facts.alarm_kind == "cpu" and "filesystem" not in facts.kinds
+    assert select_playbook(facts, list(playbooks.values()))[0].id == "host.cpu"
+
+
 def test_priorities_unique(playbooks) -> None:
     prios = [pb.match.priority for pb in playbooks.values() if not pb.is_fallback]
     assert len(prios) == len(set(prios))

@@ -311,11 +311,15 @@ SECTION_DEV_REASON_KEY = "reason_detail"
 #: (plans/196 §5.3) `scope`의 개발자 사유 키 — 섹션 사유와 같이 운영자 뷰에만 남는다.
 SCOPE_DEV_REASON_KEYS: frozenset[str] = frozenset({"polestar_reason_detail"})
 #: (plans/187 W5a) 플레이북 브리핑 사용자 뷰에 싣는 키 — 6요소 원문은 싣지 않는다(D-325 ③).
-PLAYBOOK_VIEW_KEYS: tuple[str, ...] = ("partial", "playbook", "deep_dive", "engine_agreement")
+#: (plans/201 W4) `duty_view`(영역별 점검 결과 · 선택 키)도 싣는다 — 빠지면 웹 표가 그려지지 않는다.
+PLAYBOOK_VIEW_KEYS: tuple[str, ...] = (
+    "partial", "playbook", "deep_dive", "engine_agreement", "duty_view",
+)
 #: 마스킹하지 않는 구조 값의 키 — 식별자·enum(판독 맵 `readings` 포함). 그 외 문자열은 전부 가린다.
 _PLAYBOOK_ENUM_KEYS: frozenset[str] = frozenset({
     "id", "version", "matched_by", "step", "action", "status", "verdict", "verdict_source",
     "rule_id", "mode", "result", "readings", "source", "key", "layer",
+    "code",  # (plans/201 W4) duty_view 영역 코드
 })
 
 
@@ -344,9 +348,16 @@ def playbook_user_view(
     구조 키·enum·수치는 그대로 둔다. 플레이북이 없으면 None(종전 사용자 뷰와 비트 동일).
     (plans/196 §5.3 · D-325 ③) 섹션의 개발자 사유 `reason_detail`과 `scope`의
     `SCOPE_DEV_REASON_KEYS`는 사용자 뷰에서 뺀다 — 운영자 뷰는 원 브리핑을 그대로 싣는다.
+    (plans/201 W4) 저장 축소로 `playbook`이 빠졌어도 `duty_view`가 남아 있으면 그 키만 가려서 싣는다
+    (표시용 키뿐이라 화면은 사용자 뷰로 판정한다).
     """
-    if not isinstance(briefing, Mapping) or not isinstance(briefing.get("playbook"), dict):
+    if not isinstance(briefing, Mapping):
         return None
+    if not isinstance(briefing.get("playbook"), dict):
+        duty = briefing.get("duty_view")
+        if not isinstance(duty, dict):
+            return None
+        return {"duty_view": _mask_playbook_value(duty, mask_fn)}
     view = {
         key: _mask_playbook_value(briefing[key], mask_fn)
         for key in PLAYBOOK_VIEW_KEYS
