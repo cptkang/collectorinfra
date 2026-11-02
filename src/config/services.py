@@ -83,6 +83,12 @@ class ObservabilityConfig(BaseSettings):
     # SecretStr: 웹UI 편집 차단·repr 마스킹 — `.env` 전용 그룹의 정적 Bearer 전례
     # (`NoiseGateConfig.investigation_service_token`)와 같다.
     metrics_bearer_token: SecretStr = SecretStr("")
+    # ── plans/207 A0-b: 본체 이벤트 루프 정지(lag) 계측(`src/observability/loop_lag.py`) ──
+    # on이면 lifespan이 감시 태스크를 띄운다 — 임계 이상 정지는 WARNING 1줄, 주기마다 INFO 요약 1줄.
+    # 기본 off = 태스크를 만들지 않음(현행과 비트 동일). 기동 시 1회 해석(재시작 필요).
+    loop_lag_monitor_enabled: bool = False
+    loop_lag_threshold_ms: int = Field(default=100, ge=1)  # 이 이상 정지를 WARNING으로 남긴다(ms)
+    loop_lag_report_seconds: int = Field(default=60, ge=1)  # INFO 요약 주기(초)
 
     model_config = {"env_prefix": "OBS_", "env_file": ".env", "extra": "ignore"}
 

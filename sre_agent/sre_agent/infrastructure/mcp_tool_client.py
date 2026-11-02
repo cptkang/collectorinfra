@@ -15,11 +15,19 @@ MCP · APM)별 **프로세스 전역** 세마포어를 건다 — 배치마다 �
 세마포어로는 배치 사이를 묶지 못하므로 `threading.BoundedSemaphore`다. 루프를 막지 않게 비차단
 획득을 짧게 되풀이하고, 도구 1건 상한 안에 자리를 못 얻으면 그 호출만 결손
 (`tool_concurrency_wait_timeout`)이다.
+
+조사별 몫·APM owner(plans/207 A1 · D-358 · 기본 off): `sre_tool_per_investigation_share`가
+있으면 호출 스레드의 조사 컨텍스트(`investigation_context`)로 그 조사의 축별 자리 몫을 먼저
+얻고 전역 자리를 얻는다(같은 도구 1건 상한 안 · 한 조사의 전역 자리 독식 방지).
+`sre_apm_owner_per_investigation_enabled`면 APM 배치의 `apm_*` 호출에
+`owner="investigation:<id>"`를 싣는다(호출자가 준 값은 덮는다). 조사 컨텍스트가 없는
+스레드(기능 off · 조사 밖)는 종전 그대로다.
 """
 
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import threading
@@ -28,6 +36,8 @@ from datetime import timedelta
 from typing import Any
 from urllib.parse import urlsplit, urlunsplit
 
+from sre_agent.infrastructure import investigation_context, investigation_metrics
+from sre_agent.infrastructure.investigation_context import ShareGate
 from sre_agent.settings import TOOL_CALL_TIMEOUT_S
 
 logger = logging.getLogger(__name__)
@@ -67,20 +77,41 @@ def global_semaphore(axis: str, limit: int | None) -> threading.BoundedSemaphore
         return held[1]
 
 
-async def _acquire_global(sem: threading.BoundedSemaphore, timeout_seconds: float) -> bool:
+def _axis_of(sem: threading.BoundedSemaphore) -> str:
+    """전역 세마포어의 축 이름(조사 계측용 — 모르면 `unknown`)."""
+    with _GLOBAL_LOCK:
+        return next((axis for axis, (_, held) in _GLOBAL_LIMITS.items() if held is sem),
+                    "unknown")
+
+
+async def _acquire_global(sem: threading.BoundedSemaphore, timeout_seconds: float,
+                          share: ShareGate | None = None) -> bool:
     """전역 세마포어를 루프를 막지 않고 얻는다(비차단 획득 + 짧은 대기 반복).
 
     시간 안에 못 얻으면 False.
 
     블로킹 획득은 같은 루프의 다른 호출(자리를 쥔 쪽 포함)의 응답 처리를 막아 교착을 만들 수 있다.
-    대기 중 취소되면 자리를 쥐지 않은 채 끝난다(누수 0).
+    대기 중 취소되면 자리를 쥐지 않은 채 끝난다(누수 0). `share`(조사별 몫 · plans/207 A1)가
+    있으면 같은 시한 안에서 몫을 먼저 얻고, 전역 자리를 못 얻으면 몫을 돌려준다.
     """
     loop = asyncio.get_running_loop()
     deadline = loop.time() + max(0.0, timeout_seconds)
-    while not sem.acquire(blocking=False):
-        if loop.time() >= deadline:
-            return False
-        await asyncio.sleep(_GLOBAL_POLL_S)
+    if share is not None:
+        while not share.try_acquire():
+            if loop.time() >= deadline:
+                return False
+            await asyncio.sleep(_GLOBAL_POLL_S)
+    try:
+        while not sem.acquire(blocking=False):
+            if loop.time() >= deadline:
+                if share is not None:
+                    share.release()
+                return False
+            await asyncio.sleep(_GLOBAL_POLL_S)
+    except BaseException:
+        if share is not None:
+            share.release()
+        raise
     return True
 
 
@@ -144,13 +175,15 @@ async def run_tool_batch_async(
     timeout_seconds: float = TOOL_CALL_TIMEOUT_S,
     concurrency: int = 1,
     global_limit: threading.BoundedSemaphore | None = None,
+    share_gate: ShareGate | None = None,
 ) -> list[str]:
     """SSE 세션 1개로 calls를 호출한다. 호출별 실패는 `{error}`로 격리한다.
 
     `concurrency`(최소 1)개까지 동시에 `call_tool`을 보내고, 응답은 calls 순서로 돌려준다.
     1이면 종전처럼 calls 순서대로 하나씩 호출한다. `global_limit`(plans/194 W3)이 있으면 호출마다
     그 전역 자리를 `timeout_seconds` 안에 얻어야 보낸다 — 못 얻으면 그 호출만
-    `{error: tool_concurrency_wait_timeout …}`이다. None이면 종전 그대로.
+    `{error: tool_concurrency_wait_timeout …}`이다. None이면 종전 그대로. `share_gate`(조사별 몫 ·
+    plans/207 A1)는 `global_limit`이 있을 때만 쓴다 — 전역 자리 전에 같은 시한 안에서 얻는다.
     """
     from mcp import ClientSession
     from mcp.client.sse import sse_client
@@ -164,7 +197,12 @@ async def run_tool_batch_async(
                 async def _one(name: str, args: dict[str, Any]) -> str:
                     if global_limit is None:
                         return await _call(name, args)
-                    if not await _acquire_global(global_limit, timeout_seconds):
+                    # 조사 계측(plans/207 A0-a) — 계측 off면 무동작.
+                    with investigation_metrics.measure_slot_wait(
+                            functools.partial(_axis_of, global_limit)):
+                        acquired = await _acquire_global(global_limit, timeout_seconds,
+                                                         share_gate)
+                    if not acquired:
                         logger.warning("도구 전역 동시 상한 대기 초과 %s (%gs)",
                                        name, timeout_seconds)
                         return _err(f"{TOOL_CONCURRENCY_WAIT_TIMEOUT} — {name}: "
@@ -173,12 +211,15 @@ async def run_tool_batch_async(
                         return await _call(name, args)
                     finally:
                         global_limit.release()
+                        if share_gate is not None:
+                            share_gate.release()
 
                 async def _call(name: str, args: dict[str, Any]) -> str:
                     try:
-                        res = await session.call_tool(
-                            name, args, read_timeout_seconds=timedelta(seconds=timeout_seconds)
-                        )
+                        with investigation_metrics.measure_tool():
+                            res = await session.call_tool(
+                                name, args, read_timeout_seconds=timedelta(seconds=timeout_seconds)
+                            )
                         return _text_of(res)
                     except Exception as e:  # noqa: BLE001 — 호출 단위 격리
                         logger.warning("사전수집 도구 실패 %s: %s", name, e)
@@ -205,9 +246,12 @@ def run_tool_batch(
     url: str, headers: dict[str, str] | None, calls: Sequence[tuple[str, dict]],
     *, timeout_seconds: float = TOOL_CALL_TIMEOUT_S, concurrency: int = 1,
     global_limit: threading.BoundedSemaphore | None = None,
+    share_gate: ShareGate | None = None,
 ) -> list[str]:
     """`run_tool_batch_async`의 동기 래퍼(실행 루프가 없는 워커 스레드용)."""
     extra: dict[str, Any] = {"global_limit": global_limit} if global_limit is not None else {}
+    if share_gate is not None:
+        extra["share_gate"] = share_gate
     return asyncio.run(
         run_tool_batch_async(
             url, headers, calls, timeout_seconds=timeout_seconds, concurrency=concurrency,
@@ -222,6 +266,25 @@ def _batch_concurrency(settings: object) -> int:
         return max(1, int(getattr(settings, "sre_tool_batch_concurrency", 1)))
     except (TypeError, ValueError):
         return 1
+
+
+def _share_kwargs(settings, axis: str, limit: threading.BoundedSemaphore | None) -> dict[str, Any]:  # noqa: ANN001 — AgentSettings
+    """호출 스레드 조사의 축별 자리 몫(plans/207 A1) → `run_tool_batch` 인자.
+
+    몫 설정이 None이거나 전역 상한이 없거나 조사 컨텍스트가 없으면 빈 dict(종전 그대로).
+    """
+    size = getattr(settings, "sre_tool_per_investigation_share", None)
+    if size is None or limit is None:
+        return {}
+    ctx = investigation_context.current()
+    gate = ctx.share_gate(axis, size) if ctx is not None else None
+    return {"share_gate": gate} if gate is not None else {}
+
+
+def with_apm_owner(calls: Sequence[tuple[str, dict]], owner: str) -> list[tuple[str, dict]]:
+    """APM 게이트웨이 도구(`apm_*`) 호출 인자에 owner를 싣는다(호출자가 준 owner는 덮는다)."""
+    return [(name, {**args, "owner": owner}) if name.startswith("apm_") else (name, args)
+            for name, args in calls]
 
 
 def make_batch_caller(settings) -> Callable[[Sequence[tuple[str, dict]]], list[str]] | None:  # noqa: ANN001 — AgentSettings
@@ -243,7 +306,7 @@ def make_batch_caller(settings) -> Callable[[Sequence[tuple[str, dict]]], list[s
 
     def _call(calls: Sequence[tuple[str, dict]]) -> list[str]:
         return run_tool_batch(url, headers, calls, timeout_seconds=timeout, concurrency=concurrency,
-                              **extra)
+                              **extra, **_share_kwargs(settings, "polestar", limit))
 
     return _call
 
@@ -278,15 +341,19 @@ def make_apm_batch_caller(settings) -> Callable[[Sequence[tuple[str, dict]]], li
     concurrency = _batch_concurrency(settings)
     limit = global_semaphore("apm", getattr(settings, "sre_tool_global_concurrency", None))
     extra: dict[str, Any] = {"global_limit": limit} if limit is not None else {}
+    owner_enabled = bool(getattr(settings, "sre_apm_owner_per_investigation_enabled", False))
 
     def _call(calls: Sequence[tuple[str, dict]]) -> list[str]:
+        ctx = investigation_context.current() if owner_enabled else None
+        if ctx is not None:  # 조사별 owner(plans/207 A1 · §9 C1)
+            calls = with_apm_owner(calls, ctx.owner)
         return run_tool_batch(url, headers, calls, timeout_seconds=timeout, concurrency=concurrency,
-                              **extra)
+                              **extra, **_share_kwargs(settings, "apm", limit))
 
     return _call
 
 
 __all__ = [
     "ToolCaller", "run_tool_batch_async", "run_tool_batch", "make_batch_caller",
-    "make_apm_batch_caller", "global_semaphore", "TOOL_CONCURRENCY_WAIT_TIMEOUT",
+    "make_apm_batch_caller", "global_semaphore", "TOOL_CONCURRENCY_WAIT_TIMEOUT", "with_apm_owner",
 ]

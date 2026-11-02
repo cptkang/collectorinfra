@@ -116,6 +116,17 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_DECISION_STORE_PATH": "기본 동작",
     "NOISE_DECISION_STORE_ENABLED": "기본 동작",
     "NOISE_DECISION_STORE_MAX_LINES": "기본 동작",
+    # (plans/207 M-3) 억제기 상태 집계 최근 구간만 읽기 · 판정 기록 파일 회전
+    # — 판정 기록과 같은 구획.
+    "NOISE_DECISION_STORE_RECENT_SCAN_ENABLED": "기본 동작",
+    "NOISE_DECISION_STORE_ROTATE_MAX_BYTES": "기본 동작",
+    "NOISE_DECISION_STORE_ROTATE_DAILY": "기본 동작",
+    # (plans/207 M-1·M-2·M-4) 관제 집계 루프 밖 실행·공유 캐시 · 실시간 버스 큐 상한
+    # — 조회 상한과 같은 구획.
+    "NOISE_AGGREGATE_OFFLOAD_ENABLED": "기본 동작",
+    "NOISE_AGGREGATE_TIMEOUT_SECONDS": "기본 동작",
+    "NOISE_AGGREGATE_CACHE_SECONDS": "기본 동작",
+    "NOISE_ALARM_BUS_QUEUE_MAX": "기본 동작",
     "NOISE_DECISION_ANALYSIS_TEXT_ENABLED": "기본 동작",
     # (plans/193 W2) 포털 「노이즈 관제」 뷰 탭 — 관제 화면 표시 방식이라 조회 상한과 같은 구획.
     "NOISE_CONSOLE_PORTAL_TAB_ENABLED": "기본 동작",

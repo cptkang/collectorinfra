@@ -12,6 +12,7 @@
 from __future__ import annotations
 
 import asyncio
+import functools
 import json
 import logging
 import re
@@ -36,6 +37,7 @@ from src.api import investigation_live_hub, investigation_poll
 from src.domain.investigation_reject_reasons import reject_display_text
 from src.infrastructure import investigation_request_limit
 from src.api.error_detail import admin_error_detail
+from src.api.noise_aggregate_cache import noise_aggregate_cache
 # plans/166 A8 — 스키마는 alarm_schemas로 이동 · 여기서 재노출(D-337 ①)
 from src.api.routes.alarm_schemas import (
     AlarmAnalysisOutput,
@@ -333,7 +335,14 @@ def _alarm_extra_configurable(request: Request, config) -> dict[str, Any]:
 
     ng = config.noise_gate
     return {
-        "decision_store": DecisionStore(ng.decision_store_path, ng.decision_store_enabled),
+        # (plans/207 M-3) 판정 파일 회전 설정은 쓰기 주체(워커·이 경로)가 같은 값을 쓴다
+        # (기본 회전 없음)
+        "decision_store": DecisionStore(
+            ng.decision_store_path,
+            ng.decision_store_enabled,
+            rotate_max_bytes=getattr(ng, "decision_store_rotate_max_bytes", 0),
+            rotate_daily=getattr(ng, "decision_store_rotate_daily", False),
+        ),
         "ticket_queue": TicketBatchQueue(
             ng.ticket_batch_queue_path, ng.ticket_batch_queue_enabled
         ),
@@ -639,17 +648,32 @@ async def alarm_metrics(
     window = ng.meta_alert_window_seconds
 
     # 읽기 전용 — 파일이 있으면 집계, 없으면 빈 집계(전 키 포함)
-    store = DecisionStore(ng.decision_store_path)
-    agg = store.aggregate(window_seconds=window)
-    meta = store.meta_alerts(
-        window_seconds=window,
-        suppress_ratio_threshold=ng.meta_alert_suppress_ratio,
-        min_events=ng.meta_alert_min_events,
-        # (plans/162 R4) 기본 0 = 끔. 구 config(필드 부재)도 끔으로 읽는다.
-        collection_failed_ratio_threshold=float(
-            getattr(ng, "meta_alert_collection_failed_ratio", 0.0)
-        ),
+    # (plans/207 M-3) 켜진 기동이면 창 집계를 끝에서 거꾸로 읽다가 창 밖에서 멈춘다(기본 off)
+    store = DecisionStore(
+        ng.decision_store_path,
+        recent_scan=getattr(ng, "decision_store_recent_scan_enabled", False),
     )
+    # (plans/162 R4) 기본 0 = 끔. 구 config(필드 부재)도 끔으로 읽는다.
+    cf_threshold = float(getattr(ng, "meta_alert_collection_failed_ratio", 0.0))
+    # (plans/207 M-1·M-2) 켜진 기동이면 루프 밖 1회 순회 + 사용자 공유 짧은 캐시(초과·실패는 503)
+    # — `/admin/noise/health`와 같은 키(같은 파일·활성·창·임계)면 같은 결과를 나눠 쓴다
+    cache = noise_aggregate_cache(request)
+    if cache is not None:
+        agg, meta = await cache.health(
+            store,
+            window_seconds=window,
+            suppress_ratio_threshold=ng.meta_alert_suppress_ratio,
+            min_events=ng.meta_alert_min_events,
+            collection_failed_ratio_threshold=cf_threshold,
+        )
+    else:
+        agg = store.aggregate(window_seconds=window)
+        meta = store.meta_alerts(
+            window_seconds=window,
+            suppress_ratio_threshold=ng.meta_alert_suppress_ratio,
+            min_events=ng.meta_alert_min_events,
+            collection_failed_ratio_threshold=cf_threshold,
+        )
 
     # ── D-049: incident_store 주입 시 MTTA/incident_mttr/사건전환율 채움 ──
     # 트래커 off(store=None)면 기존 null + unavailable_metrics 동작 유지(회귀 0).
@@ -1149,11 +1173,19 @@ def _investigation_mask_fn(config: Any) -> Callable[[str], str]:
     plans/187 잔여 ⑥(2026-10-22 사용자 결정): 값 전체가 비밀값 꼴이면 통째로 가리고, 아니면 한 줄
     안에 섞인 비밀값만 가린다 — 민감 키의 값·Bearer·JWT·URL 비밀번호(`mask_secrets`)와 같은 값
     패턴의 부분 일치. 운영자 뷰에는 쓰지 않는다(원문).
+
+    (plans/207 A1b) 결과는 마스크 꼴(`security.mask_pattern`)에만 달렸다(사용자·권한 무관) —
+    같은 꼴이면 **같은 함수 객체**를 돌려줘 실시간 허브가 그 함수를 키로 가림 결과를 공유한다.
     """
+    return _investigation_mask_fn_for(str(config.security.mask_pattern))
+
+
+@functools.lru_cache(maxsize=8)
+def _investigation_mask_fn_for(mask: str) -> Callable[[str], str]:
+    """마스크 꼴 1개의 사용자 뷰 마스킹 함수(`_investigation_mask_fn` 본체 · 꼴마다 1개)."""
     from src.security.data_masker import DataMasker
     from src.utils.log_masking import mask_secrets
 
-    mask = str(config.security.mask_pattern)
     inline = [
         re.compile(
             rf"(?<![{_INLINE_EDGE}])(?:{p.pattern.removeprefix('^').removesuffix('$')})"
@@ -1393,9 +1425,12 @@ async def _investigation_response(
         view["reason"] = poll_reason
     _attach_live_progress(view, rec, None if operator else _investigation_mask_fn(config))
     if hub is not None and entry is not None and activity_since is not None:
+        live_mask = None if operator else _investigation_mask_fn(config)
+        if not operator:
+            # (plans/207 A1b) 진행 중 조사 첫 조회의 큰 묶음 가림은 루프 밖에서(구독자와 공유)
+            await entry.prepare_user_events(max(activity_since, -1), live_mask)
         view.update(hub.activity_payload(
-            entry, max(activity_since, -1), operator=operator,
-            mask_fn=None if operator else _investigation_mask_fn(config),
+            entry, max(activity_since, -1), operator=operator, mask_fn=live_mask,
         ))
     if (hub is not None and activity_since is not None) or with_alarm:
         # (plans/187 W17) 장애 진단 화면 — 어떤 알람을 조사하는지(판정 기록의 알람 요약)

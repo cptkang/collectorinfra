@@ -39,6 +39,7 @@ BUNDLE_SUFFIX = ".bundle"
 TOP_FILES: tuple[str, ...] = (
     "manifest.json", "world_calls.jsonl", "raw.jsonl", "scores.jsonl", "report.md",
     "gpu_samples.jsonl",
+    "concurrency.jsonl", "concurrency.md",  # 동시 측정(`--concurrency` · plans/207 A0-a)
 )
 ARM_DIR_PREFIX = "arm-"
 ARM_SETTINGS = "settings_echo.json"

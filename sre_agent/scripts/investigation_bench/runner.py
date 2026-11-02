@@ -9,6 +9,14 @@
    (`wait_seconds=0`) → `sre_get_investigation` 폴링 → 구간 닫기 → 감사·호출 로그로 raw 1행.
 4. 자기가 띄운 PID만 내린다(`pids.json`) → manifest → `judge.rejudge`(채점+보고서 · W3a).
 
+`--concurrency K[,K…]`(plans/207 A0-a)를 주면 3의 순차 실행 대신 `concurrency.run_concurrency`가
+돌고(같은 실험군에 조사 K건 동시 접수) 채점 없이 `concurrency.jsonl`·`concurrency.md`를 쓴다.
+주지 않으면 경로·산출물이 종전 그대로다.
+
+프로세스 제어는 `IS_WINDOWS`로 가른다 — 내부망 Windows 실행 이력(docs/18 2026-10-15): POSIX 전용
+호출(`os.getpgid`·`os.killpg`·`signal.SIGKILL`·`os.kill(pid, 0)`·`start_new_session`·`ps`)은 POSIX
+분기에만 있다.
+
 무효표(F-INFRA · `infra_error`): `rejected`·`stub`·호출 예외·폴링 시간 초과. 설정 에코가 없는
 실험군은 돌리지 않고 `settings_echo_missing`으로 표기한다(판정 제외).
 
@@ -69,6 +77,8 @@ ECHO_MISSING = "settings_echo_missing"
 TIMEOUT_STATUS = "timeout"
 POLL_TIMEOUT_PREFIX = "poll_timeout"
 PROCESS_MARKER = "investigation_bench"
+# 내부망 Windows 실행 분기(docs/18 2026-10-15) — 테스트가 맥에서 켜 볼 수 있게 모듈 상수다.
+IS_WINDOWS = os.name == "nt"
 
 # 실험군 프로세스가 부모에게서 물려받는 키 — 이것뿐이다(`.env`·`.encenv`·Gemini 키가 섞이지 않게).
 INHERITED_ENV_KEYS: tuple[str, ...] = (
@@ -266,12 +276,14 @@ def _env_str(value: Any) -> str:
 def build_arm_env(
     spec: Mapping[str, Any], arm: str, *, run_dir: Path, polestar_url: str,
     apm_url: str | None, api_base: str, parent_env: Mapping[str, str] | None = None,
+    runner_env: Mapping[str, str] | None = None,
 ) -> dict[str, str]:
     """실험군 하나의 sre_agent 환경변수(§4.7 표) — 이것이 그 프로세스의 환경 전부다.
 
     부모 환경에서는 `INHERITED_ENV_KEYS`만 물려받는다. 명세 `base_env`·`arms.<arm>`이 러너 고정 키
     (`INVESTIGATION_HOURLY_BUDGET` 포함 — 러너가 `BENCH_HOURLY_BUDGET`으로 정한다)나
-    `INVESTIGATION_DEDUP_TTL_SECONDS`를 쓰면 RunnerError.
+    `INVESTIGATION_DEDUP_TTL_SECONDS`를 쓰면 RunnerError. `runner_env`(동시 측정 모드 — 동시 상한 ·
+    계측 플래그)는 러너가 마지막에 덮는다(없으면 종전 그대로).
     """
     parent = os.environ if parent_env is None else parent_env
     llm = spec.get("llm") or {}
@@ -299,6 +311,8 @@ def build_arm_env(
         "INVESTIGATION_AUDIT_PATH": str(Path(run_dir) / f"arm-{arm}" / "audit.jsonl"),
         "INVESTIGATION_HOURLY_BUDGET": str(BENCH_HOURLY_BUDGET),
     })
+    if runner_env:
+        env.update(runner_env)
     return env
 
 
@@ -466,9 +480,15 @@ class ProcessGroup:
                port: int | None, log_path: Path) -> subprocess.Popen[bytes]:
         """프로세스 하나를 띄우고 `pids.json`을 갱신한다(출력은 `log_path`에 덧붙임)."""
         log = Path(log_path).open("ab")
-        popen = subprocess.Popen(cmd, cwd=str(cwd), env=dict(env), stdout=log,
-                                 stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-                                 start_new_session=True)
+        if IS_WINDOWS:  # 세션 분리는 POSIX 전용 — Windows는 새 프로세스 그룹으로 띄운다
+            popen = subprocess.Popen(cmd, cwd=str(cwd), env=dict(env), stdout=log,
+                                     stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                     creationflags=getattr(subprocess,
+                                                           "CREATE_NEW_PROCESS_GROUP", 0))
+        else:
+            popen = subprocess.Popen(cmd, cwd=str(cwd), env=dict(env), stdout=log,
+                                     stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                                     start_new_session=True)
         self.procs.append(_Proc(name, popen, port, now_iso(), cmd, log))
         self._write()
         return popen
@@ -492,6 +512,22 @@ class ProcessGroup:
         except ProcessLookupError:
             pass
 
+    @staticmethod
+    def _terminate(popen: subprocess.Popen[bytes]) -> None:
+        """정상 종료 요청 — POSIX는 그룹째 SIGTERM, Windows는 `terminate()`(TerminateProcess)."""
+        if IS_WINDOWS:
+            popen.terminate()
+            return
+        ProcessGroup._signal(popen, signal.SIGTERM)
+
+    @staticmethod
+    def _kill(popen: subprocess.Popen[bytes]) -> None:
+        """강제 종료 — POSIX는 그룹째 SIGKILL, Windows는 `kill()`."""
+        if IS_WINDOWS:
+            popen.kill()
+            return
+        ProcessGroup._signal(popen, signal.SIGKILL)
+
     def stop(self, name: str, grace: float = 10.0) -> None:
         """이름이 `name`인 자기 프로세스만 종료하고 `pids.json`에서 뺀다(실험군 재기동용)."""
         keep: list[_Proc] = []
@@ -500,11 +536,11 @@ class ProcessGroup:
                 keep.append(p)
                 continue
             if p.popen.poll() is None:
-                self._signal(p.popen, signal.SIGTERM)
+                self._terminate(p.popen)
                 try:
                     p.popen.wait(timeout=grace)
                 except subprocess.TimeoutExpired:
-                    self._signal(p.popen, signal.SIGKILL)
+                    self._kill(p.popen)
                     p.popen.wait(timeout=5)
             p.log.close()
         self.procs = keep
@@ -514,20 +550,31 @@ class ProcessGroup:
         """자기가 띄운 프로세스만 종료(SIGTERM → 유예 → SIGKILL)."""
         for p in reversed(self.procs):
             if p.popen.poll() is None:
-                self._signal(p.popen, signal.SIGTERM)
+                self._terminate(p.popen)
         deadline = time.monotonic() + grace
         for p in reversed(self.procs):
             try:
                 p.popen.wait(timeout=max(0.1, deadline - time.monotonic()))
             except subprocess.TimeoutExpired:
-                self._signal(p.popen, signal.SIGKILL)
+                self._kill(p.popen)
                 p.popen.wait(timeout=5)
             p.log.close()
         if self.procs:
             self._write()
 
 
+def _run_out(cmd: list[str]) -> str:
+    """보조 명령 표준 출력(실패면 빈 문자열)."""
+    try:
+        return subprocess.run(cmd, capture_output=True, text=True, timeout=10,
+                              check=False).stdout or ""
+    except (OSError, subprocess.SubprocessError):
+        return ""
+
+
 def _alive(pid: int) -> bool:
+    if IS_WINDOWS:  # Windows `os.kill(pid, 0)`은 생존 확인이 아니라 TerminateProcess다
+        return f'"{pid}"' in _run_out(["tasklist", "/FI", f"PID eq {pid}", "/NH", "/FO", "CSV"])
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -538,6 +585,10 @@ def _alive(pid: int) -> bool:
 
 
 def _cmdline(pid: int) -> str:
+    if IS_WINDOWS:  # `ps` 없음
+        return _run_out(["powershell", "-NoProfile", "-Command",
+                         f"(Get-CimInstance Win32_Process -Filter 'ProcessId={int(pid)}')"
+                         ".CommandLine"]).strip()
     try:
         return subprocess.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True,
                               text=True, timeout=5, check=False).stdout.strip()
@@ -557,6 +608,9 @@ def cleanup(run_dir: Path, grace: float = 5.0) -> list[int]:
     targets = [int(e["pid"]) for e in entries
                if _alive(int(e["pid"])) and PROCESS_MARKER in _cmdline(int(e["pid"]))]
     for pid in targets:
+        if IS_WINDOWS:  # 신호 대신 taskkill(트리째 강제)
+            _run_out(["taskkill", "/PID", str(pid), "/T", "/F"])
+            continue
         try:
             os.kill(pid, signal.SIGTERM)
         except ProcessLookupError:
@@ -565,7 +619,7 @@ def cleanup(run_dir: Path, grace: float = 5.0) -> list[int]:
     for pid in targets:
         while _alive(pid) and time.monotonic() < deadline:
             time.sleep(0.1)
-        if _alive(pid):
+        if _alive(pid) and not IS_WINDOWS:
             try:
                 os.kill(pid, signal.SIGKILL)
             except ProcessLookupError:
@@ -717,9 +771,7 @@ def audit_events(audit_path: Path, investigation_id: str | None) -> list[dict[st
 
 def world_host_set(world: World) -> frozenset[str]:
     """세계 호스트(`hosts` + 알람 호스트 · 소문자) — 떠돌이 호출 판별용."""
-    ev = world.event
-    extra = {str(h).strip().casefold() for h in (ev.get("hostname"), ev.get("serverName")) if h}
-    return world.hosts | extra
+    return world.host_set
 
 
 def call_hosts(args: Any) -> set[str]:
@@ -974,6 +1026,8 @@ class RunOptions:
     allow_billed: str | None = None
     out_root: Path | None = None
     resume_dir: Path | None = None
+    # 동시 측정(plans/207 A0-a) — None이면 종전 순차 실행.
+    concurrency: tuple[int, ...] | None = None
 
 
 def make_run_dir(out_root: Path, site: str) -> tuple[str, Path]:
@@ -1043,6 +1097,49 @@ def _print_plan(spec: Mapping[str, Any], worlds: Mapping[str, World], plan: Sequ
         print(f"  … 외 {len(plan) - 12}회")
 
 
+def fake_delay_s(spec: Mapping[str, Any]) -> float:
+    """가짜 LLM 응답 1회당 고정 지연(`llm.fake_delay_s` · 기본 0 · plans/207 A0-a)."""
+    return max(0.0, float((spec.get("llm") or {}).get("fake_delay_s") or 0))
+
+
+def tool_delay_s(spec: Mapping[str, Any]) -> float:
+    """세계 서버 도구 호출 1건당 고정 지연(`world.tool_delay_s` · 기본 0 · plans/207 A0-a)."""
+    return max(0.0, float((spec.get("world") or {}).get("tool_delay_s") or 0))
+
+
+def _concurrency_setup(spec: Mapping[str, Any], worlds: Mapping[str, World],
+                       ks: Sequence[int]) -> dict[str, Any]:
+    """동시 측정 계획 — 세계 고르기 · 그룹 · 실험군에 덮을 env(동시 상한 = max K · 계측 on)."""
+    from investigation_bench import concurrency
+
+    picked = concurrency.pick_disjoint_worlds(worlds, max(ks))
+    groups = concurrency.plan_groups(picked, ks)
+    max_concurrent = max(ks)
+    return {
+        "ks": sorted(set(ks) | {1}), "worlds": picked, "groups": groups,
+        "planned": sum(len(g["worlds"]) for g in groups), "max_concurrent": max_concurrent,
+        "fake_delay_s": fake_delay_s(spec) if (spec.get("llm") or {}).get("backend") == "fake"
+        else 0.0,
+        "tool_delay_s": tool_delay_s(spec),
+        "runner_env": {"INVESTIGATION_MAX_CONCURRENT": str(max_concurrent),
+                       "SRE_INVESTIGATION_METRICS_ENABLED": "true"},
+        "allowed_fields": frozenset({concurrency.METRICS_FIELD}),
+        "judge": "skipped",
+    }
+
+
+def _concurrency_meta(conc: Mapping[str, Any]) -> dict[str, Any]:
+    """manifest·보고서용 — 그룹·허용 필드(내부용)는 뺀다."""
+    return {k: v for k, v in conc.items() if k not in ("groups", "allowed_fields")}
+
+
+def _print_concurrency(conc: Mapping[str, Any]) -> None:
+    print(f"동시 측정: K {conc['ks']} · 세계 {conc['worlds']} · 실험군당 {conc['planned']}건 · "
+          f"조사 서비스 동시 상한 {conc['max_concurrent']} · 채점 생략")
+    for g in conc["groups"]:
+        print(f"  K={g['k']}: {', '.join(g['worlds'])}")
+
+
 def run(opts: RunOptions) -> int:
     """`--run`·`--resume` 본체 → 종료 코드."""
     try:
@@ -1057,6 +1154,8 @@ def run(opts: RunOptions) -> int:
 
 def _run(opts: RunOptions) -> int:
     manifest: dict[str, Any] = {}
+    if opts.concurrency and opts.resume_dir is not None:
+        raise RunnerError("--concurrency는 --resume과 함께 쓸 수 없다(동시 측정은 처음부터)", 2)
     if opts.resume_dir is not None:
         manifest = json.loads((Path(opts.resume_dir) / "manifest.json").read_text(encoding="utf-8"))
         spec_path = Path(opts.spec_path or manifest["spec_path"])
@@ -1084,11 +1183,14 @@ def _run(opts: RunOptions) -> int:
         spec, cli_site=opts.cli_site, test=opts.test, allow_billed=opts.allow_billed,
         api_base=api_base or None, ports=planned_port_list(port_plan), n_worlds=len(worlds))
     plan = plan_runs(list(worlds), arms, int(run_cfg.get("k", 1)))
+    conc = _concurrency_setup(spec, worlds, opts.concurrency) if opts.concurrency else None
     if llm.get("backend") == "fabrix_proxy":
         print(f"예상 FabriX 호출 상한: {static['expected_llm_calls']} "
               f"({static['expected_llm_calls_basis']}) — 규모는 명세 worlds·k로 정한다")
     if opts.dry_run:
         _print_plan(spec, worlds, plan, port_plan, static, api_base)
+        if conc is not None:
+            _print_concurrency(conc)
         return 0
 
     if opts.resume_dir is not None:
@@ -1111,6 +1213,9 @@ def _run(opts: RunOptions) -> int:
             "preflight": {"static": static}, "arms": {}, "excluded_arms": {},
             "invalid_count": 0, "judge_version": None,
         }
+        if conc is not None:
+            manifest["planned_runs"] = conc["planned"] * len(arms)
+            manifest["concurrency"] = _concurrency_meta(conc)
     manifest_path = run_dir / "manifest.json"
     write_json(manifest_path, manifest)
     raw_path = run_dir / "raw.jsonl"
@@ -1133,9 +1238,11 @@ def _run(opts: RunOptions) -> int:
         worlds_dir = worlds_dir_of(spec)
         fake_url = None
         if use_fake:
-            fp = procs.launch("fake_llm", [py, "-m", "investigation_bench.fake_llm", "--worlds",
-                                           str(worlds_dir), "--port", str(ports["fake_llm"]),
-                                           "--log", str(run_dir / "fake_llm.jsonl")],
+            fake_cmd = [py, "-m", "investigation_bench.fake_llm", "--worlds", str(worlds_dir),
+                        "--port", str(ports["fake_llm"]), "--log", str(run_dir / "fake_llm.jsonl")]
+            if fake_delay_s(spec) > 0:  # plans/207 A0-a — 0(기본)이면 명령이 종전 그대로
+                fake_cmd += ["--delay-s", str(fake_delay_s(spec))]
+            fp = procs.launch("fake_llm", fake_cmd,
                               cwd=run_dir, env=base_env, port=ports["fake_llm"],
                               log_path=run_dir / "fake_llm.log")
             api_base = f"http://127.0.0.1:{ports['fake_llm']}/v1"
@@ -1164,6 +1271,8 @@ def _run(opts: RunOptions) -> int:
                      "--port", str(ports["world"])]
         if ports["world_apm"] is not None:
             world_cmd += ["--apm-port", str(ports["world_apm"])]
+        if tool_delay_s(spec) > 0:  # plans/207 A0-a — 0(기본)이면 명령이 종전 그대로
+            world_cmd += ["--tool-delay-s", str(tool_delay_s(spec))]
         wp = procs.launch("world_server", world_cmd, cwd=run_dir, env=base_env,
                           port=ports["world"], log_path=run_dir / "world_server.log")
         world_active = f"http://127.0.0.1:{ports['world']}/_bench/active"
@@ -1174,10 +1283,16 @@ def _run(opts: RunOptions) -> int:
 
         arm_popen: dict[str, subprocess.Popen[bytes]] = {}
 
+        def allowed(arm: str) -> frozenset[str]:
+            """에코에서 기본값과 달라도 되는 명세 필드(+ 동시 측정 모드의 계측 플래그)."""
+            extra = conc["allowed_fields"] if conc is not None else frozenset()
+            return spec_fields(spec, arm) | extra
+
         def launch_arm(arm: str) -> None:
             arm_dir = run_dir / f"arm-{arm}"
             env = build_arm_env(spec, arm, run_dir=run_dir, polestar_url=polestar_url,
-                                apm_url=apm_url, api_base=api_base)
+                                apm_url=apm_url, api_base=api_base,
+                                runner_env=conc["runner_env"] if conc is not None else None)
             arm_popen[arm] = procs.launch(
                 f"arm-{arm}", [py, "-m", "investigation_bench._serve", "--port",
                                str(ports["arms"][arm])],
@@ -1192,7 +1307,7 @@ def _run(opts: RunOptions) -> int:
             wait_arm(f"http://127.0.0.1:{ports['arms'][arm]}/sse", arm_popen[arm])
             echo = read_echo(run_dir / f"arm-{arm}")
             problems = (verify_echo(echo, model=str(llm.get("model")), api_base=api_base,
-                                    allowed_fields=spec_fields(spec, arm))
+                                    allowed_fields=allowed(arm))
                         if echo is not None else [ECHO_MISSING])
             if problems:
                 raise RunnerError(f"실험군 {arm} 재기동 뒤 실효 설정 불일치: {problems}", 2)
@@ -1215,7 +1330,7 @@ def _run(opts: RunOptions) -> int:
                 excluded[arm] = ECHO_MISSING
                 continue
             problems = verify_echo(echo, model=str(llm.get("model")), api_base=api_base,
-                                   allowed_fields=spec_fields(spec, arm))
+                                   allowed_fields=allowed(arm))
             if problems:
                 raise RunnerError(
                     f"실험군 {arm} 실효 설정이 사전 점검 판정과 다르다: {problems}", 2)
@@ -1228,7 +1343,11 @@ def _run(opts: RunOptions) -> int:
             sampler.start()
 
         def activate(body: Mapping[str, Any]) -> None:
-            post_active(world_active, {k: body.get(k) for k in ("world_id", "trial", "arm")})
+            if "worlds" in body:  # 동시 측정 — 활성 세계 목록(plans/207 A0-a)
+                post_active(world_active, {"worlds": [
+                    {k: e.get(k) for k in ("world_id", "trial", "arm")} for e in body["worlds"]]})
+            else:
+                post_active(world_active, {k: body.get(k) for k in ("world_id", "trial", "arm")})
             if fake_url is not None:
                 post_active(fake_url, body)
 
@@ -1240,6 +1359,17 @@ def _run(opts: RunOptions) -> int:
             world_hosts={wid: world_host_set(w) for wid, w in worlds.items()},
         )
         script = str(llm.get("script") or "model")
+        if conc is not None:
+            from investigation_bench import concurrency
+
+            concurrency.run_concurrency(
+                ctx, run_dir=run_dir, arms=arms, excluded=excluded,
+                arm_urls={a: f"http://127.0.0.1:{ports['arms'][a]}/sse" for a in arms},
+                worlds=worlds, groups=conc["groups"], script=script, restart=restart_arm,
+                meta={"run_id": run_id, "backend": manifest.get("backend"),
+                      "model": llm.get("model"), "fake_llm": use_fake,
+                      **_concurrency_meta(conc)})
+            todo = []  # 순차 실행 생략 — 동시 측정이 대신 돌았다
         for i, key in enumerate(todo, 1):
             world = worlds[key["world_id"]]
             if key["arm"] in excluded:
@@ -1285,6 +1415,9 @@ def _run(opts: RunOptions) -> int:
             manifest["host"]["gpu_processes_after"] = preflight.gpu_processes()
         write_json(manifest_path, manifest)
 
+    if conc is not None:  # 동시 측정은 채점하지 않는다(concurrency.md에 사유)
+        print(f"동시 측정: {run_dir / 'concurrency.md'} · {run_dir / 'concurrency.jsonl'}")
+        return 0
     return score(run_dir, manifest)
 
 

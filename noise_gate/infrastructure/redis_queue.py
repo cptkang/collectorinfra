@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import AsyncIterator
+from typing import Any
 
 import redis.asyncio as aioredis
 
@@ -72,6 +72,40 @@ async def read_messages(
     if not results:
         return []
     messages: list[tuple[bytes, dict]] = []
+    for _, msgs in results:
+        messages.extend(msgs)
+    return messages
+
+
+async def read_pending_messages(
+    r: aioredis.Redis,
+    stream_key: str,
+    group: str,
+    consumer: str,
+    after: bytes | str = "0",
+    count: int = 10,
+) -> list[tuple[bytes, dict[Any, Any]]]:
+    """이 소비자에게 배달됐으나 ACK되지 않은(pending) 메시지를 다시 읽는다(plans/207 W3 · C-5).
+
+    `XREADGROUP … {stream: after}` — `>`가 아닌 id를 주면 Redis는 새 메시지 대신 그 소비자의
+    pending 중 id가 `after`보다 큰 것을 돌려준다(블로킹 없음). 처음엔 `"0"`, 다음엔 직전 묶음의
+    마지막 id를 주면 끝까지 한 번씩 읽는다. 스트림에서 이미 지워진 항목은 필드가 빈 dict로 온다.
+
+    Args:
+        r: Redis 클라이언트
+        stream_key: Redis Stream 키
+        group: Consumer Group 이름
+        consumer: 소비자 이름
+        after: 이 id 뒤의 pending부터 읽는다(기본 `"0"` = 처음부터)
+        count: 한 번에 읽을 최대 메시지 수
+
+    Returns:
+        (msg_id, fields) 튜플 목록 (더 없으면 빈 리스트)
+    """
+    results: Any = await r.xreadgroup(group, consumer, {stream_key: after}, count=count)
+    if not results:
+        return []
+    messages: list[tuple[bytes, dict[Any, Any]]] = []
     for _, msgs in results:
         messages.extend(msgs)
     return messages

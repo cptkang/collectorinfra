@@ -1359,6 +1359,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - 모든 패널의 원천은 결정 기록 파일 `logs/alarm_decisions.jsonl`(`NOISE_DECISION_STORE_PATH`)이다.
 - `NOISE_DECISION_STORE_ENABLED`(기본 true)가 꺼져 있거나 파일이 없으면 오류 없이 빈 집계가 나온다.
 - 퍼널·추이·상위 억제·목록은 파일 끝에서 `NOISE_DECISION_STORE_MAX_LINES`(기본 20000)줄까지만 되짚는다. 판단이 많은 환경에서 7D·30D를 고르면 그보다 오래된 판단은 세지 않는다.
+- 결정 기록 회전(`NOISE_DECISION_STORE_ROTATE_MAX_BYTES` · `NOISE_DECISION_STORE_ROTATE_DAILY`, 기본 꺼짐)을 켜면 다 찬 파일은 `alarm_decisions.jsonl.<UTC 시각>` 조각으로 이름만 바뀌어 같은 폴더에 남는다. 화면은 조각과 현재 파일을 이어서 하나처럼 읽고, 줄 상한도 조각까지 합쳐 센다. 조각을 지우거나 옮기면 그 기간의 판단이 화면에서 빠진다. 회전해도 조각을 지우지 않으므로 전체 디스크 사용량은 계속 늘어나고, 조각 보관 기한·정리는 운영자 몫이다. 크기 기준은 10MB~1GB를 권장한다. 너무 작게 잡으면 조각이 많아져 조회가 느려진다. 회전은 파일 잠금이 있는 리눅스·맥에서만 동작한다 — Windows에서는 켜도 나누지 않고 기동 로그에 「판정 기록 회전 비활성」 경고를 남긴다.
 
 #### 항목 전수
 화면 요소 하나씩 무엇인지, 부르는 API, 사용자 화면과의 차이, 권한을 적는다. 공유 패널 수치를 읽는 법은 [사용자 매뉴얼 U-44](/manual/user#u-44)와 각 패널의 (!) 도움말이 정본이다. 경로 앞부분 `/api/v1/admin/noise`는 `…`로 줄인다.
@@ -1641,8 +1642,13 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - **언제 들어오나**: 첫 로드, 30초마다, 머리글 기간을 바꿀 때.
 - **끊겼을 때**: 실패는 알림 없이 넘어가고 다음 30초에 다시 시도한다. 스트림까지 끊기면 피드가 멈춘 채로 남는다.
 
+##### 느린 연결의 대기열 상한
+- **무엇인가**: 서버는 스트림 구독자마다 보낼 이벤트 대기열을 둔다. `NOISE_ALARM_BUS_QUEUE_MAX`(기본 0 = 상한 없음)가 양수면 대기열이 그 수를 넘을 때 가장 오래된 이벤트를 버린다. 재시작해야 반영된다.
+- **언제 들어오나**: 탭이 백그라운드에 있거나 망이 느려 화면이 스트림을 늦게 읽을 때.
+- **끊겼을 때**: 버린 이벤트는 다음 재동기화(30초)가 메운다. 서버 로그에는 「알림 버스 구독자 큐 상한(N) 초과」 경고가 구독자마다 처음 1번 남고, 요약은 전 구독자의 버림을 합쳐 전역 1분 주기로 1줄 남는다. 같은 대기열을 쓰는 포털 「이벤트 알람」 알람 카드 스트림은 재동기화가 없어, 버린 카드는 그 화면에 다시 나오지 않는다. 포털 스트림은 담당 존 거르기를 대기열에서 꺼낸 뒤에 하므로, 볼 수 없는 존의 알람도 대기열 자리를 차지해 존이 제한된 사용자의 카드가 더 일찍 밀려 버려질 수 있다.
+
 ##### 원천 ① 알람 워커의 SSE 브리지
-- **무엇인가**: 본체 안에서 도는 알람 워커가 판단을 Redis 채널에 발행하고, 본체가 그 채널을 구독해 버스로 옮긴다.
+- **무엇인가**: 알람 워커(본체 안 태스크든 별도 프로세스든)가 판단을 Redis 채널에 발행하고, 본체가 그 채널을 구독해 버스로 옮긴다.
 - **언제 들어오나**: 서버 기동 때 `NOISE_ENABLE_NOISE_GATE`(기본 false)와 `NOISE_SSE_BRIDGE_ENABLED`(기본 false)가 모두 켜져 구독이 시작됐을 때. 채널은 `NOISE_SSE_BRIDGE_CHANNEL`(기본 `alarm:sse`)이다. TICKET·DASHBOARD가 실리고, SUPPRESS는 `NOISE_SSE_SUPPRESSED_ENABLED`(기본 false)까지 켜야 실린다.
 - **끊겼을 때**: Redis가 끊기면 워커는 「SSE 브리지 발행 실패(무시)」 경고만 남기고 판단은 계속한다. 피드는 재동기화로만 채워진다.
 
@@ -1817,6 +1823,9 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - 화면은 첫 로드와 이후 60초마다 `GET /api/v1/admin/noise/health`를 부른다.
 - 응답에는 「한눈에 보기」 카드 켜짐(`investigation_summary_view_enabled` · `NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED`)도 실린다. 이 값은 운영자(break-glass) 토큰 세션만 결정 추적 서랍 카드에 쓴다. 관리자 역할 사용자 세션은 기능 조회 값을 쓴다. 첫 헬스 응답을 받기 전(조회 실패 포함)이나 키가 없으면 카드가 없고, 한 번 받은 뒤의 조회 실패는 마지막 값을 유지한다(설정은 기동 때 한 번 읽힌다).
 - 서버는 부를 때마다 결정 기록 파일을 **처음부터 끝까지** 읽는다. 화면 조회 계열이 쓰는 파일 끝 줄 상한(`NOISE_DECISION_STORE_MAX_LINES`)은 여기에 적용되지 않는다.
+- `NOISE_DECISION_STORE_RECENT_SCAN_ENABLED`(기본 false)를 켜면 파일 끝에서 거꾸로 읽다가 감시 창보다 10분 넘게 오래된 판단을 만나면 멈춘다. 파일이 커도 집계 시간이 감시 창 안 레코드 수에만 비례한다.
+- `NOISE_AGGREGATE_OFFLOAD_ENABLED`(기본 false)를 켜면 이 집계를 다른 요청과 분리해 파일 한 번 읽기로 돌리고, 결과를 `NOISE_AGGREGATE_CACHE_SECONDS`(15)초 동안 모든 관리자 화면과 운영 지표 API(`GET /api/v1/alarm/metrics`)가 나눠 쓴다. 그만큼 억제율·판단 수가 늦게 바뀔 수 있다(마지막 결정 경과는 흐른 시간만큼 더해 보인다).
+- 켠 상태에서 집계가 `NOISE_AGGREGATE_TIMEOUT_SECONDS`(30)초를 넘거나 실패하면 서버는 503과 사유를 돌려준다. 이전 결과로 대신하지 않는다. 첫 로드면 빨간 알림 「헬스 조회 실패: 관제 집계가 상한 시간(30초)을 넘어 중단했습니다 …」가 나오고, 60초 갱신이면 알림 없이 마지막으로 그린 값이 그대로 남는다.
 
 ##### 감시 창과 집계 대상
 - 집계 대상은 **감시 창**(`NOISE_META_ALERT_WINDOW_SECONDS`) 안의 판단 레코드다.
@@ -1943,7 +1952,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - **대응**: 노이즈 컨텍스트 수집이 실패하는 원인(DB 지연·`ALARM_ENRICH_TIMEOUT_SECONDS` 초과·레지스트리에 없는 db_id)을 고친다. 경보는 통보·판정을 바꾸지 않는다.
 
 #### 반영 시점과 영향
-네 설정 키를 하나씩, 그리고 판정이 미치는 범위를 적는다.
+판정 설정 키 넷과 집계 방식 설정 키 셋을 하나씩, 그리고 판정이 미치는 범위를 적는다.
 
 ##### `NOISE_META_ALERT_WINDOW_SECONDS`(기본 3600)
 - 감시 창(초)이다. 두 카드가 모두 이 창을 쓴다.
@@ -1961,12 +1970,32 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - 수집 실패율 경보 임계(0~1)다. 0이면 세지 않는다(추가 스캔 없음).
 - 설정 리로드 대상이다. 「수집 실패는 심각도3만 PAGE」(`NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY`)를 켜기 전에 먼저 걸어 두면, 켠 뒤 수집 실패가 PAGE로 드러나지 않아도 원인을 놓치지 않는다.
 
+##### `NOISE_AGGREGATE_OFFLOAD_ENABLED`(기본 false)
+- 헬스·운영 지표 집계를 다른 요청과 분리해 돌리고 결과를 짧게 나눠 쓴다. 판정 기록 파일이 커서 관제 화면을 열어 둔 동안 질의 응답·알람 처리가 느려질 때 켠다.
+- 재시작해야 반영된다. 끄면 종전처럼 요청마다 파일을 다시 읽는다.
+
+##### `NOISE_AGGREGATE_TIMEOUT_SECONDS`(기본 30)
+- 켠 상태에서 집계 1회에 허용하는 시간(초)이다. 넘으면 파일 읽기를 멈추고 503과 사유를 돌려준다.
+- 재시작해야 반영된다.
+
+##### `NOISE_AGGREGATE_CACHE_SECONDS`(기본 15)
+- 켠 상태에서 같은 집계(같은 파일·감시 창·임계값) 결과를 나눠 쓰는 시간(초)이다. 0이면 담지 않고 같은 순간에 겹친 요청만 합친다.
+- 재시작해야 반영된다. 길게 잡으면 무수신 경보가 그만큼 늦게 뜬다.
+
+##### `NOISE_DECISION_STORE_RECENT_SCAN_ENABLED`(기본 false)
+- 헬스·운영 지표 집계가 결정 기록을 파일 끝에서 거꾸로 읽고, 감시 창 하한보다 10분 넘게 오래된 판단을 만나면 멈춘다. 끄면 종전처럼 처음부터 끝까지 읽는다.
+- 재시작해야 반영된다. 결과는 끈 상태와 같다. 다만 멈춘 지점보다 앞에 놓인, 시각이 없거나 읽을 수 없는 레코드는 세지 않는다(정상 기록은 항상 시각이 붙는다).
+
 ##### 판정이 미치는 범위
 - 판정은 이 화면과 운영 지표 API(`GET /api/v1/alarm/metrics`)에만 쓰인다.
 - 경보가 떠도 알람 통보나 게이트 동작은 바뀌지 않는다. 헬스 API가 부를 때마다 현재 설정을 읽기 때문에 재시작은 필요 없다.
 
 #### 문제 해결
 증상별 원인과 대응을 적는다.
+
+##### 「헬스 조회 실패: 관제 집계가 상한 시간(N초)을 넘어 중단했습니다」
+- **원인**: `NOISE_AGGREGATE_OFFLOAD_ENABLED`를 켠 상태에서 결정 기록 파일이 커서 집계가 `NOISE_AGGREGATE_TIMEOUT_SECONDS` 안에 끝나지 않았다.
+- **대응**: `NOISE_DECISION_STORE_PATH` 파일 크기를 확인한다. 상한을 늘리면 다음 기동부터 끝까지 센다. `NOISE_DECISION_STORE_RECENT_SCAN_ENABLED`를 켜면 감시 창 안 레코드만 읽는다. 서버 로그에 「관제 집계 시간 초과」 경고가 남는다.
 
 ##### 알람이 들어오는데 「무수신」
 - **원인**: 워치독은 **판단 레코드**만 센다. 재통보 창 안의 재발은 판단 없이 재발 기록만 남고, 게이트가 켜진 상태에서 최소 심각도(`ALARM_MIN_SEVERITY`) 미만 알람은 판단 전에 버려진다.
@@ -2574,7 +2603,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 
 ```
 폴스타 알람 → 알람 수신부(TCP 9100) → Redis Stream alarm:raw
-  → AlarmWorker(본체 프로세스)
+  → AlarmWorker(본체 프로세스 안 · ALARM_WORKER_IN_PROCESS=false면 별도 프로세스 python -m noise_gate.worker)
      ① 지문 중복 제거·재통보 창, 최소 심각도 필터      규칙
      ② 컨텍스트 수집: 이력 통계·프로세스·중요도·유지보수·토폴로지·변경   조회·통계
      ③ 알람 분석: 요약·원인·패턴·일상 반복 여부            LLM(자문)
@@ -2622,11 +2651,11 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - **설정 키**: `ALARM_SERVER_STREAM_KEY`(`alarm:raw`) · Redis 접속(`localhost:6379`, db 0).
 
 ##### 3. 워커 기동 조건
-- **하는 일**: 본체 서버가 뜰 때 `AlarmWorker`를 본체 프로세스 안의 비동기 태스크로 시작한다(`src/api/server.py`).
-- **입력·출력**: 설정 객체를 받아 그래프 노드 구성과 저장소(결정 기록·침묵·TICKET 큐·피드백·조사 클라이언트)를 이때 한 번 만든다. TICKET 큐가 만들어지면 일배치 요약·보존 정리 루프도 함께 띄우고, 워커가 끝나면 멈춘다.
-- **판단 주체**: 설정 값 하나로 정해진다.
-- **실패하면**: `ALARM_ENABLED`가 꺼져 있으면 태스크 자체가 없다. 게이트 키를 켜도 스트림을 읽지 않으므로 기동 로그에 「알람 워커 시작」 줄이 있는지부터 본다.
-- **설정 키**: `ALARM_ENABLED`(false) · `NOISE_ENABLE_NOISE_GATE`(false).
+- **하는 일**: 본체 서버가 뜰 때 `AlarmWorker`를 본체 프로세스 안의 비동기 태스크로 시작한다(`src/api/server.py`). `ALARM_WORKER_IN_PROCESS=false`면 본체는 워커를 띄우지 않고, 별도 프로세스 `python -m noise_gate.worker`가 같은 워커를 돌린다([A-52](#a-52)).
+- **입력·출력**: 설정 객체를 받아 그래프 노드 구성과 저장소(결정 기록·침묵·TICKET 큐·피드백·조사 클라이언트)를 이때 한 번 만든다. TICKET 큐가 만들어지면 일배치 요약·보존 정리 루프도 함께 띄우고, 워커가 끝나면 멈춘다. `ALARM_WORKER_SINGLETON_GUARD`를 켜면 이보다 먼저 Redis 잠금 `alarm:worker:lock`을 잡는다.
+- **판단 주체**: 설정 값으로 정해진다.
+- **실패하면**: `ALARM_ENABLED`가 꺼져 있으면 태스크 자체가 없다. 게이트 키를 켜도 스트림을 읽지 않으므로 기동 로그에 「알람 워커 시작」 줄이 있는지부터 본다. 별도 프로세스 모드면 본체 로그에는 「알람 분석 워커를 본체에서 띄우지 않는다」 줄만 있고 「알람 워커 시작」은 워커 프로세스 로그에 남는다. 잠금을 못 잡으면 「단일 인스턴스 잠금 획득 실패」 ERROR 줄과 함께 그 워커는 소비하지 않는다.
+- **설정 키**: `ALARM_ENABLED`(false) · `NOISE_ENABLE_NOISE_GATE`(false) · `ALARM_WORKER_IN_PROCESS`(true) · `ALARM_WORKER_SINGLETON_GUARD`(false).
 
 ##### 4. 워커 — 스트림 소비와 확인 응답
 - **하는 일**: 컨슈머 그룹으로 새 메시지를 읽어 한 건씩 순서대로 끝까지 처리하고, 결과와 무관하게 `XACK`한다.
@@ -2777,7 +2806,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - **입력·출력**: 기본 필드는 ts·alarm_id·tier·reason·priority·fingerprint·signals이고, 값이 있으면 stage·alarm_name·server_name·recurrence·correlation_meta·semantic_annotation·db_id·resource_name·condition_log(앞 200자)·stage_evidence가 붙는다. 같은 파일에 `type`이 붙은 재발·해소·조사·L3 레코드도 섞여 쌓이며, 티어 집계는 `type` 레코드를 빼고 센다. 발송 판단 한 줄을 쓸 때마다(`type` 레코드는 제외) Prometheus 결정 카운터도 올라가며, 두 값이 다르면 파일이 정본이다.
 - **판단 주체**: 없다. 기록만 한다.
 - **실패하면**: 디스크·권한 오류는 「결정 감사 기록 실패(무시)」 경고만 남기고 통보는 계속한다.
-- **설정 키**: `NOISE_DECISION_STORE_ENABLED`(true) · `NOISE_DECISION_STORE_MAX_LINES`(20000, 화면 조회 창).
+- **설정 키**: `NOISE_DECISION_STORE_ENABLED`(true) · `NOISE_DECISION_STORE_MAX_LINES`(20000, 화면 조회 창) · `NOISE_DECISION_STORE_ROTATE_MAX_BYTES`(0, 회전 크기 바이트 · 0이면 끔) · `NOISE_DECISION_STORE_ROTATE_DAILY`(false, 날짜가 바뀌면 회전 · 회전 두 키는 리눅스·맥 전용) · `NOISE_DECISION_STORE_RECENT_SCAN_ENABLED`(false, 관제 집계 최근 구간 읽기).
 
 ##### 25. 조사 트리거(선택)
 - **하는 일**: 티어가 기준 이상이면 sre_agent 조사를 맡기고, 제한 시간 안에 돌아온 브리핑을 통보 본문에 붙인다. 후속 모드면 통보를 먼저 보내고 결과는 나중에 따로 보낸다(worKB 즉시 통보가 성공했을 때만).
@@ -2888,11 +2917,11 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 | `alarm:incident` | 통보·자가복구 | incident open·resolved 이벤트 |
 
 ##### 남는 곳 — 파일
-처리 결과가 남는 파일이다. 결정 기록은 회전하지 않아 계속 커진다. TICKET 큐 파일은 보낸 줄과 보존 한도를 넘는 오래된 줄이 지워진다.
+처리 결과가 남는 파일이다. 결정 기록은 기본으로 회전하지 않아 계속 커진다. 회전을 켜면 다 찬 파일이 조각으로 이름만 바뀌어 남고(지우지 않는다), 화면·집계·점검 도구는 조각까지 이어 읽는다. 회전해도 전체 사용량은 계속 늘어나므로 조각 정리는 운영자가 따로 한다. TICKET 큐 파일은 보낸 줄과 보존 한도를 넘는 오래된 줄이 지워진다.
 
 | 파일 | 쓰는 쪽 | 회전 |
 |---|---|---|
-| 결정 기록 파일 `logs/alarm_decisions.jsonl` | 발송 판단·재발·해소·조사·L3 | 없음 |
+| 결정 기록 파일 `logs/alarm_decisions.jsonl` | 발송 판단·재발·해소·조사·L3 | 기본 없음 · `NOISE_DECISION_STORE_ROTATE_MAX_BYTES`(크기)·`NOISE_DECISION_STORE_ROTATE_DAILY`(날짜)를 켜면 쓰기 직전에 `alarm_decisions.jsonl.<UTC 시각>` 조각으로 바꾸고 보관(삭제 없음) |
 | TICKET 큐 파일 `logs/alarm_ticket_queue.jsonl` | TICKET 통보 | 보낸 줄 삭제 · `NOISE_TICKET_BATCH_QUEUE_MAX_LINES`(20000줄) 초과분 삭제(기동 시·매일) |
 | 침묵 규칙 파일 `logs/alarm_silences.jsonl` | 침묵 규칙 화면 | 해당 없음 |
 | 피드백 파일 | 피드백 API | 상한을 넘으면 오래된 절반을 `.1`로 옮김 |
@@ -3841,17 +3870,39 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 | 알람 수신부 | `python -m noise_gate.alarm_server` | TCP 9100 → Redis |
 | MCP 서버(데이터 읽기) | `cd mcp_server && python -m mcp_server` | 별도 설정 파일 |
 | 장애 조사(sre_agent) | `sre_agent` 문서 참조 | 별도 가상환경 |
+
+알람 워커는 기본으로 본체 안에서 돈다. 알람이 몰릴 때 워커가 화면·질의 응답과 서로 늦추지 않게 하려면 워커만 **별도 프로세스**로 띄울 수 있다(선택).
+
+| 프로세스 | 기동 | 비고 |
+|---|---|---|
+| 알람 워커(선택 · 분리 모드) | `python -m noise_gate.worker` | 본체와 같은 `.env`·`.encenv`를 읽는다 — 레포 루트에서 실행 |
+
+| 설정 키 | 기본 | 뜻 |
+|---|---|---|
+| `ALARM_WORKER_IN_PROCESS` | true | true면 본체가 워커를 띄운다(종전). false면 `ALARM_ENABLED=true`여도 본체는 워커를 띄우지 않고 로그 1줄(「워커는 별도 프로세스 `python -m noise_gate.worker`로 띄운다」)만 남긴다 |
+| `ALARM_WORKER_SINGLETON_GUARD` | false | 켜면 워커가 소비 전에 Redis 잠금 `alarm:worker:lock`(값 `호스트:pid` · 30초 만료 · 10초마다 갱신)을 잡는다. 이미 다른 워커가 잡고 있으면 소비하지 않고 ERROR 1줄을 남기고 그 워커만 끝난다(본체는 계속 뜬다). 돌던 중 잠금을 잃으면 새 알람을 읽지 않고 멈춘다 — 잠금 값이 바뀌었으면 바로, Redis 호출이 실패하면 경고 1줄 뒤 다시 시도하다가 만료(30초) 전까지 갱신하지 못할 때 잃은 것으로 본다. 본체 안·별도 프로세스 어느 모드든 같다 |
+| `ALARM_WORKER_DRAIN_TIMEOUT_SECONDS` | 30 | 별도 프로세스가 종료 신호(SIGTERM·Ctrl+C)를 받으면 새로 읽지 않고 진행 중 알람을 마무리하는데, 이 시간 + 5초 안에 끝나지 않으면 남은 처리를 취소하고 끝낸다. 동시 처리 2 이상이면 이 시간을 넘긴 알람은 처리 완료 표시(ACK)를 하지 않아 Redis에 미처리로 남는다 — 서비스 관리자의 강제 종료 유예는 이 값 + 5초보다 길게 둔다 |
+| `ALARM_WORKER_MAX_CONCURRENCY` | 1 | 알람을 동시에 몇 건까지 처리할지(1~16). 1이면 종전처럼 한 건씩 처리한다. 같은 호스트·같은 사건처럼 겹치는 알람은 2 이상이어도 차례로 처리하고, PAGE 재판정 기록이 상한 근처면 잠시 한 건씩 처리하며 경고 1줄을 남긴다 |
+| `ALARM_WORKER_RECLAIM_PENDING_ON_START` | false | 켜면 기동 직후 직전 실행이 처리 완료 표시를 못 한 알람을 먼저 다시 처리한다. 이미 통보한 PAGE가 다시 통보될 수 있어 기본 꺼짐이다 |
 :::
 ::: how
 1. Redis·DB를 먼저 띄운다.
 2. MCP 서버 → 본체 → 알람 수신부 순서로 기동한다.
 3. 설치 절차는 `docs/03_setup_guide.md`를 따른다.
+4. (분리 모드) `.env`에 `ALARM_WORKER_IN_PROCESS=false`를 넣고 본체를 띄운 뒤, 레포 루트에서 `python -m noise_gate.worker`를 띄운다. 본체 로그에 「알람 분석 워커를 본체에서 띄우지 않는다」, 워커 로그에 「알람 워커 시작」이 각각 1줄 있는지 본다.
+5. 워커를 멈출 때는 SIGTERM(또는 Ctrl+C)을 보낸다. `ALARM_ENABLED=false`면 워커 프로세스는 바로 끝나고(종료 코드 0), 설정을 읽지 못하면 「설정 로드 실패」 줄과 함께 종료 코드 2로 끝난다.
 :::
 ::: ui -
 화면 캡처가 없다.
 :::
 ::: caution
 - MCP 서버의 코드·설정을 바꾸면 MCP 서버를 재기동해야 반영된다.
+- **운영에서 분리 모드·잠금·동시 처리 2 이상을 켜는 것은, 같은 소비자 그룹을 워커 둘 이상이 읽고 있다는 의심을 먼저 확인한 뒤로 미룬다**(저장소 `plans/162` W0-H). 그 상태에서는 판정 수치를 믿을 수 없다.
+- 분리 모드에서 본체를 `ALARM_WORKER_IN_PROCESS=true`(기본)로 둔 채 워커 프로세스를 띄우면 워커가 둘이 되어 같은 알람 스트림을 나눠 읽는다. 잠금이 꺼져 있으면 워커 프로세스가 기동 때 경고 1줄을 남긴다. 둘 중 하나만 소비하게 하려면 본체를 false로 두거나 잠금을 켠다.
+- 잠금 상실·획득 실패 시 워커는 끝난다 — 별도 프로세스는 종료 코드 3(상실)·4(획득 실패)로 끝나므로 서비스 관리자에 실패 시 재기동 설정(`Restart=on-failure` 등)이 필요하다. 본체 안 모드에서는 본체를 다시 띄우기 전까지 알람 소비가 멈춘다.
+- 분리 모드에서는 설정을 바꾸면 워커 프로세스도 다시 띄워야 반영된다(본체만 다시 띄우면 워커는 이전 설정으로 돈다).
+- 분리 모드에서는 담당 강조(`DUTY_ALARM_FOCUS_ENABLED`)를 켜도 알람 실시간 이벤트에 영향 프로세스 종류가 실리지 않는다 — 프로세스 종류에서 나오는 「단서」 표시가 빠진다(제니퍼 이벤트 유형 단서는 그대로).
+- 분리 모드에서 본체가 내려가 있는 동안 워커가 낸 실시간 화면 이벤트(SSE 브리지)와 사건 열림·해소 기록(`NOISE_INCIDENT_TRACKING_ENABLED`)은 본체가 받지 못해 빠진다. 판정 기록 파일은 두 프로세스가 같은 경로를 쓰므로 그대로 쌓인다.
 :::
 ::: related
 - [A-54 실행 경로 확인](#a-54)
@@ -4215,11 +4266,15 @@ Redis에는 스키마 캐시·유사어·알람 스트림·세션이 있다. 서
 | `SRE_NARRATOR_STEP_TIMEOUT_S` | 60 | 단계마다 붙는 AI 해석 1건을 기다리는 시간(초). 넘기면 그 단계는 「AI 해석 없음 — 소견기 타임아웃」으로 보인다. 조사 남은 시간이 적으면 자동으로 줄어든다 |
 | `SRE_NARRATOR_SYNTHESIS_TIMEOUT_S` | 90 | 마지막 종합 해석 1건을 기다리는 시간(초). 단계 해석을 모두 읽으므로 단계 해석보다 길게 둔다 |
 | `SRE_PLAYBOOK_POLESTAR_SOURCE_MAP` | (비움) | 제니퍼 알람에 폴스타 서버 정보가 없을 때 쓸 폴스타 DB를 제니퍼 소스별로 정한다. JSON으로 적는다(예 `{"cm_prd":"polestar_cm_gp"}`). 이 값으로 정하면 조사 결과에 「설정 매핑으로 대체(cm_prd→polestar_cm_gp)」가 표시된다 |
-| `INVESTIGATION_MAX_CONCURRENT` | 2 | 동시에 도는 조사 수 상한. 넘친 조사는 대기열에서 차례를 기다린다(사용자 화면 「대기 중 · 순번 N」) |
+| `INVESTIGATION_MAX_CONCURRENT` | 2 | 동시에 도는 조사 수 상한. 넘친 조사는 대기열에서 차례를 기다린다(사용자 화면 「대기 중 · 순번 N」). 이 값을 올리려면(예: 동시 5건) 아래 `SRE_HOLMES_MCP_LOCK_SCOPE`·`SRE_TOOL_PER_INVESTIGATION_SHARE`를 함께 정한다 — 그대로 두면 심층 조사의 도구 호출이 한 줄로 서서 조사가 늘어도 빨라지지 않고, 한 조사가 도구 자리를 독식할 수 있다 |
 | `INVESTIGATION_MAX_QUEUED` | 4 | 대기열 상한. 기다리는 조사가 이만큼이면 새 조사를 받지 않고 바로 거절한다(`queue_full` — 사용자 화면 「조사 대기열이 가득 찼습니다」). 시간 초과로 끝난 조사가 자리를 아직 쥐고 있으면 `service_overloaded`(「조사 서비스가 바쁩니다」)로 거절한다 |
 | `INVESTIGATION_ABANDON_GRACE_SECONDS` | 120 | 시간 초과로 버린 조사가 자리(동시 조사 슬롯·같은 서버 키)를 쥐고 있을 수 있는 최대 시간(초). 버린 조사는 중단 신호를 받고 끝날 때까지 자리를 쥐다가, 이 시간을 넘기면 강제로 반납한다(감사 `zombie_released`) |
 | `SRE_TOOL_GLOBAL_CONCURRENCY` | 8 | 모든 조사가 함께 쓰는 도구 동시 호출 상한(폴스타 MCP · APM 각각). `SRE_TOOL_BATCH_CONCURRENCY`는 그대로 두고 그 위에 건다. 도구 1건 상한 안에 자리를 못 얻으면 그 호출만 결손(`tool_concurrency_wait_timeout`)이다 |
+| `SRE_HOLMES_MCP_LOCK_SCOPE` | server | 심층 조사(HolmesGPT)의 도구 호출 순서 규칙. `server`면 지금처럼 같은 MCP 서버로 가는 호출을 조사 서비스 전체에서 한 번에 하나씩만 보낸다(동시 조사가 여럿이면 서로 줄을 선다). `investigation`이면 한 조사 안에서만 하나씩 보내고 조사끼리는 동시에 보낸다. 이때 그 호출도 `SRE_TOOL_GLOBAL_CONCURRENCY` 자리를 함께 나눠 써서 전체 동시 호출 수는 그 상한을 넘지 않는다 — 도구 1건 상한 안에 자리를 못 얻으면 그 호출만 결손(`tool_concurrency_wait_timeout`)이다 |
+| `SRE_TOOL_PER_INVESTIGATION_SHARE` | (비움) | 조사 1건이 동시에 쥘 수 있는 도구 자리 수(폴스타 MCP · APM 각각). 한 조사가 `SRE_TOOL_GLOBAL_CONCURRENCY` 자리를 독식하지 않게 한다. 플레이북 조회와(`SRE_HOLMES_MCP_LOCK_SCOPE=investigation`이면) 심층 조사 호출에 함께 적용된다. 비우면 조사별 제한이 없다(종전). `SRE_TOOL_GLOBAL_CONCURRENCY`를 비우면 쓰지 않는다. 예: 전역 8 · 동시 조사 5건이면 2~4 |
+| `SRE_APM_OWNER_PER_INVESTIGATION_ENABLED` | false | APM 게이트웨이(제니퍼) 호출에 조사마다 다른 호출자 표시(`owner=investigation:<조사 ID>`)를 싣는다. 게이트웨이가 호출자별로 몫을 나눠 줄 때 동시 조사들이 한 호출자로 묶이지 않게 하려는 것이라, 게이트웨이의 다중 사용자 공정 분배와 함께 쓴다. 끄면 종전처럼 싣지 않는다 |
 | `INVESTIGATION_HOURLY_BUDGET` | 20 | 조사 서비스 전체의 시간당 조사 수 상한. 넘으면 새 조사를 거절하고(`hourly_budget_exceeded` — 사용자 화면 「조사 서비스의 시간당 조사 상한에 도달했습니다.」), 조사 수와 심층 수를 더한 값이 넘으면 심층 조사 `parallel`을 `conditional`로 낮춘다. 사용자별 시간당 3건과 따로 센다 |
+| `SRE_INVESTIGATION_METRICS_ENABLED` | false | 측정용. 켜면 조사 1건마다 감사 로그에 `investigation_metrics` 이벤트 1건(전체 소요·대기열 대기 · LLM 호출 수와 지연 · 도구 자리 대기(폴스타 MCP · APM 각각) · 도구 실행 시간 · CPU 사용)을 남긴다. 동시 조사 수를 정하기 전 측정에 쓴다. 끄면 감사 로그·응답이 종전과 같다 |
 
 조사 시간과 맞물리는 다른 곳의 상한이다. 각 프로그램의 설정 파일에서 바꾼다.
 

@@ -23,6 +23,7 @@ import uuid
 from pathlib import Path
 
 import redis
+from noise_gate.infrastructure.decision_store import decision_file_chain, iter_decision_lines
 from noise_gate.scripts.mock_polestar_events import SCENARIOS, make_payload
 from scripts.manual.snapshot import APP_DIRS, FIXTURES, PROFILES
 
@@ -102,12 +103,25 @@ def record(wait_s: int) -> None:
     (OUT / "incident.jsonl").write_text(
         "".join(json.dumps(e, ensure_ascii=False) + "\n" for e in got[CH_INC]), "utf-8"
     )
-    src = APP_DIRS["alarm"] / "logs" / "alarm_decisions.jsonl"
-    if src.exists():
-        shutil.copy2(src, OUT / "decisions.jsonl")
-    print(
-        f"SSE {len(got[CH_SSE])}건 · 사건 {len(got[CH_INC])}건 · 결정 기록 {'있음' if src.exists() else '없음'}"
-    )
+    copied = copy_decisions(APP_DIRS["alarm"] / "logs" / "alarm_decisions.jsonl")
+    found = "있음" if copied else "없음"
+    print(f"SSE {len(got[CH_SSE])}건 · 사건 {len(got[CH_INC])}건 · 결정 기록 {found}")
+
+
+def copy_decisions(src: Path, dst: Path | None = None) -> bool:
+    """녹화한 결정 기록을 픽스처로 옮긴다 — 기록이 없으면 False.
+
+    (plans/207 M-3) 회전 조각이 있으면 조각부터 이어 한 파일로 쓴다(없으면 종전 복사와 같다).
+    끝 줄에 개행이 없는 조각(쓰기 중단)이 다음 파일 첫 줄과 붙지 않게 줄마다 개행을 보장한다.
+    """
+    dst = dst or OUT / "decisions.jsonl"
+    chain = decision_file_chain(src)
+    if chain == [src]:
+        shutil.copy2(src, dst)
+    elif chain:
+        lines = (ln if ln.endswith("\n") else ln + "\n" for ln in iter_decision_lines(src))
+        dst.write_text("".join(lines), "utf-8")
+    return bool(chain)
 
 
 def replay(delay: float = 0.4) -> None:

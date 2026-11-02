@@ -136,6 +136,61 @@ settings:
     stability: 값을 바꾸면 수집기 설정도 함께 바꿔야 한다. 재시작해야 반영된다.
     related: [OBS_METRICS_ENDPOINT_ENABLED]
 
+  OBS_LOOP_LAG_MONITOR_ENABLED:
+    summary: 본체 서버가 요청을 처리하지 못하고 멈춘 시간(이벤트 루프 정지)을 잴지.
+    behavior: >-
+      본체는 알람 워커·화면 요청·실시간 스트림이 한 실행 흐름을 나눠 쓴다. 어느 한 작업이 오래
+      붙잡으면 나머지가 그동안 모두 멈춘다. 켜면 0.05초마다 깨어나는 감시 작업이 예정보다 늦게 깬
+      만큼을 멈춘 시간으로 재서, 임계 이상이면 경고 1줄을, 정해진 주기마다 최대·상위 1% 값 요약 1줄을
+      서버 로그에 남긴다. **꺼져 있으면 감시 작업 자체가 없다** — 현행과 같다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 감시 작업이 없다. 서버 동작은 지금과 같다.
+      - value: "true"
+        effect: 멈춘 시간을 로그로 남긴다. 화면이 잠깐씩 굳는 원인을 시각으로 짚을 수 있다.
+    example: >-
+      장애 조사 여러 건이 동시에 돌 때 장애 진단 화면이 잠깐씩 굳는다면 켜 둔다. 로그에
+      「이벤트 루프 정지 350ms」가 찍힌 시각과 그때 들어온 요청을 맞춰 보면 어느 작업이 붙잡았는지 좁혀진다.
+    performance: 초당 20번 깨어나는 작은 작업 1개가 더해진다. 요청 처리 경로는 바뀌지 않는다.
+    stability: 측정만 한다 — 멈춤을 고치거나 요청을 막지 않는다.
+    recommendation: 응답이 굳는 현상을 조사할 때만 켠다. 재시작해야 반영된다.
+    related: [OBS_LOOP_LAG_THRESHOLD_MS, OBS_LOOP_LAG_REPORT_SECONDS]
+
+  OBS_LOOP_LAG_THRESHOLD_MS:
+    summary: 몇 ms 이상 멈춘 것을 경고 로그로 남길지(감시를 켰을 때만).
+    behavior: >-
+      감시 작업이 잰 멈춘 시간이 이 값 이상이면 그때마다 경고 1줄을 남기고, 주기 요약의 초과 횟수에 센다.
+    options:
+      - value: "100"
+        label: 기본
+        effect: 사람이 화면 굳음을 느끼기 시작하는 수준(0.1초) 이상만 남는다.
+      - value: "20"
+        effect: 짧은 멈춤까지 남아 경고 줄이 많아진다.
+      - value: "500 이상"
+        effect: 큰 멈춤만 남는다. 짧은 멈춤이 잦은 현상은 요약에서만 보인다.
+    example: >-
+      100으로 두면 0.3초 멈춤은 경고로 남고 0.05초 멈춤은 요약의 상위 1% 값에만 반영된다.
+    performance: 로그 줄 수에만 영향을 준다.
+    stability: 너무 낮추면 정상 처리 중의 짧은 멈춤까지 경고가 쌓인다.
+    related: [OBS_LOOP_LAG_MONITOR_ENABLED]
+
+  OBS_LOOP_LAG_REPORT_SECONDS:
+    summary: 멈춘 시간 요약(최대·상위 1%·임계 초과 횟수)을 몇 초마다 남길지(감시를 켰을 때만).
+    behavior: >-
+      주기마다 그 사이 잰 값을 요약 1줄로 남기고 새로 센다. 1초 미만은 1초로 올린다.
+    options:
+      - value: "60"
+        label: 기본
+        effect: 1분에 1줄. 시간대별 추이를 보기에 충분하다.
+      - value: "10"
+        effect: 측정 중 짧은 구간을 촘촘히 본다. 로그 줄이 늘어난다.
+    example: >-
+      조사 5건을 동시에 돌려 보는 10분 동안 10으로 두면, 조사가 몰린 구간과 한가한 구간의 차이가 줄 단위로 갈린다.
+    performance: 로그 줄 수에만 영향을 준다.
+    stability: 측정만 한다.
+    related: [OBS_LOOP_LAG_MONITOR_ENABLED]
+
   POLESTAR_REST_REALTIME_USAGE_ENABLED:
     summary: >-
       "지금·실시간" CPU·메모리 질의를 SQL 대신 폴스타 REST API로 조회할지.

@@ -247,9 +247,13 @@ def build_decision_store(config: Any) -> Any:
     try:
         from noise_gate.infrastructure.decision_store import DecisionStore
 
+        ng = config.noise_gate
         return DecisionStore(
-            config.noise_gate.decision_store_path,
-            config.noise_gate.decision_store_enabled,
+            ng.decision_store_path,
+            ng.decision_store_enabled,
+            # (plans/207 M-3) 판정 파일 회전 — 기본 0·off = 회전 없음(종전과 같다)
+            rotate_max_bytes=getattr(ng, "decision_store_rotate_max_bytes", 0),
+            rotate_daily=getattr(ng, "decision_store_rotate_daily", False),
         )
     except Exception:
         logger.exception("발송 판단 감사 저장소 생성 실패 — 감사 없이 진행")

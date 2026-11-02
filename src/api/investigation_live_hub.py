@@ -92,6 +92,15 @@ _CLIP_KEYS: tuple[str, ...] = (
 _STATUS_RUNNING = "running"
 #: 목록 「엔진」 칸에 싣는 엔진 이름(W14 교정 — 그 밖의 값은 버린다).
 LIST_ENGINES: frozenset[str] = frozenset({"playbook", "holmes"})
+#: (plans/207 A1b) 조사당 사용자 경로 가림 결과를 둘 마스크 함수 수 상한 — 라우트는 마스크 꼴마다
+#: 같은 함수를 넘기므로 보통 1개다. 넘치면 먼저 든 것부터 버린다.
+USER_MASK_CACHE_MAX_FNS = 4
+#: (plans/207 A1b) 아직 안 가린 이벤트가 이보다 많으면 이벤트 루프 밖(스레드)에서 가린다 —
+#: 진행 중 조사에 처음 붙을 때의 300건 묶음. 폴링 1회 증분처럼 작은 묶음은 루프 위에서 가린다.
+USER_MASK_INLINE_MAX = 16
+
+#: 사용자 경로 가림 결과 캐시 — {seq: (원 이벤트, 사용자 항목 | None=관리자 전용이라 뺌)}.
+_UserCache = dict[int, tuple[dict[str, Any], dict[str, Any] | None]]
 
 
 def _active_statuses() -> frozenset[str]:
@@ -129,24 +138,40 @@ def _mask_value(value: Any, mask_fn: Callable[[str], str] | None) -> Any:
     return value
 
 
+def _user_item(
+    ev: Mapping[str, Any], mask_fn: Callable[[str], str] | None
+) -> dict[str, Any] | None:
+    """사용자 경로 이벤트 1건(관리자 전용이면 None) — 순수 함수라 스레드에서 불러도 된다."""
+    if ev.get("kind") in ADMIN_ONLY_KINDS or (ev.get("engine"), ev.get("kind")) in (
+        ADMIN_ONLY_ENGINE_KINDS
+    ):
+        return None
+    item: dict[str, Any] = {}
+    for key in USER_EVENT_KEYS:
+        if key not in ev:
+            continue
+        value = ev[key]
+        item[key] = value if key in _UNMASKED_EVENT_KEYS else _mask_value(value, mask_fn)
+    return item
+
+
 def user_events(
     events: Iterable[Mapping[str, Any]], mask_fn: Callable[[str], str] | None
 ) -> list[dict[str, Any]]:
     """사용자 경로 이벤트 — 키 화이트리스트 · D-325 ③ 마스킹(순수 · HolmesGPT 메모만 G-48)."""
     out: list[dict[str, Any]] = []
     for ev in events:
-        if ev.get("kind") in ADMIN_ONLY_KINDS or (ev.get("engine"), ev.get("kind")) in (
-            ADMIN_ONLY_ENGINE_KINDS
-        ):
-            continue
-        item: dict[str, Any] = {}
-        for key in USER_EVENT_KEYS:
-            if key not in ev:
-                continue
-            value = ev[key]
-            item[key] = value if key in _UNMASKED_EVENT_KEYS else _mask_value(value, mask_fn)
-        out.append(item)
+        item = _user_item(ev, mask_fn)
+        if item is not None:
+            out.append(item)
     return out
+
+
+def _user_pairs(
+    events: list[dict[str, Any]], mask_fn: Callable[[str], str] | None
+) -> list[tuple[dict[str, Any], dict[str, Any] | None]]:
+    """(원 이벤트, 사용자 항목) 묶음 — `prepare_user_events`가 스레드에서 부른다."""
+    return [(ev, _user_item(ev, mask_fn)) for ev in events]
 
 
 def _change_key(entry: LiveEntry) -> tuple[Any, ...]:
@@ -206,6 +231,10 @@ class LiveEntry:
     archived: bool = False
     task: asyncio.Task[None] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+    #: (plans/207 A1b) 사용자 경로 가림 결과 — 마스크 함수별 · 구독자·상세 조회가 같은 결과를
+    #: 나눠 쓴다(같은 이벤트를 구독자마다 다시 가리지 않는다). 버퍼와 함께 sweep 된다.
+    user_cache: dict[Callable[[str], str] | None, _UserCache] = field(default_factory=dict)
+    mask_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
     @property
     def running(self) -> bool:
@@ -222,6 +251,74 @@ class LiveEntry:
     def events_after(self, since: int) -> list[dict[str, Any]]:
         """`seq > since` 이벤트(오래된 것 먼저)."""
         return [ev for ev in self.events if ev["seq"] > since]
+
+    def user_view(
+        self, events: list[dict[str, Any]], mask_fn: Callable[[str], str] | None
+    ) -> list[dict[str, Any]]:
+        """버퍼 이벤트의 사용자 경로 뷰 — `user_events(events, mask_fn)`와 같은 값(캐시 공유).
+
+        캐시는 이벤트 객체가 같을 때만 쓴다(요약 JSONL로 버퍼를 갈아 끼우면 다시 가린다).
+        돌려준 항목은 구독자끼리 나눠 쓰므로 고치지 않는다(직렬화만 한다).
+        """
+        missing = self._user_missing(events, mask_fn)
+        if missing:
+            self._store_user(mask_fn, _user_pairs(missing, mask_fn))
+        cache = self.user_cache.get(mask_fn) or {}
+        out: list[dict[str, Any]] = []
+        for ev in events:
+            hit = cache.get(ev["seq"])
+            # seq가 겹친 이벤트(요약 JSONL 이상)는 캐시 한 칸을 다투므로 그 자리에서 가린다.
+            item = hit[1] if hit is not None and hit[0] is ev else _user_item(ev, mask_fn)
+            if item is not None:
+                out.append(item)
+        return out
+
+    async def prepare_user_events(
+        self, since: int, mask_fn: Callable[[str], str] | None
+    ) -> None:
+        """`seq > since` 이벤트의 사용자 경로 가림을 미리 채운다(plans/207 A1b).
+
+        아직 안 가린 것이 `USER_MASK_INLINE_MAX`건 이하면 아무것도 하지 않는다(읽을 때 루프
+        위에서 가린다). 많으면 이벤트 루프 밖(스레드)에서 한 번만 가린다 — 같은 순간 깨어난
+        다른 구독자는 잠금 뒤에서 기다렸다가 결과를 쓴다. 이벤트 dict는 버퍼에 든 뒤 고치지
+        않으므로 목록 사본만 넘기면 스레드에서 읽어도 된다.
+        """
+        if len(self._user_missing(self.events_after(since), mask_fn)) <= USER_MASK_INLINE_MAX:
+            return
+        async with self.mask_lock:
+            missing = self._user_missing(self.events_after(since), mask_fn)
+            if len(missing) <= USER_MASK_INLINE_MAX:
+                return
+            pairs = await asyncio.to_thread(_user_pairs, missing, mask_fn)
+            self._store_user(mask_fn, pairs)
+
+    def _user_missing(
+        self, events: list[dict[str, Any]], mask_fn: Callable[[str], str] | None
+    ) -> list[dict[str, Any]]:
+        cache = self.user_cache.get(mask_fn) or {}
+        return [
+            ev for ev in events
+            if (hit := cache.get(ev["seq"])) is None or hit[0] is not ev
+        ]
+
+    def _store_user(
+        self,
+        mask_fn: Callable[[str], str] | None,
+        pairs: list[tuple[dict[str, Any], dict[str, Any] | None]],
+    ) -> None:
+        cache = self.user_cache.get(mask_fn)
+        if cache is None:
+            while len(self.user_cache) >= USER_MASK_CACHE_MAX_FNS:
+                del self.user_cache[next(iter(self.user_cache))]
+            cache = self.user_cache[mask_fn] = {}
+        for ev, item in pairs:
+            cache[ev["seq"]] = (ev, item)
+        if len(cache) > ACTIVITY_MAX_EVENTS:
+            # 버퍼에서 밀려났거나 갈아 끼운 이벤트의 결과를 비운다(상한 = 버퍼 이벤트 수).
+            # 캐시가 원 이벤트를 쥐고 있어 id가 재사용되지 않는다.
+            live = {id(ev) for ev in self.events}
+            for seq in [s for s, (ev, _) in cache.items() if id(ev) not in live]:
+                del cache[seq]
 
 
 class InvestigationLiveHub:
@@ -379,7 +476,7 @@ class InvestigationLiveHub:
                 "next_seq": entry.cursor,
                 "truncated": entry.truncated,
                 "source": entry.source,
-                "events": events if operator else user_events(events, mask_fn),
+                "events": events if operator else entry.user_view(events, mask_fn),
             },
             **{key: entry.state.get(key) for key in STATE_KEYS},
         }
@@ -749,7 +846,7 @@ def _watch_frames(
             "next_seq": entry.cursor,
             "truncated": entry.truncated,
             "source": entry.source,
-            "events": new if ctx.operator else user_events(new, ctx.mask_fn),
+            "events": new if ctx.operator else entry.user_view(new, ctx.mask_fn),
             **{key: entry.state.get(key) for key in STATE_KEYS},
             "progress": entry.live.get("progress"),
         }, cursor_key(ctx.cursors)))
@@ -808,6 +905,14 @@ async def stream_events(
                 break
             if hub.clock() - started >= STREAM_MAX_SECONDS:
                 break
+            if not ctx.operator:
+                # (plans/207 A1b) 큰 묶음 가림은 루프 밖에서 먼저 — 아래 프레임 조립은 결과를 쓴다.
+                for investigation_id in ctx.watch:
+                    entry = hub.entry(investigation_id)
+                    if investigation_id not in done and entry is not None:
+                        await entry.prepare_user_events(
+                            ctx.cursors.get(investigation_id, -1), ctx.mask_fn
+                        )
             version = hub.version
             scoped = {
                 str(rec.get("investigation_id")): rec

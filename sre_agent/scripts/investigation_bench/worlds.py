@@ -70,6 +70,16 @@ class World:
         return frozenset(str(h).strip().casefold() for h in self.data.get("hosts") or [])
 
     @property
+    def host_set(self) -> frozenset[str]:
+        """`hosts` + 알람 호스트(`event.hostname`·`serverName`) · 소문자.
+
+        호출·요청의 세계 판별용.
+        """
+        ev = self.event
+        extra = {str(h).strip().casefold() for h in (ev.get("hostname"), ev.get("serverName")) if h}
+        return self.hosts | extra
+
+    @property
     def label(self) -> dict[str, Any]:
         """정답 라벨(`root_entity`·`layer`·`kind`·`aliases` — 채점기 입력)."""
         return dict(self.data.get("label") or {})

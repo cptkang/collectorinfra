@@ -20,6 +20,13 @@
   등록 때 1회 부르고 실패하면 그 toolset을 프로세스 수명 내내 끈다(W0 실측).
 - 모든 호출을 `world_calls.jsonl`에 한 줄씩 쓴다(§4.9). 바인딩은 127.0.0.1 고정, 제어 경로는
   루프백 클라이언트만 받는다.
+- 동시 모드(plans/207 A0-a): 제어 경로에 `{worlds: [{world_id, trial, arm}, …]}`를 주면 세계 여럿이
+  동시에 활성이다. 호출의 호스트 인자로 세계를 가르고(`World.host_set` — 동시 세계끼리 겹치지
+  않게 고른다) 호출 로그 행에 그 세계를 싣는다. 활성 세계가 하나면 호스트 인자가 없어도 그
+  세계다. 둘 이상인데 호스트 인자가 없으면 세계 미지정(`matcher` 없음 · 로그
+  `route: ambiguous`), 어느 세계 호스트도 아니면 호스트 불일치다. 단일 지정은 동시 목록을 지운다.
+- `--tool-delay-s`(명세 `world.tool_delay_s` · 기본 0 = 지연 없음): 도구 호출 1건마다 고정 지연 —
+  asyncio 대기라 동시 호출을 서로 막지 않는다.
 
 경계(D-139 · §9.5): `mcp_server`·`apm_gateway`·`sre_agent` 패키지를 import하지 않는다.
 """
@@ -235,18 +242,33 @@ class CallOutcome:
     is_error: bool = False
 
 
+@dataclass
+class Route:
+    """동시 모드에서 호출 1건이 간 세계(`world_id` None = 못 가름 — `reason`)."""
+
+    world_id: str | None
+    trial: Any = None
+    arm: str | None = None
+    reason: str | None = None  # ambiguous(호스트 인자 없음) · unknown_host(어느 세계 호스트도 아님)
+    hosts: tuple[str, ...] = ()
+
+
 class WorldServer:
     """스냅샷 도구 표면 + 현재 세계 응답. 엔드포인트(`polestar`·`apm`)마다 SSE 앱 하나."""
 
     def __init__(
-        self, snapshot: schema.Snapshot, worlds: Mapping[str, World], log_path: Path
+        self, snapshot: schema.Snapshot, worlds: Mapping[str, World], log_path: Path,
+        tool_delay_s: float = 0.0,
     ) -> None:
         self.snapshot = snapshot
         self.worlds = dict(worlds)
         self.log_path = Path(log_path)
+        self.tool_delay_s = max(0.0, float(tool_delay_s))
         self.world_id: str | None = None
         self.trial: int | None = None
         self.arm: str | None = None
+        # 동시 모드 활성 세계 — world_id → {trial, arm}(비면 단일 모드).
+        self.actives: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._tools = schema.tool_index(snapshot)
         self._servers: list[uvicorn.Server] = []
@@ -263,13 +285,51 @@ class WorldServer:
             raise KeyError(world_id)
         with self._lock:
             self.world_id, self.trial, self.arm = world_id, trial, arm
+            self.actives = {}
+
+    def set_actives(self, entries: Sequence[Mapping[str, Any]]) -> None:
+        """동시 모드 — 세계 여럿을 함께 활성화한다(단일 지정은 해제). 모르는 세계면 KeyError."""
+        actives: dict[str, dict[str, Any]] = {}
+        for e in entries:
+            wid = str(e.get("world_id"))
+            if wid not in self.worlds:
+                raise KeyError(wid)
+            actives[wid] = {"trial": e.get("trial"), "arm": e.get("arm")}
+        with self._lock:
+            self.world_id, self.trial, self.arm = None, None, None
+            self.actives = actives
+
+    def route(self, name: str, arguments: Mapping[str, Any] | None) -> Route | None:
+        """동시 모드에서 호출이 간 세계 — 단일 모드면 None."""
+        with self._lock:
+            actives = dict(self.actives)
+        if not actives:
+            return None
+        host_keys, list_keys = host_arg_keys(self._tools.get(name, {}))
+        hosts = tuple(h.strip().casefold()
+                      for h in _hosts_in(clean_args(arguments), host_keys, list_keys))
+        if hosts:
+            hits = [w for w in actives if set(hosts) & self.worlds[w].host_set]
+            wid = hits[0] if len(hits) == 1 else None
+            reason = None if wid else ("ambiguous" if hits else "unknown_host")
+        elif len(actives) == 1:
+            wid, reason = next(iter(actives)), None
+        else:
+            wid, reason = None, "ambiguous"
+        entry = actives.get(wid) if wid else None
+        return Route(world_id=wid, trial=(entry or {}).get("trial"), arm=(entry or {}).get("arm"),
+                     reason=reason, hosts=hosts)
 
     # ── 호출 판정 ──
 
-    def resolve(self, endpoint: str, name: str, arguments: Mapping[str, Any] | None) -> CallOutcome:
-        """도구 호출 1건의 응답을 정한다(로그는 `call`이 쓴다)."""
-        with self._lock:
-            world = self.worlds.get(self.world_id) if self.world_id else None
+    def resolve(self, endpoint: str, name: str, arguments: Mapping[str, Any] | None,
+                route: Route | None = None) -> CallOutcome:
+        """도구 호출 1건의 응답을 정한다(로그는 `call`이 쓴다). `route`는 동시 모드 판별 결과."""
+        if route is not None:
+            world = self.worlds.get(route.world_id) if route.world_id else None
+        else:
+            with self._lock:
+                world = self.worlds.get(self.world_id) if self.world_id else None
         tool = self._tools.get(name, {})
         args = clean_args(arguments)
 
@@ -282,6 +342,9 @@ class WorldServer:
         if world is None:
             if name in HEALTH_DEFAULT_REPLIES:
                 return CallOutcome(reply=HEALTH_DEFAULT_REPLIES[name], matcher="default")
+            if route is not None and route.reason == "unknown_host":
+                return CallOutcome(reply=_host_miss(endpoint, name, list(route.hosts)),
+                                   arg_error="host")
             return CallOutcome(reply={"error": NO_WORLD_ERROR})
 
         host_keys, list_keys = host_arg_keys(tool)
@@ -329,8 +392,9 @@ class WorldServer:
         self, endpoint: str, name: str, arguments: Mapping[str, Any] | None
     ) -> types.CallToolResult:
         """도구 호출 1건 — 판정 → 실 서버 응답 모양 → `world_calls.jsonl` 1줄."""
+        route = self.route(name, arguments)
         try:
-            outcome = self.resolve(endpoint, name, arguments)
+            outcome = self.resolve(endpoint, name, arguments, route)
         except Exception as e:  # 세계 YAML 결함(gen 지시 오류 등) — 오류 응답 + 로그
             outcome = CallOutcome(reply=f"Error executing tool {name}: {e}", is_error=True)
         text = outcome.reply if isinstance(outcome.reply, str) else json.dumps(
@@ -339,7 +403,7 @@ class WorldServer:
         out_props = (self._tools.get(name, {}).get("outputSchema") or {}).get("properties") or {}
         if not outcome.is_error and "result" in out_props:
             structured = {"result": text}
-        self._log(endpoint, name, arguments, outcome, text)
+        self._log(endpoint, name, arguments, outcome, text, route)
         return types.CallToolResult(
             content=[types.TextContent(type="text", text=text)],
             structuredContent=structured,
@@ -347,13 +411,15 @@ class WorldServer:
         )
 
     def _log(self, endpoint: str, name: str, arguments: Mapping[str, Any] | None,
-             outcome: CallOutcome, text: str) -> None:
+             outcome: CallOutcome, text: str, route: Route | None = None) -> None:
         with self._lock:
+            tag = ((route.world_id, route.trial, route.arm) if route is not None
+                   else (self.world_id, self.trial, self.arm))
             row = {
                 "ts": datetime.now(UTC).isoformat(timespec="milliseconds"),
-                "world_id": self.world_id,
-                "trial": self.trial,
-                "arm": self.arm,
+                "world_id": tag[0],
+                "trial": tag[1],
+                "arm": tag[2],
                 "endpoint": endpoint,
                 "tool": name,
                 "args": dict(arguments or {}),
@@ -362,6 +428,8 @@ class WorldServer:
                 "reply": outcome.reply,
                 "reply_hash": hashlib.sha256(text.encode("utf-8")).hexdigest(),
             }
+            if route is not None and route.reason:
+                row["route"] = route.reason
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
             with self.log_path.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(row, ensure_ascii=False, default=str) + "\n")
@@ -380,6 +448,8 @@ class WorldServer:
 
         @low.call_tool(validate_input=False)  # type: ignore[untyped-decorator]
         async def _call_tool(name: str, arguments: dict[str, Any]) -> types.CallToolResult:
+            if self.tool_delay_s > 0:
+                await asyncio.sleep(self.tool_delay_s)
             return self.call(endpoint, name, arguments)
 
         if control:
@@ -391,13 +461,20 @@ class WorldServer:
                 if request.method == "POST":
                     body = await request.json()
                     try:
-                        self.set_active(body.get("world_id"), body.get("trial"), body.get("arm"))
-                    except KeyError:
-                        return JSONResponse({"error": f"unknown world: {body.get('world_id')}"},
+                        if isinstance(body.get("worlds"), list):
+                            self.set_actives(body["worlds"])
+                        else:
+                            self.set_active(body.get("world_id"), body.get("trial"),
+                                            body.get("arm"))
+                    except KeyError as e:
+                        missing = body.get("world_id") if "worlds" not in body else str(e)
+                        return JSONResponse({"error": f"unknown world: {missing}"},
                                             status_code=404)
                 state: dict[str, Any] = {"world_id": self.world_id, "trial": self.trial}
                 if self.arm is not None:  # arm 없이 부르면 응답 모양이 종전 그대로다
                     state["arm"] = self.arm
+                if self.actives:
+                    state["worlds"] = [{"world_id": w, **v} for w, v in self.actives.items()]
                 return JSONResponse(state)
 
         return mcp.sse_app()
@@ -453,8 +530,11 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--log", type=Path, required=True, help="world_calls.jsonl 경로")
     p.add_argument("--port", type=int, default=19190, help="polestar 엔드포인트(+제어 경로)")
     p.add_argument("--apm-port", type=int, default=None, help="apm 엔드포인트(지정할 때만 띄운다)")
+    p.add_argument("--tool-delay-s", type=float, default=0.0,
+                   help="도구 호출 1건당 고정 지연(초 · 기본 0 = 지연 없음 · plans/207 A0-a)")
     args = p.parse_args(argv)
-    server = WorldServer(schema.load_snapshot(args.snapshot), load_worlds(args.worlds), args.log)
+    server = WorldServer(schema.load_snapshot(args.snapshot), load_worlds(args.worlds), args.log,
+                         tool_delay_s=args.tool_delay_s)
     ports = {"polestar": args.port}
     if args.apm_port is not None:
         ports["apm"] = args.apm_port

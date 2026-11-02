@@ -45,6 +45,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import sys
 from collections import Counter
 from collections.abc import Callable, Iterable
@@ -84,6 +85,7 @@ from noise_gate.domain.page_review import (
 from noise_gate.domain.severity import coerce_severity
 from noise_gate.infrastructure.apm_noise_context import event_type_norm
 from noise_gate.infrastructure.cross_source_rules import episode_alarm, load_rules
+from noise_gate.infrastructure.decision_store import decision_fragments
 from noise_gate.infrastructure.polestar_noise_context import _unavailable
 
 SOURCE_POLESTAR = "polestar"
@@ -430,6 +432,46 @@ def load_jsonl(path: str) -> list[dict[str, Any]]:
     return records
 
 
+def expand_decision_inputs(paths: Iterable[str]) -> list[str]:
+    """입력 경로를 읽을 파일 순서로 펼친다 — 판정 감사 파일은 회전 조각부터(plans/207 M-3).
+
+    입력마다 그 회전 조각(`<이름>.<회전 시각>` · 오래된 것부터)을 앞에 붙인다. 조각이 없으면
+    입력 그대로다(종전과 같다 — 같은 파일을 두 번 넘기면 종전처럼 두 번 읽는다). 회전 틈(현재 파일
+    없음 · 조각 있음)이면 조각만 읽는다. 조각은 실경로 기준으로 한 번만 읽는다 —
+    `alarm_decisions.jsonl*`처럼 조각을 명시해 함께 넘겨도 두 번 세지 않으며, 이렇게 겹치면 표준
+    오류에 경고 한 줄을 남긴다.
+    """
+    out: list[str] = []
+    seen: set[str] = set()  # 읽기로 한 파일 전부(실경로)
+    fragment_seen: set[str] = set()  # 그중 조각으로 펼쳐 넣은 것
+    overlap = False
+    for path in paths:
+        fragments = [f for f in decision_fragments(path) if f.exists()]
+        for frag in fragments:
+            key = os.path.realpath(frag)
+            if key in seen:
+                overlap = True
+                continue
+            seen.add(key)
+            fragment_seen.add(key)
+            out.append(str(frag))
+        key = os.path.realpath(path)
+        if key in fragment_seen:
+            overlap = True
+            continue
+        if fragments and not os.path.exists(path):
+            continue
+        seen.add(key)
+        out.append(path)
+    if overlap:
+        print(
+            "경고: 입력에 회전 조각이 겹쳐 있어 같은 파일은 한 번만 읽었다(판정 감사 파일은 조각을 "
+            "자동으로 이어 읽는다)",
+            file=sys.stderr,
+        )
+    return out
+
+
 def main(argv: list[str] | None = None) -> int:
     """진입점 — 입력 JSONL들을 현행 공급자로 리플레이해 요약 JSON을 낸다."""
     parser = argparse.ArgumentParser(description="노이즈 정책 리플레이 하네스 (plans/144 W0)")
@@ -448,7 +490,7 @@ def main(argv: list[str] | None = None) -> int:
         help="PAGE 필요성 재판정 모드(plans/162 §8 · 기본 off = 종전 출력)",
     )
     args = parser.parse_args(argv)
-    lines = [rec for path in args.inputs for rec in load_jsonl(path)]
+    lines = [rec for path in expand_decision_inputs(args.inputs) for rec in load_jsonl(path)]
     tracker = build_tracker(args.cross_source_mode) if args.cross_source_mode != MODE_OFF else None
     rows, skipped = replay(lines, tracker=tracker, page_review_mode=args.page_review_mode)
     summary = summarize(rows, skipped, page_review_mode=args.page_review_mode)

@@ -390,7 +390,13 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     checkpointer = await _build_agent_graph(app, config)
 
     from noise_gate.infrastructure.notification_bus import AlarmNotificationBus
-    app.state.alarm_bus = AlarmNotificationBus()
+    # (plans/207 M-4) 구독자 큐 상한 — 0(기본)이면 종전 그대로 무상한 · 기동 시 1회 해석
+    # (양의 정수일 때만 읽는다 — `MagicMock` 설정이 상한으로 오판되지 않게)
+    bus_queue_max = getattr(getattr(config, "noise_gate", None), "alarm_bus_queue_max", 0)
+    if type(bus_queue_max) is int and bus_queue_max > 0:
+        app.state.alarm_bus = AlarmNotificationBus(queue_max=bus_queue_max)
+    else:
+        app.state.alarm_bus = AlarmNotificationBus()
 
     await _init_auth_db(app, config)
 
@@ -411,12 +417,21 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         incident_sub_task,
         incident_sub_stop,
     ) = await _start_incident_tracking(app, config)
+    loop_lag_task = _start_loop_lag_monitor(config)
 
     yield
 
     # 종료 시: 취소한 태스크를 기다릴 때 CancelledError(BaseException)도 삼킨다 — 처리 도중 취소되면
     # 그대로 새어 나와 「Application shutdown failed」로 아래 정리 단계를 건너뛰었다.
     import asyncio as _asyncio
+
+    # 종료 시: 루프 정지 감시 태스크 정리(plans/207 A0-b — 켰을 때만 있다)
+    if loop_lag_task:
+        loop_lag_task.cancel()
+        try:
+            await loop_lag_task
+        except (Exception, _asyncio.CancelledError):
+            pass
 
     # 종료 시: 조사 실시간 허브 폴러 정리(plans/187 W14 — 첫 사용 때만 생긴다 · 꺼져 있으면 없음)
     live_hub = getattr(app.state, "investigation_live_hub", None)
@@ -661,6 +676,35 @@ def _start_file_log_retention(config: AppConfig) -> Any:
     return file_log_retention_task
 
 
+def _start_loop_lag_monitor(config: AppConfig) -> Any:
+    """기동 단계 — 이벤트 루프 정지 감시 태스크(plans/207 A0-b · `OBS_LOOP_LAG_MONITOR_ENABLED`).
+
+    정확히 `True`일 때만 띄운다(`_metrics_endpoint_enabled`와 같은 이유 — `MagicMock` 설정 오판
+    방지).
+    꺼져 있으면 태스크를 만들지 않는다(현행과 비트 동일).
+
+    Returns:
+        시작한 태스크 또는 None.
+    """
+    obs: Any = getattr(config, "observability", None)
+    if getattr(obs, "loop_lag_monitor_enabled", False) is not True:
+        return None
+    import asyncio as _asyncio
+
+    from src.observability.loop_lag import run_loop_lag_monitor
+
+    threshold_ms = float(obs.loop_lag_threshold_ms)
+    report_seconds = float(obs.loop_lag_report_seconds)
+    task = _asyncio.create_task(
+        run_loop_lag_monitor(threshold_ms=threshold_ms, report_seconds=report_seconds),
+        name="loop-lag-monitor",
+    )
+    logger.info(
+        "이벤트 루프 정지 감시 시작 (임계 %.0fms · 요약 %.0f초)", threshold_ms, report_seconds
+    )
+    return task
+
+
 async def _connect_schema_cache_redis(config: AppConfig) -> None:
     """기동 단계 — Redis 연결 (스키마 캐시). 실패는 warning 후 파일 캐시로 폴백한다."""
     if config.schema_cache.backend == "redis":
@@ -680,6 +724,14 @@ def _start_alarm_worker(config: AppConfig) -> Any:
         워커 태스크 또는 None.
     """
     alarm_worker_task = None
+    # (plans/207 W5 · C-7) `ALARM_WORKER_IN_PROCESS=false`면 본체는 워커를 띄우지 않는다 — 정확히
+    # False일 때만(기본 true · `MagicMock` 설정은 종전대로 본체 안).
+    if config.alarm.enabled and getattr(config.alarm, "worker_in_process", True) is False:
+        logger.info(
+            "알람 분석 워커를 본체에서 띄우지 않는다 (ALARM_WORKER_IN_PROCESS=false) — "
+            "워커는 별도 프로세스 `python -m noise_gate.worker`로 띄운다"
+        )
+        return None
     if config.alarm.enabled:
         import asyncio as _asyncio
         from noise_gate.application.alarm_worker import AlarmWorker
@@ -886,6 +938,13 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     # (plans/201 W5 P3) 알람 카드 재배치 — 담당 업무와 독립(기동 시 1회 · 알람 capabilities로 전달).
     application.state.alarm_card_flow_enabled = (
         getattr(getattr(config, "alarm_card_flow", None), "enabled", False) is True
+    )
+    # (plans/207 M-1·M-2) 관제 메타모니터링 집계 루프 밖 실행·공유 캐시 — 켰을 때만 객체가 있다
+    # (기동 시 1회 · 없으면 `/admin/noise/health`·`/alarm/metrics`가 종전 동기 경로).
+    from src.api.noise_aggregate_cache import build_noise_aggregate_cache
+
+    application.state.noise_aggregate_cache = build_noise_aggregate_cache(
+        getattr(config, "noise_gate", None)
     )
 
     # CORS 설정 (환경변수에서 제어)

@@ -339,6 +339,25 @@ class PageRegistry:
 
     # ── 조회 ──
 
+    def sweep_due(self, now: float, pending: int = 0) -> bool:
+        """`now`에 주기 정리 기한이 됐거나, 키 상한 정리가 일어날 수 있는가(상태 불변).
+
+        `pending`은 아직 반영되지 않은 `observe` 수다 — 그만큼 키가 늘 수 있다고 보고 상한을 잰다.
+        동시 처리 실행기가 다음 알람 판정 전에 진행 중 반영을 모두 기다릴지 정하는 데 쓴다.
+        """
+        if now - self._swept_at >= _SWEEP_INTERVAL_SECONDS:
+            return True
+        return self.at_capacity(pending)
+
+    def at_capacity(self, pending: int = 0) -> bool:
+        """`pending`건이 더 반영되면 키 상한 정리가 일어날 수 있는가(지문·동시발생 키 · 상태
+        불변)."""
+        extra = max(int(pending), 0)
+        return (
+            len(self._pages) + extra >= self._max_keys
+            or len(self._fanout) + extra >= self._max_keys
+        )
+
     def signals_for(
         self, fingerprint: str, host_key: HostKey, fanout_key: FanoutKey, now: float
     ) -> PageReviewSignals:

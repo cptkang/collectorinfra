@@ -31,6 +31,7 @@ from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from src.api.dependencies import require_admin_user, require_user
+from src.api.noise_aggregate_cache import noise_aggregate_cache
 from src.security.audit_logger import log_silence_change
 
 logger = logging.getLogger(__name__)
@@ -381,6 +382,8 @@ def _decision_store(request: Request):  # noqa: ANN201
         ng.decision_store_path,
         bool(getattr(ng, "decision_store_enabled", True)),
         int(getattr(ng, "decision_store_max_lines", 20000)),
+        # (plans/207 M-3) 창을 준 억제기 상태 집계는 끝에서 거꾸로 읽다가 창 밖에서 멈춘다(기본 off)
+        recent_scan=getattr(ng, "decision_store_recent_scan_enabled", False),
     )
 
 
@@ -819,15 +822,25 @@ async def noise_health(
     threshold = float(getattr(ng, "meta_alert_suppress_ratio", 0.9))
     min_events = int(getattr(ng, "meta_alert_min_events", 1))
 
-    agg = store.aggregate(window_seconds=window)
-    alerts = store.meta_alerts(
-        window_seconds=window,
-        suppress_ratio_threshold=threshold,
-        min_events=min_events,
-        collection_failed_ratio_threshold=float(
-            getattr(ng, "meta_alert_collection_failed_ratio", 0.0)
-        ),
-    )
+    cf_threshold = float(getattr(ng, "meta_alert_collection_failed_ratio", 0.0))
+    # (plans/207 M-1·M-2) 켜진 기동이면 루프 밖 1회 순회 + 사용자 공유 짧은 캐시(초과·실패는 503)
+    cache = noise_aggregate_cache(request)
+    if cache is not None:
+        agg, alerts = await cache.health(
+            store,
+            window_seconds=window,
+            suppress_ratio_threshold=threshold,
+            min_events=min_events,
+            collection_failed_ratio_threshold=cf_threshold,
+        )
+    else:
+        agg = store.aggregate(window_seconds=window)
+        alerts = store.meta_alerts(
+            window_seconds=window,
+            suppress_ratio_threshold=threshold,
+            min_events=min_events,
+            collection_failed_ratio_threshold=cf_threshold,
+        )
     return NoiseHealthResponse(
         healthy=not alerts,
         alerts=alerts,

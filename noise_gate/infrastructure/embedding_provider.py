@@ -93,6 +93,10 @@ class AlarmEmbeddingProvider:
         self._timeout_seconds = timeout_seconds
         self._cache_max = cache_max
         self._lock = threading.Lock()
+        # (plans/207 W4) 모델 encode 전용 Lock — W4부터 P3·P4가 서로 다른 스레드에서 encode를 부를
+        # 수 있어 모델 호출을 직렬화한다. 캐시 Lock과 분리해 캐시 적중 경로는 encode 대기에 막히지
+        # 않는다.
+        self._encode_lock = threading.Lock()
         self._embedder: Any = None          # SentenceTransformer(또는 주입 fake) — 로드 성공 시
         self._embedder_failed = False       # 로드 실패 확정 플래그(경고 1회 후 재시도 방지)
         # 정규화 텍스트 -> 단위 벡터(np.ndarray). LRU: 접근 시 move_to_end, 상한 초과 시 popitem.
@@ -204,7 +208,8 @@ class AlarmEmbeddingProvider:
         computed: dict[str, Any] = {}
         if missing:
             try:
-                raw = embedder.encode(missing, batch_size=64, show_progress_bar=False)
+                with self._encode_lock:
+                    raw = embedder.encode(missing, batch_size=64, show_progress_bar=False)
             except Exception as e:  # noqa: BLE001 — 인코딩 실패는 이번 호출만 None으로 강등
                 logger.warning(
                     "B-7 알람 임베딩 계산 실패 — 임베딩 주석을 건너뜁니다: %s", e
