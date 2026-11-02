@@ -2410,3 +2410,8 @@
 - **원인**: 이 체크아웃에는 CLAUDE.md가 가정하는 루트 `.venv`가 없다(`../.venv/bin/python` 부재). 도구는 환경 결손을 원래 실패와 구분하지 못한다.
 - **방지책**: 독립 패키지(`mcp_server`·`apm_gateway`)를 바꾼 계획은 회귀 요약의 그 패키지 줄에서 `에러`·`건너뜀` 수를 본다. 수집 에러가 있으면 의존성이 갖춰진 인터프리터로 패키지 테스트를 따로 돌려 보고에 함께 적는다(이번: 형제 체크아웃 venv + `PYTHONPATH=mcp_server` → 1190 passed). 쓴 인터프리터 경로를 보고에 남긴다.
 - **후속(2026-11-02)**: 루트 `.venv`를 만들었다(`python3 -m venv .venv` · `pip install -e ".[dev,document]"` + `aiomysql`·`markdown-it-py`(매뉴얼 빌드) — 둘 다 루트 pyproject에 빠져 있다 · `ibm_db`는 로컬 미설치 유지). 이제 `cd mcp_server && ../.venv/bin/python -m pytest`가 성립한다(1192 passed · 19 skipped · 2 xfailed).
+
+### 2026-11-02 · 기준선 mypy 대조에 `git stash`를 씀
+- **실수**: 바꾼 파일의 mypy 오류 수를 기준선과 비교하려고 `git stash` → mypy → `git stash pop`을 돌렸다. 같은 작업 트리에서 백그라운드 team-lead(`plans/205`)가 파일을 고치는 중이었다.
+- **원인**: 「기준선 대조는 `git worktree`」 규칙을 짧은 확인이라 생략했다. stash는 다른 에이전트의 미커밋 변경까지 잠시 걷어 내고, 그 사이 쓰기가 있으면 pop이 충돌한다(이번에는 복원 확인).
+- **방지책**: 짧은 확인이라도 `git worktree add --detach <dir> <SHA>`에서 잰다. 병행 에이전트가 있으면 작업 트리 전체를 건드리는 명령(stash·checkout·reset)은 쓰지 않는다.

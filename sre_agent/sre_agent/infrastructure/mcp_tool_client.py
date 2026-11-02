@@ -15,6 +15,13 @@ MCP · APM)별 **프로세스 전역** 세마포어를 건다 — 배치마다 �
 세마포어로는 배치 사이를 묶지 못하므로 `threading.BoundedSemaphore`다. 루프를 막지 않게 비차단
 획득을 짧게 되풀이하고, 도구 1건 상한 안에 자리를 못 얻으면 그 호출만 결손
 (`tool_concurrency_wait_timeout`)이다.
+
+호출 점검 로그(2026-11-02 · D-347 부기): 배치마다 세션 연결·초기화 시간 1줄, 호출마다
+「축 · 도구 · 전역 자리 대기 · 호출 시간 · 결과(ok/error/timeout/wait_timeout)」 1줄을 INFO로
+남긴다 — 지연이 sre_agent 대기열(자리 대기)인지 조회 대상(호출 시간)인지 가르는 근거다.
+인자·출력은 싣지 않는다.
+세션 초기화(`initialize`)에도 도구 1건 상한을 건다 — 종전에는 상한이 없어 조회 대상의 이벤트 루프가
+막히면 스텝 상한까지 「요청 N건 중 0건 완료」로만 보였다.
 """
 
 from __future__ import annotations
@@ -23,6 +30,7 @@ import asyncio
 import json
 import logging
 import threading
+import time
 from collections.abc import Callable, Sequence
 from datetime import timedelta
 from typing import Any
@@ -82,6 +90,34 @@ async def _acquire_global(sem: threading.BoundedSemaphore, timeout_seconds: floa
             return False
         await asyncio.sleep(_GLOBAL_POLL_S)
     return True
+
+
+def _log_call(axis: str, name: str, waited: float, took: float, outcome: str) -> None:
+    """도구 호출 1건 점검 로그 — 전역 자리 대기와 호출 시간을 갈라 남긴다(인자·출력 미기재)."""
+    logger.info("도구 호출 [%s] %s: 자리 대기 %.1fs · 호출 %.1fs · 결과=%s",
+                axis, name, waited, took, outcome)
+
+
+def _is_error(result: Any, text: str) -> bool:
+    """MCP 오류 응답(`isError`)이거나 본문이 `{"error": …}` 봉투면 True."""
+    if getattr(result, "isError", False):
+        return True
+    head = text.lstrip()[:200]
+    if not head.startswith("{"):
+        return False
+    try:
+        data = json.loads(text)
+    except ValueError:
+        return False
+    return isinstance(data, dict) and "error" in data
+
+
+def _is_timeout(exc: BaseException) -> bool:
+    """호출 예외가 시간 초과인지(mcp 읽기 상한 `McpError` 문구 포함)."""
+    if isinstance(exc, TimeoutError):
+        return True
+    text = str(exc).lower()
+    return "timed out" in text or "timeout" in text
 
 
 def _text_of(result) -> str:  # noqa: ANN001 — mcp.types.CallToolResult
@@ -144,6 +180,7 @@ async def run_tool_batch_async(
     timeout_seconds: float = TOOL_CALL_TIMEOUT_S,
     concurrency: int = 1,
     global_limit: threading.BoundedSemaphore | None = None,
+    axis: str = "",
 ) -> list[str]:
     """SSE 세션 1개로 calls를 호출한다. 호출별 실패는 `{error}`로 격리한다.
 
@@ -151,36 +188,53 @@ async def run_tool_batch_async(
     1이면 종전처럼 calls 순서대로 하나씩 호출한다. `global_limit`(plans/194 W3)이 있으면 호출마다
     그 전역 자리를 `timeout_seconds` 안에 얻어야 보낸다 — 못 얻으면 그 호출만
     `{error: tool_concurrency_wait_timeout …}`이다. None이면 종전 그대로.
+    `axis`(`polestar`·`apm`)는 점검 로그의 축 이름이다(비면 `mcp`).
     """
     from mcp import ClientSession
     from mcp.client.sse import sse_client
 
     limit = max(1, int(concurrency))
+    tag = axis or "mcp"
     try:
+        started = time.monotonic()
         async with sse_client(url, headers=headers, timeout=timeout_seconds) as (read, write):
             async with ClientSession(read, write) as session:
-                await session.initialize()
+                try:
+                    await asyncio.wait_for(session.initialize(), timeout_seconds)
+                except TimeoutError:
+                    raise TimeoutError(
+                        f"MCP 세션 초기화 {timeout_seconds:g}s 초과(조회 대상 응답 없음)") from None
+                logger.info("도구 배치 [%s] 세션 연결 %.1fs · 호출 %d건 · 동시 %d",
+                            tag, time.monotonic() - started, len(calls), limit)
 
                 async def _one(name: str, args: dict[str, Any]) -> str:
+                    queued = time.monotonic()
                     if global_limit is None:
-                        return await _call(name, args)
+                        return await _call(name, args, queued)
                     if not await _acquire_global(global_limit, timeout_seconds):
                         logger.warning("도구 전역 동시 상한 대기 초과 %s (%gs)",
                                        name, timeout_seconds)
+                        _log_call(tag, name, time.monotonic() - queued, 0.0, "wait_timeout")
                         return _err(f"{TOOL_CONCURRENCY_WAIT_TIMEOUT} — {name}: "
                                     f"전역 도구 동시 상한 대기 {timeout_seconds:g}s 초과")
                     try:
-                        return await _call(name, args)
+                        return await _call(name, args, queued)
                     finally:
                         global_limit.release()
 
-                async def _call(name: str, args: dict[str, Any]) -> str:
+                async def _call(name: str, args: dict[str, Any], queued: float) -> str:
+                    sent = time.monotonic()
                     try:
                         res = await session.call_tool(
                             name, args, read_timeout_seconds=timedelta(seconds=timeout_seconds)
                         )
-                        return _text_of(res)
+                        text = _text_of(res)
+                        _log_call(tag, name, sent - queued, time.monotonic() - sent,
+                                  "error" if _is_error(res, text) else "ok")
+                        return text
                     except Exception as e:  # noqa: BLE001 — 호출 단위 격리
+                        _log_call(tag, name, sent - queued, time.monotonic() - sent,
+                                  "timeout" if _is_timeout(e) else "error")
                         logger.warning("사전수집 도구 실패 %s: %s", name, e)
                         return _err(f"{name} 호출 실패: {e}")
 
@@ -204,10 +258,12 @@ async def run_tool_batch_async(
 def run_tool_batch(
     url: str, headers: dict[str, str] | None, calls: Sequence[tuple[str, dict]],
     *, timeout_seconds: float = TOOL_CALL_TIMEOUT_S, concurrency: int = 1,
-    global_limit: threading.BoundedSemaphore | None = None,
+    global_limit: threading.BoundedSemaphore | None = None, axis: str = "",
 ) -> list[str]:
     """`run_tool_batch_async`의 동기 래퍼(실행 루프가 없는 워커 스레드용)."""
     extra: dict[str, Any] = {"global_limit": global_limit} if global_limit is not None else {}
+    if axis:
+        extra["axis"] = axis
     return asyncio.run(
         run_tool_batch_async(
             url, headers, calls, timeout_seconds=timeout_seconds, concurrency=concurrency,
@@ -240,6 +296,7 @@ def make_batch_caller(settings) -> Callable[[Sequence[tuple[str, dict]]], list[s
     concurrency = _batch_concurrency(settings)
     limit = global_semaphore("polestar", getattr(settings, "sre_tool_global_concurrency", None))
     extra: dict[str, Any] = {"global_limit": limit} if limit is not None else {}
+    extra["axis"] = "polestar"
 
     def _call(calls: Sequence[tuple[str, dict]]) -> list[str]:
         return run_tool_batch(url, headers, calls, timeout_seconds=timeout, concurrency=concurrency,
@@ -278,6 +335,7 @@ def make_apm_batch_caller(settings) -> Callable[[Sequence[tuple[str, dict]]], li
     concurrency = _batch_concurrency(settings)
     limit = global_semaphore("apm", getattr(settings, "sre_tool_global_concurrency", None))
     extra: dict[str, Any] = {"global_limit": limit} if limit is not None else {}
+    extra["axis"] = "apm"
 
     def _call(calls: Sequence[tuple[str, dict]]) -> list[str]:
         return run_tool_batch(url, headers, calls, timeout_seconds=timeout, concurrency=concurrency,
