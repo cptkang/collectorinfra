@@ -7,7 +7,8 @@ poll하여 브리핑을 받아 state에 실어 notifier가 통보에 첨부하�
 status·verdict)는 decision_store에 감사한다. (plans/153 W2) 조사 저장소가 주입되면
 상태·사유·브리핑을 웹 조회용으로 함께 남긴다(미주입이면 no-op). (plans/153 W4) 사건 맥락 플래그가
 켜져 있으면 페이로드에 제출 시점 사건 스냅샷을 싣고, 워커가 부르는 `submit_episode_investigation`이
-사건당 1회 종합 조사를 제출한다.
+사건당 1회 종합 조사를 제출한다. (plans/198 I-11) 사건 단위 조사 플래그가 켜져 있으면 같은 사건의
+진행 중 조사에 합류하고 새 잡을 내지 않는다.
 
 설계 안전장치(회귀 0·비차단·graceful):
     - 게이트 판정·라우팅 무변경 — 이 노드는 gate 노드를 건드리지 않고 gate 다음에 삽입되며,
@@ -26,6 +27,7 @@ infrastructure(sre_agent_client·decision_store) 소비. 다른 노드·graph를
 from __future__ import annotations
 
 import asyncio
+import ipaddress
 import logging
 from typing import Any, Optional
 
@@ -40,7 +42,8 @@ from noise_gate.domain.investigation_payload import (
     is_availability_alarm,
 )
 from noise_gate.domain.notification_policy import _TIER_RANK, TIER_PAGE
-from noise_gate.domain.process_rank import is_apm_event
+from noise_gate.domain.process_rank import KIND_APM, is_apm_event
+from noise_gate.infrastructure.metrics import record_incident_investigation
 from src.domain.host_authz import Principal, authorize_host_investigation
 from src.observability.investigation_metrics import record_investigation
 from src.utils.prior_targets import resolve_targets
@@ -110,6 +113,12 @@ async def investigation_trigger_node(
         return {}
     if _authz_denied(cfg, event, first, decision, decision_store, inv_store, source):
         return {}
+    # (plans/198 교정) 합류는 발주 게이트(호스트 미해소·대상 미확정·인가) 뒤에서 판정한다 — 원래
+    # 발주되지 않았을 알람을 「아낀 발주」로 세지 않는다.
+    if _joined_incident_investigation(
+        state, event, decision, decision_store, inv_store, source, episode_id
+    ):
+        return {}
     if await _service_unreachable(client, event, decision, decision_store, inv_store, source):
         return {}
 
@@ -119,6 +128,10 @@ async def investigation_trigger_node(
     # 침묵보다 낫다(침묵 폴백 금지).
     target_state = await _resolve_target_state(cfg, event, first)
     payload = _build_payload(state, gate_cfg, event, decision, target_state, episode_id)
+    # (plans/196 §5.2) APM 알람이면 확정 연결을 `meta.hints.polestar_link`로 — 수동 경로와 대칭.
+    await _attach_polestar_link(
+        cfg, event, payload, redis=configurable.get("history_redis")
+    )
 
     # (Plan 66 3-E) 후속 모드 — submit까지만 하고 통보를 즉시 내보낸다(브리핑 미첨부).
     # poll·후속 발송은 notifier가 즉시 통보 **후** 백그라운드로 수행한다(순서 보장).
@@ -138,6 +151,49 @@ def _meets_min_tier(gate_cfg: Any, decision: Any) -> bool:
     min_tier = getattr(gate_cfg, "investigation_trigger_min_tier", TIER_PAGE)
     min_rank = _TIER_RANK.get((min_tier or TIER_PAGE).lower(), _TIER_RANK[TIER_PAGE])
     return _TIER_RANK.get(decision.tier, _TIER_RANK[TIER_PAGE]) >= min_rank
+
+
+def _joined_incident_investigation(
+    state: dict[str, Any],
+    event: Any,
+    decision: Any,
+    decision_store: Any,
+    inv_store: Any,
+    source: str,
+    episode_id: str | None,
+) -> bool:
+    """같은 사건의 진행 중 조사에 합류했으면 True(감사·연결 행 후 — 노드는 빈 dict로 끝난다).
+
+    (plans/198 I-11 · 194 R8) 워커가 `episode_investigation`에 `joined=True`를 실어 넘긴 경우만
+    — 사건 단위 조사 플래그 on이고 같은 사건(존·정규화 호스트 키)에 진행 중 조사가 있을 때다.
+    새 잡을 내지 않고 조사 저장소에 연결 행(`episode_existing`)으로 이 알람 id를 보탠다 — 화면은
+    종전 연결과 같이 그 조사를 보인다. 감사 상태는 `incident_joined`(아낀 발주 수 집계 근거)다.
+    `count=False`(같은 처리에서 증상 선착 종합 조사가 나갈 사건)면 `joined` 카운터를 올리지 않는다.
+    """
+    existing = state.get("episode_investigation")
+    if not (
+        isinstance(existing, dict)
+        and existing.get("joined")
+        and existing.get("investigation_id")
+    ):
+        return False
+    investigation_id = str(existing["investigation_id"])
+    joined_episode = str(existing.get("episode_id") or episode_id or "") or None
+    logger.info(
+        "조사 합류 — 같은 사건의 진행 중 조사: alarm_id=%s episode=%s inv=%s",
+        getattr(event, "alarm_id", ""), joined_episode, investigation_id,
+    )
+    if existing.get("count", True):
+        record_incident_investigation("joined")
+    _audit(
+        decision_store, event, decision, investigation_id, "incident_joined", None,
+        episode_id=joined_episode,
+    )
+    _store(
+        inv_store, event, investigation_id, "episode_existing", source=source,
+        episode_id=joined_episode,
+    )
+    return True
 
 
 def _reused_episode_investigation(
@@ -160,6 +216,7 @@ def _reused_episode_investigation(
         is_apm_event(event)
         and isinstance(existing, dict)
         and existing.get("investigation_id")
+        and not existing.get("joined")  # 사건 합류(plans/198)는 게이트 뒤 `_joined_…`가 맡는다
     ):
         return False
     logger.info(
@@ -467,6 +524,7 @@ async def submit_episode_investigation(
     cfg: Any,  # AppConfig (덕 타이핑)
     decision_store: Any = None,  # DecisionStore | None
     inv_store: Any = None,  # InvestigationStore | None
+    redis: Any = None,  # redis.asyncio 클라이언트 | None — 호스트 연결 조회(plans/196)
 ) -> dict[str, Any]:
     """사건 종합 조사를 submit만 한다 (plans/153 §4.5 · G-6 (a) — 워커가 사건당 1회 부른다).
 
@@ -475,8 +533,12 @@ async def submit_episode_investigation(
     호출부가 notifier의 후속 경로로 띄운다. 조사 서비스의 예산·동시 상한·dedup TTL은 그대로 탄다.
     모든 실패는 graceful — 사유를 감사·조사 저장소에 남긴다(침묵 금지).
 
+    대표 알람이 APM이면 단독·수동 경로와 대칭으로 확정 연결을 `meta.hints.polestar_link`로
+    싣는다(plans/196 §5.2 · 플래그 off면 페이로드 비트 동일).
+
     Args:
         alarm_ids: 사건 멤버 alarm_id 전부(대표 알람이 첫 원소 — 저장소 존 판정 기준).
+        redis: 호스트 연결 저장소를 만들 Redis(없으면 연결 없음 → `unresolved`).
 
     Returns:
         `{"status", "investigation_id", "pending"}` — pending은 submit 성공 시 후속 태스크용
@@ -528,6 +590,7 @@ async def submit_episode_investigation(
 
     target_state = await _resolve_target_state(cfg, event, first)
     payload = build_episode_trigger_payload(event, decision, episode, target_state=target_state)
+    await _attach_polestar_link(cfg, event, payload, redis=redis)
 
     status = "error"
     investigation_id: str | None = None
@@ -573,6 +636,9 @@ async def build_manual_payload(
     *,
     fingerprint: str,
     investigation_kind: str,
+    host_link_store: Any = None,  # HostLinkStore | None (plans/196)
+    polestar_link: dict[str, Any] | None = None,
+    rerun: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """사용자 요청 알람 분석 페이로드(plans/187 W11 · G-28) — 자동 트리거와 같은 조립 함수.
 
@@ -583,6 +649,12 @@ async def build_manual_payload(
     `meta.investigation_kind`는 기존 선택 키다(계약 "1" 불변).
     재발·상관·사건 맥락은 알람 처리 시점 상태라 싣지 않는다.
     자동 트리거 경로는 이 함수를 쓰지 않는다.
+
+    (plans/196 §5.2) 호스트 연결 플래그가 켜져 있고 APM 알람이면 `meta.hints.polestar_link`를
+    싣는다 — `polestar_link`(사용자 선택 재조회)를 주면 그것, 아니면 `host_link_store`의 확정
+    연결(자동 경로와 같은 규칙). `rerun`(「이 서버로 다시 조회」)은 같은 조건에서
+    `meta.hints.rerun`.
+    플래그 off면 두 키 모두 없다(비트 동일).
     """
     target_resolution = resolve_targets(
         alarm_payload={
@@ -602,7 +674,168 @@ async def build_manual_payload(
         investigation_kind=investigation_kind,
     )
     payload["decision"]["fingerprint"] = fingerprint
+    await _attach_polestar_link(
+        cfg, event, payload, store=host_link_store, link=polestar_link, rerun=rerun
+    )
     return payload
+
+
+async def _attach_polestar_link(
+    cfg: Any,  # AppConfig (덕 타이핑)
+    event: Any,  # AlarmEvent
+    payload: dict[str, Any],
+    *,
+    store: Any = None,  # HostLinkStore | None
+    redis: Any = None,  # redis.asyncio 클라이언트 | None — store가 없을 때만 쓴다
+    link: dict[str, Any] | None = None,
+    rerun: dict[str, Any] | None = None,
+) -> None:
+    """APM 알람 페이로드에 `meta.hints.polestar_link`(+`rerun`)를 단다 (plans/196 §5.2 · plans/202).
+
+    D-188 `attach_server_identity`와 같은 대칭 원칙 — 자동 트리거·사건 종합·수동 재분석 세 경로가
+    이 함수를 부른다. APM 알람이 아니면(`meta.hints` 없음) 아무것도 하지 않는다.
+
+    우선순위(D-355 ③④):
+        ① 파드(`apm.pod is True`) 노드 주소 연결 `linked` — `host_link_enabled`와 독립
+        ② 저장된 확정 연결(D-348 · `host_link_enabled`일 때만)
+        ③ 파드 미확정 사유(`unresolved` + `reason` · `pod: true`)
+        ④ 파드 아님 — 종전(플래그 off면 키 없음 · 비트 동일)
+    사용자가 고른 연결(`link` · 「이 서버로 다시 조회」)은 그 재조회 요청이라 그대로 쓴다.
+    """
+    hints = (payload.get("meta") or {}).get("hints")
+    if not isinstance(hints, dict) or hints.get("solution") != KIND_APM:
+        return
+    gate_cfg = getattr(cfg, "noise_gate", None)
+    host_link_on = gate_cfg is not None and bool(getattr(gate_cfg, "host_link_enabled", False))
+    if host_link_on and link is not None:
+        _set_polestar_link(event, hints, link, rerun)
+        return
+    node = await _node_address_hint(cfg, event)
+    if node is None and not host_link_on:
+        return
+    if not host_link_on:
+        _set_polestar_link(event, hints, node or {}, None)
+        return
+    stored = await _stored_polestar_link(event, hints, store=store, redis=redis)
+    if node is not None and node.get("status") == "linked":
+        if stored.get("status") == "linked" and (
+            str(stored.get("db_id") or ""), str(stored.get("server_name") or "")
+        ) != (str(node.get("db_id") or ""), str(node.get("server_name") or "")):
+            node["previous_link"] = {
+                "db_id": str(stored.get("db_id") or ""),
+                "server_name": str(stored.get("server_name") or ""),
+            }
+        chosen = node
+    elif node is not None and stored.get("status") != "linked":
+        chosen = node
+    else:
+        chosen = stored
+    _set_polestar_link(event, hints, chosen, rerun)
+
+
+def _set_polestar_link(
+    event: Any, hints: dict[str, Any], link: dict[str, Any], rerun: dict[str, Any] | None
+) -> None:
+    hints["polestar_link"] = link
+    if rerun:
+        hints["rerun"] = rerun
+    logger.info(
+        "호스트 연결 힌트: alarm_id=%s status=%s basis=%s reason=%s rerun=%s",
+        getattr(event, "alarm_id", ""), link.get("status"), link.get("basis", ""),
+        link.get("reason", ""), bool(rerun),
+    )
+
+
+async def _stored_polestar_link(
+    event: Any, hints: dict[str, Any], *, store: Any, redis: Any
+) -> dict[str, Any]:
+    """저장된 확정 연결(D-348) → 힌트(확정만 · 저장소 실패는 `unresolved`)."""
+    from noise_gate.application.host_candidates import polestar_link_for
+    from noise_gate.domain.host_link import apm_source_id
+    from noise_gate.infrastructure.host_link_store import HostLinkStore
+
+    if store is None and redis is not None:
+        store = HostLinkStore(redis)
+    return await polestar_link_for(
+        store,
+        source_id=apm_source_id(str(getattr(event, "db_id", "") or ""), hints.get("source_id")),
+        hostname=str(getattr(event, "hostname", "") or ""),
+    )
+
+
+async def _node_address_hint(cfg: Any, event: Any) -> dict[str, Any] | None:
+    """파드 알람의 노드 주소 연결 힌트(plans/202 §2.2 · D-355). 파드가 아니면 None.
+
+    게이트웨이가 원문 `apm` 블록에 실은 `pod`·`host_address`·`host_address_status`를 직접 읽는다
+    (`apm_trigger_hints` 고정 키 집합은 건드리지 않는다). `pod`가 True가 아니면(false·키 없음 =
+    게이트웨이 플래그 off·판정 불가) None — 종전 경로. 상태가 `ok`가 아니면(`stale` 포함) 조회
+    없이 `node_lookup_<상태>`. 조회 자체의 예외도 삼키지 않고 사유로 남긴다.
+    """
+    from datetime import UTC, datetime
+
+    raw = getattr(event, "raw_payload", None)
+    apm = raw.get("apm") if isinstance(raw, dict) else None
+    if not isinstance(apm, dict) or apm.get("pod") is not True:
+        return None
+    host_address = str(apm.get("host_address") or "").strip()
+    status = str(apm.get("host_address_status") or "").strip() or "missing"
+    alarm_id = getattr(event, "alarm_id", "")
+    if status != "ok" or not host_address:
+        reason = f"node_lookup_{status if status != 'ok' else 'missing'}"
+        logger.info(
+            "파드 노드 주소 미확정 — 조회 생략: alarm_id=%s status=%s reason=%s",
+            alarm_id, status, reason,
+        )
+        return {"status": "unresolved", "reason": reason, "pod": True}
+    try:
+        # 정확한 IPv4 점 표기만 — 게이트웨이 검증에만 기대지 않는다(프로브 리터럴 이중 방어).
+        ipaddress.IPv4Address(host_address)
+    except ValueError:
+        logger.warning(
+            "파드 노드 주소 형식 불일치 — 조회 생략: alarm_id=%s reason=node_lookup_error",
+            alarm_id,
+        )
+        return {"status": "unresolved", "reason": "node_lookup_error", "pod": True}
+    from noise_gate.application.host_candidates import node_address_link
+    from noise_gate.domain.host_link import BASIS_NODE_ADDRESS, NODE_UNCHECKED
+
+    try:
+        found = await node_address_link(cfg, host_address=host_address)
+    except Exception:  # noqa: BLE001 — 소스 목록 해석 실패도 조사 제출을 막지 않는다
+        logger.warning(
+            "파드 노드 주소 연결 실패 — 확인하지 못함: alarm_id=%s addr=%s",
+            alarm_id, host_address, exc_info=True,
+        )
+        found = {"status": "unresolved", "reason": NODE_UNCHECKED}
+    if found.get("status") == "linked":
+        linked = {
+            "status": "linked",
+            "db_id": found["db_id"],
+            "server_name": found["server_name"],
+            "hostname": found.get("hostname", ""),
+            "basis": BASIS_NODE_ADDRESS,
+            "host_address": host_address,
+            "at": datetime.now(UTC).isoformat(),
+        }
+        # D-355 부기 2 — 일부 존 실패여도 1대 일치면 연결하고, 확인 못 한 소스를 근거에 남긴다
+        unchecked = [
+            str(u.get("db_id") or "")
+            for u in found.get("unchecked") or []
+            if isinstance(u, dict) and u.get("db_id")
+        ]
+        if unchecked:
+            linked["unchecked_db_ids"] = ",".join(unchecked)
+        return linked
+    logger.info(
+        "파드 노드 주소 미확정: alarm_id=%s addr=%s reason=%s",
+        alarm_id, host_address, found.get("reason"),
+    )
+    return {
+        "status": "unresolved",
+        "reason": str(found.get("reason") or NODE_UNCHECKED),
+        "pod": True,
+        "host_address": host_address,
+    }
 
 
 class _FingerprintOnly:

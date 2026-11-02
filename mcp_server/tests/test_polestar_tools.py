@@ -220,9 +220,41 @@ class TestResourceStatusSql:
         sql = pt.build_resource_status_sql(False, "web01", 100)
         assert "CR.AVAIL_STATUS" in sql
         assert "CR.IMPORTANCE_ID" in sql
-        assert "CR.IS_MAINTENANCE" in sql
+        assert "M.IS_MAINTENANCE AS is_maintenance" in sql
         assert "COALESCE(CR.PLATFORM_RESOURCE_ID, CR.ID)" in sql
         assert "LIMIT 100" in sql
+
+    def test_pg_joins_maintenance_table(self):
+        """plans/197 F2 — PG는 자원 테이블에 유지보수 칼럼이 없어 집계 서브쿼리를 조인한다."""
+        sql = pt.build_resource_status_sql(False, "web01", 100)
+        assert "CR.IS_MAINTENANCE" not in sql
+        assert "LEFT JOIN (SELECT RESOURCE_ID, MAX(IS_MAINTENANCE) AS IS_MAINTENANCE" in sql
+        assert "FROM polestar.cmm_resource_maintenance GROUP BY RESOURCE_ID) M" in sql
+        assert "ON M.RESOURCE_ID = CR.ID" in sql
+        # 조인은 WHERE 앞에 온다
+        assert sql.index("LEFT JOIN") < sql.index("WHERE CR.DTIME IS NULL")
+
+    def test_db2_keeps_legacy_string(self):
+        """DB2는 W0 실측 전 현행 유지(plans/197) — 종전 문자열과 비트 동일."""
+        sql = pt.build_resource_status_sql(True, "web01", 100)
+        expected = (
+            "SELECT\n"
+            "    CR.ID AS resource_id,\n"
+            "    CR.NAME AS resource_name,\n"
+            "    CR.RESOURCE_TYPE AS resource_type,\n"
+            "    CR.AVAIL_STATUS AS avail_status,\n"
+            "    CR.IMPORTANCE_ID AS importance_id,\n"
+            "    CR.IS_MAINTENANCE AS is_maintenance\n"
+            "FROM POLESTAR.cmm_resource CR\n"
+            "JOIN POLESTAR.cmm_resource SVR ON SVR.ID = COALESCE(CR.PLATFORM_RESOURCE_ID, CR.ID)\n"
+            "                     AND SVR.RESOURCE_TYPE = 'server.Server'\n"
+            "                     AND SVR.DTIME IS NULL\n"
+            "WHERE CR.DTIME IS NULL\n"
+            "  AND SVR.NAME = 'web01'\n"
+            "ORDER BY CR.RESOURCE_TYPE\n"
+            "FETCH FIRST 100 ROWS ONLY"
+        )
+        assert sql == expected
 
     def test_no_resource_conf_join(self):
         """RESOURCE_CONF_ID 조인이 없다(D-022)."""

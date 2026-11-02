@@ -101,7 +101,9 @@ TYPE_MATCHES: dict[str, dict | None] = {
 
 
 #: 저장소 YAML(W6 — db.*는 DPM 연동 뒤라 없다).
-SHIPPED_IDS = sorted(t for t in TYPE_FACTS if t != "db.session")
+#: plans/196 D2 — SQL 패턴(`was.sql`)·APM 공통 점검(`was.fallback`)은 이 표(§4.1 유형 13종) 밖에서
+#: 더했다(선택 대조는 `test_plan196_sre_screen_defects.py`).
+SHIPPED_IDS = sorted([*(t for t in TYPE_FACTS if t != "db.session"), "was.sql", "was.fallback"])
 
 
 @pytest.fixture(scope="module")

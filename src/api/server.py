@@ -42,6 +42,7 @@ CREATE TABLE IF NOT EXISTS auth_users (
     allowed_sources TEXT[],
     alarm_zones     TEXT[],
     is_protected    BOOLEAN NOT NULL DEFAULT FALSE,
+    duty_areas      TEXT[],
     auth_method     VARCHAR(20) NOT NULL DEFAULT 'local',
     login_fail_count INTEGER NOT NULL DEFAULT 0,
     last_login_at   TIMESTAMPTZ,
@@ -76,6 +77,10 @@ async def _ensure_auth_tables(pool) -> None:
             # 관측 소스 인가(plans/125 A-7) — 기존 행은 NULL = 전체 허용(D-272 ⑩)
             await conn.execute(
                 "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS allowed_sources TEXT[]"
+            )
+            # 담당 업무(plans/201 W1 · D-354) — 권한 아님 · 기존 행은 NULL = 미지정
+            await conn.execute(
+                "ALTER TABLE auth_users ADD COLUMN IF NOT EXISTS duty_areas TEXT[]"
             )
         # 인덱스는 IF NOT EXISTS로 별도 실행
         async with pool.acquire() as conn:
@@ -678,7 +683,15 @@ def _start_alarm_worker(config: AppConfig) -> Any:
     if config.alarm.enabled:
         import asyncio as _asyncio
         from noise_gate.application.alarm_worker import AlarmWorker
-        alarm_worker_task = _asyncio.create_task(AlarmWorker(config).run())
+        # (plans/201 W3) 담당 강조가 켜진 기동에서만 프로세스 종류 판정 콜백을 주입한다
+        # (`noise_gate`는 pydantic·yaml을 쓰는 `src.domain.middleware`를 import하지 않는다 · D-139 부기).
+        duty_cfg = getattr(config, "duty_area", None)
+        worker_kwargs: dict[str, Any] = {}
+        if getattr(duty_cfg, "alarm_focus_effective", False) is True:
+            from src.domain.middleware import classify_process_kind
+
+            worker_kwargs["process_kind_classifier"] = classify_process_kind
+        alarm_worker_task = _asyncio.create_task(AlarmWorker(config, **worker_kwargs).run())
         logger.info(
             "알람 분석 워커 시작 (stream=%s)", config.alarm.redis_stream_key
         )
@@ -845,6 +858,35 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
 
     # 설정을 app.state에 저장 (lifespan 이전에도 접근 가능하도록)
     application.state.config = config
+    # (plans/201 W1) 담당 업무 지정 — 기동 시 1회 해석
+    # (설정 리로드가 config를 바꿔도 이 값은 그대로).
+    duty_cfg = getattr(config, "duty_area", None)
+    application.state.duty_area_enabled = getattr(duty_cfg, "enabled", False) is True
+    # (plans/201 W3) 알람 화면 담당 강조 — 유효값 = DUTY_AREA_ENABLED AND DUTY_ALARM_FOCUS_ENABLED(기동 시 1회).
+    application.state.duty_alarm_focus_enabled = (
+        getattr(duty_cfg, "alarm_focus_effective", False) is True
+    )
+    # (plans/201 W2) 첫 화면 담당별 예시 질의 — 유효값 = DUTY_AREA_ENABLED AND DUTY_WELCOME_HINTS_ENABLED(기동 시 1회).
+    application.state.duty_welcome_hints_enabled = (
+        getattr(duty_cfg, "welcome_hints_effective", False) is True
+    )
+    # (plans/201 W2 P2) 첫 화면 상황 안내 — 담당 업무와 독립(기동 시 1회).
+    application.state.welcome_guide_enabled = (
+        getattr(getattr(config, "welcome_guide", None), "enabled", False) is True
+    )
+    # (plans/201 W5) 조치 지원 — 유효값 = DUTY_AREA_ENABLED AND DUTY_ACTION_ASSIST_ENABLED(기동 시 1회).
+    application.state.duty_action_assist_enabled = (
+        getattr(duty_cfg, "action_assist_effective", False) is True
+    )
+    # (plans/201 W6) 첫 화면 24시간 요약 카드
+    # — 유효값 = DUTY_AREA_ENABLED AND DUTY_DAILY_SUMMARY_ENABLED(기동 시 1회).
+    application.state.duty_daily_summary_enabled = (
+        getattr(duty_cfg, "daily_summary_effective", False) is True
+    )
+    # (plans/201 W5 P3) 알람 카드 재배치 — 담당 업무와 독립(기동 시 1회 · 알람 capabilities로 전달).
+    application.state.alarm_card_flow_enabled = (
+        getattr(getattr(config, "alarm_card_flow", None), "enabled", False) is True
+    )
 
     # CORS 설정 (환경변수에서 제어)
     application.add_middleware(
@@ -886,10 +928,38 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
         admin_auth.router, prefix="/api/v1", tags=["admin-auth"]
     )
     application.include_router(admin.router, prefix="/api/v1", tags=["admin"])
+    # (plans/201 W1) 담당 업무 영역 메타·관리자 현황
+    # — DUTY_AREA_ENABLED 켰을 때만 등록(끄면 404 · 현행 동일).
+    if application.state.duty_area_enabled:
+        from src.api.routes import duty_areas
+
+        application.include_router(duty_areas.router, prefix="/api/v1", tags=["admin"])
+        # (plans/201 W6) 첫 화면 24시간 요약 — DUTY_DAILY_SUMMARY_ENABLED까지 켰을 때만 등록(끄면 404).
+        if application.state.duty_daily_summary_enabled:
+            application.include_router(
+                duty_areas.daily_summary_router, prefix="/api/v1", tags=["auth"]
+            )
     # (plans/191) 분리 컴포넌트 설정 프록시 — 관리 토큰이 없으면 빈 목록(현행 화면).
     application.include_router(admin_components.router, prefix="/api/v1", tags=["admin"])
     # (plans/194 W5 · C5) 관리자 조사 설정 요약 — 읽기 전용(모드·상한·조사 서비스 부하)
     application.include_router(admin_investigation.router, prefix="/api/v1", tags=["admin"])
+    # (plans/198 W0 I-1) 조사 「실제 원인」 라벨 · 관리자 조사 정확도
+    # — NOISE_INVESTIGATION_LABEL_ENABLED 켰을 때만 등록(기동 시 1회).
+    if config.noise_gate.investigation_label_enabled:
+        from src.api.routes import investigation_label
+
+        application.include_router(investigation_label.router, prefix="/api/v1")
+    # (plans/198 W7 I-8) 비슷한 과거 조사
+    # — NOISE_INVESTIGATION_MEMORY_ENABLED 켰을 때만 등록(기동 시 1회).
+    if config.noise_gate.investigation_memory_enabled:
+        from src.api.routes import investigation_label as _investigation_memory
+
+        application.include_router(_investigation_memory.memory_router, prefix="/api/v1")
+    # (plans/196) 관리자 「호스트 연결」 — NOISE_HOST_LINK_ENABLED 켰을 때만 등록(기동 시 1회).
+    if config.noise_gate.host_link_enabled:
+        from src.api.routes import admin_host_links
+
+        application.include_router(admin_host_links.router, prefix="/api/v1", tags=["admin"])
     # (Plan 54) 알람 노이즈 캔슬링 관제 — 운영자 JWT 뒤의 집계·조회·침묵 관리.
     application.include_router(
         noise_dashboard.router, prefix="/api/v1", tags=["noise-console"]

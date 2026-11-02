@@ -1799,6 +1799,10 @@
             }
             var users = await response.json();
             await loadSourceCandidates();
+            // (plans/201 W1) 담당 업무 현황 — off(404)면 dutyState=null이라 아래 담당 열·카드를 그리지 않는다
+            await loadDutyStatus();
+            renderDutyCard();
+            if (dutyState) ensureDutyHeader();
             usersBody.innerHTML = "";
 
             users.forEach(function(u) {
@@ -1863,6 +1867,8 @@
                 var srcTd = document.createElement("td");
                 renderSourceCell(srcTd, u.user_id, u.allowed_sources, u.role === "admin");
                 tr.insertBefore(srcTd, tr.querySelector(".last-login-cell"));
+                // (plans/201 W1) 선택 체크(맨 앞) + 「담당」 셀(알림그룹 뒤 = 조회 가능 DB 앞)
+                if (dutyState) decorateDutyRow(tr, u, permTd);
 
                 usersBody.appendChild(tr);
             });
@@ -1903,6 +1909,7 @@
                 btn.addEventListener("click", function() { deleteUser(btn.dataset.uid); });
             });
 
+            if (dutyState) applyDutyFilter();
             if (usersLoading) usersLoading.classList.remove("active");
             if (usersTable) usersTable.style.display = "table";
         } catch (err) {
@@ -1913,7 +1920,7 @@
 
     async function updateUser(uid, data) {
         try {
-            var response = await apiRequest("PUT", "/api/v1/admin/users/" + uid, data);
+            var response = await apiRequest("PUT", "/api/v1/admin/users/" + encodeURIComponent(uid), data);
             if (response.ok) {
                 showSuccess("사용자 '" + uid + "' 수정 완료");
             } else {
@@ -1957,6 +1964,289 @@
             showError("통신 실패");
         }
     }
+
+    // --- 담당 업무 현황 (plans/201 W1 §3.3·§3.7 · D-354) ---
+    // 담당 업무는 권한이 아니라 중점이다. 영역 이름은 서버 메타(`/admin/duty-areas/status` options)만 읽는다 —
+    // 영역 문자열 사본 없음. 엔드포인트가 404(DUTY_AREA_ENABLED off)면 카드·열·배지를 하나도 그리지 않는다.
+    // 일괄 지정은 새 API 없이 사용자별 PUT /admin/users/{id}를 반복한다(사용자별 감사 로그).
+    var dutyState = null;          // 마지막 현황 응답(off면 null)
+    var dutyOnlyUnassigned = false;
+
+    // assignmentOnly=true(담당 체크 변경 직후)면 `?mapping=false`로 지정률만 다시 받는다 — 결정 기록
+    // 전량 스캔(매핑 점검)은 진입 시·카드 표시 시에만 돈다. 직전 점검 결과(sections·badge_count)는 유지.
+    async function loadDutyStatus(assignmentOnly) {
+        var previous = dutyState;
+        try {
+            var url = "/api/v1/admin/duty-areas/status" + (assignmentOnly ? "?mapping=false" : "");
+            var response = await apiRequest("GET", url);
+            dutyState = response.ok ? await response.json() : null;
+        } catch (e) {
+            dutyState = null;
+        }
+        if (assignmentOnly && dutyState && previous) {
+            dutyState.sections = previous.sections;
+            dutyState.badge_count = previous.badge_count;
+        }
+        renderDutyBadge();
+        return dutyState;
+    }
+
+    function dutyOptions() {
+        return (dutyState && dutyState.options) || [];
+    }
+
+    function renderDutyBadge() {
+        var tab = document.querySelector('.tab[data-tab="users"]');
+        if (!tab) return;
+        var badge = tab.querySelector(".duty-area-badge");
+        var count = dutyState ? (dutyState.badge_count || 0) : 0;
+        if (!count) {
+            if (badge) badge.parentNode.removeChild(badge);
+            return;
+        }
+        if (!badge) {
+            badge = document.createElement("span");
+            badge.className = "duty-area-badge";
+            badge.style.cssText = "margin-left:6px;padding:0 6px;border-radius:9px;background:#ef4444;" +
+                "color:#fff;font-size:0.6875rem;line-height:16px;display:inline-block";
+            tab.appendChild(badge);
+        }
+        badge.textContent = String(count);
+        badge.title = "담당 영역에 매핑되지 않은 알람 자원 유형 " + count + "종 — 사용자 관리 탭의 「담당 업무 현황」을 보세요";
+    }
+
+    function dutyLabel(code) {
+        var opts = dutyOptions();
+        for (var k = 0; k < opts.length; k++) {
+            if (opts[k].code === code) return opts[k].label;
+        }
+        return code;
+    }
+
+    function renderDutyCard() {
+        var card = document.getElementById("dutyAreaStatusCard");
+        if (!card) return;
+        card.innerHTML = "";
+        if (!dutyState) { card.hidden = true; return; }
+        card.hidden = false;
+
+        var title = document.createElement("h3");
+        title.textContent = "담당 업무 현황";
+        title.style.cssText = "margin:0 0 8px;font-size:0.9375rem";
+        card.appendChild(title);
+
+        // 지정률 — 「담당 지정 N/M명 · 영역별 · 미지정 k」(라벨은 서버 메타)
+        var a = dutyState.assignment;
+        var rate = document.createElement("div");
+        rate.className = "duty-area-rate";
+        rate.style.cssText = "font-size:0.8125rem;margin-bottom:8px";
+        if (a) {
+            var parts = ["담당 지정 " + a.assigned_users + "/" + a.total_users + "명"];
+            (a.by_area || []).forEach(function (b) { parts.push(b.label + " " + b.users); });
+            parts.push("미지정 " + a.unassigned_users);
+            rate.textContent = parts.join(" · ");
+        } else {
+            rate.textContent = "사용자 저장소를 사용할 수 없어 지정률을 셀 수 없습니다.";
+        }
+        card.appendChild(rate);
+
+        // 미지정만 보기 · 일괄 지정
+        var bar = document.createElement("div");
+        bar.style.cssText = "display:flex;flex-wrap:wrap;align-items:center;gap:6px 12px;font-size:0.8125rem;margin-bottom:8px";
+        var filterLabel = document.createElement("label");
+        var filterChk = document.createElement("input");
+        filterChk.type = "checkbox";
+        filterChk.id = "dutyOnlyUnassigned";
+        filterChk.checked = dutyOnlyUnassigned;
+        filterChk.addEventListener("change", function () {
+            dutyOnlyUnassigned = filterChk.checked;
+            applyDutyFilter();
+        });
+        filterLabel.appendChild(filterChk);
+        filterLabel.appendChild(document.createTextNode(" 미지정만 보기"));
+        bar.appendChild(filterLabel);
+
+        var sep = document.createElement("span");
+        sep.textContent = "| 선택한 사용자 담당 일괄 지정:";
+        bar.appendChild(sep);
+        dutyOptions().forEach(function (opt) {
+            var l = document.createElement("label");
+            var c = document.createElement("input");
+            c.type = "checkbox";
+            c.className = "duty-bulk-chk";
+            c.value = opt.code;
+            l.appendChild(c);
+            l.appendChild(document.createTextNode(" " + opt.label));
+            bar.appendChild(l);
+        });
+        var applyBtn = document.createElement("button");
+        applyBtn.type = "button";
+        applyBtn.className = "btn btn-secondary btn-sm";
+        applyBtn.id = "dutyBulkApplyBtn";
+        applyBtn.textContent = "일괄 지정";
+        applyBtn.style.cssText = "font-size:0.75rem;padding:3px 10px";
+        applyBtn.addEventListener("click", applyDutyBulk);
+        bar.appendChild(applyBtn);
+        var result = document.createElement("span");
+        result.id = "dutyBulkResult";
+        bar.appendChild(result);
+        card.appendChild(bar);
+
+        // 매핑 점검 — 항목(섹션)별: 미매핑 상위 5 + 건수 · 빈 유형은 별도 수 · 조치 안내
+        (dutyState.sections || []).forEach(function (sec) {
+            var box = document.createElement("div");
+            box.className = "duty-area-mapping";
+            box.style.cssText = "font-size:0.75rem;color:var(--text-secondary);margin-top:4px";
+            var head = document.createElement("div");
+            head.textContent = "매핑 점검 — " + (sec.title || sec.key) + " (최근 " + (dutyState.window_days || 7) + "일 판정 기록)";
+            box.appendChild(head);
+            var body = document.createElement("div");
+            if (sec.unmapped_distinct) {
+                // (plans/201 W3) 제니퍼 유형 항목은 event_type — 자원 유형 항목은 종전 그대로
+                body.textContent = "담당 영역에 매핑되지 않은 유형 " + sec.unmapped_distinct + "종 · " + sec.unmapped_total + "건: " +
+                    (sec.top || []).map(function (t) { return (t.resource_type || t.event_type) + " (" + t.count + ")"; }).join(", ");
+                box.appendChild(body);
+                var hint = document.createElement("div");
+                hint.textContent = "조치: " + (sec.action_hint || "");
+                box.appendChild(hint);
+            } else {
+                body.textContent = "미매핑 유형 없음 (점검 " + (sec.checked || 0) + "건)";
+                box.appendChild(body);
+            }
+            if (sec.empty_count) {
+                var empty = document.createElement("div");
+                empty.textContent = sec.key === "apm_event_type"
+                    ? "제니퍼 이벤트 유형이 기록되지 않은 판정 " + sec.empty_count + "건(점검 대상에서 제외 — 폴스타 알람, 그리고 제니퍼 유형 정책 NOISE_APM_NOISE_POLICY_ENABLED가 꺼져 있으면 제니퍼 알람도 여기에 셉니다)"
+                    : "자원 유형이 비어 있는 기록 " + sec.empty_count + "건(점검 대상에서 제외)";
+                box.appendChild(empty);
+            }
+            // (plans/201 W3) 알려진 미매핑(cause_hints.known_unmapped) — 배지에서 뺀 유형을 접어서 보인다
+            if (sec.known_unmapped && sec.known_unmapped.length) {
+                var known = document.createElement("details");
+                known.className = "duty-area-known-unmapped";
+                var knownSummary = document.createElement("summary");
+                knownSummary.textContent = "알려진 미매핑 " + sec.known_unmapped.length + "종 · " +
+                    (sec.known_unmapped_total || 0) + "건 — 유형만으로 원인 영역을 못 가려 단서를 만들지 않습니다(배지 제외)";
+                known.appendChild(knownSummary);
+                var knownList = document.createElement("div");
+                knownList.textContent = sec.known_unmapped.map(function (t) {
+                    return t.event_type + " (" + t.count + ")";
+                }).join(", ");
+                known.appendChild(knownList);
+                box.appendChild(known);
+            }
+            card.appendChild(box);
+        });
+    }
+
+    function ensureDutyHeader() {
+        if (!usersTable) return;
+        var headRow = usersTable.querySelector("thead tr");
+        if (!headRow || headRow.querySelector(".duty-col")) return;
+        var selTh = document.createElement("th");
+        selTh.className = "duty-col";
+        var allChk = document.createElement("input");
+        allChk.type = "checkbox";
+        allChk.id = "dutySelectAll";
+        allChk.title = "보이는 사용자 전체 선택";
+        allChk.addEventListener("change", function () {
+            usersBody.querySelectorAll("tr").forEach(function (tr) {
+                if (tr.style.display === "none") return;
+                var c = tr.querySelector(".duty-select-chk");
+                if (c) c.checked = allChk.checked;
+            });
+        });
+        selTh.appendChild(allChk);
+        headRow.insertBefore(selTh, headRow.firstChild);
+        // 「담당」 열은 「알림그룹」 바로 뒤(행의 셀 순서와 같다)
+        var dutyTh = document.createElement("th");
+        dutyTh.className = "duty-col";
+        dutyTh.textContent = "담당";
+        dutyTh.title = "담당 업무 — 권한이 아니라 중점입니다. 아무것도 숨기지 않습니다.";
+        var zoneTh = null;
+        headRow.querySelectorAll("th").forEach(function (th) { if (th.textContent === "알림그룹") zoneTh = th; });
+        headRow.insertBefore(dutyTh, zoneTh ? zoneTh.nextSibling : null);
+    }
+
+    function decorateDutyRow(tr, u, beforeTd) {
+        var areas = u.duty_areas || [];
+        tr.dataset.dutyAssigned = areas.length ? "1" : "0";
+        var selTd = document.createElement("td");
+        var sel = document.createElement("input");
+        sel.type = "checkbox";
+        sel.className = "duty-select-chk";
+        sel.dataset.uid = u.user_id;
+        selTd.appendChild(sel);
+        tr.insertBefore(selTd, tr.firstChild);
+
+        var td = document.createElement("td");
+        var group = document.createElement("div");
+        group.className = "zone-chk-group";
+        dutyOptions().forEach(function (opt) {
+            var l = document.createElement("label");
+            var c = document.createElement("input");
+            c.type = "checkbox";
+            c.className = "duty-chk";
+            c.dataset.uid = u.user_id;
+            c.value = opt.code;
+            c.checked = areas.indexOf(opt.code) >= 0;
+            c.addEventListener("change", function () {
+                var picked = Array.prototype.map.call(
+                    group.querySelectorAll(".duty-chk:checked"), function (x) { return x.value; });
+                tr.dataset.dutyAssigned = picked.length ? "1" : "0";
+                updateUser(u.user_id, {duty_areas: picked}).then(refreshDutyCard);
+            });
+            l.appendChild(c);
+            l.appendChild(document.createTextNode(" " + opt.label));
+            group.appendChild(l);
+        });
+        td.appendChild(group);
+        tr.insertBefore(td, beforeTd);
+    }
+
+    function applyDutyFilter() {
+        if (!usersBody) return;
+        usersBody.querySelectorAll("tr").forEach(function (tr) {
+            tr.style.display = (dutyOnlyUnassigned && tr.dataset.dutyAssigned === "1") ? "none" : "";
+        });
+    }
+
+    async function refreshDutyCard() {
+        await loadDutyStatus(true);   // 지정률만 — 매핑 점검은 다시 계산하지 않는다
+        renderDutyCard();
+    }
+
+    async function applyDutyBulk() {
+        var resultEl = document.getElementById("dutyBulkResult");
+        var picked = Array.prototype.map.call(
+            document.querySelectorAll("#dutyAreaStatusCard .duty-bulk-chk:checked"), function (c) { return c.value; });
+        var targets = Array.prototype.map.call(
+            usersBody.querySelectorAll(".duty-select-chk:checked"), function (c) { return c.dataset.uid; });
+        if (!targets.length) {
+            if (resultEl) resultEl.textContent = "선택한 사용자가 없습니다.";
+            return;
+        }
+        var what = picked.length ? picked.map(dutyLabel).join(", ") : "미지정(담당 해제)";
+        if (!confirm(targets.length + "명의 담당 업무를 「" + what + "」(으)로 지정하시겠습니까?")) return;
+        var ok = 0;
+        var fail = 0;
+        for (var k = 0; k < targets.length; k++) {
+            try {
+                var response = await apiRequest(
+                    "PUT", "/api/v1/admin/users/" + encodeURIComponent(targets[k]), {duty_areas: picked});
+                if (response.ok) ok++; else fail++;
+            } catch (e) {
+                fail++;
+            }
+        }
+        await loadUsers();
+        var after = document.getElementById("dutyBulkResult");
+        if (after) after.textContent = "일괄 지정 결과: 성공 " + ok + "명 · 실패 " + fail + "명";
+        if (fail) showError("담당 일괄 지정 중 " + fail + "명 실패"); else showSuccess("담당 일괄 지정 " + ok + "명 완료");
+    }
+
+    // 대시보드 진입 시 1회 — 미매핑이 있으면 「사용자 관리」 탭 이름 옆에 배지가 바로 보인다
+    loadDutyStatus();
 
     // --- 사용자 DB 접근 권한 (plans/104 C-4) ---
     //

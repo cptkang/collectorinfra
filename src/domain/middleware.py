@@ -166,3 +166,28 @@ def identify(
         unmatched=unmatched,
         note=f"규칙 {len(sigs)}종으로 판정 · 식별 {len(matched)} · 미식별 {len(unmatched)}",
     )
+
+
+def classify_process_kind(
+    name: str,
+    args: str,
+    *,
+    signatures: Optional[Sequence[MiddlewareSignature]] = None,
+) -> Optional[str]:
+    """프로세스 1건(이름·실행 인자)의 미들웨어 kind. 미식별이면 None(plans/201 W3 · 결정적).
+
+    실행 인자(`args`)를 먼저 보고, 못 가리면 프로세스 이름(`name`)으로 한 번 더 본다 — 폴스타 실시간
+    프로세스 목록은 인자가 절단(마스킹 120자)될 수 있고, DB 엔진은 이름만으로 갈리는 경우가 많다.
+    판정 규칙은 `identify()`와 같다(선언 파일 · 공통 제외 패턴 포함). kind 이름만 돌려준다 — 원문은 남기지 않는다.
+
+    `noise_gate` 알림 노드가 쓰지만 import하지 않는다 — 본체 기동부가 이 함수를 콜백으로 주입한다
+    (D-139 부기: `noise_gate → src.domain`은 stdlib 전용 모듈만 · 이 모듈은 pydantic·yaml을 쓴다).
+    """
+    for text in (args, name):
+        cmdline = str(text or "").strip()
+        if not cmdline:
+            continue
+        scan = identify([{"pid": 0, "cmdline": cmdline}], signatures=signatures)
+        if scan.matched:
+            return scan.matched[0].kind
+    return None

@@ -26,10 +26,11 @@ from sre_agent import __version__
 from sre_agent.application.briefing_builder import build_briefing
 from sre_agent.application.evidence_prefetch import prefetch_and_correlate, scope_from_job
 from sre_agent.application.investigation_dispatcher import (
+    PREFETCH_TIMEBOX_FLOOR_SECONDS,
     InvestigationDispatcher,
     PlaybookWiring,
 )
-from sre_agent.application.investigation_guidance import build_guidance
+from sre_agent.application.investigation_guidance import build_guidance, toolset_kind
 from sre_agent.application.investigation_jobs import (
     CONTRACT_VERSION,
     JobStore,
@@ -51,14 +52,16 @@ from sre_agent.domain.cross_source_episode import (
     active_episode,
     prompt_text,
 )
+from sre_agent.domain.failure_guards import ExpectedSources
 from sre_agent.domain.playbook import Playbook
+from sre_agent.infrastructure.expected_sources_loader import load_expected_sources
 from sre_agent.infrastructure.known_error_loader import DEFAULT_KNOWN_ERROR_DIR, load_known_errors
 from sre_agent.infrastructure.mcp_tool_client import make_apm_batch_caller, make_batch_caller
 from sre_agent.infrastructure.playbook_loader import DEFAULT_PLAYBOOK_DIR, load_playbooks
 from sre_agent.interface.config_admin import AdminPathRouter, build_admin_app
 from sre_agent.interface.config_admin_adapter import build_adapter
 from sre_agent.settings import AgentSettings, timechain_warnings
-from sre_agent.toolset_profiles import remote_vm_profile
+from sre_agent.toolset_profiles import narrowed_tool_names, remote_vm_profile
 
 logger = logging.getLogger(__name__)
 
@@ -226,13 +229,15 @@ def _build_mcp_servers(settings: AgentSettings) -> dict[str, dict] | None:
     return servers or None
 
 
-def _agent_getter(settings: AgentSettings):
+def _agent_getter(settings: AgentSettings, holder: dict[str, DiagnosisAgent] | None = None):
     """`DiagnosisAgent`를 지연 생성해 공유하는 getter.
 
     조사 함수와 플레이북 소견기(plans/187 W4)가 같은 객체를 쓴다. 캐시된 agent에 FAILED MCP
     툴셋이 있으면 **한 번** 새로 만든다(plans/188 C1 — holmes는 같은 agent 안에서 재검사하지 않는다).
+    `holder`를 넘기면 그 dict에 캐시한다 — 생성 없이 현재 agent를 엿볼 때 쓴다
+    (plans/198 재검토 Minor5).
     """
-    holder: dict[str, DiagnosisAgent] = {}
+    holder = {} if holder is None else holder
     lock = threading.Lock()
 
     def _get() -> DiagnosisAgent:
@@ -250,6 +255,35 @@ def _agent_getter(settings: AgentSettings):
             return agent
 
     return _get
+
+
+def _kind_toolset_narrower(settings: AgentSettings):
+    """잡 단위 툴셋 좁히기 판정기(plans/198 I-9)를 만든다.
+
+    판정기: `(job, 도구 이름) → ((kind, 허용 소스), 남길 도구)`.
+
+    좁히지 않는 잡(알람 잡 아님 · 크로스소스 사건 · 허용 키 없는 kind · YAML 적재 실패)이면 None.
+    YAML은 첫 판정 때 1회 읽는다(실패면 경고 1회 뒤 계속 None — 조사 무영향).
+    """
+    state: dict[str, ExpectedSources | None] = {}
+
+    def _narrow(job, tool_names: frozenset[str]):  # noqa: ANN001, ANN202 — JobLike · 튜플
+        kind = toolset_kind(settings, job)
+        if kind is None:
+            return None
+        if "spec" not in state:
+            try:
+                state["spec"] = load_expected_sources()
+            except Exception as exc:  # noqa: BLE001 — 파일·형식·YAML 구문 오류(좁히기만 생략)
+                logger.warning("기대 소스 YAML 적재 실패 — kind별 툴셋 좁히기 생략: %s", exc)
+                state["spec"] = None
+        spec = state["spec"]
+        sources = spec.allowed_for(kind) if spec is not None else ()
+        if spec is None or not sources:
+            return None
+        return (kind, sources), narrowed_tool_names(tool_names, sources, spec.source_of)
+
+    return _narrow
 
 
 def _default_diagnose_fn(
@@ -274,6 +308,9 @@ def _default_diagnose_fn(
     검사 결과는 `toolset_check`에 남는다(C6).
     """
     get_agent = agent_getter or _agent_getter(settings)
+    # kind별 툴셋 좁히기(plans/198 I-9) — off면 판정기를 만들지 않는다(종전 호출 그대로).
+    narrow = (_kind_toolset_narrower(settings)
+              if getattr(settings, "kind_toolset_narrowing_enabled", False) else None)
 
     def _diagnose(job, activity: ActivityLog | None = None) -> DiagnosisResult:
         # `activity`(plans/187 W13 · 선택)는 잡 실행 기록
@@ -298,10 +335,17 @@ def _default_diagnose_fn(
         cancel_event = getattr(job, "cancel_event", None)
         if cancel_event is not None:
             extra["cancel_event"] = cancel_event
+        tools = agent.tool_names()
+        guidance_kw: dict = {}
+        scoped = narrow(job, tools) if narrow is not None else None
+        if scoped is not None:
+            # 허용 밖 관측 도구는 이 잡에서 노출·실행 모두 빠지고, 지침에 범위 노트가 붙는다.
+            guidance_kw["toolset_scope"], tools = scoped
+            extra["tool_allowlist"] = tools
         result = agent.ask(
             _job_to_question(job, settings),
             system_prompt_additions=build_guidance(
-                settings, job, remote=True, available_tools=agent.tool_names()
+                settings, job, remote=True, available_tools=tools, **guidance_kw
             ),
             **extra,
         )
@@ -310,6 +354,10 @@ def _default_diagnose_fn(
         return result
 
     return _diagnose
+
+
+#: 사전수집 타임박스 중 이웃 알람 배치가 끝나야 하는 시점의 비율(plans/198 재검토 Major1).
+NEIGHBOR_BUDGET_SHARE = 0.8
 
 
 def _default_prefetch_fn(settings: AgentSettings):
@@ -330,10 +378,20 @@ def _default_prefetch_fn(settings: AgentSettings):
         scope = scope_from_job(job, baseline_periods=settings.evidence_baseline_periods,
                                change_overlay=settings.evidence_change_overlay_enabled,
                                related_hosts_max=settings.evidence_correlation_related_hosts,
-                               cross_source=settings.cross_source_investigation_enabled)
+                               cross_source=settings.cross_source_investigation_enabled,
+                               neighbors_max=(
+                                   settings.evidence_topology_neighbors_max
+                                   if settings.evidence_topology_neighbors_enabled else 0))
         if scope is None:
             return None
-        return prefetch_and_correlate(scope, call_batch).to_dict()
+        if scope.neighbors_max <= 0:
+            return prefetch_and_correlate(scope, call_batch).to_dict()
+        # plans/198 재검토 Major1 — 이웃 배치는 dispatcher 사전수집 타임박스(같은 계산식) 안에서만
+        # 기다린다. 여유분을 남겨 바깥 타임박스가 먼저 끊어 대표 상관까지 잃지 않게 한다.
+        timebox = max(PREFETCH_TIMEBOX_FLOOR_SECONDS, settings.investigation_timeout_seconds / 2)
+        return prefetch_and_correlate(
+            scope, call_batch, neighbor_budget_s=timebox * NEIGHBOR_BUDGET_SHARE
+        ).to_dict()
 
     return _prefetch
 
@@ -430,7 +488,14 @@ def _build_dispatcher(
     `toolset_check`(plans/188 C6)는 조사 직전 툴셋 검사 결과를 받아 `sre_health`에 넘기는
     기록함이다.
     """
-    agent_getter = _agent_getter(settings)
+    holder: dict[str, DiagnosisAgent] = {}
+    agent_getter = _agent_getter(settings, holder)
+
+    def _loaded_tools() -> frozenset[str] | None:
+        # 이미 만든 agent의 로드된 도구만 — 여기서 agent를 만들지 않는다(없으면 None = 종전 표기).
+        agent = holder.get("agent")
+        return None if agent is None else frozenset(agent.tool_names())
+
     return InvestigationDispatcher(
         settings,
         diagnose_fn=_default_diagnose_fn(settings, toolset_check, agent_getter),
@@ -438,6 +503,7 @@ def _build_dispatcher(
         prefetch_fn=_default_prefetch_fn(settings),
         audit_path=audit_path if audit_path is not None else default_audit_path(),
         playbook=_default_playbook_wiring(settings, agent_getter),
+        loaded_tools_fn=_loaded_tools,
     )
 
 

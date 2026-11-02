@@ -1,0 +1,16 @@
+# 알람 kind별 기대 소스 (plans/198 I-10 · UNCHECKED_SOURCE_LIMITATION_ENABLED)
+# HolmesGPT 조사가 끝났을 때 kinds의 소스 중 도구 호출이 0건인 것을 브리핑 한계에
+# 「확인하지 않은 소스: …」로 싣는다. kind는 점으로 나뉜다(host.cpu) — 정확한 키가 없으면 앞 마디(host)를 본다.
+# 지금 dispatcher가 넘기는 kind는 host(그 밖 알람)·was(APM 사건) 둘이다. 세부 키(host.cpu)는 같은 구조로 더한다.
+# allowed(plans/198 I-9 · KIND_TOOLSET_NARROWING_ENABLED): kind → 조사 LLM에 남길 소스. 여기 없는 소스의 도구는
+# 그 잡에서 빠진다(sources 접두어에 안 걸리는 도구 — 할 일 목록 등 — 는 그대로). 키가 없는 kind는 종전 툴셋이다.
+sources:                     # 소스 → 도구 이름 접두어
+  polestar: [polestar_]
+  prometheus: [prom_]
+  apm: [apm_]
+kinds:                       # kind → 기대 소스(표기 순서 = 한계 문구 순서)
+  host: [polestar, prometheus]
+  was: [apm, polestar]
+allowed:                     # kind → 허용 소스(plans/198 I-9 — kinds와 따로 둔다: 기대 ⊆ 허용)
+  host: [polestar, prometheus]
+  was: [apm, polestar]

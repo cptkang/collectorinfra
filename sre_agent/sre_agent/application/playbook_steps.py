@@ -24,6 +24,7 @@ import re
 import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
 from statistics import mean
@@ -51,7 +52,7 @@ from sre_agent.domain.source_adapter import (
     AdapterRegistry,
     fetch_or_not_connected,
 )
-from sre_agent.domain.step_findings import tool_phrase
+from sre_agent.domain.step_findings import step_status_label, tool_phrase
 from sre_agent.infrastructure.log_masking import mask_secrets
 
 logger = logging.getLogger(__name__)
@@ -93,6 +94,12 @@ VERDICT_SOURCE_GATEWAY = "apm_gateway"
 VERDICT_SOURCE_RULE = "playbook_rule"
 #: 역방향 대상 확정(`scope.host_to_was`)에서 이 호스트에 WAS가 없다는 판정(W4 후속 ③).
 NO_WAS_VERDICT = "no_was"
+#: 게이트웨이 `apm_instance_map(hostname=…)`의 「일치 인스턴스 없음」 오류 코드와, 그 문장에서
+#: 대조가 불완전했음을 알리는 표지(`apm_gateway/application/sources.py` `resolve` 문구 사본 ·
+#: D-274 ③). 표지가 없으면 전 소스·도메인을 대조하고 없었다는 확인된 사실이다.
+APM_INSTANCE_UNRESOLVED = "instance_unresolved"
+APM_PARTIAL_MARKERS = ("일부 도메인 조회 불가", "일부 소스 조회 불가")
+_COMPARED_RE = re.compile(r"인스턴스 (\d+)건 대조")
 #: [제안] p95가 기준선(전일·전주 평균)의 이 배수 이상이면 degraded — 스텝 인자 `p95_ratio`로 바꾼다.
 DEFAULT_P95_RATIO = 2.0
 #: 정합 신뢰도 중 「대상 확정 실패」로 보는 값(게이트웨이 어휘 high·medium·none + 방어적 low).
@@ -196,6 +203,12 @@ class RunScope:
     #: 폴스타 소스를 설정 매핑으로 대체했을 때의 근거 문장(plans/187 W21 P6). None이면 브리핑
     #: 범위(`to_dict`)에 키 자체를 싣지 않는다(종전 모양 그대로).
     polestar_basis: str | None = None
+    #: 폴스타 미확정 사유의 운영자 상세(필드명·계획 번호 — plans/196 D6). `polestar_reason`은
+    #: 사용자 문장이다. None이면 브리핑 범위에 키를 싣지 않는다.
+    polestar_reason_detail: str | None = None
+    #: 페이로드 `meta.hints.polestar_link`를 실제로 쓴 상태(`linked`·`absent`·`unresolved` —
+    #: plans/196 §5.2). None이면 힌트 미사용(종전 동작)이고 브리핑 범위에 키를 싣지 않는다.
+    polestar_link: str | None = None
 
     def target_names(self) -> list[str]:
         return [name for name, _ in self.target_entries()]
@@ -215,8 +228,11 @@ class RunScope:
     def to_dict(self) -> dict[str, Any]:
         out = asdict(self)
         out.pop("host_was", None)
-        if out.get("polestar_basis") is None:
-            out.pop("polestar_basis", None)
+        # 운영자 상세는 직렬화하지 않는다(D6 — 섹션 `reason_detail`·서버 로그로만)
+        out.pop("polestar_reason_detail", None)
+        for key in ("polestar_basis", "polestar_link"):
+            if out.get(key) is None:
+                out.pop(key, None)
         return out
 
 
@@ -247,9 +263,21 @@ class StepResult:
     elapsed_ms: int = 0
     #: 직렬화하지 않는 객체(상관 계산 재료 — MetricSeries·AlarmPoint 등).
     artifacts: dict[str, Any] = field(default_factory=dict, repr=False)
+    #: 사유의 운영자 상세(필드명·계획 번호 — plans/196 D6 · §5.3). `reason`은 사용자 문장이다.
+    #: None이면 직렬화에 키를 싣지 않는다(가산 키).
+    reason_detail: str | None = None
+    #: 재조회(plans/196 §5.2 `rerun`)에서 부모 조사 결과를 그대로 쓴 섹션의 부모 조사 id.
+    #: None이면 직렬화에 키를 싣지 않는다(가산 키).
+    reused_from: str | None = None
+    #: 축별 상태 `{축: 상태}`를 그대로 쓸 값(재조회 재사용 섹션이 부모 값을 옮긴다 — plans/196 D7).
+    #: None이면 직렬화가 액션·`data["axes"]`로 계산한다(`section_axis_status`).
+    axis_status: dict[str, str] | None = None
+    #: 단계별 조회 `[{tool, phrase}]`(plans/195 W4 — `step_queries` · 인자 원문은 싣지 않는다).
+    #: 비면 직렬화에 키를 싣지 않는다(가산 키).
+    queries: list[dict[str, str]] = field(default_factory=list)
 
     def to_dict(self, *, include_data: bool = True) -> dict[str, Any]:
-        out = {
+        out: dict[str, Any] = {
             "step": self.step,
             "action": self.action,
             "title": self.title,
@@ -263,6 +291,19 @@ class StepResult:
             "reason": self.reason,
             "elapsed_ms": self.elapsed_ms,
         }
+        if self.reason_detail is not None:
+            out["reason_detail"] = self.reason_detail
+        if self.reused_from is not None:
+            out["reused_from"] = self.reused_from
+        if self.queries:
+            out["queries"] = [dict(q) for q in self.queries]
+        axis_status = (
+            self.axis_status
+            if self.axis_status is not None
+            else section_axis_status(self.action, self.status, self.data)
+        )
+        if axis_status:
+            out["axis_status"] = dict(axis_status)
         if include_data:
             out["data"] = self.data
         return out
@@ -301,6 +342,11 @@ def parse_response(tool: str, args: dict, raw: str) -> ToolResponse:
 STEP_ABORTED = "스텝 타임아웃으로 중단"
 
 
+def _aborted(calls: Sequence[tuple[str, dict]]) -> list[ToolResponse]:
+    """중단된 스텝의 호출 — 부르지 않고(또는 기록하지 않고) 전부 `STEP_ABORTED` 오류 응답."""
+    return [ToolResponse(t, dict(a), None, STEP_ABORTED) for t, a in calls]
+
+
 class StepContext:
     """스텝 1회 실행 문맥. 스텝마다 새로 만든다(호출 기록이 스텝별).
 
@@ -324,6 +370,7 @@ class StepContext:
         adapters: AdapterRegistry | None = None,
         target_sources: Sequence[str | None] | None = None,
         xview_confirm_over: int | None = None,
+        axis_concurrency: bool = False,
     ) -> None:
         self.payload = payload
         self.windows = windows
@@ -343,6 +390,9 @@ class StepContext:
         )
         #: 브리핑 한계 문장(실행기가 `PlaybookRun.notes`로 모은다 · 순서 보존 · 중복 제거).
         self.limits: list[str] = []
+        #: 스텝 안 독립 축 동시 조회(plans/200 I-3 · `sre_playbook_axis_concurrency_enabled`).
+        #: False = 축 순차(종전 비트 동일).
+        self.axis_concurrency = bool(axis_concurrency)
         self.polestar = polestar
         self.apm = apm
         self.now = now
@@ -407,15 +457,92 @@ class StepContext:
         if not calls:
             return []
         if self.cancel.is_set():
-            return [ToolResponse(t, dict(a), None, STEP_ABORTED) for t, a in calls]
+            return _aborted(calls)
         caller = self.apm if axis == "apm" else self.polestar
         if caller is None:
-            msg = "APM 게이트웨이 미구성" if axis == "apm" else "폴스타 MCP 미구성"
-            out_missing = [ToolResponse(t, dict(a), None, msg) for t, a in calls]
-            for r in out_missing:
-                self._record_end(r, None, "error", None, msg)
-            return out_missing
+            return self._unconfigured(axis, calls)
         cached = self._record_start(caller, calls)
+        raws, elapsed_ms = self._invoke(caller, calls)
+        if self.cancel.is_set():
+            # 중단 뒤 돌아온 배치 — 계수만 갱신하고 기록·적재는 하지 않는다(W21 교정)
+            return _aborted(calls)
+        return self._store(calls, raws, cached, elapsed_ms)
+
+    def call_axes(
+        self, groups: Sequence[tuple[Axis, Sequence[tuple[str, dict]]]]
+    ) -> list[list[ToolResponse]]:
+        """서로 결과를 쓰지 않는 축별 호출 묶음을 부른다 — 결과는 `groups` 순서(plans/200 I-3).
+
+        `axis_concurrency`가 False면 축마다 `call()`을 차례로 부른다(종전 비트 동일). True면 축별
+        배치 콜러블 호출만 동시에(축 수만큼 스레드) 내고, 기록(`tools`·`calls`·`outputs`·
+        `tool_end`)은 모두 돌아온 뒤 `groups` 순서로 한다 — 결과·적재 순서가 off와 같다. 실행
+        기록 개수도 같고, 순서만 `tool_start`(축 순서 · 호출 전) → `tool_end`(축 순서 · 전부 반환
+        뒤)로 실제 동시성을 따른다. 배치 동시·전역 상한(D-347)은 콜러블 안의 것이라 그대로다.
+        중단은 호출 전·전부 반환 뒤에 본다(`call()`과 같은 의미). 한 축 콜러블이 예외를 내면 다른
+        축을 기다린 뒤 축 순서상 첫 예외를 다시 낸다. 그 전에 실제로 호출한 축은 모두 기록한다 —
+        돌아온 축은 적재·`tool_end`, 예외 축은 `tool_end(status=error)`만(「진행 중」이 남지
+        않게). 앞 축이 예외면 off(뒤 축을 부르지 않음)와 달리 뒤 축 호출이 `calls`에 실린다(on
+        전용 차이). 호출하지 않은 미구성 축은 첫 예외 뒤로는 기록하지 않는다.
+        """
+        if not self.axis_concurrency:
+            return [self.call(axis, calls) for axis, calls in groups]
+        # 호출 전 판정은 축 순서로 — 확정 결과(빈 호출·중단) · 미구성(기록은 뒤에서) · 호출 대상
+        done: dict[int, list[ToolResponse]] = {}
+        live: dict[int, tuple[BatchCaller, list[bool]]] = {}
+        for i, (axis, calls) in enumerate(groups):
+            if not calls:
+                done[i] = []
+            elif self.cancel.is_set():
+                done[i] = _aborted(calls)
+            else:
+                caller = self.apm if axis == "apm" else self.polestar
+                if caller is not None:
+                    live[i] = (caller, self._record_start(caller, calls))
+        futures: dict[int, Future[tuple[list[str], int]]] = {}
+        if live:
+            with ThreadPoolExecutor(
+                max_workers=len(live), thread_name_prefix="playbook-axis"
+            ) as pool:
+                for i, (caller, _) in live.items():
+                    futures[i] = pool.submit(self._invoke, caller, groups[i][1])
+        out: list[list[ToolResponse]] = []
+        first_exc: BaseException | None = None
+        for i, (axis, calls) in enumerate(groups):
+            if i not in live:
+                if first_exc is None:
+                    out.append(done[i] if i in done else self._unconfigured(axis, calls))
+                continue
+            exc = futures[i].exception()
+            if self.cancel.is_set():
+                # 중단 뒤 돌아온 배치 — 기록·적재하지 않는다(`call()`과 같은 의미)
+                out.append(_aborted(calls))
+            elif exc is not None:
+                msg = f"{type(exc).__name__}: {exc}"
+                for t, a in calls:
+                    self._record_end(ToolResponse(t, dict(a), None, msg), None, "error", None, msg)
+            else:
+                raws, elapsed_ms = futures[i].result()
+                out.append(self._store(calls, raws, live[i][1], elapsed_ms))
+            if exc is not None and first_exc is None:
+                first_exc = exc
+        if first_exc is not None:
+            raise first_exc
+        return out
+
+    def _unconfigured(self, axis: Axis, calls: Sequence[tuple[str, dict]]) -> list[ToolResponse]:
+        """콜러블이 없는 축 — 부르지 않고 전부 미구성 오류 응답(`tool_end`만 남긴다)."""
+        msg = "APM 게이트웨이 미구성" if axis == "apm" else "폴스타 MCP 미구성"
+        out_missing = [ToolResponse(t, dict(a), None, msg) for t, a in calls]
+        for r in out_missing:
+            self._record_end(r, None, "error", None, msg)
+        return out_missing
+
+    def _invoke(
+        self, caller: BatchCaller, calls: Sequence[tuple[str, dict]]
+    ) -> tuple[list[str], int]:
+        """배치 콜러블 1회 호출 — 진행 계수를 갱신하고 `(원시 응답들, 소요 ms)`를 돌려준다.
+
+        예외는 그대로 낸다(대기 목록에서는 빼고, 완료 계수는 올리지 않는다)."""
         names = [t for t, _ in calls]
         with self._progress_lock:
             self.requested += len(calls)
@@ -429,10 +556,16 @@ class StepContext:
                     self.inflight.remove(name)
         with self._progress_lock:
             self.completed += len(calls)
-        if self.cancel.is_set():
-            # 중단 뒤 돌아온 배치 — 계수만 갱신하고 기록·적재는 하지 않는다(W21 교정)
-            return [ToolResponse(t, dict(a), None, STEP_ABORTED) for t, a in calls]
-        elapsed_ms = int((time.monotonic() - t0) * 1000)
+        return raws, int((time.monotonic() - t0) * 1000)
+
+    def _store(
+        self,
+        calls: Sequence[tuple[str, dict]],
+        raws: list[str],
+        cached: Sequence[bool],
+        elapsed_ms: int,
+    ) -> list[ToolResponse]:
+        """돌아온 배치를 기록·적재한다(응답 누락 패딩 · `tools`·`calls`·`outputs` · `tool_end`)."""
         if len(raws) < len(calls):
             raws += [json.dumps({"error": "응답 누락"})] * (len(calls) - len(raws))
         out: list[ToolResponse] = []
@@ -498,6 +631,24 @@ class StepContext:
 
 
 StepFn = Callable[[StepContext], StepResult]
+
+
+def step_queries(calls: Sequence[tuple[str, Mapping[str, Any]]]) -> list[dict[str, str]]:
+    """스텝의 도구 호출들 → 섹션 `queries`(plans/195 W4 · 결정적).
+
+    조회 문장은 `tool_phrase`로 만든다 — 인자 원문(`tool_label`·args JSON)은 싣지 않는다(실행 중
+    SQL 문 같은 값이 브리핑에 섞이지 않게). 문장이 없는 도구(사전 밖·문장화 실패)는 `{tool}`만
+    싣는다(무엇을 불렀는지는 남긴다). 같은 (도구, 문장)은 첫 1건만(호출 순서 보존).
+    """
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, str | None]] = set()
+    for tool, args in calls:
+        phrase = tool_phrase(tool, args)
+        if (tool, phrase) in seen:
+            continue
+        seen.add((tool, phrase))
+        out.append({"tool": tool, "phrase": phrase} if phrase else {"tool": tool})
+    return out
 
 
 def _mask_sql_values(value: Any, key: str = "") -> Any:
@@ -574,14 +725,93 @@ def _reasons(resps: Sequence[ToolResponse]) -> str:
     return " · ".join(f"{r.tool}: {r.error}" for r in resps if not r.ok)
 
 
+#: 폴스타 축을 「생략」(결손 아님)으로 두는 연결 상태(plans/196 §5.2 — 부정 연결·선택 대기).
+POLESTAR_LINK_SKIP = frozenset({"absent", "unresolved"})
+
+#: 폴스타 축을 부르는 액션 — 전용(`host.*`)과 혼합(폴스타 축 + 제니퍼 축) 단계(plans/196 §5.2
+#: 재조회 대상). 혼합 단계는 다시 돌면 제니퍼 축도 다시 부른다.
+POLESTAR_AXIS_ACTIONS = frozenset({
+    "host.usage_trend",
+    "host.process_top",
+    "host.resource_status",
+    "host.topology",
+    "host.alarm_history",
+    "xsource.related_alarms",
+    "change.recent",
+})
+
+#: 단일 축 액션 → 그 액션이 부르는 축(plans/196 D7 — 화면 「판정 근거 부족」 축별 집계).
+#: 혼합 단계(`MIXED_AXIS_ACTIONS`)는 `data["axes"]`의 축별 상태를 쓴다. 표에 없는 액션
+#: (`dpm.*`·`synthesize`)은 축 상태를 싣지 않는다.
+ACTION_AXIS: dict[str, Axis] = {
+    "scope.resolve_was_targets": "apm",
+    "scope.host_to_was": "apm",
+    "apm.golden_signals": "apm",
+    "apm.runtime_and_pool": "apm",
+    "apm.slow_tx_breakdown": "apm",
+    "apm.events_errors": "apm",
+    "apm.active_services": "apm",
+    "apm.active_sql": "apm",
+    "host.usage_trend": "polestar",
+    "host.process_top": "polestar",
+    "host.resource_status": "polestar",
+    "host.topology": "polestar",
+    "host.alarm_history": "polestar",
+}
+#: 폴스타 축 + 다른 축을 함께 부르는 단계 — 축별 상태가 `data["axes"]`에 있다.
+MIXED_AXIS_ACTIONS = frozenset({"xsource.related_alarms", "change.recent"})
+
+
+def section_axis_status(action: str, status: str, data: Mapping[str, Any]) -> dict[str, str]:
+    """섹션의 축별 상태 `{축: 상태}`(결정적 — plans/196 D7). 값이 없으면 빈 dict.
+
+    단일 축 액션은 섹션 상태 그대로, 혼합 단계는 `data["axes"]`의 축별 상태(화면 축 라벨
+    `AXIS_LABELS`가 있는 축만)를 쓴다. 미연동(`NOT_CONNECTED`) 축은 뺀다 — 판정 근거 부족의 원인이
+    아니다(S7 축 요약이 미연동 ITSM을 숨기는 규칙과 대칭)."""
+    if action in MIXED_AXIS_ACTIONS:
+        axes = data.get("axes") if isinstance(data, Mapping) else None
+        if not isinstance(axes, Mapping):
+            return {}
+        return {
+            k: str(v["status"])
+            for k, v in axes.items()
+            if k in AXIS_LABELS
+            and isinstance(v, Mapping)
+            and v.get("status")
+            and v.get("reason") != NOT_CONNECTED
+        }
+    axis = ACTION_AXIS.get(action)
+    return {axis: status} if axis and status else {}
+
+
+def _polestar_skipped(ctx: StepContext) -> bool:
+    """폴스타 축이 연결 힌트(부정 연결·선택 대기)로 생략 대상인가 — 결손(missing)이 아니다."""
+    return not ctx.scope.polestar_source and ctx.scope.polestar_link in POLESTAR_LINK_SKIP
+
+
 def _polestar_reason(ctx: StepContext) -> str | None:
-    """폴스타 축을 부를 수 없으면 사유 문장(미확정·미구성), 부를 수 있으면 None."""
+    """폴스타 축을 부를 수 없으면 사유 문장(미확정·미구성·생략), 부를 수 있으면 None."""
     if not ctx.scope.polestar_source or not ctx.scope.polestar_server:
+        if _polestar_skipped(ctx) and ctx.scope.polestar_reason:
+            return ctx.scope.polestar_reason
         detail = ctx.scope.polestar_reason or "폴스타 소스·서버명을 결정적으로 정할 수 없다"
-        return f"{POLESTAR_UNRESOLVED} — {detail}"
+        return polestar_unresolved_text(detail)
     if ctx.polestar is None:
         return "폴스타 MCP 미구성"
     return None
+
+
+def _polestar_blocked(ctx: StepContext, tools: Sequence[str], reason: str) -> StepResult:
+    """폴스타 전용 스텝을 부를 수 없을 때의 결과 — 연결 생략이면 skipped(결손 아님 · plans/196
+    §5.2), 아니면 missing. 운영자 상세 사유(`reason_detail`)를 함께 단다(D6)."""
+    res = (
+        StepResult(status="skipped", reason=reason)
+        if _polestar_skipped(ctx)
+        else _missing(tools, reason)
+    )
+    if not ctx.scope.polestar_source:
+        res.reason_detail = ctx.scope.polestar_reason_detail
+    return res
 
 
 def _evidence_scope(ctx: StepContext, granularity: str = "h") -> EvidenceScope:
@@ -1059,18 +1289,20 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
         alarm_instance=alarm_instance,
         host=host,
         polestar_source=ctx.scope.polestar_source,
-        polestar_server=host or ctx.scope.polestar_server,
+        # 확정 연결(plans/196 §5.2)의 폴스타 등록명은 제니퍼 hostname으로 덮지 않는다
+        polestar_server=ctx.scope.polestar_server
+        if ctx.scope.polestar_link == "linked"
+        else host or ctx.scope.polestar_server,
         polestar_reason=ctx.scope.polestar_reason,
         alarm_name=ctx.scope.alarm_name,
         targets=targets,
         polestar_basis=ctx.scope.polestar_basis,
+        polestar_reason_detail=ctx.scope.polestar_reason_detail,
+        polestar_link=ctx.scope.polestar_link,
     )
-    if not scope.polestar_source:
-        reasons.append(
-            f"{POLESTAR_UNRESOLVED} — {scope.polestar_reason or '폴스타 소스 결정 불가'}"
-        )
-    elif scope.polestar_basis:
-        reasons.append(scope.polestar_basis)
+    polestar_reason = scope_polestar_reason(scope)
+    if polestar_reason:
+        reasons.append(polestar_reason)
     table = {
         "columns": [
             "instance",
@@ -1114,8 +1346,24 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
         },
         missing=missing,
         reason=" · ".join(r for r in reasons if r) or None,
+        reason_detail=None if scope.polestar_source else scope.polestar_reason_detail,
         artifacts={"scope": scope},
     )
+
+
+def polestar_unresolved_text(reason: str) -> str:
+    """「폴스타 서버 미확정 — {사유}」. 사유가 이미 그 머리로 시작하면(파드 미확정 · plans/202)
+    머리를 겹쳐 붙이지 않는다."""
+    if reason.startswith(f"{POLESTAR_UNRESOLVED} — "):
+        return reason
+    return f"{POLESTAR_UNRESOLVED} — {reason}"
+
+
+def scope_polestar_reason(scope: RunScope) -> str | None:
+    """S0 사유의 폴스타 토막 — 미확정이면 그 사유, 대체·연결로 정했으면 근거(없으면 None)."""
+    if not scope.polestar_source:
+        return polestar_unresolved_text(scope.polestar_reason or "폴스타 소스 결정 불가")
+    return scope.polestar_basis
 
 
 def host_to_was(ctx: StepContext) -> StepResult:
@@ -1136,7 +1384,20 @@ def host_to_was(ctx: StepContext) -> StepResult:
         _apm_args(ctx, APM_INSTANCE_MAP, None, discovery=True, hostname=host),
     )
     if not m.ok:
-        return _missing([APM_INSTANCE_MAP], f"{APM_INSTANCE_MAP}: {m.error}")
+        err = str(m.error or "")
+        complete = not any(k in err for k in APM_PARTIAL_MARKERS)
+        if err.startswith(APM_INSTANCE_UNRESOLVED) and complete:
+            # 전 소스·도메인을 대조하고 일치가 없었다 — 조회 실패가 아니라 「WAS 아님」이라는 사실
+            compared = _COMPARED_RE.search(err)
+            basis = f"제니퍼 인스턴스 {compared.group(1)}건 대조" if compared else "제니퍼 인스턴스 대조"
+            return StepResult(
+                status="ok",
+                verdict=NO_WAS_VERDICT,
+                verdict_source=VERDICT_SOURCE_RULE,
+                reason=f"이 호스트에 WAS 인스턴스 없음 — {basis} · 호스트 '{host}' 일치 없음",
+                data={"host": host, "instances": []},
+            )
+        return _missing([APM_INSTANCE_MAP], f"WAS 여부 미확인 — {APM_INSTANCE_MAP}: {err}")
     # (인스턴스, 소스) — 같은 이름이라도 소스가 다르면 행을 나눈다(plans/190 W1).
     entries = list(
         dict.fromkeys((str(r["instance_name"]), _row_source(r)) for r in _instance_rows(m))
@@ -1196,6 +1457,8 @@ def host_to_was(ctx: StepContext) -> StepResult:
         targets=targets,
         host_was=[str(i["instance"]) for i in instances if i["verdict"] is not None],
         polestar_basis=ctx.scope.polestar_basis,
+        polestar_reason_detail=ctx.scope.polestar_reason_detail,
+        polestar_link=ctx.scope.polestar_link,
     )
     v, s = _worst([(i["verdict"], i["verdict_source"]) for i in instances])
     return StepResult(
@@ -1572,7 +1835,7 @@ def usage_trend(ctx: StepContext) -> StepResult:
     kinds = [k for k in (ctx.args.get("kinds") or list(thresholds)) if k in thresholds]
     blocked = _polestar_reason(ctx)
     if blocked:
-        return _missing(kinds, blocked)
+        return _polestar_blocked(ctx, kinds, blocked)
     scope = _evidence_scope(ctx, str(ctx.args.get("granularity", "h")))
     calls = [c for c in build_calls(scope) if c[0] == TOOL_METRIC and c[1].get("kind") in kinds]
     notes: list[str] = []
@@ -1632,52 +1895,95 @@ def usage_trend(ctx: StepContext) -> StepResult:
     )
 
 
+#: 축 표시 이름(축별 결정적 요약 — plans/196 D4).
+AXIS_LABELS: dict[str, str] = {"apm": "제니퍼", "polestar": "폴스타", "itsm": "ITSM"}
+
+
+def _axis_failed(label: str, reason: str | None, blocked: bool) -> str:
+    """조회하지 못한 축의 요약 한 토막.
+
+    부를 수 없었으면 사유 그대로, 호출 실패면 「조회 못 함」."""
+    if blocked:
+        return f"{label}: {reason or '조회 불가'}"
+    return f"{label}: 조회 못 함" + (f" — {reason}" if reason else "")
+
+
+def _axis_count(label: str, n: int, empty: str, unit: str) -> str:
+    """조회 성공 축의 요약 한 토막 — 0건은 「없음」의 근거로 적는다(D4 · 「수집 못 함」과 구분)."""
+    return f"{label}: 조회 성공 0건 = {empty}" if n == 0 else f"{label}: {unit} {n}건"
+
+
 def related_alarms(ctx: StepContext) -> StepResult:
     """S5 — 알람 전후 폴스타 알람(`build_calls` 알람 호출 · `_alarms`) + 제니퍼 이벤트 →
     `correlate()` 타임라인.
 
-    「상관 ≠ 인과」 문구를 결과에 고정한다.
+    「상관 ≠ 인과」 문구를 결과에 고정한다. 사유(`reason`)는 축별 결정적 요약이다(plans/196 D4 —
+    조회 성공 0건 = 없음 · 조회 못 함 구분). 제니퍼 이벤트 행 수와 타임라인 반영 수가 다르면 그
+    차이와 사유를 요약에 적는다(D3). 폴스타 축이 연결 힌트로 생략이면 결손으로 세지 않는다.
     """
     notes: list[str] = []
     missing: list[str] = []
-    reasons: list[str] = []
+    axes: dict[str, dict[str, Any]] = {}
     alarms = []
     polestar_ok = False
     blocked = _polestar_reason(ctx)
-    if blocked:
-        missing.append(TOOL_ALARMS)
-        reasons.append(f"폴스타 축: {blocked}")
+    instance, src = ctx.target_items()[0] if ctx.targets else (ctx.scope.alarm_instance, None)
+    pol_calls = [] if blocked else [build_calls(_evidence_scope(ctx))[0]]
+
+    def _apm_calls() -> list[tuple[str, dict]]:
+        if ctx.apm is None or not instance:
+            return []
+        return [
+            (
+                APM_EVENTS,
+                _apm_args(
+                    ctx,
+                    APM_EVENTS,
+                    src,
+                    instance_name=instance,
+                    reference_time=ctx.windows.reference_time,
+                    lookback_minutes=ctx.windows.lookback_minutes,
+                ),
+            )
+        ]
+
+    if ctx.axis_concurrency:
+        # 두 축은 서로의 결과를 쓰지 않는다(제니퍼 인스턴스는 대상·범위에서) — 한 번에 부른다(I-3)
+        apm_calls = _apm_calls()
+        pol_resps, apm_resps = ctx.call_axes([("polestar", pol_calls), ("apm", apm_calls)])
     else:
-        call = build_calls(_evidence_scope(ctx))[0]
-        resp = ctx.call_one("polestar", *call)
+        # 종전 순서 그대로 — 폴스타 호출 뒤에 제니퍼 인자(`_apm_args`의 한계 기록)를 만든다
+        pol_resps = ctx.call("polestar", pol_calls)
+        apm_calls = _apm_calls()
+        apm_resps = ctx.call("apm", apm_calls)
+    pol_part: str
+    if blocked:
+        skipped = _polestar_skipped(ctx)
+        if not skipped:
+            missing.append(TOOL_ALARMS)
+        axes["polestar"] = {"status": "skipped" if skipped else "missing", "reason": blocked}
+        pol_part = _axis_failed(AXIS_LABELS["polestar"], blocked, True)
+    else:
+        (resp,) = pol_resps
         if resp.ok:
             polestar_ok = True
             alarms = _alarms(resp.data or {}, notes)
+            axes["polestar"] = {"status": "ok", "reason": None}
+            pol_part = _axis_count(AXIS_LABELS["polestar"], len(alarms), "연관 알람 없음", "알람")
         else:
             missing.append(TOOL_ALARMS)
-            reasons.append(f"{TOOL_ALARMS}: {resp.error}")
+            axes["polestar"] = {"status": "missing", "reason": f"{TOOL_ALARMS}: {resp.error}"}
+            pol_part = _axis_failed(AXIS_LABELS["polestar"], resp.error, False)
     events: list[dict[str, Any]] = []
     points: list[EpisodePoint] = []
     apm_ok = False
-    instance, src = ctx.target_items()[0] if ctx.targets else (ctx.scope.alarm_instance, None)
-    if ctx.apm is None or not instance:
+    if not apm_calls:
         missing.append(APM_EVENTS)
-        reasons.append(
-            "APM 축: " + ("APM 게이트웨이 미구성" if ctx.apm is None else "대상 인스턴스 없음")
-        )
+        why = "APM 게이트웨이 미구성" if ctx.apm is None else "대상 인스턴스 없음"
+        axes["apm"] = {"status": "missing", "reason": why}
+        apm_part = _axis_failed(AXIS_LABELS["apm"], why, True)
     else:
-        ev = ctx.call_one(
-            "apm",
-            APM_EVENTS,
-            _apm_args(
-                ctx,
-                APM_EVENTS,
-                src,
-                instance_name=instance,
-                reference_time=ctx.windows.reference_time,
-                lookback_minutes=ctx.windows.lookback_minutes,
-            ),
-        )
+        (ev,) = apm_resps
         if ev.ok:
             apm_ok = True
             for row in (ev.data or {}).get("rows") or []:
@@ -1706,11 +2012,32 @@ def related_alarms(ctx: StepContext) -> StepResult:
                             f"{row.get('instance_name') or ''}".strip(),
                         )
                     )
+            axes["apm"] = {"status": "ok", "reason": None}
+            apm_part = _axis_count(AXIS_LABELS["apm"], len(events), "이벤트 없음", "이벤트")
+            if len(points) != len(events):
+                # 조회 행 수 ≠ 타임라인 행 수 — 차이와 사유를 결정적으로 적는다(D3)
+                apm_part += (
+                    f" 중 타임라인 반영 {len(points)}건 — 발생 시각을 읽지 못한 이벤트 "
+                    f"{len(events) - len(points)}건"
+                )
+                logger.info(
+                    "S5 제니퍼 이벤트 %d건 중 time_ms 해석 불가 %d건(타임라인 제외)",
+                    len(events), len(events) - len(points),
+                )
         else:
             missing.append(APM_EVENTS)
-            reasons.append(f"{APM_EVENTS}: {ev.error}")
+            axes["apm"] = {"status": "missing", "reason": f"{APM_EVENTS}: {ev.error}"}
+            apm_part = _axis_failed(AXIS_LABELS["apm"], ev.error, False)
+    summary = " · ".join([apm_part, pol_part])
+    detail = ctx.scope.polestar_reason_detail if blocked and not ctx.scope.polestar_source else None
     if not polestar_ok and not apm_ok:
-        return StepResult(status="missing", missing=missing, reason=" · ".join(reasons))
+        return StepResult(
+            status="missing",
+            missing=missing,
+            data={"axes": axes, "axes_summary": summary},
+            reason=summary,
+            reason_detail=detail,
+        )
     result = correlate(
         ctx.windows.alarm_time,
         alarms,
@@ -1737,19 +2064,26 @@ def related_alarms(ctx: StepContext) -> StepResult:
             "apm_events": events,
             "notes": list(result.notes),
             "caveat": CORRELATION_NOT_CAUSATION,
+            "axes": axes,
+            "axes_summary": summary,
         },
         badges=[CORRELATION_NOT_CAUSATION],
         missing=missing,
-        reason=" · ".join(reasons) or None,
+        reason=summary,
+        reason_detail=detail,
         artifacts={"alarms": alarms, "episode_points": points},
     )
 
 
 def process_top(ctx: StepContext) -> StepResult:
-    """S6 — 폴스타 프로세스 상위(실시간 단면 — `captured_at` 배지 · 판정 없음)."""
+    """S6 — 폴스타 프로세스 상위(실시간 단면 — `captured_at` 배지 · 판정 없음).
+
+    `source`로 조사 대상의 폴스타를 넘긴다 — 프로세스 API는 폴스타마다 따로라 소스 없이 부르면
+    서버 설정 하나(다른 존일 수 있음)로 간다. 0건은 「목록 없음」이 아니라 수집 결손이다.
+    """
     blocked = _polestar_reason(ctx)
     if blocked:
-        return _missing([POLESTAR_PROCESS], blocked)
+        return _polestar_blocked(ctx, [POLESTAR_PROCESS], blocked)
     resp = ctx.call_one(
         "polestar",
         POLESTAR_PROCESS,
@@ -1757,6 +2091,7 @@ def process_top(ctx: StepContext) -> StepResult:
             "hostname": ctx.scope.polestar_server,
             "top_n": int(ctx.args.get("top_n", 10)),
             "sort": str(ctx.args.get("sort", "cpu")),
+            "source": ctx.scope.polestar_source,
         },
     )
     if not resp.ok:
@@ -1771,6 +2106,21 @@ def process_top(ctx: StepContext) -> StepResult:
     badge = realtime_badge(
         data.get("captured_at") or data.get("queried_at"), ctx.windows.alarm_time, ctx.now
     )
+    if not rows:
+        # 기동 중인 호스트에 프로세스가 0개일 수는 없다 — 다른 폴스타로 갔거나 호스트명 불일치
+        # MCP가 등록명을 OS 호스트명으로 바꿔 조회했으면 실제 조회 값을 보인다
+        queried = data.get("hostname") or ctx.scope.polestar_server
+        res = _missing(
+            [POLESTAR_PROCESS],
+            f"{POLESTAR_PROCESS}: 0건 — 프로세스 API가 호스트 '{queried}'의"
+            f" 프로세스를 돌려주지 않음(소스 {ctx.scope.polestar_source} · 존별 프로세스 API 설정"
+            " 또는 호스트명 불일치 확인)"
+            + (f" · {data['hostname_note']}" if data.get("hostname_note") else ""),
+        )
+        res.data = {"rows": [], "total_processes": data.get("total_processes"),
+                    "captured_at": data.get("captured_at")}
+        res.badges.append(badge)
+        return res
     return StepResult(
         status="ok",
         table={"columns": list(cols), "rows": [[r.get(c) for c in cols] for r in rows]},
@@ -1812,21 +2162,41 @@ def recent_changes(ctx: StepContext) -> StepResult:
                 }
             )
 
-    if ctx.apm is None or not instance:
+    parts: dict[str, str] = {}  # 축별 결정적 요약(plans/196 D4)
+    # 두 축은 서로의 결과를 쓰지 않는다(제니퍼 인스턴스는 대상·범위에서) — 한 번에 부른다(I-3)
+    apm_calls: list[tuple[str, dict]] = []
+    if ctx.apm is not None and instance:
+        args = {"instance_name": instance, "reference_time": ctx.windows.reference_time}
+        apm_calls = [
+            (APM_SOURCE_CHANGES, _apm_args(ctx, APM_SOURCE_CHANGES, src, **args)),
+            (APM_CHANGE_IMPACT, _apm_args(ctx, APM_CHANGE_IMPACT, src, **args)),
+        ]
+    blocked = _polestar_reason(ctx)
+    link_skipped = bool(blocked) and _polestar_skipped(ctx)
+    pol_calls: list[tuple[str, dict]] = []
+    if not blocked:
+        scope = _evidence_scope(ctx)
+        pol_calls = [
+            (
+                TOOL_CHANGES,
+                {
+                    "source": scope.source,
+                    "server_name": scope.server_name,
+                    "reference_time": ctx.windows.reference_time,
+                    "lookback_minutes": hours * 60,
+                },
+            )
+        ]
+    apm_resps, pol_resps = ctx.call_axes([("apm", apm_calls), ("polestar", pol_calls)])
+    if not apm_calls:
         axes["apm"] = {
             "status": "missing",
             "reason": "APM 게이트웨이 미구성" if ctx.apm is None else "대상 인스턴스 없음",
         }
         missing += [APM_SOURCE_CHANGES, APM_CHANGE_IMPACT]
+        parts["apm"] = _axis_failed(AXIS_LABELS["apm"], axes["apm"]["reason"], True)
     else:
-        args = {"instance_name": instance, "reference_time": ctx.windows.reference_time}
-        sc, ci = ctx.call(
-            "apm",
-            [
-                (APM_SOURCE_CHANGES, _apm_args(ctx, APM_SOURCE_CHANGES, src, **args)),
-                (APM_CHANGE_IMPACT, _apm_args(ctx, APM_CHANGE_IMPACT, src, **args)),
-            ],
-        )
+        sc, ci = apm_resps
         for r in (sc, ci):
             if not r.ok:
                 missing.append(r.tool)
@@ -1842,25 +2212,28 @@ def recent_changes(ctx: StepContext) -> StepResult:
                     f"{row.get('instance_name') or instance} 소스 변경 감지",
                 )
         impact = [r for r in (ci.data or {}).get("rows") or [] if isinstance(r, dict)]
-    blocked = _polestar_reason(ctx)
+        if sc.ok or ci.ok:
+            n_apm = sum(
+                1 for r in (sc.data or {}).get("rows") or [] if isinstance(r, dict)
+            ) + len(impact)
+            parts["apm"] = _axis_count(AXIS_LABELS["apm"], n_apm, "변경 없음", "변경")
+            if axes["apm"]["reason"]:
+                parts["apm"] += f"(일부 조회 못 함 — {axes['apm']['reason']})"
+        else:
+            parts["apm"] = _axis_failed(AXIS_LABELS["apm"], axes["apm"]["reason"], False)
     if blocked:
-        axes["polestar"] = {"status": "missing", "reason": blocked}
-        missing.append(TOOL_CHANGES)
+        if link_skipped:  # 연결 힌트로 생략 — 결손이 아니다(plans/196 §5.2)
+            axes["polestar"] = {"status": "skipped", "reason": blocked}
+        else:
+            axes["polestar"] = {"status": "missing", "reason": blocked}
+            missing.append(TOOL_CHANGES)
+        parts["polestar"] = _axis_failed(AXIS_LABELS["polestar"], blocked, True)
     else:
-        scope = _evidence_scope(ctx)
-        pc = ctx.call_one(
-            "polestar",
-            TOOL_CHANGES,
-            {
-                "source": scope.source,
-                "server_name": scope.server_name,
-                "reference_time": ctx.windows.reference_time,
-                "lookback_minutes": hours * 60,
-            },
-        )
+        (pc,) = pol_resps
         if not pc.ok:
             axes["polestar"] = {"status": "missing", "reason": pc.error}
             missing.append(TOOL_CHANGES)
+            parts["polestar"] = _axis_failed(AXIS_LABELS["polestar"], pc.error, False)
         else:
             notes: list[str] = []
             changes = _changes(pc.data or {}, scope, notes)
@@ -1869,20 +2242,35 @@ def recent_changes(ctx: StepContext) -> StepResult:
                     "status": "skipped",
                     "reason": " · ".join(notes) or "unsupported",
                 }
+                skip_reason = axes["polestar"]["reason"]
+                parts["polestar"] = f"{AXIS_LABELS['polestar']}: 생략 — {skip_reason}"
             else:
                 axes["polestar"] = {"status": "ok", "reason": " · ".join(notes) or None}
                 for c in changes:
                     _candidate(TOOL_CHANGES, naive_time(c.time), c.description)
+                parts["polestar"] = _axis_count(
+                    AXIS_LABELS["polestar"], len(changes), "변경 없음", "변경"
+                )
     itsm = _adapter_fetch(ctx, ITSM, "S7")
     axes["itsm"] = {"status": itsm.get("status", "skipped"), "reason": itsm.get("reason")}
+    # ITSM 미연동은 상시 상태라 해석 근거(요약)에서 빼고 결과 줄 꼬리로만 둔다(D4 ③)
+    if axes["itsm"]["reason"] != NOT_CONNECTED:
+        parts["itsm"] = f"{AXIS_LABELS['itsm']}: {step_status_label(axes['itsm']['status'])}" + (
+            f" — {axes['itsm']['reason']}" if axes["itsm"]["reason"] else ""
+        )
+    summary = " · ".join(parts.values())
+    detail = ctx.scope.polestar_reason_detail if blocked and not ctx.scope.polestar_source else None
     candidates.sort(key=lambda c: (c["minutes_before_alarm"], c["source"]))
-    queried = [a for k, a in axes.items() if k != "itsm"]
+    queried = [
+        a for k, a in axes.items() if k != "itsm" and not (k == "polestar" and link_skipped)
+    ]
     if not any(a["status"] in ("ok", "skipped") for a in queried):
         return StepResult(
             status="missing",
             missing=missing,
-            data={"axes": axes},
-            reason=" · ".join(f"{k}: {a['reason']}" for k, a in axes.items() if a["reason"]),
+            data={"axes": axes, "axes_summary": summary},
+            reason=summary,
+            reason_detail=detail,
         )
     return StepResult(
         status="ok",
@@ -1899,13 +2287,12 @@ def recent_changes(ctx: StepContext) -> StepResult:
             "axes": axes,
             "lookback_hours": hours,
             "caveat": CHANGE_CANDIDATE_NOTE,
+            "axes_summary": summary,
         },
         badges=[CHANGE_CANDIDATE_NOTE],
         missing=missing,
-        reason=" · ".join(
-            f"{k}: {a['reason']}" for k, a in axes.items() if a["status"] != "ok" and a["reason"]
-        )
-        or None,
+        reason=summary or None,
+        reason_detail=detail,
     )
 
 
@@ -2115,7 +2502,7 @@ def _polestar_simple(
 ) -> StepResult:
     blocked = _polestar_reason(ctx)
     if blocked:
-        return _missing([tool], blocked)
+        return _polestar_blocked(ctx, [tool], blocked)
     resp = ctx.call_one(
         "polestar",
         tool,
@@ -2176,8 +2563,18 @@ STEP_LIBRARY: dict[str, StepFn] = {
 #: 대상 확정 액션 — 실행기가 결과의 `artifacts["scope"]`로 범위를 갱신한다.
 SCOPE_ACTIONS = frozenset({"scope.resolve_was_targets", "scope.host_to_was"})
 
+#: 액션 → 그 스텝 함수가 `ctx.prior`(앞 결과)에서 읽는 액션(plans/200 I-1 · 실행 의존 계산용).
+#: 표에 없는 액션은 앞 결과를 읽지 않는다. 가드: `tests/test_plan200_w1_deps.py`.
+PRIOR_INPUTS: Mapping[str, frozenset[str]] = {
+    # `target: was_cpu_top` — 앞 S2의 프로세스 CPU 최대 인스턴스(`_was_cpu_top`)
+    "apm.active_services": frozenset({"apm.runtime_and_pool"}),
+    # 앞 단계 실행 중 요청(S3a) 중 CPU 시간 상위
+    "apm.active_sql": frozenset({"apm.active_services"}),
+}
+
 
 __all__ = [
+    "ACTION_AXIS",
     "ACTION_TITLES",
     "APM_SOURCE_IDS_TOOLS",
     "APM_SOURCE_UNRESOLVED_LIMIT",
@@ -2190,10 +2587,19 @@ __all__ = [
     "DEFAULT_P95_RATIO",
     "NOT_CONNECTED",
     "NO_WAS_VERDICT",
+    "AXIS_LABELS",
+    "MIXED_AXIS_ACTIONS",
+    "POLESTAR_AXIS_ACTIONS",
+    "POLESTAR_LINK_SKIP",
     "POLESTAR_UNRESOLVED",
     "RunScope",
     "RunWindows",
+    "PRIOR_INPUTS",
     "SCOPE_ACTIONS",
+    "polestar_unresolved_text",
+    "scope_polestar_reason",
+    "section_axis_status",
+    "step_queries",
     "STEP_ABORTED",
     "STEP_LIBRARY",
     "StepContext",

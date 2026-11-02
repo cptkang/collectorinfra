@@ -50,6 +50,42 @@ class ServerConfig:
     expose_polestar_tools: bool = True
     # 폴스타 실시간 프로세스 API base_url (process_snapshot 도구용). 비면 도구가 오류 반환.
     process_api_base_url: str = ""
+    # 소스별 프로세스 API base_url — "db_id1=http://host1,db_id2=http://host2"(본체
+    # ALARM_PROCESS_API_BASE_URLS_CSV와 같은 형식). 비면 위 단일 값만 쓴다(현행 동일).
+    # env: PROCESS_API_BASE_URLS_CSV.
+    process_api_base_urls_csv: str = ""
+
+    def process_api_urls(self) -> dict[str, str]:
+        """소스별 매핑을 읽는다. 잘못된 항목(`=` 없음·빈 키·빈 URL)은 무시한다."""
+        out: dict[str, str] = {}
+        for pair in self.process_api_base_urls_csv.split(","):
+            key, sep, url = pair.strip().partition("=")
+            if sep and key.strip() and url.strip():
+                out[key.strip()] = url.strip()
+        return out
+
+    def process_api_url_for(self, source: str | None) -> tuple[str, str | None]:
+        """프로세스 API base_url과 오류 문장 — 성공이면 `(url, None)`, 실패면 `("", 사유)`.
+
+        소스별 매핑이 비었으면 단일 값을 쓴다(현행 동일). 매핑이 하나라도 있으면 매핑에 없는
+        소스는 단일 값으로 보내지 않고 오류다 — 다른 폴스타에 물어 빈 목록을 받는 침묵 오답을 막는다.
+        """
+        mapping = self.process_api_urls()
+        src = (source or "").strip()
+        if mapping:
+            if src in mapping:
+                return mapping[src], None
+            listed = ", ".join(sorted(mapping))
+            if src:
+                return "", (
+                    f"소스 {src}의 프로세스 API 미설정 — PROCESS_API_BASE_URLS_CSV에 없음"
+                    f"(설정된 소스: {listed})"
+                )
+            if not self.process_api_base_url:
+                return "", f"source 인자 필요 — 프로세스 API가 소스별로 설정됨(설정된 소스: {listed})"
+        if self.process_api_base_url:
+            return self.process_api_base_url, None
+        return "", "PROCESS_API_BASE_URL 미설정 — 프로세스 스냅샷 조회 불가"
     # 전송 구간 정적 Bearer 토큰 (Plan 04 §6-4, D-015). 빈 값이면 무인증 통과
     # (로컬/개발 — 네트워크 격리 전제). 설정 시 모든 HTTP 요청에
     # `Authorization: Bearer <token>` 헤더를 요구하고 불일치 시 401을 반환한다.
@@ -304,6 +340,7 @@ def _load_toml(path: Path) -> AppServerConfig:
         polestar_domain_guard=server_data.get("polestar_domain_guard", True),
         expose_polestar_tools=server_data.get("expose_polestar_tools", True),
         process_api_base_url=server_data.get("process_api_base_url", ""),
+        process_api_base_urls_csv=server_data.get("process_api_base_urls_csv", ""),
         bearer_token=server_data.get("bearer_token", ""),
     )
 
@@ -493,6 +530,7 @@ def _apply_env_overrides(
         "SERVER_TRANSPORT": ("transport", str),
         "SERVER_LOG_LEVEL": ("log_level", str),
         "PROCESS_API_BASE_URL": ("process_api_base_url", str),
+        "PROCESS_API_BASE_URLS_CSV": ("process_api_base_urls_csv", str),
         "MCP_BEARER_TOKEN": ("bearer_token", str),
     }
     for env_key, (attr, cast) in _env_overrides.items():

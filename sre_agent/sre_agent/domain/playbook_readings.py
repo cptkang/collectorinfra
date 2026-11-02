@@ -48,6 +48,36 @@ READING_ACTIONS: dict[str, tuple[str, ...]] = {
     "change_candidates": ("change.recent",),
 }
 
+#: 판독 → 그 판독 함수가 실제로 읽는 액션 전부(plans/200 I-1 · 실행 의존 계산용).
+#: `READING_ACTIONS`(담당 = 판독 귀속)와 다르다 — 알람 인스턴스(`_alarm_instance` → 대상 확정)와
+#: TPS 변화율(`_tps_change_pct` → 골든 시그널)처럼 담당이 아닌 입력도 싣는다. 가드:
+#: `tests/test_plan200_w1_deps.py`(기록 프록시로 실제 접근 ⊆ 이 표).
+READING_INPUTS: Mapping[str, frozenset[str]] = {
+    "scope": frozenset({"scope.resolve_was_targets"}),
+    "service_spread": frozenset({"apm.slow_tx_breakdown"}),
+    "load_mode": frozenset({"scope.resolve_was_targets", "apm.golden_signals"}),
+    "little_check": frozenset(
+        {"scope.resolve_was_targets", "apm.golden_signals", "apm.runtime_and_pool"}
+    ),
+    "dominant": frozenset({"apm.slow_tx_breakdown"}),
+    "db_split": frozenset({"apm.slow_tx_breakdown"}),
+    "cpu_owner": frozenset(
+        {
+            "scope.resolve_was_targets",
+            "apm.golden_signals",
+            "apm.runtime_and_pool",
+            "host.usage_trend",
+            "host.process_top",
+        }
+    ),
+    "heap_shape": frozenset(
+        {"scope.resolve_was_targets", "apm.runtime_and_pool", "apm.golden_signals"}
+    ),
+    "host_saturation": frozenset({"host.usage_trend"}),
+    "fs_eta": frozenset({"host.usage_trend"}),
+    "change_candidates": frozenset({"change.recent"}),
+}
+
 #: 판독 → 규칙 ID(§4.2).
 READING_RULES: dict[str, str] = {
     "scope": "R-A",
@@ -936,6 +966,7 @@ __all__ = [
     "DEFAULT_PARAMS",
     "NA",
     "READING_ACTIONS",
+    "READING_INPUTS",
     "READING_RULES",
     "ReadingEvidence",
     "ReadingParams",

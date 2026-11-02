@@ -8,7 +8,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
 
 def _default_test_db_id() -> str:
@@ -521,3 +521,44 @@ class AlarmCapabilitiesResponse(BaseModel):
             "(NOISE_CONSOLE_PORTAL_TAB_ENABLED · plans/193 W2 · 기본 off)"
         ),
     )
+    investigation_label_enabled: bool = Field(
+        default=False,
+        description=(
+            "완료 조사 「실제 원인」 입력 — 거짓이면 웹이 라벨 조회를 보내지 않는다 "
+            "(NOISE_INVESTIGATION_LABEL_ENABLED · plans/198 W0 · 기본 off)"
+        ),
+    )
+    investigation_memory_enabled: bool = Field(
+        default=False,
+        description=(
+            "완료 조사 「비슷한 과거 조사」 — 거짓이면 웹이 유사 조사 조회를 보내지 않는다 "
+            "(NOISE_INVESTIGATION_MEMORY_ENABLED · plans/198 W7 · 기본 off)"
+        ),
+    )
+    investigation_summary_view_enabled: bool = Field(
+        default=False,
+        description=(
+            "조사 결과 「한눈에 보기」 카드 — 거짓이면 웹이 종전 조사 화면을 그대로 그린다 "
+            "(NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED · plans/199 W1 · D-352 부기 2 기본 on)"
+        ),
+    )
+    # (plans/201 W5 P3) 알람 카드 인지→분석→조치 재배치 — 켠 기동에서만 라우트가 `True`로 **명시로 채운다**
+    # (아래 직렬화기 — 끄면 키 자체가 없어 응답 키 집합이 종전과 같다).
+    card_flow_enabled: bool | None = Field(
+        default=None,
+        description=(
+            "알람 카드 칸을 ① 무슨 일인가 ② 원인이 내 쪽인가 ③ 무엇을 하나로 다시 묶는다 — 켠 기동에서만 키가 실린다 "
+            "(ALARM_CARD_FLOW_ENABLED · plans/201 W5 · 기본 off)"
+        ),
+    )
+
+    # 반환 주석을 일부러 달지 않는다 — 달면 응답 OpenAPI 스키마가 필드 없는 dict로 바뀐다(`UserInfoResponse` 선례).
+    @model_serializer(mode="wrap")
+    def _omit_unset_card_flow(  # type: ignore[no-untyped-def]
+        self, handler: SerializerFunctionWrapHandler
+    ):
+        """`card_flow_enabled`는 명시로 채운 경우에만 직렬화한다(플래그 off = 응답 키 부재)."""
+        data = handler(self)
+        if isinstance(data, dict) and "card_flow_enabled" not in self.model_fields_set:
+            data.pop("card_flow_enabled", None)
+        return data

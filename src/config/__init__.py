@@ -39,13 +39,16 @@ from src.config.security import AuthConfig as AuthConfig
 from src.config.security import HostAuthzConfig as HostAuthzConfig
 from src.config.security import SecurityConfig as SecurityConfig
 from src.config.services import COMPONENT_ADMIN_NAMES as COMPONENT_ADMIN_NAMES
+from src.config.services import AlarmCardFlowConfig as AlarmCardFlowConfig
 from src.config.services import ComponentAdminConfig as ComponentAdminConfig
 from src.config.services import DrmConfig as DrmConfig
+from src.config.services import DutyAreaConfig as DutyAreaConfig
 from src.config.services import ObservabilityConfig as ObservabilityConfig
 from src.config.services import PortalHelpConfig as PortalHelpConfig
 from src.config.services import RagConfig as RagConfig
 from src.config.services import ResultVizConfig as ResultVizConfig
 from src.config.services import ServerConfig as ServerConfig
+from src.config.services import WelcomeGuideConfig as WelcomeGuideConfig
 from src.config.text2sql import CompositeConfig as CompositeConfig
 from src.config.text2sql import IntentFrameConfig as IntentFrameConfig
 from src.config.text2sql import RouterConfig as RouterConfig
@@ -94,6 +97,12 @@ class AppConfig(BaseSettings):
     portal_help: PortalHelpConfig = Field(default_factory=PortalHelpConfig)
     # plans/191: 분리 컴포넌트 설정 관리 프록시 — endpoints 미입력 = off(설정 탭 대상 선택 없음)
     component_admin: ComponentAdminConfig = Field(default_factory=ComponentAdminConfig)
+    # plans/201 W1: 담당 업무 지정(권한 아님 · D-354) — 기본 off
+    duty_area: DutyAreaConfig = Field(default_factory=DutyAreaConfig)
+    # plans/201 W2: 첫 화면 상황 안내(담당 업무와 독립 · 모든 사용자) — 기본 off
+    welcome_guide: WelcomeGuideConfig = Field(default_factory=WelcomeGuideConfig)
+    # plans/201 W5: 알람 카드 인지→분석→조치 재배치(담당 업무와 독립 · 모든 사용자) — 기본 off
+    alarm_card_flow: AlarmCardFlowConfig = Field(default_factory=AlarmCardFlowConfig)
     checkpoint_backend: Literal["sqlite", "postgres"] = "sqlite"
     checkpoint_db_url: str = "checkpoints.db"
 

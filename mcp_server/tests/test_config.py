@@ -230,6 +230,55 @@ process_api_base_url = "http://proc.local:8080"
         assert config.server.process_api_base_url == "http://env-proc:9000"
 
 
+class TestProcessApiPerSource:
+    """소스별 프로세스 API 주소 — 매핑이 없으면 단일 값(현행), 있으면 매핑 밖은 오류."""
+
+    def test_no_mapping_uses_single_url_for_any_source(self):
+        s = ServerConfig(process_api_base_url="http://one")
+        assert s.process_api_url_for(None) == ("http://one", None)
+        assert s.process_api_url_for("db_a") == ("http://one", None)
+
+    def test_no_mapping_no_url_is_error(self):
+        url, problem = ServerConfig().process_api_url_for("db_a")
+        assert url == "" and "PROCESS_API_BASE_URL 미설정" in problem
+
+    def test_mapping_routes_by_source(self):
+        s = ServerConfig(process_api_base_url="http://one",
+                         process_api_base_urls_csv=" db_a=http://a , db_b=http://b:9010")
+        assert s.process_api_url_for("db_a") == ("http://a", None)
+        assert s.process_api_url_for("db_b") == ("http://b:9010", None)
+
+    def test_mapping_rejects_unlisted_source_instead_of_single_url(self):
+        s = ServerConfig(process_api_base_url="http://one",
+                         process_api_base_urls_csv="db_a=http://a")
+        url, problem = s.process_api_url_for("db_c")
+        assert url == ""
+        assert "소스 db_c의 프로세스 API 미설정" in problem and "db_a" in problem
+
+    def test_mapping_without_source_falls_back_to_single_url(self):
+        s = ServerConfig(process_api_base_url="http://one",
+                         process_api_base_urls_csv="db_a=http://a")
+        assert s.process_api_url_for(None) == ("http://one", None)
+
+    def test_mapping_without_source_and_single_url_needs_source(self):
+        s = ServerConfig(process_api_base_urls_csv="db_a=http://a")
+        url, problem = s.process_api_url_for("")
+        assert url == "" and "source 인자 필요" in problem
+
+    def test_malformed_pairs_ignored(self):
+        s = ServerConfig(process_api_base_urls_csv="bad,=http://x,db_a=,db_b=http://b")
+        assert s.process_api_urls() == {"db_b": "http://b"}
+
+    def test_toml_and_env(self, tmp_path, monkeypatch):
+        f = tmp_path / "config.toml"
+        f.write_text('[server]\nprocess_api_base_urls_csv = "db_a=http://a"\n', encoding="utf-8")
+        assert _load_toml(f).server.process_api_urls() == {"db_a": "http://a"}
+        monkeypatch.setenv("PROCESS_API_BASE_URLS_CSV", "db_b=http://b")
+        config = AppServerConfig(server=ServerConfig())
+        _apply_env_overrides(config)
+        assert config.server.process_api_urls() == {"db_b": "http://b"}
+
+
 class TestPolestarGates:
     """폴스타 게이트 2종 설정 테스트 (Plan 67 Phase 0 ⑬/⑭).
 

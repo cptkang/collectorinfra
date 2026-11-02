@@ -1,0 +1,1225 @@
+{
+ "_note": "latency_external · parallel · 가짜 HolmesGPT 예외 → deep_dive.status failed · 1순위 가설 지지. 생성: make_fixtures.py(1단 _gen_sre.py — 가짜 콜러블·가짜 LLM·가짜 HolmesGPT) · 생산 코드 산출(손 편집 없음 · updated_at만 고정)",
+ "view": {
+  "status": "done",
+  "investigation_id": "inv-deep_failed",
+  "kind": "alarm",
+  "episode_id": null,
+  "briefing_lines": [
+   {
+    "label": "중요도",
+    "text": "경고(신뢰도 none) — 게이트 page"
+   },
+   {
+    "label": "요약",
+    "text": "[플레이북 was.latency] 1순위 가설: 외부 연계 지연(인스턴스 · 단일 서비스)(지지) · 판정 경고(신뢰도 none)"
+   },
+   {
+    "label": "타임라인",
+    "text": "T+0m 이벤트 TX_BAD_RESPONSE A1"
+   },
+   {
+    "label": "병목",
+    "text": "지배 계층 external (판독 dominant=external)"
+   },
+   {
+    "label": "원인",
+    "text": "1위 외부 연계 지연(인스턴스 · 단일 서비스) — 지지 (근거 S3·S0)\n2위 외부 연계 지연(공통 의존) — 반박 (근거 S3·S0)\n3위 외부 연계 지연(인스턴스 · 여러 서비스) — 반박 (근거 S3·S0)"
+   },
+   {
+    "label": "원인 가설",
+    "text": "1) (지지) 외부 연계 지연(인스턴스 · 단일 서비스) — 근거: S3; S0\n2) (반박) 외부 연계 지연(공통 의존) — 근거: S3; S0\n3) (반박) 외부 연계 지연(인스턴스 · 여러 서비스) — 근거: S3; S0"
+   },
+   {
+    "label": "권고",
+    "text": "완화 먼저 — 재기동 전에 스레드 덤프를 확보한다\n연계 담당에 대상 응답 확인 요청 · 타임아웃 설정 점검\n연계 대상 응답·타임아웃 설정 확인\n※ 실행은 운영자 승인 후 수동 — 시스템은 제안만(자동 실행 경로 없음)"
+   },
+   {
+    "label": "한계",
+    "text": "S2 JVM 런타임 · DB 커넥션 풀: 현재값 · 알람 후 12분 — 사건 시점 값이 아님\nS6 프로세스 CPU 상위: 현재값 · 알람 후 12분 — 사건 시점 값이 아님\nS8 DB 상태(DPM): 생략 — not_connected\n판독 불가(n/a — 근거 부족): db_split\n프로세스·자원 스냅샷은 조사 시점 단면일 수 있음\n사건 구간 내 알람 0건 — 알람 축 선후 판정 불가\n지표 정밀도 60분 단위 — 그보다 짧은 선후는 판정 불가\n상관 ≠ 인과 — 가설 신뢰도는 선행성·지속성(결정적 상관)에서 도출한 것이며 인과 확정이 아님"
+   },
+   {
+    "label": "deep_dive",
+    "text": "status: failed\nmode: parallel\nreason: 심층 조사 실패 — RuntimeError: holmes 연결 실패\nlabel: 심층 조사(HolmesGPT · 가설)"
+   },
+   {
+    "label": "engine_agreement",
+    "text": "result: not_comparable\nlabel: 비교 불가\napproximate: True\nnote: 대략적 대조 — 서술이 아니라 근거(플레이북 판독 enum ↔ HolmesGPT 매칭 시그니처·인용 도구)의 계층만 비교한다\nreason: 심층 조사 failed — 심층 조사 실패 — RuntimeError: holmes 연결 실패\nplaybook: {'layer': 'external', 'basis': ['dominant=external']}\nholmesgpt: {'layers': [], 'basis': []}"
+   },
+   {
+    "label": "playbook",
+    "text": "id: was.latency\nversion: 3\nmatched_by: match:resource_type+any_kind\nscope: {'alarm_instance': 'A1', 'host': 'wasdemo01', 'polestar_source': 'polestar', 'polestar_server': 'wasdemo01', 'polestar_reason': None, 'alarm_name': 'TX_BAD_RESPONSE', 'targets': [{'instance': 'A1', 'verdict': 'degraded', 'verdict_source': 'playbook_rule', 'confidence': 'high', 'source_id': 'default'}], 'incident_window': {'start': '2026-10-19T09:30:00', 'end': '2026-10-19T10:10:00', 'minutes': 40}}\nwindows: {'alarm_time': '2026-10-19T10:00:00', 'reference_time': '2026-10-19T10:10:00', 'lookback_minutes': 40, 'incident_start': '2026-10-19T09:30:00', 'incident_end': '2026-10-19T10:10:00', 'baselines': [{'name': 'prev_day', 'start': '2026-10-18T09:30:00', 'end': '2026-10-18T10:10:00', 'reference_time': '2026-10-18T10:10:00'}, {'name': 'prev_week', 'start': '2026-10-12T09:30:00', 'end': '2026-10-12T10:10:00', 'reference_time': '2026-10-12T10:10:00'}]}\nreadings: {'scope': 'instance', 'service_spread': 'single', 'load_mode': 'processing_delay', 'little_check': 'consistent', 'dominant': 'external', 'db_split': 'n/a', 'cpu_owner': 'none', 'heap_shape': 'normal', 'host_saturation': 'none', 'fs_eta': None, 'change_candidates': []}\nsections: [{'step': 'S0', 'action': 'scope.resolve_was_targets', 'title': '대상 확정 · 범위 비교', 'status': 'ok', 'verdict': 'degraded', 'verdict_source': 'playbook_rule', 'table': {'columns': ['instance', 'host', 'tps', 'p95_ms', 'baseline_p95_ms', 'error_rate', 'verdict', 'verdict_source'], 'rows': [['A1', 'wasdemo01', 9.167, 7000.0, 795.0, 0.0009090909090909091, 'degraded', 'playbook_rule'], ['A2', 'wasdemo01', 10.0, 790.0, None, 0.0008333333333333334, 'normal', 'playbook_rule'], ['B1', 'wasdemo02', 10.0, 790.0, None, 0.0008333333333333334, 'normal', 'playbook_rule']]}, 'badges': [], 'tools': ['apm_instance_map', 'apm_app_health'], 'missing': [], 'reason': None, 'elapsed_ms': 0, 'axis_status': {'apm': 'ok'}, 'opinion': '수집된 표의 값을 확인했다.', 'opinion_dropped_reason': None, 'opinion_guard': []}, {'step': 'S1', 'action': 'apm.golden_signals', 'title': 'WAS 골든 시그널', 'status': 'ok', 'verdict': 'degraded', 'verdict_source': 'playbook_rule', 'table': {'columns': ['instance', 'metric', 'incident', 'prev_day', 'prev_week', 'change_pct_prev_day', 'change_pct_prev_week'], 'rows': [['A1', 'p95_ms', 7000.0, 800.0, 790.0, 775.0, 786.1], ['A1', 'tps', 9.167, 10.0, 9.792, -8.3, -6.4], ['A1', 'error_rate', 0.0009090909090909091, 0.0008333333333333334, 0.000851063829787234, 9.1, 6.8], ['A1', 'calls', 22000, 24000, 23500, -8.3, -6.4], ['A1', 'avg_response_ms', 2700.0, 340.0, 330.0, 694.1, 718.2]]}, 'badges': [], 'tools': ['apm_app_health', 'apm_period_compare'], 'missing': [], 'reason': None, 'elapsed_ms': 0, 'axis_status': {'apm': 'ok'}, 'opinion': '수집된 표의 값을 확인했다.', 'opinion_dropped_reason': None, 'opinion_guard': []}, {'step': 'S2', 'action': 'apm.runtime_and_pool', 'title': 'JVM 런타임 · DB 커넥션 풀', 'status': 'ok', 'verdict': 'normal', 'verdict_source': 'apm_gateway', 'table': {'columns': ['instance', 'metric', 'min', 'max', 'last', 'note'], 'rows': [['A1', 'heap_used_mb', 900.0, 980.0, 940.0, '추세'], ['A1', 'heap_committed_mb', 2048.0, 2048.0, 2048.0, '추세'], ['A1', 'gc_time_usage_pct', 0.9, 1.3, 1.0, '추세'], ['A1', 'process_cpu_pct', 13.0, 13.0, 13.0, '추세'], ['A1', 'active_services', 4.0, 18.0, 17.0, '추세'], ['A1', 'db_pool_active', None, None, 3.0, '현재값 · 알람 후 12분'], ['A1', 'db_pool_configured_avg', None, None, 30.0, '현재값 · 알람 후 12분'], ['A1', 'db_pool_idle_avg', None, None, 27.0, '현재값 · 알람 후 12분'], ['A1', 'db_pool_usage_ratio', None, None, 0.1, '현재값 · 알람 후 12분'], ['A1', 'active_services', None, None, 17.0, '현재값 · 알람 후 12분'], ['A1', 'thread_current', None, None, 180.0, '현재값 · 알람 후 12분']]}, 'badges': ['현재값 · 알람 후 12분'], 'tools': ['apm_runtime_health', 'apm_resource_pool'], 'missing': [], 'reason': None, 'elapsed_ms': 0, 'axis_status': {'apm': 'ok'}, 'opinion': '(현재값 기준) 수집된 표의 값을 확인했다.', 'opinion_dropped_reason': None, 'opinion_guard': ['실시간 단면 — 「현재값」 표기 보강']}, {'step': 'S3', 'action': 'apm.slow_tx_breakdown', 'title': '느린 트랜잭션 Top 시간 분해', 'status': 'ok', 'verdict': 'degraded', 'verdict_source': 'apm_gateway', 'table': {'columns': ['application', 'response_time_ms', 'sql_ms', 'fetch_ms', 'external_ms', 'cpu_ms', 'network_ms', 'txid'], 'rows': [['/acct/verify/ext', 7400, 120, 20, 7100, 40, 20, '770000'], ['/acct/verify/ext', 7100, 110, 20, 6800, 40, 20, '770001'], ['/acct/verify/ext', 6900, 100, 20, 6600, 40, 20, '770002'], ['/acct/verify/ext', 6600, 130, 20, 6300, 40, 20, '770003'], ['/acct/verify/ext', 6400, 90, 20, 6100, 40, 20, '770004']]}, 'badges': [], 'tools': ['apm_slow_transactions', 'apm_transaction_profile'], 'missing': [], 'reason': None, 'elapsed_ms': 0, 'axis_status': {'apm': 'ok'}, 'opinion': '수집된 표의 값을 확인했다.', 'opinion_dropped_reason': None, 'opinion_guard': []}, {'step': 'S4', 'action': 'host.usage_trend', 'title': '호스트 자원 시간대별 추이', 'status': 'ok', 'verdict': 'normal', 'verdict_source': 'playbook_rule', 'table': {'columns': ['kind', 'peak', 'baseline_mean', 'z_score', 'is_anomalous', 'anomaly_kind'], 'rows': [['cpu', 23.0, 22.25, 0.6, False, None], ['memory', 61.0, 61.25, -0.2, False, None], ['filesystem', 48.0, 48.25, -0.2, False, None]]}, 'badges': [], 'tools': ['polestar_metric_trend'], 'missing': [], 'reason': None, 'elapsed_ms': 0, 'axis_status': {'polestar': 'ok'}, 'opinion': '수집된 표의 값을 확인했다.', 'opinion_dropped_reason': None, 'opinion_guard': []}, {'step': 'S5', 'action': 'xsource.related_alarms', 'title': '전후 연관 알람', 'status': 'ok', 'verdict': None, 'verdict_source': None, 'table': {'columns': ['t_offset_min', 'kind', 'detail'], 'rows': [[0, 'apm_event', 'TX_BAD_RESPONSE A1']]}, 'badges': ['상관 ≠ 인과 — 시간상 가까운 알람·이벤트는 원인 후보일 뿐 원인 근거가 아니다'], 'tools': ['polestar_incident_alarms', 'apm_events'], 'missing': [], 'reason': '제니퍼: 이벤트 1건 · 폴스타: 조회 성공 0건 = 연관 알람 없음', 'elapsed_ms': 0, 'axis_status': {'polestar': 'ok', 'apm': 'ok'}, 'opinion': '수집된 표의 값을 확인했다.', 'opinion_dropped_reason': None, 'opinion_guard': []}, {'step': 'S6', 'action': 'host.process_top', 'title': '프로세스 CPU 상위', 'status': 'ok', 'verdict': None, 'verdict_source': None, 'table': {'columns': ['name', 'pid', 'user', 'pcpu', 'pmem', 'rss', 'args'], 'rows': [['java', 31001, 'wasadm', 12.0, 18.0, 2880000, '/opt/java/bin/java -Dapm.instance=A1 -Xmx2g ...'], ['java', 31002, 'wasadm', 8.0, 15.0, 2400000, '/opt/java/bin/java -Dapm.instance=A2 -Xmx2g ...'], ['sshd', 900, 'root', 0.3, 0.1, 16000, '/usr/sbin/sshd -D'], ['polestar-agent', 1200, 'root', 0.8, 0.6, 96000, '/opt/agent/bin/agent'], ['crond', 700, 'root', 0.0, 0.0, 0, '/usr/sbin/crond -n']]}, 'badges': ['현재값 · 알람 후 12분'], 'tools': ['polestar_process_snapshot'], 'missing': [], 'reason': None, 'elapsed_ms': 0, 'axis_status': {'polestar': 'ok'}, 'opinion': '(현재값 기준) 수집된 표의 값을 확인했다.', 'opinion_dropped_reason': None, 'opinion_guard': ['실시간 단면 — 「현재값」 표기 보강']}, {'step': 'S7', 'action': 'change.recent', 'title': '최근 변경 대조', 'status': 'ok', 'verdict': None, 'verdict_source': None, 'table': {'columns': ['source', 'at', 'minutes_before_alarm', 'description'], 'rows': []}, 'badges': ['변경은 「상관 후보」로만 표기한다 — 원인 확정이 아니다'], 'tools': ['apm_source_changes', 'apm_change_impact', 'polestar_change_history'], 'missing': [], 'reason': '제니퍼: 조회 성공 0건 = 변경 없음 · 폴스타: 조회 성공 0건 = 변경 없음', 'elapsed_ms': 0, 'axis_status': {'apm': 'ok', 'polestar': 'ok'}, 'opinion': '수집된 표의 값을 확인했다.', 'opinion_dropped_reason': None, 'opinion_guard': []}, {'step': 'S8', 'action': 'dpm.db_health', 'title': 'DB 상태(DPM)', 'status': 'skipped', 'verdict': None, 'verdict_source': None, 'table': None, 'badges': [], 'tools': [], 'missing': [], 'reason': 'not_connected', 'elapsed_ms': 0, 'opinion': '', 'opinion_dropped_reason': None, 'opinion_guard': []}, {'step': 'S9', 'action': 'synthesize', 'title': '종합', 'status': 'ok', 'verdict': None, 'verdict_source': None, 'table': {'columns': ['순위', '가설', '상태', '근거 스텝'], 'rows': [[1, '외부 연계 지연(인스턴스 · 단일 서비스)', '지지', 'S3, S0'], [2, '외부 연계 지연(공통 의존)', '반박', 'S3, S0'], [3, '외부 연계 지연(인스턴스 · 여러 서비스)', '반박', 'S3, S0']]}, 'badges': [], 'tools': [], 'missing': [], 'reason': None, 'elapsed_ms': 0, 'opinion': '수집된 표의 값을 확인했다.', 'opinion_dropped_reason': None, 'opinion_guard': []}]\nsynthesis: {'hypotheses': [{'rank': 1, 'title': '외부 연계 지연(인스턴스 · 단일 서비스)', 'status': 'supported', 'status_label': '지지', 'evidence_steps': ['S3', 'S0'], 'rule_id': 'H-EXT-INSTANCE-SINGLE'}, {'rank': 2, 'title': '외부 연계 지연(공통 의존)', 'status': 'refuted', 'status_label': '반박', 'evidence_steps': ['S3', 'S0'], 'rule_id': 'H-EXT-SHARED'}, {'rank': 3, 'title': '외부 연계 지연(인스턴스 · 여러 서비스)', 'status': 'refuted', 'status_label': '반박', 'evidence_steps': ['S3', 'S0'], 'rule_id': 'H-EXT-INSTANCE-MANY'}], 'actions': [{'order': 1, 'source': 'response_hint', 'text': '완화 먼저 — 재기동 전에 스레드 덤프를 확보한다', 'key': 'triage_first'}, {'order': 2, 'source': 'runbook', 'text': '연계 담당에 대상 응답 확인 요청 · 타임아웃 설정 점검', 'when': \"dominant == 'external'\", 'risk': 'low', 'verification': '외부 호출 구간 시간 기준선 복귀', 'rollback': '해당 없음'}, {'order': 3, 'source': 'response_hint', 'text': '연계 대상 응답·타임아웃 설정 확인', 'key': 'external_dominant', 'hypothesis': 'H-EXT-INSTANCE-SINGLE'}], 'followups': [], 'narrative': '수집된 표의 값을 확인했다.', 'narrative_dropped_reason': None, 'narrative_guard': [], 'top_inconclusive': False}\ntimings: {'total_ms': 4, 'budget_s': 240.0, 'budget_exceeded': False, 'steps': {'S0': 0, 'S1': 0, 'S2': 0, 'S3': 0, 'S4': 0, 'S5': 0, 'S6': 0, 'S7': 0, 'S8': 0, 'S9': 0}, 'synthesis_ms': 2, 'llm_calls': 9}\nreadings_detail: {'values': {'scope': 'instance', 'service_spread': 'single', 'load_mode': 'processing_delay', 'little_check': 'consistent', 'dominant': 'external', 'db_split': 'n/a', 'cpu_owner': 'none', 'heap_shape': 'normal', 'host_saturation': 'none', 'fs_eta': None, 'change_candidates': []}, 'evidence': {'scope': {'rule': 'R-A', 'steps': ['S0'], 'values': {'alarm_host': 'wasdemo01', 'compared': 3, 'degraded': ['A1'], 'same_host_instances': 2, 'other_hosts_degraded': []}, 'reason': None, 'source': 'playbook_rule'}, 'service_spread': {'rule': 'R-A', 'steps': ['S3'], 'values': {'top_service': '/acct/verify/ext', 'top_count': 5, 'rows': 5, 'share': 1.0}, 'reason': None, 'source': 'playbook_rule'}, 'load_mode': {'rule': 'R-B', 'steps': ['S1'], 'values': {'p95_ms': 7000.0, 'baseline_p95_ms': 795.0, 'tps': 9.167, 'baseline_tps': 9.896, 'tps_change_pct': -7.4, 'p95_ratio': 8.81}, 'reason': None, 'source': 'playbook_rule'}, 'little_check': {'rule': 'R-B′', 'steps': ['S1', 'S2'], 'values': {'tps': 9.167, 'avg_response_ms': 2700.0, 'active_avg': 13.625, 'expected_active': 24.751, 'ratio': 0.55}, 'reason': None, 'source': 'playbook_rule'}, 'dominant': {'rule': 'R-C', 'steps': ['S3'], 'values': {'per_row': ['external', 'external', 'external', 'external', 'external'], 'votes': {'external': 5}, 'totals_ms': {'sql': 550.0, 'fetch': 100.0, 'external': 32900.0, 'cpu': 200.0, 'network': 100.0, 'other': 550.0}}, 'reason': None, 'source': 'playbook_rule'}, 'db_split': {'rule': 'R-D', 'steps': ['S3'], 'values': {}, 'reason': '프로파일에 커넥션 획득·SQL 실행 구조화 필드(acquire_ms·execute_ms) 없음 — 프로파일 텍스트는 형식 미검증이라 해석하지 않는다', 'source': 'playbook_rule'}, 'cpu_owner': {'rule': 'R-E', 'steps': ['S4', 'S2', 'S6'], 'values': {'host_cpu_peak': 23.0, 'host_cpu_anomalous': False, 'was_cpu_max': 13.0, 'top_process': {'name': 'java', 'pcpu': 12.0}}, 'reason': None, 'source': 'playbook_rule'}, 'heap_shape': {'rule': 'R-F', 'steps': ['S2'], 'values': {'points': 8, 'min': 900.0, 'max': 980.0, 'committed': 2048.0, 'large_drops': 0, 'floors': [900.0, 900.0, 900.0]}, 'reason': None, 'source': 'playbook_rule'}, 'host_saturation': {'rule': 'R-G', 'steps': ['S4'], 'values': {'peaks': {'cpu': 23.0, 'memory': 61.0, 'filesystem': 48.0}, 'thresholds': {'cpu': 80.0, 'memory': 90.0, 'filesystem': 90.0}, 'saturated': []}, 'reason': '코어 수 미상 → 80% 기준', 'source': 'playbook_rule'}, 'fs_eta': {'rule': 'R-G', 'steps': ['S4'], 'values': {'first': 48.0, 'last': 48.0, 'hours': 1.0}, 'reason': '파일시스템 사용률 증가 없음 — 고갈 예상 없음', 'source': 'playbook_rule'}, 'change_candidates': {'rule': 'R-H', 'steps': ['S7'], 'values': {'count': 0}, 'reason': '상관 후보 — 원인 확정 아님', 'source': 'playbook_rule'}}, 'facts': {'S2': {'pool': 'ok', 'gc': 'ok'}, 'S7': {'change': 'none'}}, 'fact_evidence': {'S2.pool': {'rule': 'fact', 'steps': ['S2'], 'values': {'was_signals': []}, 'reason': None, 'source': 'apm_gateway'}, 'S2.gc': {'rule': 'fact', 'steps': ['S2'], 'values': {'was_signals': []}, 'reason': None, 'source': 'apm_gateway'}, 'S7.change': {'rule': 'fact', 'steps': ['S7'], 'values': {'nearest_minutes': None, 'near_minutes': 60}, 'reason': None, 'source': 'playbook_rule'}}, 'notes': []}\nrunbook: {'meaning': 'WAS 인스턴스 응답시간(p95)이 기준선 대비 상승했다.', 'impact': '해당 업무 응답 지연 · 액티브 누적 시 스레드 고갈로 전 업무 영향 가능', 'mitigation': [{'when': \"db_split == 'acquire'\", 'action': '커넥션 풀 점유 트랜잭션 확인 후 담당 업무팀에 통보', 'risk': 'low', 'verification': '풀 대기 0 · p95 기준선 복귀', 'rollback': '해당 없음'}, {'when': \"dominant == 'sql' and db_split == 'execute'\", 'action': 'DBA에 해당 SQL 실행계획·락 대기 확인 요청', 'risk': 'low', 'verification': '해당 SQL 응답시간 기준선 복귀', 'rollback': '해당 없음'}, {'when': \"dominant == 'external'\", 'action': '연계 담당에 대상 응답 확인 요청 · 타임아웃 설정 점검', 'risk': 'low', 'verification': '외부 호출 구간 시간 기준선 복귀', 'rollback': '해당 없음'}], 'escalation': '업무 담당 → WAS 담당 → DBA', 'references': ['manual://incident/was-latency'], 'owner': 'WAS운영팀', 'last_reviewed': '2026-10-17', 'review_every_days': 180, 'stale': False}"
+   }
+  ],
+  "cross_source": null,
+  "verdict_level": "경고",
+  "reason": null,
+  "updated_at": "2026-10-19T01:10:00+00:00",
+  "source": "api_poll",
+  "briefing": {
+   "severity": {
+    "level": "경고",
+    "confidence": "none",
+    "escalate": false,
+    "gate_tier": "page",
+    "signals": [],
+    "evidence_insufficient": false
+   },
+   "summary": "[플레이북 was.latency] 1순위 가설: 외부 연계 지연(인스턴스 · 단일 서비스)(지지) · 판정 경고(신뢰도 none)",
+   "timeline": [
+    "T+0m 이벤트 TX_BAD_RESPONSE A1"
+   ],
+   "bottleneck": "지배 계층 external (판독 dominant=external)",
+   "cause": "1위 외부 연계 지연(인스턴스 · 단일 서비스) — 지지 (근거 S3·S0)\n2위 외부 연계 지연(공통 의존) — 반박 (근거 S3·S0)\n3위 외부 연계 지연(인스턴스 · 여러 서비스) — 반박 (근거 S3·S0)",
+   "root_cause_hypotheses": [
+    {
+     "rank": 1,
+     "cause": "외부 연계 지연(인스턴스 · 단일 서비스)",
+     "confidence": "지지",
+     "status": "supported",
+     "evidence": [
+      "S3",
+      "S0"
+     ],
+     "reasoning": "H-EXT-INSTANCE-SINGLE"
+    },
+    {
+     "rank": 2,
+     "cause": "외부 연계 지연(공통 의존)",
+     "confidence": "반박",
+     "status": "refuted",
+     "evidence": [
+      "S3",
+      "S0"
+     ],
+     "reasoning": "H-EXT-SHARED"
+    },
+    {
+     "rank": 3,
+     "cause": "외부 연계 지연(인스턴스 · 여러 서비스)",
+     "confidence": "반박",
+     "status": "refuted",
+     "evidence": [
+      "S3",
+      "S0"
+     ],
+     "reasoning": "H-EXT-INSTANCE-MANY"
+    }
+   ],
+   "recommendation": {
+    "items": [
+     "완화 먼저 — 재기동 전에 스레드 덤프를 확보한다",
+     "연계 담당에 대상 응답 확인 요청 · 타임아웃 설정 점검",
+     "연계 대상 응답·타임아웃 설정 확인"
+    ],
+    "note": "※ 실행은 운영자 승인 후 수동 — 시스템은 제안만(자동 실행 경로 없음)"
+   },
+   "limitations": [
+    "S2 JVM 런타임 · DB 커넥션 풀: 현재값 · 알람 후 12분 — 사건 시점 값이 아님",
+    "S6 프로세스 CPU 상위: 현재값 · 알람 후 12분 — 사건 시점 값이 아님",
+    "S8 DB 상태(DPM): 생략 — not_connected",
+    "판독 불가(n/a — 근거 부족): db_split",
+    "프로세스·자원 스냅샷은 조사 시점 단면일 수 있음",
+    "사건 구간 내 알람 0건 — 알람 축 선후 판정 불가",
+    "지표 정밀도 60분 단위 — 그보다 짧은 선후는 판정 불가",
+    "상관 ≠ 인과 — 가설 신뢰도는 선행성·지속성(결정적 상관)에서 도출한 것이며 인과 확정이 아님"
+   ],
+   "citations_verified": true,
+   "hypotheses": [],
+   "playbook": {
+    "id": "was.latency",
+    "version": 3,
+    "matched_by": "match:resource_type+any_kind",
+    "scope": {
+     "alarm_instance": "A1",
+     "host": "wasdemo01",
+     "polestar_source": "polestar",
+     "polestar_server": "wasdemo01",
+     "polestar_reason": null,
+     "alarm_name": "TX_BAD_RESPONSE",
+     "targets": [
+      {
+       "instance": "A1",
+       "verdict": "degraded",
+       "verdict_source": "playbook_rule",
+       "confidence": "high",
+       "source_id": "default"
+      }
+     ],
+     "incident_window": {
+      "start": "2026-10-19T09:30:00",
+      "end": "2026-10-19T10:10:00",
+      "minutes": 40
+     }
+    },
+    "windows": {
+     "alarm_time": "2026-10-19T10:00:00",
+     "reference_time": "2026-10-19T10:10:00",
+     "lookback_minutes": 40,
+     "incident_start": "2026-10-19T09:30:00",
+     "incident_end": "2026-10-19T10:10:00",
+     "baselines": [
+      {
+       "name": "prev_day",
+       "start": "2026-10-18T09:30:00",
+       "end": "2026-10-18T10:10:00",
+       "reference_time": "2026-10-18T10:10:00"
+      },
+      {
+       "name": "prev_week",
+       "start": "2026-10-12T09:30:00",
+       "end": "2026-10-12T10:10:00",
+       "reference_time": "2026-10-12T10:10:00"
+      }
+     ]
+    },
+    "readings": {
+     "scope": "instance",
+     "service_spread": "single",
+     "load_mode": "processing_delay",
+     "little_check": "consistent",
+     "dominant": "external",
+     "db_split": "n/a",
+     "cpu_owner": "none",
+     "heap_shape": "normal",
+     "host_saturation": "none",
+     "fs_eta": null,
+     "change_candidates": []
+    },
+    "sections": [
+     {
+      "step": "S0",
+      "action": "scope.resolve_was_targets",
+      "title": "대상 확정 · 범위 비교",
+      "status": "ok",
+      "verdict": "degraded",
+      "verdict_source": "playbook_rule",
+      "table": {
+       "columns": [
+        "instance",
+        "host",
+        "tps",
+        "p95_ms",
+        "baseline_p95_ms",
+        "error_rate",
+        "verdict",
+        "verdict_source"
+       ],
+       "rows": [
+        [
+         "A1",
+         "wasdemo01",
+         9.167,
+         7000.0,
+         795.0,
+         0.0009090909090909091,
+         "degraded",
+         "playbook_rule"
+        ],
+        [
+         "A2",
+         "wasdemo01",
+         10.0,
+         790.0,
+         null,
+         0.0008333333333333334,
+         "normal",
+         "playbook_rule"
+        ],
+        [
+         "B1",
+         "wasdemo02",
+         10.0,
+         790.0,
+         null,
+         0.0008333333333333334,
+         "normal",
+         "playbook_rule"
+        ]
+       ]
+      },
+      "badges": [],
+      "tools": [
+       "apm_instance_map",
+       "apm_app_health"
+      ],
+      "missing": [],
+      "reason": null,
+      "elapsed_ms": 0,
+      "axis_status": {
+       "apm": "ok"
+      },
+      "opinion": "수집된 표의 값을 확인했다.",
+      "opinion_dropped_reason": null,
+      "opinion_guard": []
+     },
+     {
+      "step": "S1",
+      "action": "apm.golden_signals",
+      "title": "WAS 골든 시그널",
+      "status": "ok",
+      "verdict": "degraded",
+      "verdict_source": "playbook_rule",
+      "table": {
+       "columns": [
+        "instance",
+        "metric",
+        "incident",
+        "prev_day",
+        "prev_week",
+        "change_pct_prev_day",
+        "change_pct_prev_week"
+       ],
+       "rows": [
+        [
+         "A1",
+         "p95_ms",
+         7000.0,
+         800.0,
+         790.0,
+         775.0,
+         786.1
+        ],
+        [
+         "A1",
+         "tps",
+         9.167,
+         10.0,
+         9.792,
+         -8.3,
+         -6.4
+        ],
+        [
+         "A1",
+         "error_rate",
+         0.0009090909090909091,
+         0.0008333333333333334,
+         0.000851063829787234,
+         9.1,
+         6.8
+        ],
+        [
+         "A1",
+         "calls",
+         22000,
+         24000,
+         23500,
+         -8.3,
+         -6.4
+        ],
+        [
+         "A1",
+         "avg_response_ms",
+         2700.0,
+         340.0,
+         330.0,
+         694.1,
+         718.2
+        ]
+       ]
+      },
+      "badges": [],
+      "tools": [
+       "apm_app_health",
+       "apm_period_compare"
+      ],
+      "missing": [],
+      "reason": null,
+      "elapsed_ms": 0,
+      "axis_status": {
+       "apm": "ok"
+      },
+      "opinion": "수집된 표의 값을 확인했다.",
+      "opinion_dropped_reason": null,
+      "opinion_guard": []
+     },
+     {
+      "step": "S2",
+      "action": "apm.runtime_and_pool",
+      "title": "JVM 런타임 · DB 커넥션 풀",
+      "status": "ok",
+      "verdict": "normal",
+      "verdict_source": "apm_gateway",
+      "table": {
+       "columns": [
+        "instance",
+        "metric",
+        "min",
+        "max",
+        "last",
+        "note"
+       ],
+       "rows": [
+        [
+         "A1",
+         "heap_used_mb",
+         900.0,
+         980.0,
+         940.0,
+         "추세"
+        ],
+        [
+         "A1",
+         "heap_committed_mb",
+         2048.0,
+         2048.0,
+         2048.0,
+         "추세"
+        ],
+        [
+         "A1",
+         "gc_time_usage_pct",
+         0.9,
+         1.3,
+         1.0,
+         "추세"
+        ],
+        [
+         "A1",
+         "process_cpu_pct",
+         13.0,
+         13.0,
+         13.0,
+         "추세"
+        ],
+        [
+         "A1",
+         "active_services",
+         4.0,
+         18.0,
+         17.0,
+         "추세"
+        ],
+        [
+         "A1",
+         "db_pool_active",
+         null,
+         null,
+         3.0,
+         "현재값 · 알람 후 12분"
+        ],
+        [
+         "A1",
+         "db_pool_configured_avg",
+         null,
+         null,
+         30.0,
+         "현재값 · 알람 후 12분"
+        ],
+        [
+         "A1",
+         "db_pool_idle_avg",
+         null,
+         null,
+         27.0,
+         "현재값 · 알람 후 12분"
+        ],
+        [
+         "A1",
+         "db_pool_usage_ratio",
+         null,
+         null,
+         0.1,
+         "현재값 · 알람 후 12분"
+        ],
+        [
+         "A1",
+         "active_services",
+         null,
+         null,
+         17.0,
+         "현재값 · 알람 후 12분"
+        ],
+        [
+         "A1",
+         "thread_current",
+         null,
+         null,
+         180.0,
+         "현재값 · 알람 후 12분"
+        ]
+       ]
+      },
+      "badges": [
+       "현재값 · 알람 후 12분"
+      ],
+      "tools": [
+       "apm_runtime_health",
+       "apm_resource_pool"
+      ],
+      "missing": [],
+      "reason": null,
+      "elapsed_ms": 0,
+      "axis_status": {
+       "apm": "ok"
+      },
+      "opinion": "(현재값 기준) 수집된 표의 값을 확인했다.",
+      "opinion_dropped_reason": null,
+      "opinion_guard": [
+       "실시간 단면 — 「현재값」 표기 보강"
+      ]
+     },
+     {
+      "step": "S3",
+      "action": "apm.slow_tx_breakdown",
+      "title": "느린 트랜잭션 Top 시간 분해",
+      "status": "ok",
+      "verdict": "degraded",
+      "verdict_source": "apm_gateway",
+      "table": {
+       "columns": [
+        "application",
+        "response_time_ms",
+        "sql_ms",
+        "fetch_ms",
+        "external_ms",
+        "cpu_ms",
+        "network_ms",
+        "txid"
+       ],
+       "rows": [
+        [
+         "/acct/verify/ext",
+         7400,
+         120,
+         20,
+         7100,
+         40,
+         20,
+         "770000"
+        ],
+        [
+         "/acct/verify/ext",
+         7100,
+         110,
+         20,
+         6800,
+         40,
+         20,
+         "770001"
+        ],
+        [
+         "/acct/verify/ext",
+         6900,
+         100,
+         20,
+         6600,
+         40,
+         20,
+         "770002"
+        ],
+        [
+         "/acct/verify/ext",
+         6600,
+         130,
+         20,
+         6300,
+         40,
+         20,
+         "770003"
+        ],
+        [
+         "/acct/verify/ext",
+         6400,
+         90,
+         20,
+         6100,
+         40,
+         20,
+         "770004"
+        ]
+       ]
+      },
+      "badges": [],
+      "tools": [
+       "apm_slow_transactions",
+       "apm_transaction_profile"
+      ],
+      "missing": [],
+      "reason": null,
+      "elapsed_ms": 0,
+      "axis_status": {
+       "apm": "ok"
+      },
+      "opinion": "수집된 표의 값을 확인했다.",
+      "opinion_dropped_reason": null,
+      "opinion_guard": []
+     },
+     {
+      "step": "S4",
+      "action": "host.usage_trend",
+      "title": "호스트 자원 시간대별 추이",
+      "status": "ok",
+      "verdict": "normal",
+      "verdict_source": "playbook_rule",
+      "table": {
+       "columns": [
+        "kind",
+        "peak",
+        "baseline_mean",
+        "z_score",
+        "is_anomalous",
+        "anomaly_kind"
+       ],
+       "rows": [
+        [
+         "cpu",
+         23.0,
+         22.25,
+         0.6,
+         false,
+         null
+        ],
+        [
+         "memory",
+         61.0,
+         61.25,
+         -0.2,
+         false,
+         null
+        ],
+        [
+         "filesystem",
+         48.0,
+         48.25,
+         -0.2,
+         false,
+         null
+        ]
+       ]
+      },
+      "badges": [],
+      "tools": [
+       "polestar_metric_trend"
+      ],
+      "missing": [],
+      "reason": null,
+      "elapsed_ms": 0,
+      "axis_status": {
+       "polestar": "ok"
+      },
+      "opinion": "수집된 표의 값을 확인했다.",
+      "opinion_dropped_reason": null,
+      "opinion_guard": []
+     },
+     {
+      "step": "S5",
+      "action": "xsource.related_alarms",
+      "title": "전후 연관 알람",
+      "status": "ok",
+      "verdict": null,
+      "verdict_source": null,
+      "table": {
+       "columns": [
+        "t_offset_min",
+        "kind",
+        "detail"
+       ],
+       "rows": [
+        [
+         0,
+         "apm_event",
+         "TX_BAD_RESPONSE A1"
+        ]
+       ]
+      },
+      "badges": [
+       "상관 ≠ 인과 — 시간상 가까운 알람·이벤트는 원인 후보일 뿐 원인 근거가 아니다"
+      ],
+      "tools": [
+       "polestar_incident_alarms",
+       "apm_events"
+      ],
+      "missing": [],
+      "reason": "제니퍼: 이벤트 1건 · 폴스타: 조회 성공 0건 = 연관 알람 없음",
+      "elapsed_ms": 0,
+      "axis_status": {
+       "polestar": "ok",
+       "apm": "ok"
+      },
+      "opinion": "수집된 표의 값을 확인했다.",
+      "opinion_dropped_reason": null,
+      "opinion_guard": []
+     },
+     {
+      "step": "S6",
+      "action": "host.process_top",
+      "title": "프로세스 CPU 상위",
+      "status": "ok",
+      "verdict": null,
+      "verdict_source": null,
+      "table": {
+       "columns": [
+        "name",
+        "pid",
+        "user",
+        "pcpu",
+        "pmem",
+        "rss",
+        "args"
+       ],
+       "rows": [
+        [
+         "java",
+         31001,
+         "wasadm",
+         12.0,
+         18.0,
+         2880000,
+         "/opt/java/bin/java -Dapm.instance=A1 -Xmx2g ..."
+        ],
+        [
+         "java",
+         31002,
+         "wasadm",
+         8.0,
+         15.0,
+         2400000,
+         "/opt/java/bin/java -Dapm.instance=A2 -Xmx2g ..."
+        ],
+        [
+         "sshd",
+         900,
+         "root",
+         0.3,
+         0.1,
+         16000,
+         "/usr/sbin/sshd -D"
+        ],
+        [
+         "polestar-agent",
+         1200,
+         "root",
+         0.8,
+         0.6,
+         96000,
+         "/opt/agent/bin/agent"
+        ],
+        [
+         "crond",
+         700,
+         "root",
+         0.0,
+         0.0,
+         0,
+         "/usr/sbin/crond -n"
+        ]
+       ]
+      },
+      "badges": [
+       "현재값 · 알람 후 12분"
+      ],
+      "tools": [
+       "polestar_process_snapshot"
+      ],
+      "missing": [],
+      "reason": null,
+      "elapsed_ms": 0,
+      "axis_status": {
+       "polestar": "ok"
+      },
+      "opinion": "(현재값 기준) 수집된 표의 값을 확인했다.",
+      "opinion_dropped_reason": null,
+      "opinion_guard": [
+       "실시간 단면 — 「현재값」 표기 보강"
+      ]
+     },
+     {
+      "step": "S7",
+      "action": "change.recent",
+      "title": "최근 변경 대조",
+      "status": "ok",
+      "verdict": null,
+      "verdict_source": null,
+      "table": {
+       "columns": [
+        "source",
+        "at",
+        "minutes_before_alarm",
+        "description"
+       ],
+       "rows": []
+      },
+      "badges": [
+       "변경은 「상관 후보」로만 표기한다 — 원인 확정이 아니다"
+      ],
+      "tools": [
+       "apm_source_changes",
+       "apm_change_impact",
+       "polestar_change_history"
+      ],
+      "missing": [],
+      "reason": "제니퍼: 조회 성공 0건 = 변경 없음 · 폴스타: 조회 성공 0건 = 변경 없음",
+      "elapsed_ms": 0,
+      "axis_status": {
+       "apm": "ok",
+       "polestar": "ok"
+      },
+      "opinion": "수집된 표의 값을 확인했다.",
+      "opinion_dropped_reason": null,
+      "opinion_guard": []
+     },
+     {
+      "step": "S8",
+      "action": "dpm.db_health",
+      "title": "DB 상태(DPM)",
+      "status": "skipped",
+      "verdict": null,
+      "verdict_source": null,
+      "table": null,
+      "badges": [],
+      "tools": [],
+      "missing": [],
+      "reason": "not_connected",
+      "elapsed_ms": 0,
+      "opinion": "",
+      "opinion_dropped_reason": null,
+      "opinion_guard": []
+     },
+     {
+      "step": "S9",
+      "action": "synthesize",
+      "title": "종합",
+      "status": "ok",
+      "verdict": null,
+      "verdict_source": null,
+      "table": {
+       "columns": [
+        "순위",
+        "가설",
+        "상태",
+        "근거 스텝"
+       ],
+       "rows": [
+        [
+         1,
+         "외부 연계 지연(인스턴스 · 단일 서비스)",
+         "지지",
+         "S3, S0"
+        ],
+        [
+         2,
+         "외부 연계 지연(공통 의존)",
+         "반박",
+         "S3, S0"
+        ],
+        [
+         3,
+         "외부 연계 지연(인스턴스 · 여러 서비스)",
+         "반박",
+         "S3, S0"
+        ]
+       ]
+      },
+      "badges": [],
+      "tools": [],
+      "missing": [],
+      "reason": null,
+      "elapsed_ms": 0,
+      "opinion": "수집된 표의 값을 확인했다.",
+      "opinion_dropped_reason": null,
+      "opinion_guard": []
+     }
+    ],
+    "synthesis": {
+     "hypotheses": [
+      {
+       "rank": 1,
+       "title": "외부 연계 지연(인스턴스 · 단일 서비스)",
+       "status": "supported",
+       "status_label": "지지",
+       "evidence_steps": [
+        "S3",
+        "S0"
+       ],
+       "rule_id": "H-EXT-INSTANCE-SINGLE"
+      },
+      {
+       "rank": 2,
+       "title": "외부 연계 지연(공통 의존)",
+       "status": "refuted",
+       "status_label": "반박",
+       "evidence_steps": [
+        "S3",
+        "S0"
+       ],
+       "rule_id": "H-EXT-SHARED"
+      },
+      {
+       "rank": 3,
+       "title": "외부 연계 지연(인스턴스 · 여러 서비스)",
+       "status": "refuted",
+       "status_label": "반박",
+       "evidence_steps": [
+        "S3",
+        "S0"
+       ],
+       "rule_id": "H-EXT-INSTANCE-MANY"
+      }
+     ],
+     "actions": [
+      {
+       "order": 1,
+       "source": "response_hint",
+       "text": "완화 먼저 — 재기동 전에 스레드 덤프를 확보한다",
+       "key": "triage_first"
+      },
+      {
+       "order": 2,
+       "source": "runbook",
+       "text": "연계 담당에 대상 응답 확인 요청 · 타임아웃 설정 점검",
+       "when": "dominant == 'external'",
+       "risk": "low",
+       "verification": "외부 호출 구간 시간 기준선 복귀",
+       "rollback": "해당 없음"
+      },
+      {
+       "order": 3,
+       "source": "response_hint",
+       "text": "연계 대상 응답·타임아웃 설정 확인",
+       "key": "external_dominant",
+       "hypothesis": "H-EXT-INSTANCE-SINGLE"
+      }
+     ],
+     "followups": [],
+     "narrative": "수집된 표의 값을 확인했다.",
+     "narrative_dropped_reason": null,
+     "narrative_guard": [],
+     "top_inconclusive": false
+    },
+    "timings": {
+     "total_ms": 4,
+     "budget_s": 240.0,
+     "budget_exceeded": false,
+     "steps": {
+      "S0": 0,
+      "S1": 0,
+      "S2": 0,
+      "S3": 0,
+      "S4": 0,
+      "S5": 0,
+      "S6": 0,
+      "S7": 0,
+      "S8": 0,
+      "S9": 0
+     },
+     "synthesis_ms": 2,
+     "llm_calls": 9
+    },
+    "notes": [],
+    "readings_detail": {
+     "values": {
+      "scope": "instance",
+      "service_spread": "single",
+      "load_mode": "processing_delay",
+      "little_check": "consistent",
+      "dominant": "external",
+      "db_split": "n/a",
+      "cpu_owner": "none",
+      "heap_shape": "normal",
+      "host_saturation": "none",
+      "fs_eta": null,
+      "change_candidates": []
+     },
+     "evidence": {
+      "scope": {
+       "rule": "R-A",
+       "steps": [
+        "S0"
+       ],
+       "values": {
+        "alarm_host": "wasdemo01",
+        "compared": 3,
+        "degraded": [
+         "A1"
+        ],
+        "same_host_instances": 2,
+        "other_hosts_degraded": []
+       },
+       "reason": null,
+       "source": "playbook_rule"
+      },
+      "service_spread": {
+       "rule": "R-A",
+       "steps": [
+        "S3"
+       ],
+       "values": {
+        "top_service": "/acct/verify/ext",
+        "top_count": 5,
+        "rows": 5,
+        "share": 1.0
+       },
+       "reason": null,
+       "source": "playbook_rule"
+      },
+      "load_mode": {
+       "rule": "R-B",
+       "steps": [
+        "S1"
+       ],
+       "values": {
+        "p95_ms": 7000.0,
+        "baseline_p95_ms": 795.0,
+        "tps": 9.167,
+        "baseline_tps": 9.896,
+        "tps_change_pct": -7.4,
+        "p95_ratio": 8.81
+       },
+       "reason": null,
+       "source": "playbook_rule"
+      },
+      "little_check": {
+       "rule": "R-B′",
+       "steps": [
+        "S1",
+        "S2"
+       ],
+       "values": {
+        "tps": 9.167,
+        "avg_response_ms": 2700.0,
+        "active_avg": 13.625,
+        "expected_active": 24.751,
+        "ratio": 0.55
+       },
+       "reason": null,
+       "source": "playbook_rule"
+      },
+      "dominant": {
+       "rule": "R-C",
+       "steps": [
+        "S3"
+       ],
+       "values": {
+        "per_row": [
+         "external",
+         "external",
+         "external",
+         "external",
+         "external"
+        ],
+        "votes": {
+         "external": 5
+        },
+        "totals_ms": {
+         "sql": 550.0,
+         "fetch": 100.0,
+         "external": 32900.0,
+         "cpu": 200.0,
+         "network": 100.0,
+         "other": 550.0
+        }
+       },
+       "reason": null,
+       "source": "playbook_rule"
+      },
+      "db_split": {
+       "rule": "R-D",
+       "steps": [
+        "S3"
+       ],
+       "values": {},
+       "reason": "프로파일에 커넥션 획득·SQL 실행 구조화 필드(acquire_ms·execute_ms) 없음 — 프로파일 텍스트는 형식 미검증이라 해석하지 않는다",
+       "source": "playbook_rule"
+      },
+      "cpu_owner": {
+       "rule": "R-E",
+       "steps": [
+        "S4",
+        "S2",
+        "S6"
+       ],
+       "values": {
+        "host_cpu_peak": 23.0,
+        "host_cpu_anomalous": false,
+        "was_cpu_max": 13.0,
+        "top_process": {
+         "name": "java",
+         "pcpu": 12.0
+        }
+       },
+       "reason": null,
+       "source": "playbook_rule"
+      },
+      "heap_shape": {
+       "rule": "R-F",
+       "steps": [
+        "S2"
+       ],
+       "values": {
+        "points": 8,
+        "min": 900.0,
+        "max": 980.0,
+        "committed": 2048.0,
+        "large_drops": 0,
+        "floors": [
+         900.0,
+         900.0,
+         900.0
+        ]
+       },
+       "reason": null,
+       "source": "playbook_rule"
+      },
+      "host_saturation": {
+       "rule": "R-G",
+       "steps": [
+        "S4"
+       ],
+       "values": {
+        "peaks": {
+         "cpu": 23.0,
+         "memory": 61.0,
+         "filesystem": 48.0
+        },
+        "thresholds": {
+         "cpu": 80.0,
+         "memory": 90.0,
+         "filesystem": 90.0
+        },
+        "saturated": []
+       },
+       "reason": "코어 수 미상 → 80% 기준",
+       "source": "playbook_rule"
+      },
+      "fs_eta": {
+       "rule": "R-G",
+       "steps": [
+        "S4"
+       ],
+       "values": {
+        "first": 48.0,
+        "last": 48.0,
+        "hours": 1.0
+       },
+       "reason": "파일시스템 사용률 증가 없음 — 고갈 예상 없음",
+       "source": "playbook_rule"
+      },
+      "change_candidates": {
+       "rule": "R-H",
+       "steps": [
+        "S7"
+       ],
+       "values": {
+        "count": 0
+       },
+       "reason": "상관 후보 — 원인 확정 아님",
+       "source": "playbook_rule"
+      }
+     },
+     "facts": {
+      "S2": {
+       "pool": "ok",
+       "gc": "ok"
+      },
+      "S7": {
+       "change": "none"
+      }
+     },
+     "fact_evidence": {
+      "S2.pool": {
+       "rule": "fact",
+       "steps": [
+        "S2"
+       ],
+       "values": {
+        "was_signals": []
+       },
+       "reason": null,
+       "source": "apm_gateway"
+      },
+      "S2.gc": {
+       "rule": "fact",
+       "steps": [
+        "S2"
+       ],
+       "values": {
+        "was_signals": []
+       },
+       "reason": null,
+       "source": "apm_gateway"
+      },
+      "S7.change": {
+       "rule": "fact",
+       "steps": [
+        "S7"
+       ],
+       "values": {
+        "nearest_minutes": null,
+        "near_minutes": 60
+       },
+       "reason": null,
+       "source": "playbook_rule"
+      }
+     },
+     "notes": []
+    },
+    "runbook": {
+     "meaning": "WAS 인스턴스 응답시간(p95)이 기준선 대비 상승했다.",
+     "impact": "해당 업무 응답 지연 · 액티브 누적 시 스레드 고갈로 전 업무 영향 가능",
+     "mitigation": [
+      {
+       "when": "db_split == 'acquire'",
+       "action": "커넥션 풀 점유 트랜잭션 확인 후 담당 업무팀에 통보",
+       "risk": "low",
+       "verification": "풀 대기 0 · p95 기준선 복귀",
+       "rollback": "해당 없음"
+      },
+      {
+       "when": "dominant == 'sql' and db_split == 'execute'",
+       "action": "DBA에 해당 SQL 실행계획·락 대기 확인 요청",
+       "risk": "low",
+       "verification": "해당 SQL 응답시간 기준선 복귀",
+       "rollback": "해당 없음"
+      },
+      {
+       "when": "dominant == 'external'",
+       "action": "연계 담당에 대상 응답 확인 요청 · 타임아웃 설정 점검",
+       "risk": "low",
+       "verification": "외부 호출 구간 시간 기준선 복귀",
+       "rollback": "해당 없음"
+      }
+     ],
+     "escalation": "업무 담당 → WAS 담당 → DBA",
+     "references": [
+      "manual://incident/was-latency"
+     ],
+     "owner": "WAS운영팀",
+     "last_reviewed": "2026-10-17",
+     "review_every_days": 180,
+     "stale": false
+    },
+    "known_errors": []
+   },
+   "deep_dive": {
+    "status": "failed",
+    "mode": "parallel",
+    "reason": "심층 조사 실패 — RuntimeError: holmes 연결 실패",
+    "label": "심층 조사(HolmesGPT · 가설)"
+   },
+   "engine_agreement": {
+    "result": "not_comparable",
+    "label": "비교 불가",
+    "approximate": true,
+    "note": "대략적 대조 — 서술이 아니라 근거(플레이북 판독 enum ↔ HolmesGPT 매칭 시그니처·인용 도구)의 계층만 비교한다",
+    "badge": null,
+    "reason": "심층 조사 failed — 심층 조사 실패 — RuntimeError: holmes 연결 실패",
+    "playbook": {
+     "layer": "external",
+     "basis": [
+      "dominant=external"
+     ]
+    },
+    "holmesgpt": {
+     "layers": [],
+     "basis": []
+    }
+   }
+  },
+  "progress": {
+   "done": 10,
+   "total": 10,
+   "current_step": null
+  }
+ }
+}

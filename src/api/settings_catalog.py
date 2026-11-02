@@ -50,7 +50,7 @@ GROUP_ORDER: tuple[str, ...] = (
     "intent_frame", "composite", "security", "host_authz", "server", "admin", "auth",
     "multi_db", "polestar_rest", "redis", "schema_cache", "audit", "observability",
     "alarm", "workb", "noise_gate", "drm", "rag", "result_viz", "portal_help",
-    "component_admin", TOP_LEVEL_GROUP,
+    "component_admin", "duty_area", "welcome_guide", "alarm_card_flow", TOP_LEVEL_GROUP,
 )
 
 GROUP_TITLES: dict[str, str] = {
@@ -82,6 +82,9 @@ GROUP_TITLES: dict[str, str] = {
     "result_viz": "결과 그래프·값 해석",
     "portal_help": "포탈 도움말",
     "component_admin": "분리 컴포넌트 관리",
+    "duty_area": "담당 업무",
+    "welcome_guide": "첫 화면 상황 안내",
+    "alarm_card_flow": "알람 카드 읽는 순서",
     TOP_LEVEL_GROUP: "전역",
 }
 
@@ -232,9 +235,20 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_INVESTIGATION_KB_INCORRECT_STREAK": "자동 장애 조사",
     "NOISE_INVESTIGATION_KB_ENGINE_MIN_SAMPLES": "자동 장애 조사",
     "NOISE_INVESTIGATION_KB_ENGINE_SWITCH_RATIO": "자동 장애 조사",
+    # (plans/198 W0 I-1) 조사 「실제 원인」 라벨 · 관리자 조사 정확도 주간 표
+    "NOISE_INVESTIGATION_LABEL_ENABLED": "자동 장애 조사",
+    # (plans/198 W7 I-8) 사건 기억 — 유사 과거 조사 · KEDB 부트스트랩
+    "NOISE_INVESTIGATION_MEMORY_ENABLED": "자동 장애 조사",
+    "NOISE_INVESTIGATION_KEDB_MIN_COUNT": "자동 장애 조사",
+    # (plans/198 W8 I-11) 사건 단위 조사 — 같은 서버 알람 묶음 · 증상 선착 보완
+    "NOISE_INVESTIGATION_INCIDENT_UNIT_ENABLED": "자동 장애 조사",
     # (plans/187 W14) 조사 진행 실시간 화면(SSE 허브)
     "NOISE_INVESTIGATION_LIVE_VIEW_ENABLED": "자동 장애 조사",
     "NOISE_INVESTIGATION_LIVE_POLL_SECONDS": "자동 장애 조사",
+    # (plans/195 W2) 조사 응답의 「질의응답에서 확인할 질의」
+    "NOISE_INVESTIGATION_REQUERY_ENABLED": "자동 장애 조사",
+    # (plans/199 W1 · D-352) 조사 결과 「한눈에 보기」 카드
+    "NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED": "자동 장애 조사",
     "NOISE_FAULT_DIAGNOSIS_ENABLED": "자동 장애 조사",
     "NOISE_FAULT_ESCALATION_ENABLED": "자동 장애 조사",
     # (plans/87 J4) APM 게이트웨이 fatal 이벤트로 폴스타 알람 승격(app_impact)

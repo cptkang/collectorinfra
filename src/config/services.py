@@ -1,4 +1,4 @@
-"""기타 서비스 설정 — 서버·관측(로그)·DRM·문서 RAG·결과 그래프·포탈 도움말·컴포넌트 설정 프록시.
+"""기타 서비스 설정 — 서버·관측(로그)·DRM·문서 RAG·결과 그래프·포탈 도움말·담당 업무·첫 화면 안내·컴포넌트 설정 프록시.
 
 plans/166 W2 I4 — 옛 `src/config.py`에서 클래스를 그대로 옮겼다. 공개 경로는 `src.config`
 그대로다(패키지 `__init__`이 이 모듈의 클래스를 재노출한다 · D-337 ①).
@@ -9,7 +9,9 @@ plans/166 W2 I4 — 옛 `src/config.py`에서 클래스를 그대로 옮겼다. 
 
 from __future__ import annotations
 
-from pydantic import Field, SecretStr
+from typing import Any
+
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings
 
 
@@ -195,6 +197,129 @@ class PortalHelpConfig(BaseSettings):
     enabled: bool = True
 
     model_config = {"env_prefix": "PORTAL_HELP_", "env_file": ".env", "extra": "ignore"}
+
+
+class DutyAreaConfig(BaseSettings):
+    """담당 업무 지정 `duty_area` 설정 (plans/201 W1 · D-354).
+
+    담당 업무는 **권한이 아니라 중점**이다 — 무엇도 숨기지 않고, 인가 판정은 이 값을 읽지 않는다.
+    어휘 정본은 `config/duty_areas.yaml`이다. 기본 off(D-162) — 끄면 가입·관리 화면에 담당 선택이
+    없고 사용자 응답 JSON에 담당 키가 실리지 않아 현행과 같다. 기동 시 1회 해석한다(재시작 반영).
+    """
+
+    enabled: bool = False
+    # (plans/201 W3) 알람 화면 담당 강조 — 카드 배지(발생·단서)·「내 담당 먼저」 정렬·추천 질의 재정렬,
+    # notifier SSE 키(`apm_event_type`·`top_process_kinds`), `/auth/me` 메타(`duty_alarm_focus`).
+    # 유효값 = `enabled` AND 이 값(`alarm_focus_effective`). env 이름은 계획서 확정값(접두 없음).
+    # 기본 off = SSE payload·`/auth/me`·화면 비트 동일.
+    alarm_focus_enabled: bool = Field(
+        default=False,
+        validation_alias="DUTY_ALARM_FOCUS_ENABLED",
+    )
+    # (plans/201 W2) 첫 화면 담당별 예시 질의 — 담당 지정 사용자의 첫 화면 예시 버튼을 담당 영역 문구로 바꾼다
+    # (`/auth/me` `duty_welcome_queries`). 문구 정본은 `config/duty_areas.yaml` `welcome_queries`(검증 근거
+    # `verified_by` 있는 것만). 유효값 = `enabled` AND 이 값(`welcome_hints_effective`). env 이름은 이것 하나만.
+    # 기본 off = `/auth/me`·첫 화면 비트 동일.
+    welcome_hints_enabled: bool = Field(
+        default=False,
+        validation_alias="DUTY_WELCOME_HINTS_ENABLED",
+    )
+    # (plans/201 W5) 조치 지원 — 조사 「질의응답에서 확인」 담당 영역 순 재정렬·영역 묶음, 브리핑 「권고」 아래 담당 영역
+    # 점검 순서(접힘), 알람 카드 [인계 요약 복사]. 정본은 `config/duty_areas.yaml` `requery_axes`·`checklists`
+    # (`/auth/me` `duty_action_assist`). 유효값 = `enabled` AND 이 값(`action_assist_effective`). env 이름은 이것 하나만.
+    # 기본 off = `/auth/me`·카드·브리핑 DOM 비트 동일.
+    action_assist_enabled: bool = Field(
+        default=False,
+        validation_alias="DUTY_ACTION_ASSIST_ENABLED",
+    )
+    # (plans/201 W6) 첫 화면 「지난 24시간 · 내 담당」 요약 카드 — 노이즈 결정 기록(새 수집 없음)에서 사용자 알람 존 범위 ·
+    # 담당 영역(발생·단서)이 겹치는 알람의 티어별 건수 · 확인 필요 상위 3건 · 반복 상위 1종을 보인다
+    # (`/auth/me` `duty_daily_summary` · `GET /api/v1/auth/duty-areas/daily-summary`).
+    # 유효값 = `enabled` AND 이 값(`daily_summary_effective`). env 이름은 이것 하나만.
+    # 기본 off = `/auth/me`·첫 화면 비트 동일 · 경로 미등록(404).
+    daily_summary_enabled: bool = Field(
+        default=False,
+        validation_alias="DUTY_DAILY_SUMMARY_ENABLED",
+    )
+
+    model_config = {"env_prefix": "DUTY_AREA_", "env_file": ".env", "extra": "ignore"}
+
+    @model_validator(mode="before")
+    @classmethod
+    def _accept_alarm_focus_field_name(cls, data: Any) -> Any:
+        """생성자 필드명 인자(`alarm_focus_enabled=` 등 `_DUTY_FIELD_ALIASES` 키)를 env 이름으로 옮긴다.
+
+        plans/201 W3 교정 · W2 · W5 · W6(`daily_summary_enabled=`).
+
+        env는 `DUTY_ALARM_FOCUS_ENABLED`·`DUTY_WELCOME_HINTS_ENABLED` 하나씩만 받아야 한다 — `AliasChoices`에
+        필드명을 넣으면 접두 없는 env(`ALARM_FOCUS_ENABLED`·`WELCOME_HINTS_ENABLED`)가, `populate_by_name`을 켜면
+        그룹 접두 이름(`DUTY_AREA_…`)이 함께 읽힌다. 필드명 키는 생성자 인자에서만 오므로 그것만 별칭 키로
+        옮긴다(생성자 인자가 env보다 우선).
+        """
+        if isinstance(data, dict) and any(name in data for name in _DUTY_FIELD_ALIASES):
+            data = dict(data)
+            for name, alias in _DUTY_FIELD_ALIASES.items():
+                if name in data:
+                    data[alias] = data.pop(name)
+        return data
+
+    @property
+    def alarm_focus_effective(self) -> bool:
+        """알람 화면 담당 강조가 실제로 켜졌는가(`DUTY_AREA_ENABLED` AND `DUTY_ALARM_FOCUS_ENABLED`)."""
+        return self.enabled is True and self.alarm_focus_enabled is True
+
+    @property
+    def welcome_hints_effective(self) -> bool:
+        """첫 화면 담당별 예시 질의가 실제로 켜졌는가(`DUTY_AREA_ENABLED` AND `DUTY_WELCOME_HINTS_ENABLED`)."""
+        return self.enabled is True and self.welcome_hints_enabled is True
+
+    @property
+    def action_assist_effective(self) -> bool:
+        """조치 지원(재정렬·점검 순서·인계 요약)이 실제로 켜졌는가(`DUTY_AREA_ENABLED` AND `DUTY_ACTION_ASSIST_ENABLED`)."""
+        return self.enabled is True and self.action_assist_enabled is True
+
+    @property
+    def daily_summary_effective(self) -> bool:
+        """첫 화면 24시간 요약 카드가 실제로 켜졌는가(`DUTY_AREA_ENABLED` AND `DUTY_DAILY_SUMMARY_ENABLED`)."""
+        return self.enabled is True and self.daily_summary_enabled is True
+
+
+#: `DutyAreaConfig` 생성자 필드명 → env 별칭(필드명 인자 이관용 · 접두 없는 env는 받지 않는다).
+_DUTY_FIELD_ALIASES: dict[str, str] = {
+    "alarm_focus_enabled": "DUTY_ALARM_FOCUS_ENABLED",
+    "welcome_hints_enabled": "DUTY_WELCOME_HINTS_ENABLED",
+    "action_assist_enabled": "DUTY_ACTION_ASSIST_ENABLED",
+    "daily_summary_enabled": "DUTY_DAILY_SUMMARY_ENABLED",
+}
+
+
+class WelcomeGuideConfig(BaseSettings):
+    """첫 화면 상황 안내 `welcome_guide` 설정 (plans/201 W2 §4.0 P2 · D-354).
+
+    질의응답 첫 화면에 「이 화면에서 할 수 있는 일」 3줄(알람을 받았다면 · 원인을 찾고 있다면 · 보고 자료가
+    필요하다면)을 보인다. **담당 업무와 독립**이다 — 담당 지정(`DUTY_AREA_ENABLED`)이 꺼져 있어도 단독으로
+    켤 수 있고 로그인한 모든 사용자에게 같다(인증 켠 기동 한정 — 인증 꺼진 개발 기동에서는 뜨지 않는다). 기본 off(D-162) — 끄면 `/auth/me`에 키가 없고 첫 화면이 현행과 같다.
+    기동 시 1회 해석한다(재시작 반영).
+    """
+
+    enabled: bool = False
+
+    model_config = {"env_prefix": "WELCOME_GUIDE_", "env_file": ".env", "extra": "ignore"}
+
+
+class AlarmCardFlowConfig(BaseSettings):
+    """알람 카드 인지 → 분석 → 조치 재배치 `alarm_card_flow` 설정 (plans/201 W5 §7.4 P3 · D-354).
+
+    이벤트 알람 탭 카드의 기존 칸을 ① 무슨 일인가 ② 원인이 내 쪽인가 ③ 무엇을 하나로 다시 묶고 맨 위에 진행 표시
+    한 줄(인지·분석·조치 — 브라우저 localStorage에만 · 서버 전송 없음)을 둔다. 칸을 덧붙이거나 빼지 않는다.
+    **담당 업무와 독립**이다 — `DUTY_AREA_ENABLED`와 무관하게 모든 사용자에게 같다. 화면 전달은 알람 기능 조회
+    (`GET /alarm/capabilities` `card_flow_enabled` — 켠 기동에서만 키)다. 노이즈 관제 드로어 배치는 바꾸지 않는다.
+    기본 off(D-162) — 끄면 capabilities 키 집합과 카드 DOM이 현행과 같다. 기동 시 1회 해석한다(재시작 반영).
+    """
+
+    enabled: bool = False
+
+    model_config = {"env_prefix": "ALARM_CARD_FLOW_", "env_file": ".env", "extra": "ignore"}
 
 
 #: 본체 프록시가 받는 분리 컴포넌트 이름(plans/191 · D-345). 이 밖의 이름은 설정에 있어도 무시한다.

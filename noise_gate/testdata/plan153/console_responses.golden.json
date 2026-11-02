@@ -30,7 +30,10 @@
         "server_name": "xsapp01",
         "db_id": "polestar_cm_gp",
         "resource_name": "CPU",
-        "stage_label": "유지보수"
+        "stage_label": "유지보수",
+        "solution": "polestar",
+        "solution_label": "폴스타",
+        "location_label": "공동존 김포"
       },
       {
         "alarm_id": "P150-CPU-1",
@@ -66,7 +69,10 @@
           "promote": [],
           "demote": []
         },
-        "stage_label": "우선순위 매트릭스"
+        "stage_label": "우선순위 매트릭스",
+        "solution": "polestar",
+        "solution_label": "폴스타",
+        "location_label": "공동존 김포"
       },
       {
         "alarm_id": "P150-ERR-1",
@@ -103,7 +109,10 @@
           "demote": [],
           "analysis": "AI 분석 실패 — 원문 알람으로 판단"
         },
-        "stage_label": "우선순위 매트릭스"
+        "stage_label": "우선순위 매트릭스",
+        "solution": "polestar",
+        "solution_label": "폴스타",
+        "location_label": "공동존 김포"
       },
       {
         "alarm_id": "jennifer:p150q0000000001",
@@ -148,7 +157,10 @@
             "applied": false
           }
         },
-        "stage_label": "수집 실패 보수화"
+        "stage_label": "수집 실패 보수화",
+        "solution": "apm",
+        "solution_label": "제니퍼",
+        "location_label": "공동존 운영"
       }
     ],
     "total": 4,
@@ -165,7 +177,15 @@
         "collection_failed": 1,
         "matrix": 2,
         "maintenance": 1
+      },
+      "solutions": {
+        "apm": 1,
+        "polestar": 3
       }
+    },
+    "solution_labels": {
+      "apm": "제니퍼",
+      "polestar": "폴스타"
     }
   },
   "operator_list": {
@@ -200,7 +220,10 @@
         "db_id": "polestar_cm_gp",
         "resource_name": "CPU",
         "condition_log": "[98 % (> 90 %, 3회 연속)]",
-        "stage_label": "유지보수"
+        "stage_label": "유지보수",
+        "solution": "polestar",
+        "solution_label": "폴스타",
+        "location_label": "공동존 김포"
       },
       {
         "alarm_id": "P150-CPU-1",
@@ -237,7 +260,10 @@
           "promote": [],
           "demote": []
         },
-        "stage_label": "우선순위 매트릭스"
+        "stage_label": "우선순위 매트릭스",
+        "solution": "polestar",
+        "solution_label": "폴스타",
+        "location_label": "공동존 김포"
       },
       {
         "alarm_id": "P150-ERR-1",
@@ -275,7 +301,10 @@
           "demote": [],
           "analysis": "AI 분석 실패 — 원문 알람으로 판단"
         },
-        "stage_label": "우선순위 매트릭스"
+        "stage_label": "우선순위 매트릭스",
+        "solution": "polestar",
+        "solution_label": "폴스타",
+        "location_label": "공동존 김포"
       },
       {
         "alarm_id": "jennifer:p150q0000000001",
@@ -321,7 +350,10 @@
             "applied": false
           }
         },
-        "stage_label": "수집 실패 보수화"
+        "stage_label": "수집 실패 보수화",
+        "solution": "apm",
+        "solution_label": "제니퍼",
+        "location_label": "공동존 운영"
       }
     ],
     "total": 4,
@@ -338,7 +370,15 @@
         "collection_failed": 1,
         "matrix": 2,
         "maintenance": 1
+      },
+      "solutions": {
+        "apm": 1,
+        "polestar": 3
       }
+    },
+    "solution_labels": {
+      "apm": "제니퍼",
+      "polestar": "폴스타"
     }
   },
   "user_trace_polestar": {
@@ -376,7 +416,10 @@
         "promote": [],
         "demote": []
       },
-      "stage_label": "우선순위 매트릭스"
+      "stage_label": "우선순위 매트릭스",
+      "solution": "polestar",
+      "solution_label": "폴스타",
+      "location_label": "공동존 김포"
     },
     "timeline": [
       {
@@ -501,7 +544,10 @@
           "applied": false
         }
       },
-      "stage_label": "수집 실패 보수화"
+      "stage_label": "수집 실패 보수화",
+      "solution": "apm",
+      "solution_label": "제니퍼",
+      "location_label": "공동존 운영"
     },
     "timeline": [
       {
@@ -617,7 +663,10 @@
         "demote": [],
         "analysis": "AI 분석 실패 — 원문 알람으로 판단"
       },
-      "stage_label": "우선순위 매트릭스"
+      "stage_label": "우선순위 매트릭스",
+      "solution": "polestar",
+      "solution_label": "폴스타",
+      "location_label": "공동존 김포"
     },
     "timeline": [
       {

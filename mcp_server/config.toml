@@ -18,6 +18,11 @@ expose_polestar_tools = true
 # 폴스타 실시간 프로세스 API base_url (process_snapshot 도구용). 비면 도구가 오류 반환.
 # 값은 mcp_server/.env의 PROCESS_API_BASE_URL로 오버라이드 가능.
 process_api_base_url = ""
+# 소스별 프로세스 API — 폴스타마다 주소가 다를 때. 형식은 본체 ALARM_PROCESS_API_BASE_URLS_CSV와 같다.
+# 예: "polestar_cm_gp=http://gp-host,polestar_cm_yd=http://yd-host,polestar_b0=http://b0-host:9010"
+# 하나라도 적으면 여기 없는 소스는 위 단일 값으로 보내지 않고 오류를 낸다(다른 존 폴스타 오답 방지).
+# 값은 mcp_server/.env의 PROCESS_API_BASE_URLS_CSV로 오버라이드 가능.
+process_api_base_urls_csv = ""
 
 # ============================================================
 # Prometheus (PromQL 도구 — Plan 06 §3 · D-119)

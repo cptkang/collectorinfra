@@ -20,7 +20,7 @@ from collections import deque
 from collections.abc import Callable
 from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
@@ -33,6 +33,11 @@ _VALID_LABELS = ("noise", "valid")
 #   episode_split    — 이 묶음은 틀렸다(분리) · 사건 순도
 #   demotion_needed  — 강등된 증상이 실제로 조치가 필요했다 · 거짓 강등률
 EPISODE_FEEDBACK_LABELS: tuple[str, ...] = ("episode_split", "demotion_needed")
+
+# (plans/198 W0 I-1 · D-350 ②) 조사 「실제 원인」 라벨 — 조사 정확도 집계의 입력이다. 사건 피드백과
+# 같은 이유로 `_VALID_LABELS`에 넣지 않아 few-shot·유효/노이즈 집계·사건 집계에 들지 않고,
+# investigation_labels로만 읽는다. 판정 값(verdict) 검증은 호출부(domain `validate_label`)가 한다.
+INVESTIGATION_CAUSE_LABEL = "investigation_cause"
 
 # (Plan 83 T4) 철회 tombstone 라벨. 파일 재작성 없이 append만으로 라벨을 무효화한다
 # — append-only 감사 원칙을 지키면서 오클릭을 되돌리기 위한 유일한 수단이다.
@@ -187,6 +192,81 @@ class FeedbackStore:
             counts[label] += 1
         return counts
 
+    def record_investigation_label(
+        self,
+        *,
+        investigation_id: str,
+        verdict: str,
+        rank: int | None = None,
+        note: str = "",
+        kind: str = "",
+        labeled_by: str = "",
+        operator: bool = False,
+        ts: datetime | None = None,
+    ) -> bool:
+        """조사 「실제 원인」 라벨을 JSONL 한 줄로 append 한다 (plans/198 W0 I-1).
+
+        같은 조사에 다시 쓰면 최신 1건이 이긴다(investigation_labels). investigation_id·verdict가
+        비면 기록하지 않는다. operator는 운영자(관리자) 라벨 표지다 — KEDB 부트스트랩은 이 표지가
+        있는 라벨만 센다(plans/198 교정 M3).
+
+        Returns:
+            실제로 기록했으면 True. 비활성·검증 실패·디스크 실패(교정 M2 — 알람 피드백 기록과 달리
+            삼키지 않고 호출부에 알린다)면 False.
+        """
+        if not self.enabled or not investigation_id or not verdict:
+            return False
+        when = ts or datetime.now(UTC)
+        return self._append({
+            "ts": when.isoformat(),
+            "label": INVESTIGATION_CAUSE_LABEL,
+            "investigation_id": str(investigation_id),
+            "verdict": verdict,
+            "rank": rank,
+            "note": note,
+            "kind": kind,
+            "labeled_by": labeled_by,
+            "operator": bool(operator),
+        })
+
+    def investigation_labels(self) -> dict[str, dict[str, Any]]:
+        """조사 id → 최신 「실제 원인」 라벨.
+
+        값 키: `verdict, rank, note, kind, labeled_by, operator, ts`.
+
+        철회 tombstone은 **원 라벨 작성자(`labeled_by` 일치)이거나 운영자(`operator` 표지)가 남긴
+        것만** 인정한다(plans/198 교정 m1 — 철회 라우트는 `target_ts`만 보므로 쓰기 인가 밖 사용자의
+        철회를 여기서 무시한다). 알람 피드백 철회 규약(find_similar·summarize)은 그대로다.
+        비활성·파일 없음·읽기 실패면 빈 dict.
+        """
+        if not self.enabled or not self.path.exists():
+            return {}
+        rows = self._read_window()
+        if rows is None:
+            return {}
+        retracts: dict[str, list[dict[str, Any]]] = {}
+        for r in rows:
+            if r.get("label") == _RETRACT_LABEL and r.get("target_ts"):
+                retracts.setdefault(str(r["target_ts"]), []).append(r)
+        out: dict[str, dict[str, Any]] = {}
+        for rec in rows:
+            if rec.get("label") != INVESTIGATION_CAUSE_LABEL:
+                continue
+            if any(
+                t.get("operator") is True or t.get("labeled_by", "") == rec.get("labeled_by", "")
+                for t in retracts.get(str(rec.get("ts")), [])
+            ):
+                continue
+            investigation_id = rec.get("investigation_id")
+            if not investigation_id:
+                continue
+            # 파일 순서가 곧 시간 순서다(append-only) — 뒤에 온 것이 최신
+            out[str(investigation_id)] = {
+                key: rec.get(key)
+                for key in ("verdict", "rank", "note", "kind", "labeled_by", "operator", "ts")
+            }
+        return out
+
     def record_retract(
         self,
         *,
@@ -194,22 +274,28 @@ class FeedbackStore:
         alarm_name: str = "",
         labeled_by: str = "",
         ts: Optional[datetime] = None,
+        operator: bool = False,
     ) -> None:
         """라벨 철회를 tombstone 한 줄로 append 한다 (Plan 83 T4).
 
         파일을 **재작성하지 않는다** — 원본 레코드는 감사 추적용으로 남고 `find_similar`
         후보에서만 빠진다(append-only 원칙 · 동시 쓰기 위험 회피). target_ts가 비면 no-op.
+        operator(plans/198 교정 m1)가 참일 때만 `operator` 키를 싣는다 — 조사 라벨 철회 인정
+        판정(investigation_labels)용이며 알람 피드백 철회 규약에는 쓰이지 않는다.
         """
         if not self.enabled or not target_ts:
             return
         when = ts or datetime.now(timezone.utc)
-        self._append({
+        record: dict[str, Any] = {
             "ts": when.isoformat(),
             "label": _RETRACT_LABEL,
             "target_ts": target_ts,
             "alarm_name": alarm_name,
             "labeled_by": labeled_by,
-        })
+        }
+        if operator:
+            record["operator"] = True
+        self._append(record)
 
     def find_similar(
         self,
@@ -326,11 +412,15 @@ class FeedbackStore:
 
     # ─── 내부 helper (Plan 83 T4) ────────────────────────────────────────────
 
-    def _append(self, record: dict) -> None:
+    def _append(self, record: dict[str, Any]) -> bool:
         """레코드 한 줄을 append하고 필요 시 회전한다(실패는 warning 후 무시).
 
         회전 검사는 append 시점에만 한다 — 적재는 운영자 클릭 빈도(드묾)라 이 비용이
         문제가 되지 않는다. hot path인 조회는 `_read_window`가 창만 읽는다.
+
+        Returns:
+            기록 성공이면 True, 쓰기 실패면 False(회전 실패는 기록 성공으로 본다). 알람 피드백
+            기록은 이 값을 쓰지 않는다 — 조사 라벨만 실패를 호출부에 알린다(plans/198 교정 M2).
         """
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -339,8 +429,9 @@ class FeedbackStore:
                 fh.write(line + "\n")
         except OSError as exc:  # 디스크/권한 등 — 응답을 막지 않고 경고만
             logger.warning("피드백 기록 실패(무시): %s", exc)
-            return
+            return False
         self._rotate_if_needed()
+        return True
 
     def _read_window(self) -> Optional[list[dict]]:
         """파일 끝에서 max_lines 줄을 읽어 파싱 결과를 순서대로 반환한다.

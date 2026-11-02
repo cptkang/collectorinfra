@@ -169,6 +169,10 @@ class _WorkerEpisodeHost:
         return self._w._sre_agent_client
 
     @property
+    def redis(self) -> Any:
+        return getattr(self._w, "_redis", None)
+
+    @property
     def incident_publisher(self) -> Any:
         return self._w._incident_publisher
 
@@ -362,13 +366,22 @@ def _dedup_service(worker: AlarmWorker) -> DedupService:
 class AlarmWorker:
     """Redis Stream에서 알람을 소비하여 분석 그래프를 실행한다."""
 
-    def __init__(self, config) -> None:  # noqa: ANN001
+    def __init__(
+        self,
+        config,  # noqa: ANN001
+        *,
+        process_kind_classifier: Callable[[str, str], Optional[str]] | None = None,
+    ) -> None:
         """AlarmWorker를 초기화한다.
 
         Args:
             config: AppConfig 인스턴스
+            process_kind_classifier: (plans/201 W3) 프로세스(이름·인자) → 미들웨어 kind 판정 콜백.
+                본체 기동부가 담당 강조 플래그 유효 on일 때만 주입한다(`noise_gate`는 판정 모듈을
+                import하지 않는다 · D-139 부기). None이면 configurable에 키가 없다(비트 동일).
         """
         self._config = config
+        self._process_kind_classifier = process_kind_classifier
         self._graph = None
         self._history_repo = None
         self._process_client = None
@@ -1193,6 +1206,11 @@ class AlarmWorker:
                         # (plans/87 J4) APM 게이트웨이 클라이언트 — off/미설정이면 None →
                         # 게이트 노드가 app_impact를 조회하지 않는다(판정 비트동일·회귀 0).
                         "apm_client": self._apm_client,
+                        # (plans/201 W3) 담당 강조 프로세스 종류 판정 콜백 — 미주입이면 키 없음(비트 동일).
+                        **(
+                            {"process_kind_classifier": self._process_kind_classifier}
+                            if self._process_kind_classifier is not None else {}
+                        ),
                     }
                 },
             )

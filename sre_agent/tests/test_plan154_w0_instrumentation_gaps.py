@@ -99,9 +99,11 @@ def fake_diagnose(
     """고정 결과를 돌려주는 diagnose_fn.
 
     `steps`는 W1 신설 속성이라 setattr로 싣는다(현행 dataclass도 받는다).
+    `activity`는 실 조사 함수와 같은 선택 인자다 — 실행 기록 기본 on(2026-10-29)이라 JobStore 경유
+    잡은 dispatcher가 이 인자를 묶어 부른다.
     """
 
-    def _fn(job):
+    def _fn(job, activity=None):
         outs = outputs if outputs is not None else [
             _record("polestar_metric_trend", "success", RAW_SENTINEL,
                     {"server_name": "w0-a", "kind": "cpu"}),
