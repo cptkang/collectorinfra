@@ -12,6 +12,7 @@ import logging
 import re
 import threading
 import time
+from collections import Counter
 from collections.abc import Callable, Collection
 from dataclasses import dataclass, field
 from typing import Any
@@ -32,6 +33,7 @@ from holmes.utils.colors import AI_COLOR
 from holmes.utils.stream import StreamEvents
 
 from sre_agent.domain.activity_log import ActivityLog, safe_append
+from sre_agent.domain.answer_markup import has_tool_call_markup
 from sre_agent.domain.failure_guards import StallTracker
 from sre_agent.infrastructure.activity_masking import mask_activity_text
 from sre_agent.infrastructure.bash_write_guard import install_bash_write_guard
@@ -571,6 +573,24 @@ class _StreamDrain:
         return list(deduped.values())
 
 
+def _log_tool_summary(result: DiagnosisResult) -> DiagnosisResult:
+    """조사 1건의 도구 호출 요약을 1줄로 남기고 결과를 그대로 돌려준다.
+
+    도구 호출 점검용(D-343 부기 1).
+
+    LLM step 수 대비 도구 호출 0건 · 답의 도구 호출 형식 섞임이면 vLLM 파서·대화 템플릿 불일치를
+    의심할 근거다(docs/26 §5.6.3). 도구 이름별 건수와 오류 건수만 싣는다 — 인자·출력은 싣지 않는다.
+    """
+    counts = Counter(r.tool_name for r in result.tool_outputs)
+    errors = sum(1 for r in result.tool_outputs if r.error or r.status == "error")
+    logger.info(
+        "조사 도구 호출 요약: LLM step=%s · 도구 호출 %d건(오류 %d) %s · 미완주=%s · "
+        "답 도구 호출 형식 섞임=%s",
+        result.steps, len(result.tool_outputs), errors, dict(counts), result.incomplete,
+        has_tool_call_markup(result.answer))
+    return result
+
+
 def _turn_metrics(drain: _StreamDrain) -> dict[str, Any]:
     """드레인의 턴 계측 → `DiagnosisResult` 가산 필드(plans/200 I-0 — 사본).
 
@@ -767,7 +787,7 @@ class DiagnosisAgent:
             result = drain.run(messages)
         except InvestigationStalledError as stalled:
             partial = drain.partial(stalled.steps)
-            return DiagnosisResult(
+            return _log_tool_summary(DiagnosisResult(
                 answer=(
                     f"[미완주] 조사가 정체돼 중단했습니다({stalled.reason}). 수집된 근거가 "
                     f"불충분하므로 가설/한계로 취급합니다."
@@ -780,13 +800,13 @@ class DiagnosisAgent:
                 steps=partial.num_llm_calls,
                 stalled=stalled.reason,
                 **_turn_metrics(drain),
-            )
+            ))
         except Exception as exc:  # noqa: BLE001 — holmes는 전용 예외 클래스 없이 plain Exception
             drain._judge_end("error")  # 열린 판단 회차가 있으면 실패로 닫는다(기록 없으면 무동작)
             msg = str(exc)
             if "max_steps" in msg or "Too many LLM calls" in msg:
                 partial = drain.partial(_steps_from_error(msg, self.settings.max_steps))
-                return DiagnosisResult(
+                return _log_tool_summary(DiagnosisResult(
                     answer=(
                         f"[미완주] 조사가 step 상한({self.settings.max_steps})에 도달해 "
                         f"결론을 도출하지 못했습니다({msg}). 수집된 근거가 불충분하므로 "
@@ -799,9 +819,9 @@ class DiagnosisAgent:
                     incomplete=True,
                     steps=partial.num_llm_calls,
                     **_turn_metrics(drain),
-                )
+                ))
             raise
-        return DiagnosisResult(
+        return _log_tool_summary(DiagnosisResult(
             answer=result.result or "",
             tool_calls=[tc.description for tc in (result.tool_calls or [])],
             tool_outputs=to_tool_records(result.tool_calls),
@@ -809,4 +829,4 @@ class DiagnosisAgent:
             total_cost=result.total_cost,
             steps=result.num_llm_calls,
             **_turn_metrics(drain),
-        )
+        ))

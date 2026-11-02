@@ -80,6 +80,8 @@ def _run(result_or_fn, tmp_path, **kw):
     "<start_function_call>call:foo{a:1}<end_function_call>",
     # 리터럴 없는 Gemma 꼴
     "call:polestar_x{lookback_minutes:120}",
+    # 맨 JSON(답 전체) — D-342 W4 부기 2로 감지 범위에 편입(종전 미탐)
+    '{"name": "polestar_x", "arguments": {"lookback_minutes": 120}}',
 ])
 def test_other_families_detected(text):
     assert has_tool_call_markup(text)
@@ -88,7 +90,6 @@ def test_other_families_detected(text):
 @pytest.mark.parametrize("text", [
     '<|python_tag|>{"name": "polestar_x", "parameters": {}}',   # Llama 3.x
     '[TOOL_CALLS][{"name": "polestar_x", "arguments": {}}]',     # Mistral
-    '{"name": "polestar_x", "arguments": {"lookback_minutes": 120}}',  # 맨 JSON
 ])
 def test_out_of_scope_families_not_detected(text):
     """범위 밖(계획서 감지 패턴 6종에 없음) — 현 동작 기록. 미탐이다(Minor)."""
