@@ -10,6 +10,7 @@ from typing import Any
 from apm_gateway.adapters.jennifer.allowlist import ALLOWED
 from apm_gateway.adapters.jennifer.api import JenniferApi
 from apm_gateway.application.apm_core import ApmCore
+from apm_gateway.application.fanout import gather_ordered
 from apm_gateway.application.resolver import SHORT_CACHE_SECONDS
 from apm_gateway.application.sources import (
     JenniferSource,
@@ -103,29 +104,42 @@ class HealthTools:
                     " 그대로 싣는다"
                 )
             expect_calls(sum(len(plan.get(i["source_id"], [])) for i in res.instances))
+            # (인스턴스, 지표) 호출은 동시에(plans/205 W2) — 결과는 아래 이중 루프 순서로 처리한다
+            series_units = [
+                (inst, metric_id)
+                for inst in res.instances
+                for metric_id, _label in plan.get(inst["source_id"], [])
+            ]
+            start_ms, end_ms = window.start_ms, window.end_ms
+            fetched = iter(
+                await gather_ordered(
+                    series_units,
+                    lambda u: self.core.api(u[0]["source_id"]).instance_metric_series(
+                        u[0]["domain_id"],
+                        u[0]["instance_id"],
+                        u[1],
+                        interval,
+                        start_ms,
+                        end_ms,
+                    ),
+                    limit=self.core.cfg.perf.fanout_concurrency,
+                )
+            )
             for inst in res.instances:  # 정합된 인스턴스 전부(종전 2개 상한 제거 · W1 N-4)
                 trend: dict[str, list[dict[str, Any]]] = {}
-                for metric_id, label in plan.get(inst["source_id"], []):
-                    try:
-                        trend[label] = await self.core.api(
-                            inst["source_id"]
-                        ).instance_metric_series(
-                            inst["domain_id"],
-                            inst["instance_id"],
-                            metric_id,
-                            interval,
-                            window.start_ms,
-                            window.end_ms,
-                        )
-                    except ApmError as e:
+                for _metric_id, label in plan.get(inst["source_id"], []):
+                    _, got = next(fetched)
+                    if isinstance(got, ApmError):
                         limits.fail(
                             limit_notice(
-                                e,
+                                got,
                                 f"추세 {label}",
                                 f"(인스턴스 {self.core.inst_label(inst_key(inst))})",
-                                self.core.reason_tail(e),
+                                self.core.reason_tail(got),
                             )
                         )
+                    else:
+                        trend[label] = got
                 if trend:
                     trends[inst_key(inst)] = trend
         if not current and not trends:
@@ -193,16 +207,19 @@ class HealthTools:
         active_ok = False
         groups = group_by_domain(res)
         expect_calls(len(groups))
-        for (sid, domain_id), ids in groups.items():
-            try:
-                for svc in tag_records(
-                    await self.core.api(sid).active_services(domain_id, ids), sid
-                ):
-                    services.setdefault(inst_key(svc), []).append(svc)
-                active_ok = True
-            except ApmError as e:
+        fetched = await gather_ordered(
+            groups.items(),
+            lambda g: self.core.api(g[0][0]).active_services(g[0][1], g[1]),
+            limit=self.core.cfg.perf.fanout_concurrency,
+        )
+        for ((sid, domain_id), _ids), got in fetched:
+            if isinstance(got, ApmError):
                 where = self.core.sources.where(sid, domain_id)
-                limits.fail(limit_notice(e, "액티브 서비스", f"({where})"))
+                limits.fail(limit_notice(got, "액티브 서비스", f"({where})"))
+                continue
+            for svc in tag_records(got, sid):
+                services.setdefault(inst_key(svc), []).append(svc)
+            active_ok = True
         if not current and not active_ok:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
         rows: list[dict[str, Any]] = []
@@ -265,16 +282,21 @@ class HealthTools:
         body["api_calls_total"] = src.api.calls_total
         return body, limits
 
+    def _live(self, result: dict[str, Any]) -> dict[str, Any]:
+        """캐시와 무관하게 매번 새로 읽는 칸 — 폴러 상태 · 소스별 동시 호출 자리 현황(떠 있는 호출
+        `in_flight` · 자리 대기 `waiting` · 자리를 쥔 호출자 수 `callers` — plans/205 W3b ④)."""
+        out = dict(result)
+        slots = {src.source_id: src.api.client.slot_status() for src in self.core.sources}
+        out["rows"] = [{**row, **slots.get(row["source_id"], {})} for row in result["rows"]]
+        out["poller"] = self.core.poller_status() if self.core.poller_status else {"enabled": False}
+        return out
+
     async def gateway_health(self) -> dict[str, Any]:
         """소스별 행 · 전체 상태 `ok`(모두 정상) / `degraded`(하나라도) / `not_configured`(0개)."""
         tool = "gateway_health"
         now = self.core.clock()
         if self._health_cache and now - self._health_cache[0] < _HEALTH_CACHE_SECONDS:
-            cached = dict(self._health_cache[1])
-            cached["poller"] = (
-                self.core.poller_status() if self.core.poller_status else {"enabled": False}
-            )
-            return cached
+            return self._live(self._health_cache[1])
         results = await asyncio.gather(*(self._source_health(src) for src in self.core.sources))
         rows = [body for body, _ in results]
         limits = [line for _, lines in results for line in lines]
@@ -285,8 +307,4 @@ class HealthTools:
             status = "ok" if all(r["status"] == "ok" for r in rows) else "degraded"
         result = self.core.ok(tool, rows, limits=limits, status=status)
         self._health_cache = (now, result)
-        result = dict(result)
-        result["poller"] = (
-            self.core.poller_status() if self.core.poller_status else {"enabled": False}
-        )
-        return result
+        return self._live(result)

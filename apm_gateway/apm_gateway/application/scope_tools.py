@@ -27,6 +27,7 @@ from typing import Any
 from apm_gateway.adapters.jennifer.api import JenniferApi
 from apm_gateway.application.apm_core import ApmCore
 from apm_gateway.application.business_map import cache_fresh
+from apm_gateway.application.fanout import gather_ordered
 from apm_gateway.application.masking import mask_text, mask_url
 from apm_gateway.application.name_search import (
     domain_order,
@@ -88,6 +89,16 @@ BUSINESS_FIELDS = (
 )
 # 업무 목록 행의 전체 파일 전용 칸(내부 OID — COV-BUSINESS)
 BUSINESS_FILE_ONLY = ("business_oid",)
+
+
+def _merge_limits(limits: Limits, sub: Limits) -> None:
+    """항목별로 모은 `[한계]`(`sub`)를 입력 순서 자리에서 합친다(plans/205 W2 — 순차 실행과 같은
+    문구·순서·`partial`·미해결 고지)."""
+    limits.extend(sub)
+    if sub.partial:
+        limits.partial = True
+    for text in sub.unresolved:
+        limits.unresolve(text)
 
 
 def name_list(value: Any, name: str) -> list[str] | None:
@@ -183,6 +194,11 @@ class ScopeTools:
     def _at(self, source_id: str, domain_id: int | None = None) -> str:
         where = self.core.sources.where(source_id, domain_id)
         return f"({where})" if where else ""
+
+    @property
+    def _fanout(self) -> int:
+        """도구 안 독립 호출 동시 수(plans/205 W2 · 1 = 순차)."""
+        return self.core.cfg.perf.fanout_concurrency
 
     def _in_scope(self, source_id: str, domain_id: int) -> bool:
         """소스 설정의 도메인 필터(`domain_ids`) 안인가 — 필터가 없으면 전부."""
@@ -334,11 +350,15 @@ class ScopeTools:
         failures: list[tuple[str, ApmError]] = []
         failed: dict[str, ApmError] = {}
         answered: set[str] = set()
-        for src, did in calls:
+
+        async def fetch(call: tuple[JenniferSource, int | None]) -> list[dict[str, Any]]:
+            return await call[0].api.realtime_domains(call[1])
+
+        # 호출만 동시(plans/205 W2) — 첫 오류·먼저 받은 행 우선은 아래 입력 순서 루프가 정한다
+        for (src, did), records in await gather_ordered(calls, fetch, limit=self._fanout):
             sid = src.source_id
-            try:
-                records = await src.api.realtime_domains(did)
-            except ApmError as e:
+            if isinstance(records, ApmError):
+                e = records
                 notice = limit_notice(
                     e, "실시간 도메인", self._at(sid, did), core.reason_tail(e)
                 )
@@ -394,6 +414,36 @@ class ScopeTools:
 
     # ── 업무 해석 ──────────────────────────────────────────
 
+    async def _defs_ordered(
+        self,
+        scope: ServiceScope,
+        now: float,
+        failures: list[tuple[str, ApmError]] | None = None,
+    ) -> list[tuple[ServiceUnit, list[dict[str, Any]] | None]]:
+        """범위의 도메인마다 업무 정의(`business_defs_of` — 실패는 None). 호출만 동시이고(plans/205
+        W2) 도메인별로 모은 `[한계]`·실패는 입력 순서로 `scope.limits`·`failures`에 합친다 —
+        순차 실행과 같은 순서다. 계약 위반은 입력 순서상 그 자리에서 다시 던진다."""
+        core = self.core
+
+        async def read(
+            u: ServiceUnit,
+        ) -> tuple[list[dict[str, Any]] | None, Limits, list[tuple[str, ApmError]]]:
+            sub = Limits()
+            fails: list[tuple[str, ApmError]] = []
+            defs = await core.business_defs_of(u.source, u.domain_id, now, sub, fails)
+            return defs, sub, fails
+
+        out: list[tuple[ServiceUnit, list[dict[str, Any]] | None]] = []
+        for u, got in await gather_ordered(scope.units, read, limit=self._fanout):
+            if isinstance(got, ApmError):
+                raise got
+            defs, sub, fails = got
+            _merge_limits(scope.limits, sub)
+            if failures is not None:
+                failures += fails
+            out.append((u, defs))
+        return out
+
     async def _business_defs(
         self, scope: ServiceScope
     ) -> list[tuple[ServiceUnit, list[dict[str, Any]]]]:
@@ -410,8 +460,7 @@ class ScopeTools:
         )
         out: list[tuple[ServiceUnit, list[dict[str, Any]]]] = []
         failures: list[tuple[str, ApmError]] = []
-        for u in scope.units:
-            defs = await core.business_defs_of(u.source, u.domain_id, now, scope.limits, failures)
+        for u, defs in await self._defs_ordered(scope, now, failures):
             if defs is not None:
                 out.append((u, defs))
         if scope.units and len(failures) == len(scope.units):
@@ -564,11 +613,15 @@ class ScopeTools:
         failures: list[tuple[str, ApmError]] = []
         failed: dict[str, ApmError] = {}
         answered: set[str] = set()
-        for u in scope.units:
+
+        async def fetch(u: ServiceUnit) -> list[dict[str, Any]]:
+            return await u.source.api.realtime_business(u.domain_id)
+
+        # 호출만 동시(plans/205 W2) — 행·고지는 아래에서 입력(도메인) 순서로 쌓는다
+        for u, records in await gather_ordered(scope.units, fetch, limit=self._fanout):
             sid = u.source.source_id
-            try:
-                records = await u.source.api.realtime_business(u.domain_id)
-            except ApmError as e:
+            if isinstance(records, ApmError):
+                e = records
                 notice = limit_notice(
                     e, "실시간 업무", self._at(sid, u.domain_id), core.reason_tail(e)
                 )
@@ -594,13 +647,17 @@ class ScopeTools:
         failed: dict[str, ApmError] = {}
         answered: set[str] = set()
         missing: list[str] = []
-        for t in targets:
+
+        async def fetch(t: BusinessUnit) -> list[dict[str, Any]]:
+            return await t.unit.source.api.realtime_business(t.unit.domain_id, t.business_id)
+
+        # 호출만 동시(plans/205 W2) — 행·고지는 아래에서 입력(업무) 순서로 쌓는다
+        for t, records in await gather_ordered(targets, fetch, limit=self._fanout):
             u, sid = t.unit, t.unit.source.source_id
             # 도메인이 있으니 위치 문구는 비지 않는다(소스가 하나면 「도메인 N」)
             label = f"{core.sources.where(sid, u.domain_id)} · 업무 {t.business_id}"
-            try:
-                records = await u.source.api.realtime_business(u.domain_id, t.business_id)
-            except ApmError as e:
+            if isinstance(records, ApmError):
+                e = records
                 notice = limit_notice(e, "실시간 업무", f"({label})", core.reason_tail(e))
                 failures.append((label, e))
                 failed.setdefault(sid, e)
@@ -688,7 +745,33 @@ class ScopeTools:
         empty: list[str] = []
         failures: list[tuple[str, ApmError]] = []
         attempted = 0
-        for u, t in targets:
+        units = [
+            (u, t, metric_id)
+            for u, t in targets
+            for metric_id, _label in plan.get(u.source.source_id, [])
+        ]
+
+        async def series(
+            unit: tuple[ServiceUnit, BusinessUnit | None, str],
+        ) -> list[dict[str, Any]]:
+            u, t, metric_id = unit
+            if t is None:
+                return await u.source.api.domain_metric_series(
+                    u.domain_id, metric_id, interval, window.start_ms, window.end_ms
+                )
+            return await u.source.api.business_metric_series(
+                u.domain_id,
+                t.business_id,
+                metric_id,
+                interval,
+                window.start_ms,
+                window.end_ms,
+            )
+
+        # 호출만 동시(plans/205 W2) — 고지·행은 아래에서 입력(대상×지표) 순서로 쌓는다
+        for (u, t, metric_id), points in await gather_ordered(
+            units, series, limit=self._fanout
+        ):
             sid = u.source.source_id
             where = core.sources.where(sid, u.domain_id)  # 도메인이 있어 비지 않는다
             label = f"{where} · 업무 {t.business_id}" if t else where
@@ -700,35 +783,20 @@ class ScopeTools:
             if t is not None:
                 base["business_id"] = t.business_id
                 base["business_name"] = t.business_name
-            for metric_id, _label in plan.get(sid, []):
-                attempted += 1
-                try:
-                    if t is None:
-                        points = await u.source.api.domain_metric_series(
-                            u.domain_id, metric_id, interval, window.start_ms, window.end_ms
-                        )
-                    else:
-                        points = await u.source.api.business_metric_series(
-                            u.domain_id,
-                            t.business_id,
-                            metric_id,
-                            interval,
-                            window.start_ms,
-                            window.end_ms,
-                        )
-                except ApmError as e:
-                    notice = limit_notice(
-                        e, f"지표 {metric_id}", f"({label})", core.reason_tail(e)
-                    )
-                    failures.append((f"{label} 지표 {metric_id}", e))
-                    limits.fail(notice)
-                    continue
-                if not points:
-                    empty.append(f"{label}:{metric_id}")
-                rows += [
-                    {**base, "metric": metric_id, "time_ms": p["time_ms"], "value": p["value"]}
-                    for p in points
-                ]
+            attempted += 1
+            if isinstance(points, ApmError):
+                notice = limit_notice(
+                    points, f"지표 {metric_id}", f"({label})", core.reason_tail(points)
+                )
+                failures.append((f"{label} 지표 {metric_id}", points))
+                limits.fail(notice)
+                continue
+            if not points:
+                empty.append(f"{label}:{metric_id}")
+            rows += [
+                {**base, "metric": metric_id, "time_ms": p["time_ms"], "value": p["value"]}
+                for p in points
+            ]
         if attempted and len(failures) == attempted:
             raise core.all_failed(failures)
         if empty:
@@ -836,8 +904,7 @@ class ScopeTools:
             )
         )
         out: list[BusinessUnit] = []
-        for u in scope.units:
-            defs = await core.business_defs_of(u.source, u.domain_id, now, scope.limits)
+        for u, defs in await self._defs_ordered(scope, now):
             if defs is None:
                 out.append(BusinessUnit(u, business_id, "", None))
                 continue

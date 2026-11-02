@@ -16,6 +16,7 @@ from apm_gateway.application.business_map import (
     cache_fresh,
     parse_business_map,
 )
+from apm_gateway.application.fanout import gather_ordered
 from apm_gateway.application.jobs import (
     FILE_ONLY_KEY,
     MASKED_KEY,
@@ -54,7 +55,13 @@ from apm_gateway.application.tool_common import (
 from apm_gateway.config import GatewayConfig
 from apm_gateway.domain import signals as sig
 from apm_gateway.domain.call_context import expect_calls
-from apm_gateway.domain.errors import API_ERROR, INVALID_ARGUMENT, SOURCE_UNAVAILABLE, ApmError
+from apm_gateway.domain.errors import (
+    API_ERROR,
+    CONTRACT_VIOLATION,
+    INVALID_ARGUMENT,
+    SOURCE_UNAVAILABLE,
+    ApmError,
+)
 from apm_gateway.domain.events import level_rank
 
 SOURCE_KIND = "apm_api"
@@ -227,18 +234,24 @@ class ApmCore:
     async def realtime(
         self, resolution: Resolution, limits: Limits
     ) -> dict[InstKey, dict[str, Any]]:
-        """해소 인스턴스의 실시간 스냅샷((소스, 도메인)당 1호출 · 대상 인스턴스만 묻는다)."""
+        """해소 인스턴스의 실시간 스냅샷((소스, 도메인)당 1호출 · 대상 인스턴스만 묻는다). 호출은
+        동시에(plans/205 W2) 하고 결과는 묶음 순서로 처리한다."""
         wanted = {inst_key(i) for i in resolution.instances}
         out: dict[InstKey, dict[str, Any]] = {}
         groups = group_by_domain(resolution)
         expect_calls(len(groups))
-        for (sid, domain_id), ids in groups.items():
-            try:
-                for rec in tag_records(await self.api(sid).realtime(domain_id, ids), sid):
-                    if inst_key(rec) in wanted:
-                        out[inst_key(rec)] = rec
-            except ApmError as e:
-                limits.fail(limit_notice(e, "실시간", f"({self.sources.where(sid, domain_id)})"))
+        fetched = await gather_ordered(
+            groups.items(),
+            lambda g: self.api(g[0][0]).realtime(g[0][1], g[1]),
+            limit=self.cfg.perf.fanout_concurrency,
+        )
+        for ((sid, domain_id), _ids), got in fetched:
+            if isinstance(got, ApmError):
+                limits.fail(limit_notice(got, "실시간", f"({self.sources.where(sid, domain_id)})"))
+                continue
+            for rec in tag_records(got, sid):
+                if inst_key(rec) in wanted:
+                    out[inst_key(rec)] = rec
         missing = wanted - set(out)
         if missing:
             limits.append(f"[한계] 실시간 데이터 없는 인스턴스: {self.ids_text(missing)}")
@@ -248,26 +261,42 @@ class ApmCore:
         self, resolution: Resolution, window: Window, limits: Limits
     ) -> tuple[list[dict[str, Any]], bool]:
         """X-View 기본 데이터를 1분 창으로 나눠 **창 전체**를 모은다(제니퍼 1분 창 제약 —
-        상한 없음). (거래, 성공 여부)."""
+        상한 없음). (거래, 성공 여부). (소스, 도메인) 묶음은 동시에(plans/205 W2) 돌고 묶음 안
+        1분 조각은 차례로 묻는다(조각 실패면 그 묶음의 남은 조각을 묻지 않는다). 중복 제거·실패
+        고지는 묶음 순서로 처리한다."""
         wanted = {inst_key(i) for i in resolution.instances}
         seen: set[tuple[str, str]] = set()
         txs: list[dict[str, Any]] = []
         any_ok = False
         groups = group_by_domain(resolution)
         expect_calls(math.ceil((window.end_ms - window.start_ms) / XVIEW_WINDOW_MS) * len(groups))
-        for (sid, domain_id), ids in groups.items():
+
+        async def chunks(
+            group: tuple[tuple[str, int], list[int]],
+        ) -> tuple[list[list[dict[str, Any]]], ApmError | None]:
+            """묶음 하나의 조각 응답들(받은 순서)과 조각 실패(있으면 그 뒤는 묻지 않았다)."""
+            (sid, domain_id), ids = group
+            batches: list[list[dict[str, Any]]] = []
             t = window.start_ms
             while t < window.end_ms:
                 chunk_end = min(t + XVIEW_WINDOW_MS, window.end_ms)
                 query_end = chunk_end if chunk_end == window.end_ms else chunk_end - 1
                 try:
-                    batch = await self.api(sid).transactions(domain_id, ids, t, query_end)
-                    any_ok = True
+                    batches.append(await self.api(sid).transactions(domain_id, ids, t, query_end))
                 except ApmError as e:
-                    limits.fail(
-                        limit_notice(e, "트랜잭션", f"({self.sources.where(sid, domain_id)})")
-                    )
-                    break
+                    if e.code == CONTRACT_VIOLATION:  # 차례 경로가 이 묶음에서 멈추게(종전과 같다)
+                        raise
+                    return batches, e
+                t = chunk_end
+            return batches, None
+
+        fetched = await gather_ordered(
+            groups.items(), chunks, limit=self.cfg.perf.fanout_concurrency
+        )
+        for ((sid, domain_id), _ids), got in fetched:
+            batches, error = ([], got) if isinstance(got, ApmError) else got
+            for batch in batches:
+                any_ok = True
                 for tx in tag_records(batch, sid, domain_id):
                     key = (
                         sid,
@@ -277,7 +306,10 @@ class ApmCore:
                     if inst_key(tx) in wanted and key not in seen:
                         seen.add(key)
                         txs.append(tx)
-                t = chunk_end
+            if error is not None:
+                limits.fail(
+                    limit_notice(error, "트랜잭션", f"({self.sources.where(sid, domain_id)})")
+                )
         return txs, any_ok
 
     @staticmethod
@@ -303,17 +335,18 @@ class ApmCore:
         rows: list[dict[str, Any]] = []
         groups = group_by_domain(resolution)
         expect_calls(len(groups))
-        for (sid, domain_id), ids in groups.items():
-            try:
-                rows.extend(
-                    tag_records(
-                        await self.api(sid).application_status(domain_id, ids, start, end), sid
-                    )
-                )
-            except ApmError as e:
+        fetched = await gather_ordered(
+            groups.items(),
+            lambda g: self.api(g[0][0]).application_status(g[0][1], g[1], start, end),
+            limit=self.cfg.perf.fanout_concurrency,
+        )
+        for ((sid, domain_id), _ids), got in fetched:
+            if isinstance(got, ApmError):
                 limits.fail(
-                    limit_notice(e, "시 단위 통계", f"({self.sources.where(sid, domain_id)})")
+                    limit_notice(got, "시 단위 통계", f"({self.sources.where(sid, domain_id)})")
                 )
+                continue
+            rows.extend(tag_records(got, sid))
         if not rows:
             return None
         calls = sum(r["calls"] for r in rows)

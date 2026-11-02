@@ -39,6 +39,7 @@ from apm_gateway.adapters.jennifer.manage_api import (
     RULE_TARGETS,
     JenniferManageApi,
 )
+from apm_gateway.application.fanout import gather_ordered
 from apm_gateway.application.masking import (
     mask_identifier,
     mask_ip,
@@ -308,16 +309,18 @@ class ManageTools:
         v2: bool = True,
     ) -> tuple[list[tuple[U, T]], list[tuple[U, ApmError]]]:
         """단위마다 1호출 — 실패는 `[한계]`+partial로 적고 넘어간다. 전부 실패면 오류.
-        (성공 단위·결과, 실패 단위·오류)."""
+        (성공 단위·결과, 실패 단위·오류). 호출은 동시에(`APM_FANOUT_CONCURRENCY` · plans/205 W2)
+        하고 결과는 입력 순서로 처리한다."""
         done: list[tuple[U, T]] = []
         failed: list[tuple[U, ApmError]] = []
-        for unit in units:
-            try:
-                done.append((unit, await call(unit)))
-            except ApmError as e:
-                notice = limit_notice(e, what, where(unit), detail=self._why(e, v2=v2))
-                failed.append((unit, e))
+        fetched = await gather_ordered(units, call, limit=self.core.cfg.perf.fanout_concurrency)
+        for unit, got in fetched:
+            if isinstance(got, ApmError):
+                notice = limit_notice(got, what, where(unit), detail=self._why(got, v2=v2))
+                failed.append((unit, got))
                 limits.fail(notice)
+            else:
+                done.append((unit, got))
         if units and len(failed) == len(units):
             raise self.core.all_failed([(where(u).strip("()"), e) for u, e in failed])
         return done, failed
@@ -986,7 +989,8 @@ class ManageTools:
         selected = [s.source_id for s in self.core.sources.select(source_ids)]
         units = [(sid, origin) for sid in selected for origin in origins]
         expect_calls(len(units))
-        absent: list[str] = []
+        # 단위별로 적고 입력 순서로 모은다(호출이 동시라 끝나는 순서가 바뀐다 · plans/205 W2)
+        absent_of: dict[tuple[str, str], str] = {}
 
         async def fetch(unit: tuple[str, str]) -> list[dict[str, Any]]:
             sid, origin = unit
@@ -1000,14 +1004,14 @@ class ManageTools:
                 found = await api.account(uid)
             except ApmError as e:
                 if e.status == 404:  # 계정이 없거나 경로 미지원 — 구분할 수 없다
-                    absent.append(f"{self._at(sid)} HTTP 404".strip())
+                    absent_of[unit] = f"{self._at(sid)} HTTP 404".strip()
                     return []
                 # 클라이언트가 경로·되울린 계정 ID를 이미 변수 표기로 바꿨다 — 남은 것도 가린 ID로
                 raise ApmError(
                     e.code, f"계정 {shown_id}: {e.reason.replace(uid, shown_id)}", status=e.status
                 ) from e
             if found is None:
-                absent.append(self._at(sid) or "빈 응답")
+                absent_of[unit] = self._at(sid) or "빈 응답"
                 return []
             return [found]
 
@@ -1016,6 +1020,7 @@ class ManageTools:
             return f"({at + ' · ' if at else ''}{unit[1]})"
 
         done, failed = await self._run(units, fetch, where, "사용자", limits, v2=False)
+        absent = [absent_of[u] for u in units if u in absent_of]
         rows: list[dict[str, Any]] = []
         masked: set[str] = set()
         for (sid, origin), found in done:

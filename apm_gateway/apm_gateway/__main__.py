@@ -180,6 +180,8 @@ async def _serve() -> list[int]:
         await jobs.aclose()  # 진행 중 백그라운드 작업 → interrupted(종료 감사 1줄씩)
         for src in sources:
             await src.api.client.aclose()
+        if sources.parse_pool is not None:
+            sources.parse_pool.shutdown()  # 파싱 프로세스 풀(plans/205 · 뜬 적 없으면 할 일 없음)
         if node_address is not None:
             await node_address.aclose()
         if redis_client is not None:

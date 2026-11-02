@@ -10,8 +10,16 @@ SPEC-apm-question-coverage §3.4).
   응답을 받으면 `after_call(source_id, seconds, group=경로 템플릿)`로 실 호출 소요(속도 제어 대기
   제외)를 넘긴다 — 작업이 (소스, 경로 군) 이동 평균으로 모아 남은 예상 시간에 쓴다(plans/164
   W7-B · W7-C 교정: 빠른 인스턴스 명단 표본이 X-View 견적을 실측으로 바꾸지 않게).
+  자리를 받고 속도 제어를 지나면(또는 자리 대기가 넘치면) `after_wait(source_id, slot_ms=…,
+  throttle_ms=…)`로 그 호출의 자리 대기·속도 제어 대기(ms)를 넘긴다 — 작업이 합계·최대를 기록·감사에
+  싣는다(plans/205 W3b ④ 혼잡 가시화).
+- **호출자 키**(`caller` · plans/205 W3b · D-356 ⑤): 소스 자리를 호출자별로 공정하게 나누는 키다.
+  기본 `""`(키 없음 — 공정 분배·호출자 상한 밖 · 종전 동작). 작업은 (주체, `owner`) 조합을 준다.
 - **공유 적재**: 여러 요청이 함께 기다리는 적재(인스턴스 명단)는 `SharedLoadScope`로 돈다 —
-  우선순위 `interactive` · 슬롯 대기 없음 · 호출 수와 메모는 적재를 시작한 요청에만 센다.
+  우선순위 `interactive` · 슬롯 대기 없음 · 호출 수와 메모는 적재를 시작한 요청에만 센다. 호출자
+  키는 `""`다 — 여러 요청이 함께 기다리는 적재라 시작한 호출자 몫이 아니고(그 호출자의 공정 몫을
+  깎거나 상한에 걸려 함께 기다리는 다른 요청까지 늦추지 않게), 소스당 동시 1건이라 상한 우회 영향이
+  작다.
 - **호출 계획 · 메모**: 도구가 아는 호출 수(`expect_calls`)는 진행·비용 예측에, 자격증명 검사의
   `[한계]` 메모(`note`)는 봉투 `limits`에, 자격증명 검사가 실제로 가린 칸 이름(`masked`)은 봉투
   고지 `disclosures`(`apm_masked_fields`)에 쓰인다.
@@ -48,6 +56,11 @@ class CallScope:
             raise ValueError(f"미지 우선순위: {priority}")
         self.priority = priority
 
+    @property
+    def caller(self) -> str:
+        """호출자 키(소스 자리 공정 분배 단위) — 작업 밖 기본은 `""`(키 없음)."""
+        return ""
+
     async def before_call(self, source_id: str = "") -> None:
         """HTTP 1회 직전(허용목록 검사 뒤 · 속도 제어 앞)."""
         self.count_call(source_id)
@@ -61,6 +74,11 @@ class CallScope:
     ) -> None:
         """HTTP 1회 응답 수신 뒤 — 실 호출 소요(초 · 속도 제어 대기 제외) · 경로 군(`group`) ·
         공유 적재 여부(`shared`). 작업만 기록한다."""
+        return None
+
+    def after_wait(self, source_id: str, *, slot_ms: float, throttle_ms: float) -> None:
+        """HTTP 1회의 자리 대기·속도 제어 대기(ms — 자리 대기가 넘쳐 HTTP를 못 보낸 호출은
+        `throttle_ms = 0`). 작업만 기록한다."""
         return None
 
     def expect_calls(self, count: int) -> None:
@@ -91,6 +109,9 @@ class SharedLoadScope(CallScope):
         self, source_id: str, seconds: float, *, group: str = "", shared: bool = False
     ) -> None:
         self._origin.after_call(source_id, seconds, group=group, shared=True)
+
+    def after_wait(self, source_id: str, *, slot_ms: float, throttle_ms: float) -> None:
+        self._origin.after_wait(source_id, slot_ms=slot_ms, throttle_ms=throttle_ms)
 
     def note(self, text: str) -> None:
         self._origin.note(text)

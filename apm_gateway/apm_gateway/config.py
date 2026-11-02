@@ -22,6 +22,11 @@
   웹 계정 `JENNIFER_<ID>_WEB_USER`·`_WEB_PASSWORD`(비면 그 소스는 `disabled`) · `_WEB_URL`(비면
   `_API_URL`) · `_WEB_TLS_VERIFY`(기본 true). 웹 키는 전역 값을 승계하지 않는다 — 소스마다 전용
   계정이다(사람 계정·소스 간 공유 금지). 단일 설정(소스 `default`)은 웹 키가 없어 `disabled`다.
+- 조회 가속(plans/205 · D-356 · 기본 on — D-162 예외): `APM_PARSE_WORKERS`(큰 응답 파싱·자격증명
+  검사 프로세스 수 · 기본 `min(4, CPU-1)` · 0 = 끔) · `APM_PARSE_PROCESS_MIN_BYTES`(프로세스로 보낼
+  본문 바이트 하한 · 기본 256KiB) · `APM_FANOUT_CONCURRENCY`(도구 안 독립 호출 동시 수 · 기본 2 ·
+  1 = 순차 · 다중 사용자 R-1 실측으로 4→2 —
+  D-356 부기). 되돌리기 값(`0`·`1`)은 현행과 비트 동일이다.
 - 설정 관리 API(plans/191 · D-345): `APM_GATEWAY_ADMIN_TOKEN`이 있을 때만 `/admin/config`를 연다.
   `load_dotenv`가 `os.environ`에 넣은 키는 `DOTENV_INJECTED_KEYS`에 기록한다 — 거기 없는데
   `os.environ`에 있는 키는 프로세스 환경 원천(파일을 고쳐도 반영되지 않음)으로 판정한다.
@@ -62,6 +67,7 @@ SOURCE_KEY_SUFFIXES = (
     "RATE_LIMIT_PER_SEC",
     "MAX_RESPONSE_BYTES",
     "MAX_INFLIGHT_PER_SOURCE",
+    "MAX_INFLIGHT_PER_CALLER",
     "WEB_USER",
     "WEB_PASSWORD",
     "WEB_URL",
@@ -69,6 +75,10 @@ SOURCE_KEY_SUFFIXES = (
 )
 # `load_dotenv`가 `os.environ`에 넣은 키(설정 관리 API의 프로세스 환경 원천 판정용 · plans/191)
 DOTENV_INJECTED_KEYS: set[str] = set()
+
+
+# `max_inflight_per_caller` 미설정 표지 — 그 소스의 자리 수 // 2(최소 1)로 정한다
+PER_CALLER_AUTO = -1
 
 
 @dataclass
@@ -86,12 +96,21 @@ class JenniferApiConfig:
     # 무제한이라 응답이 느려지면 `rate × 지연`만큼 제니퍼에 요청이 쌓였다(제니퍼 부하). 응답이
     # 1.6s(= 8 / 5회/s) 안이면 이 상한에 닿지 않아 정상 부하 동작은 같다.
     max_inflight_per_source: int = 8
+    # 호출자별 동시 호출 상한(plans/205 W3b · D-356 ⑤ · 기본 on) — 같은 우선순위 안에서 자리를 가장
+    # 적게 쥔 호출자 먼저 · 상한에 닿은 호출자는 다른 호출자가 기다리는 동안 건너뛴다(일 보존 —
+    # 기다리는 다른 호출자가 없으면 넘겨 받는다). 0 = 끔(종전 순서 비트 동일) · `PER_CALLER_AUTO` =
+    # `max(1, max_inflight_per_source // 2)`(생성 시 정해진다).
+    max_inflight_per_caller: int = PER_CALLER_AUTO
     source_id: str = DEFAULT_SOURCE_ID
     # 웹 세션 노드 주소 조회(plans/202 · D-355) — 소스별 전용 조회 권한 계정. 비면 `disabled`.
     web_url: str = ""
     web_user: str = ""
     web_password: str = field(default="", repr=False)
     web_tls_verify: bool = True
+
+    def __post_init__(self) -> None:
+        if self.max_inflight_per_caller < 0:
+            self.max_inflight_per_caller = max(1, self.max_inflight_per_source // 2)
 
 
 @dataclass
@@ -136,8 +155,31 @@ class JobConfig:
     chunk_rows: int = 2000
     retention_seconds: int = 86400
     max_concurrent: int = 4
+    # 같은 owner(주체 + owner)의 실행 중 작업 상한(plans/205 W3b · D-356 ⑤ · 기본 on) — 대기 작업은
+    # 실행 중 작업이 가장 적은 owner부터(동률은 먼저 온 순서) · 일 보존. 0 = 끔(종전 FIFO 비트
+    # 동일). 기본 4 = 전역 칸 수(사용자 결정 2026-11-02) — 한 owner가 칸을 다 쓸 수 있고 공정성은
+    # 순서 규칙이 맡는다
+    max_concurrent_per_owner: int = 4
     stall_seconds: int = 300
     priority_aging_seconds: float = 10.0
+
+
+def _default_parse_workers() -> int:
+    return min(4, max(1, (os.cpu_count() or 1) - 1))
+
+
+@dataclass
+class PerfConfig:
+    """조회 가속(plans/205 · D-356) — 기본 on. `parse_workers` 0 · `fanout_concurrency` 1이면 현행과
+    같다."""
+
+    # 큰 응답 파싱·자격증명 검사 프로세스 수(0 = 끔 → 스레드 경로)
+    parse_workers: int = field(default_factory=_default_parse_workers)
+    # 이 바이트 이상인 응답 본문만 프로세스로 보낸다
+    parse_process_min_bytes: int = 256 * 1024
+    # 도구 안 독립 API 호출 동시 수(1 = 순차). 기본 2 = 자리 8 // 작업 동시 4 — 사용자 10명 · 응답
+    # 5s에서 4는 자리 대기 30s 초과가 새로 났다(plans/205 W3b 측정 · D-356 부기)
+    fanout_concurrency: int = 2
 
 
 @dataclass
@@ -181,6 +223,7 @@ class GatewayConfig:
     redis: RedisConfig = field(default_factory=RedisConfig)
     policies: Policies = field(default_factory=Policies)
     node_address: NodeAddressConfig = field(default_factory=NodeAddressConfig)
+    perf: PerfConfig = field(default_factory=PerfConfig)
 
 
 def _bool(value: str | None, default: bool) -> bool:
@@ -274,6 +317,14 @@ def _load_sources(
                     base.max_inflight_per_source,
                     prefix + "MAX_INFLIGHT_PER_SOURCE",
                 ),
+                # 소스 키 → 전역 키 → 미설정이면 그 소스의 자리 수 // 2
+                max_inflight_per_caller=_non_negative_int(
+                    pick("MAX_INFLIGHT_PER_CALLER"),
+                    base.max_inflight_per_caller
+                    if (env.get("JENNIFER_MAX_INFLIGHT_PER_CALLER") or "").strip()
+                    else PER_CALLER_AUTO,
+                    prefix + "MAX_INFLIGHT_PER_CALLER",
+                ),
                 source_id=sid,
                 web_url=pick("WEB_URL") or pick("API_URL"),
                 web_user=pick("WEB_USER"),
@@ -352,6 +403,19 @@ def _positive_int(value: str | None, default: int, key: str) -> int:
             raise ValueError(f"{key}는 정수여야 한다: {value!r}") from None
     if number < 1:
         raise ValueError(f"{key}는 1 이상이어야 한다")
+    return number
+
+
+def _non_negative_int(value: str | None, default: int, key: str) -> int:
+    """0 이상 정수 키를 읽는다(0 = 끔) — 소수·문자·음수는 키 이름을 담아 거부한다."""
+    if value is None or not value.strip():
+        return default
+    try:
+        number = int(value.strip())
+    except ValueError:
+        raise ValueError(f"{key}는 정수여야 한다: {value!r}") from None
+    if number < 0:
+        raise ValueError(f"{key}는 0 이상이어야 한다")
     return number
 
 
@@ -446,6 +510,11 @@ def load_config(
         max_inflight_per_source=_positive_int(
             get("JENNIFER_MAX_INFLIGHT_PER_SOURCE"), 8, "JENNIFER_MAX_INFLIGHT_PER_SOURCE"
         ),
+        max_inflight_per_caller=_non_negative_int(
+            get("JENNIFER_MAX_INFLIGHT_PER_CALLER"),
+            PER_CALLER_AUTO,
+            "JENNIFER_MAX_INFLIGHT_PER_CALLER",
+        ),
     )
     sources = _load_sources(get("JENNIFER_SOURCES"), jennifer, env)
     bearer_token = (get("APM_GATEWAY_BEARER_TOKEN") or "").strip()
@@ -459,6 +528,9 @@ def load_config(
             )
         ),
         max_concurrent=int(_positive(get("APM_JOB_MAX_CONCURRENT"), 4, "APM_JOB_MAX_CONCURRENT")),
+        max_concurrent_per_owner=_non_negative_int(
+            get("APM_JOB_MAX_CONCURRENT_PER_OWNER"), 4, "APM_JOB_MAX_CONCURRENT_PER_OWNER"
+        ),
         stall_seconds=int(_positive(get("APM_JOB_STALL_SECONDS"), 300, "APM_JOB_STALL_SECONDS")),
         priority_aging_seconds=_positive(
             get("APM_PRIORITY_AGING_SECONDS"), 10.0, "APM_PRIORITY_AGING_SECONDS"
@@ -518,6 +590,17 @@ def load_config(
                 get("JENNIFER_NODE_ADDRESS_MIN_REFETCH_SECONDS"),
                 60,
                 "JENNIFER_NODE_ADDRESS_MIN_REFETCH_SECONDS",
+            ),
+        ),
+        perf=PerfConfig(
+            parse_workers=_non_negative_int(
+                get("APM_PARSE_WORKERS"), _default_parse_workers(), "APM_PARSE_WORKERS"
+            ),
+            parse_process_min_bytes=_positive_int(
+                get("APM_PARSE_PROCESS_MIN_BYTES"), 256 * 1024, "APM_PARSE_PROCESS_MIN_BYTES"
+            ),
+            fanout_concurrency=_positive_int(
+                get("APM_FANOUT_CONCURRENCY"), 2, "APM_FANOUT_CONCURRENCY"
             ),
         ),
     )

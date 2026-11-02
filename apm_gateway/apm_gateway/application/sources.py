@@ -16,6 +16,9 @@ D-287 ①②⑦ · SPEC-apm-gateway §2.1·§3).
 - 일부 소스·도메인을 쓸 수 없으면 봉투 `partial: true`의 근거가 된다(`partial_of` · plans/134 W0-B).
 - 소스 클라이언트는 메모리 임계를 넘는 응답을 스풀 `tmp/`에 받고, 호출 대기열을 우선순위·에이징으로
   판다(plans/134 W0-B N-14·N-18).
+- 큰 응답 파싱·자격증명 검사 프로세스 풀은 프로세스당 1개를 소스 클라이언트가 함께 쓴다(plans/205 W1
+  · D-356 ② · `APM_PARSE_WORKERS` 0이면 없음). 묶음이 소유하고 종료 지점이 `parse_pool.shutdown()`을
+  부른다.
 """
 
 from __future__ import annotations
@@ -28,6 +31,7 @@ from typing import Any
 
 from apm_gateway.adapters.jennifer.api import JenniferApi
 from apm_gateway.adapters.jennifer.client import JenniferClient
+from apm_gateway.adapters.parse_pool import ParsePool
 from apm_gateway.application.resolver import (
     BY_INSTANCE_NAME,
     HIGH,
@@ -82,9 +86,11 @@ def partial_of(
 class SourceSet:
     """설정된 소스 전부. 한 프로세스에서 공유하고 도구·폴러가 함께 쓴다."""
 
-    def __init__(self, sources: list[JenniferSource]) -> None:
+    def __init__(self, sources: list[JenniferSource], parse_pool: ParsePool | None = None) -> None:
         self._sources = list(sources)
         self._by_id = {s.source_id: s for s in self._sources}
+        # 소스 클라이언트가 함께 쓰는 파싱 프로세스 풀(종료 지점이 shutdown)
+        self.parse_pool = parse_pool
 
     def __iter__(self) -> Iterator[JenniferSource]:
         return iter(self._sources)
@@ -300,7 +306,14 @@ def build_source_set(
     transport: Any = None,
     clock: Callable[[], float] = time.monotonic,
 ) -> SourceSet:
-    """설정의 소스마다 클라이언트·조회 함수·정합기를 만든다(토큰은 그 소스 클라이언트에만)."""
+    """설정의 소스마다 클라이언트·조회 함수·정합기를 만든다(토큰은 그 소스 클라이언트에만). 파싱
+    프로세스 풀은 1개를 만들어 모든 클라이언트에 넘긴다(프로세스는 첫 큰 응답 때 뜬다)."""
+    perf = cfg.perf
+    parse_pool = (
+        ParsePool(perf.parse_workers, perf.parse_process_min_bytes)
+        if perf.parse_workers > 0
+        else None
+    )
     sources = []
     for api_cfg in cfg.sources:
         client = JenniferClient(
@@ -308,6 +321,7 @@ def build_source_set(
             transport=transport,
             spool_dir=cfg.jobs.spool_dir / TMP_DIR,
             aging_seconds=cfg.jobs.priority_aging_seconds,
+            parse_pool=parse_pool,
         )
         api = JenniferApi(client)
         resolver = InstanceResolver(
@@ -317,6 +331,7 @@ def build_source_set(
             domain_filter=api_cfg.domain_ids,
             cache_seconds=cfg.runtime.instance_cache_seconds,
             clock=clock,
+            fanout_concurrency=perf.fanout_concurrency,
         )
         sources.append(JenniferSource(api_cfg.source_id, api, resolver))
-    return SourceSet(sources)
+    return SourceSet(sources, parse_pool)

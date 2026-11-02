@@ -256,6 +256,18 @@ def _sources_text(calls: dict[str, int], order: list[str]) -> str:
     return ",".join(f"{sid}:{n}" for sid, n in items) or "-"
 
 
+def _waits_text(job: Job) -> str | None:
+    """감사 `waits=` — 작업 호출의 자리 대기·속도 제어 대기 합계/최대(ms · 정수 반올림 ·
+    `slot:1200/600,throttle:300/200`). 대기를 잰 호출이 없으면 None(칸 없음 — plans/205 W3b ④)."""
+    w = job.waits()
+    if not w["calls"]:
+        return None
+    return (
+        f"slot:{w['slot_ms_total']:.0f}/{w['slot_ms_max']:.0f},"
+        f"throttle:{w['throttle_ms_total']:.0f}/{w['throttle_ms_max']:.0f}"
+    )
+
+
 async def run_tool(
     tools: ApmTools,
     tool: str,
@@ -316,6 +328,7 @@ async def run_tool(
         principal=principal,
         job_id=_job_id_of(result),
         search=_search_text(result),
+        waits=_waits_text(owned[0]) if owned else None,
     )
     return json.dumps(result, ensure_ascii=False, default=str)
 
@@ -361,6 +374,7 @@ def audit_job_finished(job: Job) -> None:
         principal=job.principal,
         job_id=job.job_id,
         search=_search_text(job.result_meta),
+        waits=_waits_text(job),
     )
 
 

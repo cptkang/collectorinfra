@@ -13,8 +13,10 @@
 도메인 조회 불가 인벤토리는 짧게(30초) 캐시한다 — 라이선스 적용·에이전트 접속 뒤 최대 10분 동안
 "도메인 0건"을 돌려주지 않게 한다(F-3). 빈 결과를 "정상 · 0건"으로 단정하지 않는다(§0.10 #18).
 
-적재는 도메인마다 순차 호출이라 도메인이 수백 개면 수십 초~수 분이 걸린다(운영 실측 2026-09-30 —
-도메인 약 350개 · 호출 상한 5회/초 → 적재 1회 ≈ 70초, 겹친 적재 2회 ≈ 140~160초). 그래서
+적재는 도메인마다 1호출이라 도메인이 수백 개면 수십 초~수 분이 걸린다(운영 실측 2026-09-30 —
+도메인 약 350개 · 호출 상한 5회/초 → 적재 1회 ≈ 70초, 겹친 적재 2회 ≈ 140~160초). 도메인
+호출은 `fanout_concurrency`개까지 동시에 보내고(plans/205 W2 · 1 = 순차) 명단은 도메인 순서로
+쌓는다. 그래서
 - **적재는 한 번에 하나**다 — 진행 중이면 새 요청은 그 적재를 함께 기다린다(중복 적재가 호출 상한을
   나눠 쓰며 서로를 두 배로 늦췄다).
 - 기다리던 요청이 취소돼도 적재는 끝까지 간다 — 결과가 캐시에 남아야 다음 요청이 빈 캐시를 만나지 않는다.
@@ -37,6 +39,7 @@ from dataclasses import dataclass, field
 from typing import Any
 
 from apm_gateway.adapters.jennifer.api import JenniferApi
+from apm_gateway.application.fanout import gather_ordered
 from apm_gateway.domain.call_context import SharedLoadScope, current_scope, set_scope
 from apm_gateway.domain.errors import SOURCE_UNAVAILABLE, ApmError
 from apm_gateway.domain.sources import DEFAULT_SOURCE_ID
@@ -150,8 +153,10 @@ class InstanceResolver:
         domain_filter: tuple[int, ...] = (),
         cache_seconds: int = 600,
         clock: Callable[[], float] = time.monotonic,
+        fanout_concurrency: int = 1,
     ) -> None:
         self._api = api
+        self._fanout = fanout_concurrency  # 적재 때 도메인 호출 동시 수(1 = 순차)
         self.source_id = source_id
         self._overrides = [
             ov
@@ -250,11 +255,16 @@ class InstanceResolver:
         if self._domain_filter:
             domains = [d for d in domains if d["domain_id"] in self._domain_filter]
         inv = Inventory(domains=domains, fetched_at=started)
-        for d in domains:
-            try:
-                found = await self._api.instances(d["domain_id"], d["domain_name"])
-            except ApmError as e:
-                inv.unavailable[d["domain_id"]] = f"{e.code}: {e.reason}"
+        fetched = await gather_ordered(
+            domains,
+            lambda d: self._api.instances(d["domain_id"], d["domain_name"]),
+            limit=self._fanout,
+            # 종전 루프도 계약 위반을 조회 불가 도메인으로 적고 계속 돌았다
+            stop_on_contract_violation=False,
+        )
+        for d, found in fetched:
+            if isinstance(found, ApmError):
+                inv.unavailable[d["domain_id"]] = f"{found.code}: {found.reason}"
                 continue
             inv.instances.extend({**inst, "source_id": self.source_id} for inst in found)
         logger.info(

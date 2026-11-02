@@ -22,6 +22,7 @@ from apm_gateway.application.business_map import (
     business_key,
     cache_fresh,
 )
+from apm_gateway.application.fanout import gather_ordered
 from apm_gateway.application.masking import mask_text
 from apm_gateway.application.name_search import (
     domain_order,
@@ -64,6 +65,16 @@ _SEARCH_CONFIDENCE = {
 # plans/130 N-2 — 업무명 해석 근거(우선순위 순) · 업무 정의 역추적 창(분)
 BUSINESS_KINDS = ("business_map", "domain", "business", "instance_text")
 BUSINESS_TRACE_MINUTES = 5
+
+
+def _merge_limits(limits: Limits, sub: Limits) -> None:
+    """항목별로 모은 `[한계]`(`sub`)를 입력 순서 자리에서 합친다(plans/205 W2 — 순차 실행과 같은
+    문구·순서·`partial`·미해결 고지)."""
+    limits.extend(sub)
+    if sub.partial:
+        limits.partial = True
+    for text in sub.unresolved:
+        limits.unresolve(text)
 
 
 class InstanceTools:
@@ -494,9 +505,22 @@ class InstanceTools:
             )
         )
         matched: list[tuple[int, JenniferSource, Inventory, int, dict[str, str]]] = []
-        for rank, src, inv, did in targets:
+        fanout = self.core.cfg.perf.fanout_concurrency
+
+        async def read_defs(
+            target: tuple[int, JenniferSource, Inventory, int],
+        ) -> tuple[list[dict[str, Any]] | None, Limits]:
+            sub = Limits()
+            return await self.core.business_defs_of(target[1], target[3], now, sub), sub
+
+        # 호출만 동시(plans/205 W2) — 도메인별 `[한계]`는 입력 순서로 합친다
+        for (rank, src, inv, did), got in await gather_ordered(targets, read_defs, limit=fanout):
+            if isinstance(got, ApmError):  # 계약 위반 — 순차와 같은 자리에서 다시 던진다
+                raise got
+            defs, sub = got
+            _merge_limits(limits, sub)
             names: dict[str, str] = {}
-            for b in await self.core.business_defs_of(src, did, now, limits) or []:
+            for b in defs or []:
                 if b["business_id"] is not None and (
                     q in b["business_name"].casefold()
                     or q in mask_text(b["business_description"], limit=None).casefold()
@@ -514,8 +538,22 @@ class InstanceTools:
             )
         )
         out: list[tuple[int, JenniferSource, Inventory, dict[str, Any], list[str]]] = []
-        for rank, src, inv, did, names in matched:
-            seen = await self._business_seen_of(src, did, now, limits)
+
+        async def read_seen(
+            hit: tuple[int, JenniferSource, Inventory, int, dict[str, str]],
+        ) -> tuple[dict[str, set[int]], Limits]:
+            """도메인 1개의 역추적 — 안쪽 1분 조각은 차례로 받는다(실패하면 남은 조각 생략)."""
+            sub = Limits()
+            return await self._business_seen_of(hit[1], hit[3], now, sub), sub
+
+        # 매칭 도메인끼리만 동시(plans/205 W2) — `[한계]`·후보는 입력 순서로 쌓는다
+        for (rank, src, inv, did, names), seen_got in await gather_ordered(
+            matched, read_seen, limit=fanout
+        ):
+            if isinstance(seen_got, ApmError):  # 계약 위반 — 순차와 같은 자리에서 다시 던진다
+                raise seen_got
+            seen, sub = seen_got
+            _merge_limits(limits, sub)
             by_inst: dict[int, list[str]] = {}
             for bid, bname in names.items():
                 for iid in seen.get(bid, ()):

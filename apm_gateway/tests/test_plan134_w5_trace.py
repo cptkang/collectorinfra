@@ -115,7 +115,8 @@ async def test_trace_without_hostname_asks_every_domain_once_and_orders_by_start
     base, tools = trace
     out = await tools.apm_transaction_trace(GUID)
     calls = [h["query"] for h in _hits(base) if h["template"] == "/api/transaction/guid"]
-    assert [c["domain_id"] for c in calls] == ["1000", "2000", "3000"]
+    # 도메인마다 1번 — 도메인 호출은 동시라(plans/205 W2) 도착 순서는 보지 않는다(출력 순서는 아래)
+    assert sorted(c["domain_id"] for c in calls) == ["1000", "2000", "3000"]
     assert all(
         c == {
             "domain_id": c["domain_id"],

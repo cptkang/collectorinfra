@@ -479,22 +479,22 @@ async def test_plan_corrects_estimate_as_items_report():
 
     outer = Outer()
     plan = _Plan(outer, 4)
-    scope = _ItemScope(plan)
-    plan.begin()
+    scope = _ItemScope(plan, 0)
+    plan.begin(0)
     scope.expect_calls(3)
     assert outer.expected == 12  # 3 × 4
     scope.expect_calls(1)
     assert outer.expected == 16  # 첫 항목 계획이 4로 늘었다 → 4 × 4
-    plan.end()
-    for count in (2, 0):  # 둘째 2(추정 4보다 적다) · 셋째 0(정합 실패 등)
-        plan.begin()
+    plan.end(0)
+    for index, count in ((1, 2), (2, 0)):  # 둘째 2(추정 4보다 적다) · 셋째 0(정합 실패 등)
+        plan.begin(index)
         if count:
-            _ItemScope(plan).expect_calls(count)
-        plan.end()
+            _ItemScope(plan, index).expect_calls(count)
+        plan.end(index)
     assert outer.expected == 4 + 2 + 0 + 4
-    plan.begin()
-    _ItemScope(plan).expect_calls(5)
-    plan.end()
+    plan.begin(3)
+    _ItemScope(plan, 3).expect_calls(5)
+    plan.end(3)
     assert outer.expected == 4 + 2 + 0 + 5  # 끝 = 신고 합계
     assert sum(outer.reports) == outer.expected
 
@@ -506,7 +506,7 @@ async def test_item_scope_keeps_job_priority_and_counts_calls(tmp_path):
     from apm_gateway.domain.call_context import PRIORITY_BACKGROUND, CallScope
 
     outer = CallScope()
-    scope = _ItemScope(_Plan(outer, 1))
+    scope = _ItemScope(_Plan(outer, 1), 0)
     assert scope.priority == outer.priority
     outer.priority = PRIORITY_BACKGROUND
     assert scope.priority == PRIORITY_BACKGROUND

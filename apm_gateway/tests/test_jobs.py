@@ -36,6 +36,7 @@ RECORD_KEYS = {
     "progress",
     "estimate",
     "api_calls",
+    "waits",  # 호출 대기 합계·최대(plans/205 W3b ④)
     "result_meta",
     "artifact",
     "limits",

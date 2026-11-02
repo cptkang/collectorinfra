@@ -1,10 +1,10 @@
 # 205. APM 게이트웨이 조회 가속 — 도구 안 독립 호출 동시 실행 · 큰 응답 파싱·자격증명 검사 멀티코어
 
 > **작성일**: 2026-11-02 · v1
-> **상태**: **TODO** — 코드 0건
+> **상태**: **구현 완료(2026-11-02)** — W1 파싱 프로세스 풀 · W0 분류표 §5 · W2 도구 안 동시(a 9곳·b 18곳 · 보류 0 · 순차·동시 모두 계약 위반 뒤 새 호출 멈춤 · `jobs.wait_slot` 작업별 잠금) · W3 배치 항목 동시(중첩 gather는 순차 — 작업당 미결 ≤ limit) · W3b 다중 사용자 공정 동시성(호출자별 자리 상한 4 · owner별 작업 상한 4 · 일 보존 · 대기 가시화) · W4 측정 스크립트 · **R-1로 `APM_FANOUT_CONCURRENCY` 기본 4 → 2**(§7 · D-356 부기) · 잔여: 폐쇄망 측정(§6)
 > **계획 시작 SHA**: `16ea44fa`
 > **관련 결정**: D-356(이 계획 · 기본 on — D-162 예외) · D-347 ③(소스별 in-flight 상한 8 — 유지) · D-296 ④(메모리 임계·스풀 — 유지) · D-344 · D-274 ③(양방향 import 0) · D-303(회귀)
-> **회귀 대상 파일**: W1 `apm_gateway/apm_gateway/adapters/parse_pool.py`(신규) · `adapters/jennifer/client.py` · `config.py` · `interface/config_admin_adapter.py` · 조립부(`__main__.py`·`interface/server.py` 중 클라이언트 생성·종료 지점) · `apm_gateway/.env.example` / W2 `application/fanout.py`(신규) · `application/resolver.py` · `apm_core.py` · `manage_tools.py` · `stats_tools.py` · `scope_tools.py` · `transaction_tools.py` · `compare_tools.py` · `health_tools.py` · `fleet_tools.py` · `instance_tools.py`(W0 분류 결과로 확정) / W3 `application/batch.py`
+> **회귀 대상 파일**: W1 `apm_gateway/apm_gateway/adapters/parse_pool.py`(신규) · `adapters/jennifer/client.py` · `config.py` · `interface/config_admin_adapter.py` · `application/sources.py` · `__main__.py` · `apm_gateway/.env.example` · `tests/test_plan205_w1_parse_pool.py` / W2 `application/fanout.py`(신규) · `application/resolver.py` · `apm_core.py` · `manage_tools.py` · `stats_tools.py` · `scope_tools.py` · `transaction_tools.py` · `compare_tools.py` · `health_tools.py` · `fleet_tools.py` · `instance_tools.py` · `jobs.py`(wait_slot) · `tests/test_plan205_w2a_fanout.py` · `tests/test_plan205_w2b_fanout.py` · `tests/test_plan134_w7_allowlist.py` · `tests/test_plan134_w5_trace.py` / W3 `application/batch.py` · `application/fanout.py`(중첩 순차) · `tests/test_plan205_w3_batch.py` · `tests/test_plan134_w3_targets.py` / W3b `adapters/throttle.py` · `domain/call_context.py` · `adapters/jennifer/client.py` · `application/jobs.py` · `application/fanout.py` · `application/batch.py` · `application/health_tools.py` · `interface/server.py` · `interface/audit.py` · `config.py` · `interface/config_admin_adapter.py` · `.env.example` · `tests/test_plan205_w3b_fairness.py` · `tests/test_jobs.py` / W4 `apm_gateway/scripts/bench_parallel.py`(신규) · `tests/test_plan205_w4_bench.py` / 검증 `tests/test_plan205_verify.py` · 교정 `application/fanout.py` · `adapters/parse_pool.py` · `tests/test_plan205_w2a_fanout.py` — 계 36개(`git diff --name-only 16ea44fa -- apm_gateway` + 신규)
 
 ---
 
@@ -53,7 +53,7 @@
 - **W0(착수 전 분류)**: §1의 루프 전수(`grep` — `for` 본문 안의 `await …api…`/`resolver.inventory()`)를 ① 독립(병렬 대상) ② 종속(앞 결과로 다음 호출 결정 — `apm_core.fetch_errors` 표기 후보 순차 · 페이지 넘김) ③ 캐시 1회성(`fleet_tools.py:206` 소스별 캐시 명단 — 효과 미미)으로 나눠 표로 남긴다(이 계획서 §5). ②·③은 바꾸지 않는다. 폴러(`poller.py:119`)는 이미 `gather`.
 - 신규 `application/fanout.py`: `async def gather_ordered(items, call, *, limit) -> list[tuple[item, result | ApmError]]` — `asyncio.Semaphore(limit)`로 묶고 **입력 순서**로 돌려준다. `ApmError`만 결과로 잡고, 그 밖 예외는 나머지를 취소한 뒤 다시 올린다. `limit == 1`이면 태스크 없이 차례로 await(현행과 같은 호출 순서 — 녹화 응답 순서에 기대는 테스트 보호). 호출 맥락(ContextVar `current_scope`)은 태스크에 복사되어 같은 맥락 객체를 공유함을 테스트로 고정한다.
 - 공용 헬퍼 우선: `manage_tools._run` 하나로 다수 도구가 바뀐다. 그 밖은 W0 표의 ① 대상을 하나씩 — 호출부를 `gather_ordered`로 바꾸고, 결과 처리 루프는 종전 코드를 입력 순서 그대로 둔다.
-- 설정 `APM_FANOUT_CONCURRENCY`(기본 4 · 1 = 현행 순차) — 도구 호출 1건 안의 동시 상한.
+- 설정 `APM_FANOUT_CONCURRENCY`(기본 4 · 1 = 현행 순차) — 도구 호출 1건 안의 동시 상한. **구현 결과 기본 2**(R-1 다중 사용자 측정 — §7 · D-356 부기).
 - **위험 R-1 — 자리 대기 시간 초과**: 지금은 작업 4개 × 순차 1 = 소스당 동시 4 < 자리 8이라 자리 대기가 없다. 동시 4면 작업 4 × 4 = 16 > 8 → 제니퍼가 느릴 때 자리 대기가 API timeout(30s)을 넘어 **종전엔 없던 `SOURCE_UNAVAILABLE`**이 날 수 있다. 검증: 가짜 전송(지연 3s · 5s) × 작업 4 동시 × 도구당 독립 호출 12건에서 자리 대기 초과 0건을 단언. 실패하면 기본값을 `max(1, max_inflight_per_source // APM_JOB_MAX_CONCURRENT)`(= 2)로 낮추고 근거를 D-356 부기에 남긴다. 자리 상한(8) 자체는 올리지 않는다(D-347 ③).
 - **테스트**: 각 바꾼 경로마다 ① 동시 4와 순차 1의 봉투 동일(행·`limits` 순서·`partial`·오류 봉투) — 일부 단위 실패 · 전부 실패 포함 ② 지연 1s 가짜 전송으로 소요 단축 단언(느슨) ③ 작업 감사 `api_calls`·`calls_by_source`·예상 호출 수 동일.
 
@@ -70,7 +70,7 @@
 **호출자 식별**: 호출자 키 = (주체 `principal`, `owner`). 본체는 사용자마다 `owner=user:<sub>`를 싣는다(`src/orchestration/apm_jobs.py` `gateway_owner`). owner가 없는 호출(sre_agent 조사 등)은 주체 단위 1개 키다. 데이터 도구는 모두 작업(`JobManager.execute`)으로 돌므로 작업 맥락에서 키를 얻는다 — `CallScope`에 `caller` 속성(기본 `""`)을 더하고 `Job`·`_ItemScope`가 바깥 값을 그대로 돌려준다.
 
 - ① **공정 자리 분배**(`adapters/throttle.py` `PrioritySlots`): 순위·에이징 규칙은 그대로 두고, **같은 유효 순위 안에서는 지금 자리를 가장 적게 쥔 호출자를 먼저** 준다(동률이면 종전 순서). 호출자별 동시 상한 `JENNIFER_MAX_INFLIGHT_PER_CALLER`(기본 `max(1, 자리 // 2)` = 4) — 한 사용자의 동시 호출이 자리를 다 채우지 못한다. 상한에 닿은 호출자의 대기자는 다른 호출자가 기다리는 동안 건너뛴다(**자리가 남는데 아무도 못 받는 상태 금지** — 기다리는 다른 호출자가 없으면 상한을 넘겨 받는다 · 일 보존). poller는 상한 제외. `caller == ""`(키 없음)은 종전 동작.
-- ② **공정 작업 슬롯**(`jobs.py` `_Slots`): 같은 owner의 실행 중 작업 상한 `APM_JOB_MAX_CONCURRENT_PER_OWNER`(기본 2) · 대기 작업은 실행 중 작업이 가장 적은 owner부터(동률은 FIFO) · 일 보존 규칙 같음. 전역 `APM_JOB_MAX_CONCURRENT`(4)는 유지.
+- ② **공정 작업 슬롯**(`jobs.py` `_Slots`): 같은 owner의 실행 중 작업 상한 `APM_JOB_MAX_CONCURRENT_PER_OWNER`(기본 4 = 전역 칸 수 — 사용자 결정 2026-11-02 · 한 owner가 전역 칸을 다 쓸 수 있고, 공정성은 「실행 중 작업이 가장 적은 owner부터」 순서 규칙이 맡는다) · 대기 작업은 실행 중 작업이 가장 적은 owner부터(동률은 FIFO) · 일 보존 규칙 같음. 전역 `APM_JOB_MAX_CONCURRENT`(4)는 유지.
 - ③ **속도 제어**: 자리가 먼저 공정하게 거르므로(속도 제어 앞 대기자는 최대 자리 수) 속도 제어 순서 규칙은 바꾸지 않는다 — 측정에서 불공정이 보이면 같은 규칙을 넣는다.
 - ④ **혼잡 가시화**: 호출마다 `slot_wait_ms`·`throttle_wait_ms`를 재어 작업 기록·감사에 싣고(합계·최대), 상태 표면(`apm_health` 또는 설정 관리 현황 — 기존 노출 위치 실측 후 한 곳)에 소스별 `in_flight`·`waiting`·호출자 수를 낸다. 자리 대기 초과 오류 사유에 「동시 사용 혼잡(대기 n건 · 호출자 m)」을 적어 제니퍼 장애와 구분한다.
 - ⑤ **용량 산정 규칙(문서 · §6)**: 자리 ≈ 초당 상한 × p95 응답 시간. 동시 사용자 U명이 각 N건을 부르면 응답은 대략 U·N/초당 상한 초 — 초당 상한은 소스 전체라 자리를 늘려도 넘지 않는다. 자리·초당 상한의 코드 기본값은 이 계획에서 바꾸지 않는다(D-347 ③ · 운영 `.env`로 조정).
@@ -134,12 +134,39 @@
 
 - **공통 순서 위험**: 클라이언트 `_absorb`가 HTTP 1회마다 `current_scope().note()/masked()`를 부른다 — 동시 실행이면 자격증명 메모가 응답 도착 순으로 쌓인다. `gather_ordered`가 항목별로 메모·가린 칸을 모아 **입력 순서로 다시 신고**한다(호출 훅·우선순위·호출 수는 바깥 맥락 그대로).
 - **오류 경로 호출 수 차이(허용 · 봉투 불변)**: #26~#28의 `CONTRACT_VIOLATION` 즉시 raise와 청크 `break`(#3·#21 — 바깥만 동시라 안쪽 생략은 유지)는 순차에서 뒤 단위를 부르지 않는다. 동시 실행에서는 이미 나간 호출이 있어 감사 `api_calls`가 순차보다 클 수 있다(결과 처리·raise 지점은 입력 순서라 봉투는 같다).
+  - 구현(검증 교정 2026-11-02): `gather_ordered`는 순차·동시 경로 모두 계약 위반을 받으면 **새 호출을 멈춘다** — 동시 경로는 입력 순서상 가장 앞 계약 위반 자리를 공유해, 자리를 얻은 항목이 그보다 뒤면 부르지 않고(앞 항목은 끝까지 부른다) 결과를 첫 계약 위반 항목까지 잘라 돌려준다. 이미 떠난 호출은 취소하지 않는다. 실측(fanout 2 · 첫 단위 계약 위반 · 감사 호출 수 순차/교정 전/교정 후): change_impact 21/99/26 · app_health xview 21/98/32 · instance-business-seen 21/63/27 · runtime 21/68/22 — 남은 차이가 이 허용 차이다. resolver `_load`만 `stop_on_contract_violation=False`.
+- **대기 가시화(허용 차이 · D-356 부기)**: 감사 줄 `waits=slot:…,throttle:…` 칸 · 작업 기록 `waits` 키 · 자리 대기 초과 사유의 혼잡 꼬리(「동시 사용 혼잡(대기 n건 · 호출자 m)」)는 되돌리기 값과 무관하게 늘 켜진 관측 칸이다 — 되돌리기 값의 「비트 동일」은 결과 봉투·호출 순서에 대한 것이다(`tests/test_plan205_verify.py::test_zero_wait_audit_line_documents_current_shape`).
 - **루프 아닌 순차 독립 호출**(transaction_tools.py:462/467/484 profile 3호출 · `apm_app_health`의 realtime→xview→hourly · `_impact_side` xview·errors)은 이 계획 범위 밖 — 후속 후보.
 
 ## 6. 폐쇄망 측정 (배포 뒤)
 
 - `APM_GATEWAY_LOG_LEVEL=DEBUG`에서 같은 질의를 `APM_FANOUT_CONCURRENCY=1 · APM_PARSE_WORKERS=0`(현행)과 기본값으로 각각 실행 — 도구 `elapsed_ms`(감사) · `apm http … elapsed_ms` 합 · 스풀 로그 건수 · RSS(워커 수 × 증가분)를 비교한다.
+- 감사 줄 `waits=slot:<합>/<최대>,throttle:<합>/<최대>`(ms)와 `apm_health` 소스 행의 `in_flight`·`waiting`·`callers`로 자리·속도 제어 대기를 본다. 자리 대기 초과 사유에 「동시 사용 혼잡(대기 n건 · 호출자 m)」이 붙으면 제니퍼 장애가 아니라 게이트웨이 혼잡이다.
+- **용량 산정 규칙**: 자리(`JENNIFER_MAX_INFLIGHT_PER_SOURCE` 8) ≈ 초당 상한(5) × p95 응답 시간(s). 동시 사용자 U명이 각 N건을 부르면 응답은 대략 U·N/초당 상한 초다 — 초당 상한은 소스 전체라 자리나 fanout을 늘려도 넘지 않는다. fanout 기본값 = 자리 // `APM_JOB_MAX_CONCURRENT`(8 // 4 = 2)이면 작업 칸이 다 차도 미결 호출이 자리를 넘지 않는다. 자리를 올리면(운영 `.env`) fanout도 같은 식으로 올릴 수 있다. 코드 기본값은 바꾸지 않는다(D-347 ③).
+- 개발용 미리보기: `cd apm_gateway && ../.venv/bin/python scripts/bench_parallel.py --scale 0.1 --latency 1 3 --size-kib 512 --calls 12`(사용자 1명) · `--users 10 --latency 3 --fanout 1 2 4 --fair on off`(다중 사용자). 가짜 전송이라 실 제니퍼에 접속하지 않으며, 표는 방향만 본다.
 
 ## 7. 결과
 
-(완료 시 기록)
+2026-11-02 · 커밋 전 작업 트리 · 계획 시작 SHA `16ea44fa`.
+
+- **기본값(최종)**: `APM_FANOUT_CONCURRENCY` **2**(계획 4 → R-1로 낮춤) · `APM_PARSE_WORKERS` `min(4, CPU-1)` · `APM_PARSE_PROCESS_MIN_BYTES` 262144 · `JENNIFER_MAX_INFLIGHT_PER_CALLER` 자리//2 = 4 · `APM_JOB_MAX_CONCURRENT_PER_OWNER` 4(사용자 결정). 되돌리기 1·0·0·0.
+- **봉투 동일**: `16ea44fa` 기준선과 limit=1 대조 84건 차이 0 · 검증 차등 75건 봉투 동일 · 계약 위반 29건 동일 · W3 신고 열 바이트 동일.
+- **W1 풀**: 워커 첫 기동 76–80ms · 6MiB 응답 처리 중 루프 지연 스레드 경로 180–343ms → 풀 경로 26–48ms. 워커 import는 `parse_pool`·`json_stream`·`credentials`뿐(spawn `__main__` 가드 실측).
+- **R-1(단일 사용자 · 작업 4 × 호출 12)**: fanout 4에서 자리 대기 초과 0 · 무축척 최대 자리 대기 6.0s. 배치 조합은 교정 전 하위 호출 4개 이상에서 초과 1 → 중첩 gather 순차로 교정 후 전 조합 0(최대 약 5s).
+- **R-1(다중 사용자 · 10명 × 작업 2 · 자리 8 · 초당 5 · timeout 30s)** — 기본값을 2로 낮춘 근거:
+
+| 지연 | fanout | 최대 자리 대기 | 자리 대기 초과 | 소요 |
+|---|---:|---:|---:|---:|
+| 3s | 4 | 27.6s | 0 | 46.8s |
+| 3s | 2 | 17.2s | 0 | 63.3s |
+| 3s | 1 | 12.3s | 0 | 76.1s |
+| 5s | 4 | 30s | **12** | 71.7s |
+| 5s | 2 | 25.9s | 0 | 105.8s |
+| 5s | 1 | 14.6s | 0 | 125.5s |
+
+  fanout 4는 지연 5s에서 종전에 없던 `SOURCE_UNAVAILABLE` 12건 · 3s에서도 대기 27.6s로 timeout(30s) 직전이라 계획 규칙(`자리 // APM_JOB_MAX_CONCURRENT`)대로 2.
+- **W3b 공정성**: 공정 on은 사용자별 첫 호출 시작 최대를 3s·f4 16.0s → 6.1s · 5s·f4 30.1s → 10.4s로 줄였다. 무축척(3s·f4·on) 27.4s · 초과 0. 순위(poller > interactive > background)·에이징 불변 · 호출자 하나면 상한을 넘겨 받는다(일 보존) · 늦게 온 owner가 앞 owner의 5번째 작업보다 먼저 칸을 받는다.
+- **W4 측정(`bench_parallel.py` · 축척 0.1 · 512KiB · 12호출 · 환산)**: 사용자 1명 지연 3s — fanout 1/2/4 = 43.5 / 24.0(풀 22.1) / 14.5(풀 11.3)s · 풀이 루프 지연을 16–67ms → 1–11ms로. 사용자 10명 지연 3s · 풀 4 — fanout 1/2/4 소요 모두 약 47s(초당 5 상한이 지배) · 최대 자리 대기 3.2 / 7.7 / 15.5s · 초과 0 · 풀을 끄면 67–70s · 루프 지연 112–158ms.
+- **검증**: Critical 0 · Major 0 · Minor 3 → 2건 교정(동시 경로 계약 위반 뒤 새 호출 멈춤 · 풀 폐기가 대기 호출을 취소하지 않음) · 1건 허용 차이로 기록(대기 가시화 — §5). `tests/test_plan205_verify.py`.
+- **게이트**: `python scripts/regress.py --base 16ea44fa --files <36개>` — apm_gateway 패키지 통과 2,036 · 실패 0 · 건너뜀 14 · 저장소 가드 통과 179 · 실패 1(`tests/test_manual/test_help_index.py::test_index_matches_sources` [원래 실패]) · arch·overfit·config_fallback 통과 · ruff 이번 diff 줄 0 · 범위: 모듈 단위 — 전체 미실행. mypy는 regress가 apm_gateway를 대상으로 잡지 않아 수동 실행 — 기준선부터 있던 2건뿐.
+- **잔여·후속**: ① 폐쇄망 측정(§6 · RSS 포함) ② 승격된 작업 경로는 측정하지 않음 ③ 루프 아닌 순차 독립 호출(profile 3호출 · `apm_app_health` realtime→xview→hourly · `_impact_side`)은 범위 밖 ④ 동시 경로 계약 위반에서 이미 떠난 호출만큼 감사 `api_calls`가 순차보다 크다(§5 허용 차이).

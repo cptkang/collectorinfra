@@ -39,6 +39,7 @@ GROUP_TITLES = {
     "poller": "이벤트 폴러",
     "redis": "Redis",
     "node_address": "노드 주소 조회",
+    "perf": "조회 가속",
 }
 _Getter = Callable[[GatewayConfig], Any]
 
@@ -115,6 +116,14 @@ _TABLE: tuple[tuple[str, str, str, Any, _Getter, str], ...] = (
         "8",
         lambda c: c.jennifer.max_inflight_per_source,
         "소스별 동시 호출 상한(대기는 API 타임아웃까지)",
+    ),
+    (
+        "JENNIFER_MAX_INFLIGHT_PER_CALLER",
+        "jennifer",
+        "int",
+        None,
+        lambda c: c.jennifer.max_inflight_per_caller,
+        "호출자별 동시 호출 상한(비면 동시 호출 상한 // 2 · 0 = 공정 분배 끔)",
     ),
     (
         "APM_GATEWAY_HOST",
@@ -216,6 +225,14 @@ _TABLE: tuple[tuple[str, str, str, Any, _Getter, str], ...] = (
         "백그라운드 작업 동시 실행 수",
     ),
     (
+        "APM_JOB_MAX_CONCURRENT_PER_OWNER",
+        "jobs",
+        "int",
+        "4",
+        lambda c: c.jobs.max_concurrent_per_owner,
+        "같은 사용자(owner)의 백그라운드 작업 동시 실행 수(0 = 공정 분배 끔)",
+    ),
+    (
         "APM_JOB_STALL_SECONDS",
         "jobs",
         "int",
@@ -307,6 +324,31 @@ _TABLE: tuple[tuple[str, str, str, Any, _Getter, str], ...] = (
         lambda c: c.node_address.min_refetch_seconds,
         "같은 도메인 재조회 최소 간격(초 · 알람 경로 캐시 신선도 상한)",
     ),
+    # 조회 가속(plans/205 · D-356) — 파싱 프로세스 수 기본값은 CPU 수에 따라 정해진다
+    (
+        "APM_PARSE_WORKERS",
+        "perf",
+        "int",
+        None,
+        lambda c: c.perf.parse_workers,
+        "큰 응답 파싱·자격증명 검사 프로세스 수(비면 min(4, CPU-1) · 0 = 끔)",
+    ),
+    (
+        "APM_PARSE_PROCESS_MIN_BYTES",
+        "perf",
+        "int",
+        "262144",
+        lambda c: c.perf.parse_process_min_bytes,
+        "프로세스로 보낼 응답 본문 바이트 하한",
+    ),
+    (
+        "APM_FANOUT_CONCURRENCY",
+        "perf",
+        "int",
+        "2",
+        lambda c: c.perf.fanout_concurrency,
+        "도구 안 독립 API 호출 동시 수(1 = 순차)",
+    ),
 )
 # 소스별 접두 키 접미 → (type, 기동 값 읽기, 설명) — `config.SOURCE_KEY_SUFFIXES`와 같은 집합
 _SOURCE_SUFFIX_META: dict[str, tuple[str, Callable[[Any], Any], str]] = {
@@ -320,6 +362,11 @@ _SOURCE_SUFFIX_META: dict[str, tuple[str, Callable[[Any], Any], str]] = {
         "int",
         lambda s: s.max_inflight_per_source,
         "동시 호출 상한(비면 전역 값)",
+    ),
+    "MAX_INFLIGHT_PER_CALLER": (
+        "int",
+        lambda s: s.max_inflight_per_caller,
+        "호출자별 동시 호출 상한(비면 전역 값 · 전역도 비면 동시 호출 상한 // 2)",
     ),
     # 웹 세션 노드 주소 조회(plans/202) — 전역 값을 승계하지 않는다(소스별 전용 계정)
     "WEB_USER": ("string", lambda s: s.web_user, "노드 주소 조회 전용 웹 계정 ID(비면 disabled)"),

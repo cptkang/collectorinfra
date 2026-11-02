@@ -7,6 +7,7 @@ from collections import Counter
 from typing import Any
 
 from apm_gateway.application.apm_core import ApmCore
+from apm_gateway.application.fanout import gather_ordered
 from apm_gateway.application.masking import mask_identifier, mask_ip, mask_sql, mask_text, mask_url
 from apm_gateway.application.tool_common import (
     EVENTS_DEFAULT_MINUTES,
@@ -144,19 +145,18 @@ class TransactionTools:
         ok = False
         groups = group_by_domain(res)
         expect_calls(len(groups))
-        for (sid, domain_id), ids in groups.items():
-            try:
-                services += [
-                    s
-                    for s in tag_records(
-                        await self.core.api(sid).active_services(domain_id, ids), sid, domain_id
-                    )
-                    if inst_key(s) in wanted
-                ]
-                ok = True
-            except ApmError as e:
+        fetched = await gather_ordered(
+            groups.items(),
+            lambda g: self.core.api(g[0][0]).active_services(g[0][1], g[1]),
+            limit=self.core.cfg.perf.fanout_concurrency,
+        )
+        for ((sid, domain_id), _ids), got in fetched:
+            if isinstance(got, ApmError):
                 where = self.core.sources.where(sid, domain_id)
-                limits.fail(limit_notice(e, "액티브 서비스", f"({where})"))
+                limits.fail(limit_notice(got, "액티브 서비스", f"({where})"))
+                continue
+            services += [s for s in tag_records(got, sid, domain_id) if inst_key(s) in wanted]
+            ok = True
         if not ok:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
         ranked = sorted(services, key=lambda s: s.get("elapsed_ms") or 0, reverse=True)
@@ -268,10 +268,14 @@ class TransactionTools:
         events_ok = errors_ok = False
         groups = group_by_domain(res)
         expect_calls(len(groups) * 2)
-        for (sid, domain_id), ids in groups.items():
+
+        async def fetch(
+            unit: tuple[tuple[tuple[str, int], list[int]], str],
+        ) -> tuple[list[dict[str, Any]], Limits]:
+            """묶음 하나의 이벤트 또는 오류 기록 — (레코드, 표기 후보 `[한계]`(오류 기록만))."""
+            ((sid, domain_id), ids), record = unit
             api = self.core.api(sid)
-            where = self.core.sources.where(sid, domain_id)
-            try:
+            if record == "event":
                 batch = await api.events(
                     domain_id,
                     ids,
@@ -279,18 +283,36 @@ class TransactionTools:
                     window.end_ms,
                     level=lvl if mode == "exact" else None,
                 )
-                events += [e for e in tag_records(batch, sid, domain_id) if inst_key(e) in wanted]
+                return batch, Limits()
+            notes = Limits()  # 표기 후보 순차 조회의 고지 — 묶음 순서로 옮긴다
+            where = self.core.sources.where(sid, domain_id)
+            batch = await self.core.fetch_errors(api, domain_id, ids, window, etype, where, notes)
+            return batch, notes
+
+        # 묶음마다 이벤트·오류 기록 2호출을 동시에(plans/205 W2) — 결과는 묶음 순서로 처리한다
+        fetched = iter(
+            await gather_ordered(
+                [(group, record) for group in groups.items() for record in ("event", "error")],
+                fetch,
+                limit=self.core.cfg.perf.fanout_concurrency,
+            )
+        )
+        for sid, domain_id in groups:
+            where = self.core.sources.where(sid, domain_id)
+            _, got = next(fetched)
+            if isinstance(got, ApmError):
+                limits.fail(limit_notice(got, "이벤트", f"({where})"))
+            else:
+                events += [e for e in tag_records(got[0], sid, domain_id) if inst_key(e) in wanted]
                 events_ok = True
-            except ApmError as e:
-                limits.fail(limit_notice(e, "이벤트", f"({where})"))
-            try:
-                batch = await self.core.fetch_errors(
-                    api, domain_id, ids, window, etype, where, limits
-                )
+            _, got = next(fetched)
+            if isinstance(got, ApmError):
+                limits.fail(limit_notice(got, "오류 기록", f"({where})"))
+            else:
+                batch, notes = got
+                limits.extend(notes)
                 errors += [e for e in tag_records(batch, sid, domain_id) if inst_key(e) in wanted]
                 errors_ok = True
-            except ApmError as e:
-                limits.fail(limit_notice(e, "오류 기록", f"({where})"))
         if (rec == "event" and not events_ok) or (rec == "error" and not errors_ok):
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
         events = self.core.filter_events(events, lvl, mode, etype)
