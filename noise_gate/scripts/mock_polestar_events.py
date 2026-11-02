@@ -944,7 +944,7 @@ class Judge:
     def current_offset(self) -> tuple[int, int, int]:
         """현재 파일 끝 위치를 반환한다(주입 후 append분만 조회하기 위한 기준).
 
-        (plans/207 M-3) 바이트 크기에 파일 식별(장치·inode)을 더한 기준점이다 — 대기 중 판정 파일이
+        (plans/208 M-3) 바이트 크기에 파일 식별(장치·inode)을 더한 기준점이다 — 대기 중 판정 파일이
         회전돼도 기준 파일(이제 조각)의 나머지부터 이어 읽는다.
         """
         from noise_gate.infrastructure.decision_store import decision_cursor
@@ -1018,7 +1018,7 @@ class Judge:
 
         ids: set = set()
         try:
-            # (plans/207 M-3) 회전 조각이 있으면 조각부터 이어 읽는다(없으면 종전과 같다)
+            # (plans/208 M-3) 회전 조각이 있으면 조각부터 이어 읽는다(없으면 종전과 같다)
             for line in iter_decision_lines(self.path):
                 line = line.strip()
                 if not line:

@@ -505,7 +505,7 @@ class AuditInputs:
 def read_audit(path: Path, start: datetime, end: datetime) -> AuditInputs:
     """판정 감사 JSONL을 순차로 읽어 [start, end] 창의 레코드를 종류별로 나눈다.
 
-    (plans/207 M-3) 회전 조각이 있으면 조각부터 현재 파일까지 이어 읽는다(없으면 종전과 같다).
+    (plans/208 M-3) 회전 조각이 있으면 조각부터 현재 파일까지 이어 읽는다(없으면 종전과 같다).
     """
     out = AuditInputs()
     if not decision_file_chain(path):
@@ -2493,7 +2493,7 @@ def dry_run(
         "window_end": end.astimezone(KST).replace(microsecond=0).isoformat(),
         "long_start": long_start.astimezone(KST).replace(microsecond=0).isoformat(),
         "decisions_path": str(decisions_path),
-        # (plans/207 M-3) 회전 직후 현재 파일이 잠깐 없어도 조각이 있으면 기록이 있다
+        # (plans/208 M-3) 회전 직후 현재 파일이 잠깐 없어도 조각이 있으면 기록이 있다
         "decisions_exists": bool(decision_file_chain(decisions_path)),
         "decisions": len(audit.decisions),
         "recurrences": len(audit.recurrences),

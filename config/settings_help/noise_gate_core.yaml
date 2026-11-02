@@ -517,7 +517,7 @@ settings:
     recommendation: 기본 20000 유지. 화면이 느리면 줄인다.
     related: [NOISE_DECISION_STORE_PATH, NOISE_DECISION_STORE_ENABLED]
 
-  # ── plans/207 트랙 C M-3: 억제기 상태 집계 최근 구간만 읽기 · 판정 기록 파일 회전 ──
+  # ── plans/208 트랙 C M-3: 억제기 상태 집계 최근 구간만 읽기 · 판정 기록 파일 회전 ──
 
   NOISE_DECISION_STORE_RECENT_SCAN_ENABLED:
     example: >-
@@ -586,7 +586,7 @@ settings:
     recommendation: 날짜별로 판정 기록을 백업·반출해야 하면 켠다. 재시작해야 반영된다.
     related: [NOISE_DECISION_STORE_ROTATE_MAX_BYTES, NOISE_DECISION_STORE_PATH]
 
-  # ── plans/207 트랙 C M-1·M-2: 메타모니터링 집계 루프 밖 실행 · 사용자 공유 캐시 ──
+  # ── plans/208 트랙 C M-1·M-2: 메타모니터링 집계 루프 밖 실행 · 사용자 공유 캐시 ──
 
   NOISE_AGGREGATE_OFFLOAD_ENABLED:
     example: >-
@@ -651,7 +651,7 @@ settings:
     recommendation: 기본 15초 유지.
     related: [NOISE_AGGREGATE_OFFLOAD_ENABLED, NOISE_AGGREGATE_TIMEOUT_SECONDS]
 
-  # ── plans/207 트랙 C M-4: 실시간 알림 버스 구독자 큐 상한 ──
+  # ── plans/208 트랙 C M-4: 실시간 알림 버스 구독자 큐 상한 ──
 
   NOISE_ALARM_BUS_QUEUE_MAX:
     example: >-

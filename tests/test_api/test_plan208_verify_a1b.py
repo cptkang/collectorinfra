@@ -1,4 +1,4 @@
-"""plans/207 A1b 독립 검증(verifier) — 사용자 경로 가림 공유 캐시의 보안 경계.
+"""plans/208 A1b 독립 검증(verifier) — 사용자 경로 가림 공유 캐시의 보안 경계.
 
 - 스레드 가림이 도는 사이 버퍼가 바뀌어도(폴링 증분 · 요약 JSONL 교체) 사용자 출력에 원문 0 ·
   교체된 내용이 반영된다(옛 가림 결과 재사용 0)
@@ -19,7 +19,7 @@ import pytest
 
 from src.api import investigation_live_hub as hub_mod
 from src.api.routes.alarm import _investigation_mask_fn
-from tests.test_api.test_plan207_a1b_mask_share import (
+from tests.test_api.test_plan208_a1b_mask_share import (
     _MASK,
     INV,
     SECRET,

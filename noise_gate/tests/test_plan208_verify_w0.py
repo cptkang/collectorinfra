@@ -1,6 +1,6 @@
-"""plans/207 트랙 B W0 독립 검증 — 계측 off 비트 동일 · on 예외/조기 반환 안전 · 판정 불변.
+"""plans/208 트랙 B W0 독립 검증 — 계측 off 비트 동일 · on 예외/조기 반환 안전 · 판정 불변.
 
-`test_plan207_w0_timing.py`가 덮지 않는 경로를 본다.
+`test_plan208_w0_timing.py`가 덮지 않는 경로를 본다.
 
 - off: 그래프 예외 → dead-letter · 파싱 실패 · 조기 반환(게이트 on 심각도 미달 · 게이트 off 중복·
   심각도 미달)에서 타이머 생성 0 · DEBUG 구간 줄 0 · configurable `alarm_timing` 키 0.

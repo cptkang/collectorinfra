@@ -335,7 +335,7 @@ def _alarm_extra_configurable(request: Request, config) -> dict[str, Any]:
 
     ng = config.noise_gate
     return {
-        # (plans/207 M-3) 판정 파일 회전 설정은 쓰기 주체(워커·이 경로)가 같은 값을 쓴다
+        # (plans/208 M-3) 판정 파일 회전 설정은 쓰기 주체(워커·이 경로)가 같은 값을 쓴다
         # (기본 회전 없음)
         "decision_store": DecisionStore(
             ng.decision_store_path,
@@ -648,14 +648,14 @@ async def alarm_metrics(
     window = ng.meta_alert_window_seconds
 
     # 읽기 전용 — 파일이 있으면 집계, 없으면 빈 집계(전 키 포함)
-    # (plans/207 M-3) 켜진 기동이면 창 집계를 끝에서 거꾸로 읽다가 창 밖에서 멈춘다(기본 off)
+    # (plans/208 M-3) 켜진 기동이면 창 집계를 끝에서 거꾸로 읽다가 창 밖에서 멈춘다(기본 off)
     store = DecisionStore(
         ng.decision_store_path,
         recent_scan=getattr(ng, "decision_store_recent_scan_enabled", False),
     )
     # (plans/162 R4) 기본 0 = 끔. 구 config(필드 부재)도 끔으로 읽는다.
     cf_threshold = float(getattr(ng, "meta_alert_collection_failed_ratio", 0.0))
-    # (plans/207 M-1·M-2) 켜진 기동이면 루프 밖 1회 순회 + 사용자 공유 짧은 캐시(초과·실패는 503)
+    # (plans/208 M-1·M-2) 켜진 기동이면 루프 밖 1회 순회 + 사용자 공유 짧은 캐시(초과·실패는 503)
     # — `/admin/noise/health`와 같은 키(같은 파일·활성·창·임계)면 같은 결과를 나눠 쓴다
     cache = noise_aggregate_cache(request)
     if cache is not None:
@@ -1174,7 +1174,7 @@ def _investigation_mask_fn(config: Any) -> Callable[[str], str]:
     안에 섞인 비밀값만 가린다 — 민감 키의 값·Bearer·JWT·URL 비밀번호(`mask_secrets`)와 같은 값
     패턴의 부분 일치. 운영자 뷰에는 쓰지 않는다(원문).
 
-    (plans/207 A1b) 결과는 마스크 꼴(`security.mask_pattern`)에만 달렸다(사용자·권한 무관) —
+    (plans/208 A1b) 결과는 마스크 꼴(`security.mask_pattern`)에만 달렸다(사용자·권한 무관) —
     같은 꼴이면 **같은 함수 객체**를 돌려줘 실시간 허브가 그 함수를 키로 가림 결과를 공유한다.
     """
     return _investigation_mask_fn_for(str(config.security.mask_pattern))
@@ -1427,7 +1427,7 @@ async def _investigation_response(
     if hub is not None and entry is not None and activity_since is not None:
         live_mask = None if operator else _investigation_mask_fn(config)
         if not operator:
-            # (plans/207 A1b) 진행 중 조사 첫 조회의 큰 묶음 가림은 루프 밖에서(구독자와 공유)
+            # (plans/208 A1b) 진행 중 조사 첫 조회의 큰 묶음 가림은 루프 밖에서(구독자와 공유)
             await entry.prepare_user_events(max(activity_since, -1), live_mask)
         view.update(hub.activity_payload(
             entry, max(activity_since, -1), operator=operator, mask_fn=live_mask,

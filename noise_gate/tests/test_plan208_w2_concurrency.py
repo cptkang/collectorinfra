@@ -1,4 +1,4 @@
-"""plans/207 트랙 B W2 — 알람 워커 동시 처리 실행기(C-2·C-3·C-4).
+"""plans/208 트랙 B W2 — 알람 워커 동시 처리 실행기(C-2·C-3·C-4).
 
 - 동등성: 픽스처·합성 입력을 N=1(직렬)과 N=2·4로 처리한 판정 감사 레코드 집합 · 그래프 입력 ·
   그래프 뒤 상태 · ACK 다중집합이 같다(서버명 역조회·P3 안 await에 무작위 지연을 넣어 양보를
@@ -719,7 +719,7 @@ class _BlockingGraph:
 class TestCancellation:
     async def test_cancel_cancels_inflight_and_leaves_them_pending(self, tmp_path: Path):
         """취소 시 루프가 끝나고 진행 중 태스크는 취소된다 — (W3 · C-5) 취소된 건은 ACK하지 않아
-        pending으로 남는다(직접 호출 기본 드레인 0초 · 드레인은 `test_plan207_w3_drain`).
+        pending으로 남는다(직접 호출 기본 드레인 0초 · 드레인은 `test_plan208_w3_drain`).
         읽지 않은 건은 미배달로 남는다."""
         worker = AlarmWorker(harness_config(write_enforce_rules(tmp_path)))
         r = FakeStreamRedis()

@@ -16,7 +16,7 @@ MCP · APM)별 **프로세스 전역** 세마포어를 건다 — 배치마다 �
 획득을 짧게 되풀이하고, 도구 1건 상한 안에 자리를 못 얻으면 그 호출만 결손
 (`tool_concurrency_wait_timeout`)이다.
 
-조사별 몫·APM owner(plans/207 A1 · D-358 · 기본 off): `sre_tool_per_investigation_share`가
+조사별 몫·APM owner(plans/208 A1 · D-359 · 기본 off): `sre_tool_per_investigation_share`가
 있으면 호출 스레드의 조사 컨텍스트(`investigation_context`)로 그 조사의 축별 자리 몫을 먼저
 얻고 전역 자리를 얻는다(같은 도구 1건 상한 안 · 한 조사의 전역 자리 독식 방지).
 `sre_apm_owner_per_investigation_enabled`면 APM 배치의 `apm_*` 호출에
@@ -91,7 +91,7 @@ async def _acquire_global(sem: threading.BoundedSemaphore, timeout_seconds: floa
     시간 안에 못 얻으면 False.
 
     블로킹 획득은 같은 루프의 다른 호출(자리를 쥔 쪽 포함)의 응답 처리를 막아 교착을 만들 수 있다.
-    대기 중 취소되면 자리를 쥐지 않은 채 끝난다(누수 0). `share`(조사별 몫 · plans/207 A1)가
+    대기 중 취소되면 자리를 쥐지 않은 채 끝난다(누수 0). `share`(조사별 몫 · plans/208 A1)가
     있으면 같은 시한 안에서 몫을 먼저 얻고, 전역 자리를 못 얻으면 몫을 돌려준다.
     """
     loop = asyncio.get_running_loop()
@@ -183,7 +183,7 @@ async def run_tool_batch_async(
     1이면 종전처럼 calls 순서대로 하나씩 호출한다. `global_limit`(plans/194 W3)이 있으면 호출마다
     그 전역 자리를 `timeout_seconds` 안에 얻어야 보낸다 — 못 얻으면 그 호출만
     `{error: tool_concurrency_wait_timeout …}`이다. None이면 종전 그대로. `share_gate`(조사별 몫 ·
-    plans/207 A1)는 `global_limit`이 있을 때만 쓴다 — 전역 자리 전에 같은 시한 안에서 얻는다.
+    plans/208 A1)는 `global_limit`이 있을 때만 쓴다 — 전역 자리 전에 같은 시한 안에서 얻는다.
     """
     from mcp import ClientSession
     from mcp.client.sse import sse_client
@@ -197,7 +197,7 @@ async def run_tool_batch_async(
                 async def _one(name: str, args: dict[str, Any]) -> str:
                     if global_limit is None:
                         return await _call(name, args)
-                    # 조사 계측(plans/207 A0-a) — 계측 off면 무동작.
+                    # 조사 계측(plans/208 A0-a) — 계측 off면 무동작.
                     with investigation_metrics.measure_slot_wait(
                             functools.partial(_axis_of, global_limit)):
                         acquired = await _acquire_global(global_limit, timeout_seconds,
@@ -269,7 +269,7 @@ def _batch_concurrency(settings: object) -> int:
 
 
 def _share_kwargs(settings, axis: str, limit: threading.BoundedSemaphore | None) -> dict[str, Any]:  # noqa: ANN001 — AgentSettings
-    """호출 스레드 조사의 축별 자리 몫(plans/207 A1) → `run_tool_batch` 인자.
+    """호출 스레드 조사의 축별 자리 몫(plans/208 A1) → `run_tool_batch` 인자.
 
     몫 설정이 None이거나 전역 상한이 없거나 조사 컨텍스트가 없으면 빈 dict(종전 그대로).
     """
@@ -345,7 +345,7 @@ def make_apm_batch_caller(settings) -> Callable[[Sequence[tuple[str, dict]]], li
 
     def _call(calls: Sequence[tuple[str, dict]]) -> list[str]:
         ctx = investigation_context.current() if owner_enabled else None
-        if ctx is not None:  # 조사별 owner(plans/207 A1 · §9 C1)
+        if ctx is not None:  # 조사별 owner(plans/208 A1 · §9 C1)
             calls = with_apm_owner(calls, ctx.owner)
         return run_tool_batch(url, headers, calls, timeout_seconds=timeout, concurrency=concurrency,
                               **extra, **_share_kwargs(settings, "apm", limit))

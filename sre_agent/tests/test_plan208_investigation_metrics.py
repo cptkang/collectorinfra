@@ -1,4 +1,4 @@
-"""plans/207 A0-a — 조사별 동시성 계측(`SRE_INVESTIGATION_METRICS_ENABLED`).
+"""plans/208 A0-a — 조사별 동시성 계측(`SRE_INVESTIGATION_METRICS_ENABLED`).
 
 - off(기본): 훅을 설치하지 않고 감사에 계측 이벤트가 없다 · 조사 스레드에 계측 객체가 없다.
 - on: 조사 1건당 감사 `investigation_metrics` 1건 — 워커가 만든 스레드(타임박스 → 풀)에서 부른

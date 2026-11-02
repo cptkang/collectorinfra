@@ -9,7 +9,7 @@
    (`wait_seconds=0`) → `sre_get_investigation` 폴링 → 구간 닫기 → 감사·호출 로그로 raw 1행.
 4. 자기가 띄운 PID만 내린다(`pids.json`) → manifest → `judge.rejudge`(채점+보고서 · W3a).
 
-`--concurrency K[,K…]`(plans/207 A0-a)를 주면 3의 순차 실행 대신 `concurrency.run_concurrency`가
+`--concurrency K[,K…]`(plans/208 A0-a)를 주면 3의 순차 실행 대신 `concurrency.run_concurrency`가
 돌고(같은 실험군에 조사 K건 동시 접수) 채점 없이 `concurrency.jsonl`·`concurrency.md`를 쓴다.
 주지 않으면 경로·산출물이 종전 그대로다.
 
@@ -1026,7 +1026,7 @@ class RunOptions:
     allow_billed: str | None = None
     out_root: Path | None = None
     resume_dir: Path | None = None
-    # 동시 측정(plans/207 A0-a) — None이면 종전 순차 실행.
+    # 동시 측정(plans/208 A0-a) — None이면 종전 순차 실행.
     concurrency: tuple[int, ...] | None = None
 
 
@@ -1098,12 +1098,12 @@ def _print_plan(spec: Mapping[str, Any], worlds: Mapping[str, World], plan: Sequ
 
 
 def fake_delay_s(spec: Mapping[str, Any]) -> float:
-    """가짜 LLM 응답 1회당 고정 지연(`llm.fake_delay_s` · 기본 0 · plans/207 A0-a)."""
+    """가짜 LLM 응답 1회당 고정 지연(`llm.fake_delay_s` · 기본 0 · plans/208 A0-a)."""
     return max(0.0, float((spec.get("llm") or {}).get("fake_delay_s") or 0))
 
 
 def tool_delay_s(spec: Mapping[str, Any]) -> float:
-    """세계 서버 도구 호출 1건당 고정 지연(`world.tool_delay_s` · 기본 0 · plans/207 A0-a)."""
+    """세계 서버 도구 호출 1건당 고정 지연(`world.tool_delay_s` · 기본 0 · plans/208 A0-a)."""
     return max(0.0, float((spec.get("world") or {}).get("tool_delay_s") or 0))
 
 
@@ -1240,7 +1240,7 @@ def _run(opts: RunOptions) -> int:
         if use_fake:
             fake_cmd = [py, "-m", "investigation_bench.fake_llm", "--worlds", str(worlds_dir),
                         "--port", str(ports["fake_llm"]), "--log", str(run_dir / "fake_llm.jsonl")]
-            if fake_delay_s(spec) > 0:  # plans/207 A0-a — 0(기본)이면 명령이 종전 그대로
+            if fake_delay_s(spec) > 0:  # plans/208 A0-a — 0(기본)이면 명령이 종전 그대로
                 fake_cmd += ["--delay-s", str(fake_delay_s(spec))]
             fp = procs.launch("fake_llm", fake_cmd,
                               cwd=run_dir, env=base_env, port=ports["fake_llm"],
@@ -1271,7 +1271,7 @@ def _run(opts: RunOptions) -> int:
                      "--port", str(ports["world"])]
         if ports["world_apm"] is not None:
             world_cmd += ["--apm-port", str(ports["world_apm"])]
-        if tool_delay_s(spec) > 0:  # plans/207 A0-a — 0(기본)이면 명령이 종전 그대로
+        if tool_delay_s(spec) > 0:  # plans/208 A0-a — 0(기본)이면 명령이 종전 그대로
             world_cmd += ["--tool-delay-s", str(tool_delay_s(spec))]
         wp = procs.launch("world_server", world_cmd, cwd=run_dir, env=base_env,
                           port=ports["world"], log_path=run_dir / "world_server.log")
@@ -1343,7 +1343,7 @@ def _run(opts: RunOptions) -> int:
             sampler.start()
 
         def activate(body: Mapping[str, Any]) -> None:
-            if "worlds" in body:  # 동시 측정 — 활성 세계 목록(plans/207 A0-a)
+            if "worlds" in body:  # 동시 측정 — 활성 세계 목록(plans/208 A0-a)
                 post_active(world_active, {"worlds": [
                     {k: e.get(k) for k in ("world_id", "trial", "arm")} for e in body["worlds"]]})
             else:

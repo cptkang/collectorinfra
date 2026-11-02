@@ -1,4 +1,4 @@
-"""plans/207 트랙 B W3 · C-5 — 종료 드레인(N≥2) · 기동 시 미ACK(pending) 회수(옵트인).
+"""plans/208 트랙 B W3 · C-5 — 종료 드레인(N≥2) · 기동 시 미ACK(pending) 회수(옵트인).
 
 - 설정 2종 기본값·환경 변수 이름 · 워커 해석(음수 드레인 → 0).
 - 드레인: 드레인 안에 끝난 건 ACK · 못 끝낸 건 pending · 수신 = ACK ∪ pending(유실 0) · 드레인 중
@@ -42,7 +42,7 @@ from noise_gate.tests.equivalence_harness import (
     synthetic_alarms,
     write_enforce_rules,
 )
-from noise_gate.tests.test_plan207_w2_concurrency import run_loop_executor, with_yields
+from noise_gate.tests.test_plan208_w2_concurrency import run_loop_executor, with_yields
 
 _BASE = datetime(2026, 11, 2, 9, 0, 0)
 

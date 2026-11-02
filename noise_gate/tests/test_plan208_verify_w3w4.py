@@ -1,6 +1,6 @@
-"""plans/207 트랙 B W3(C-5 종료 드레인 · 기동 시 미ACK 회수) · W4(C-6 임베딩 스레드 이전) 독립 검증.
+"""plans/208 트랙 B W3(C-5 종료 드레인 · 기동 시 미ACK 회수) · W4(C-6 임베딩 스레드 이전) 독립 검증.
 
-implementer 테스트(`test_plan207_w3_drain.py` · `test_plan207_w4_to_thread.py`)가 비운 자리만 본다.
+implementer 테스트(`test_plan208_w3_drain.py` · `test_plan208_w4_to_thread.py`)가 비운 자리만 본다.
 
 - 드레인: 자리가 꽉 찬 상태(`free <= 0` 대기)에서 취소 · 드레인 뒤 태스크 누수 0 · 드레인 시간
   0에서 P3 전 대기 건도 pending(교착 없이 끝남) · 드레인 중 진행 건이 예외를 내면 그 건은 ACK +

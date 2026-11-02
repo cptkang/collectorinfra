@@ -495,7 +495,7 @@ settings:
     recommendation: 기본 3600초 유지.
     related: [ALARM_SERVER_IDENTITY_TIMEOUT_SECONDS]
 
-  # ── plans/207 W0: 알람 워커 구간 계측(측정 전용) ──
+  # ── plans/208 W0: 알람 워커 구간 계측(측정 전용) ──
 
   ALARM_WORKER_TIMING_ENABLED:
     example: >-
@@ -521,7 +521,7 @@ settings:
     references:
       - docs/28_noise_cancellation_operator_guide.md (§4-D)
 
-  # ── plans/207 W2~W5 · D-358: 알람 워커 동시 처리·종료·분리 실행 ──
+  # ── plans/208 W2~W5 · D-359: 알람 워커 동시 처리·종료·분리 실행 ──
 
   ALARM_WORKER_MAX_CONCURRENCY:
     example: >-
@@ -555,7 +555,7 @@ settings:
     related: [ALARM_WORKER_TIMING_ENABLED, ALARM_WORKER_DRAIN_TIMEOUT_SECONDS, ALARM_WORKER_SINGLETON_GUARD]
     references:
       - docs/28_noise_cancellation_operator_guide.md (§4-D)
-      - docs/decisions/D-358.md
+      - docs/decisions/D-359.md
 
   ALARM_WORKER_DRAIN_TIMEOUT_SECONDS:
     example: >-
@@ -607,7 +607,7 @@ settings:
     related: [ALARM_WORKER_DRAIN_TIMEOUT_SECONDS, ALARM_WORKER_SINGLETON_GUARD, NOISE_PAGE_REVIEW_MODE]
     references:
       - docs/28_noise_cancellation_operator_guide.md (§4-D)
-      - plans/207-WIP-multi-user-concurrency.md (회수 on 전제 조건)
+      - plans/208-WIP-multi-user-concurrency.md (회수 on 전제 조건)
 
   ALARM_WORKER_IN_PROCESS:
     example: >-
@@ -635,7 +635,7 @@ settings:
     related: [ALARM_ENABLED, ALARM_WORKER_SINGLETON_GUARD, ALARM_WORKER_DRAIN_TIMEOUT_SECONDS]
     references:
       - docs/28_noise_cancellation_operator_guide.md (§4-D)
-      - docs/decisions/D-358.md
+      - docs/decisions/D-359.md
 
   ALARM_WORKER_SINGLETON_GUARD:
     example: >-
@@ -664,7 +664,7 @@ settings:
     related: [ALARM_WORKER_IN_PROCESS, ALARM_WORKER_RECLAIM_PENDING_ON_START, ALARM_WORKER_MAX_CONCURRENCY]
     references:
       - docs/28_noise_cancellation_operator_guide.md (§4-D)
-      - docs/decisions/D-358.md
+      - docs/decisions/D-359.md
 
   ALARM_DEFAULT_TEST_DB_ID:
     example: >-

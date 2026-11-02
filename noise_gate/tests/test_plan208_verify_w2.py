@@ -1,4 +1,4 @@
-"""plans/207 트랙 B W2 독립 검증(verifier) — 동시 처리 실행기의 맹점 점검.
+"""plans/208 트랙 B W2 독립 검증(verifier) — 동시 처리 실행기의 맹점 점검.
 
 - 하네스 민감도: P3 잠금 조기 반납 · 충돌 키 제거 · 배리어 제거 변이를 테스트 안에서 주입하면
   동등성 단언이 실제로 깨지는가(지연 주입이 순서 위반을 드러낼 수 있는 형태인가).
@@ -39,7 +39,7 @@ from noise_gate.tests.equivalence_harness import (
     synthetic_alarms,
     write_enforce_rules,
 )
-from noise_gate.tests.test_plan207_w2_concurrency import with_setup, with_yields
+from noise_gate.tests.test_plan208_w2_concurrency import with_setup, with_yields
 
 _BASE = datetime(2026, 11, 2, 9, 0, 0)
 
@@ -355,7 +355,7 @@ class TestDefects:
         assert entered == ["CW-0"]
         task.cancel()
         await asyncio.wait_for(task, 2.0)
-        # (plans/207 W3 · C-5) 드레인 없이(직접 호출 기본 0초) 취소된 진행 중 건도 ACK하지 않는다 —
+        # (plans/208 W3 · C-5) 드레인 없이(직접 호출 기본 0초) 취소된 진행 중 건도 ACK하지 않는다 —
         # 직렬(처리 중 1건 ACK)과 다르게 pending으로 남겨 기동 시 회수 대상으로 둔다(§4 기준 5).
         assert b"1-0" not in r.acked
         assert b"2-0" not in r.acked  # 처리하지 않은 건은 남아야 재처리된다

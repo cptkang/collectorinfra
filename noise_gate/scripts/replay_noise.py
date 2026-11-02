@@ -433,7 +433,7 @@ def load_jsonl(path: str) -> list[dict[str, Any]]:
 
 
 def expand_decision_inputs(paths: Iterable[str]) -> list[str]:
-    """입력 경로를 읽을 파일 순서로 펼친다 — 판정 감사 파일은 회전 조각부터(plans/207 M-3).
+    """입력 경로를 읽을 파일 순서로 펼친다 — 판정 감사 파일은 회전 조각부터(plans/208 M-3).
 
     입력마다 그 회전 조각(`<이름>.<회전 시각>` · 오래된 것부터)을 앞에 붙인다. 조각이 없으면
     입력 그대로다(종전과 같다 — 같은 파일을 두 번 넘기면 종전처럼 두 번 읽는다). 회전 틈(현재 파일

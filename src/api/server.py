@@ -390,7 +390,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     checkpointer = await _build_agent_graph(app, config)
 
     from noise_gate.infrastructure.notification_bus import AlarmNotificationBus
-    # (plans/207 M-4) 구독자 큐 상한 — 0(기본)이면 종전 그대로 무상한 · 기동 시 1회 해석
+    # (plans/208 M-4) 구독자 큐 상한 — 0(기본)이면 종전 그대로 무상한 · 기동 시 1회 해석
     # (양의 정수일 때만 읽는다 — `MagicMock` 설정이 상한으로 오판되지 않게)
     bus_queue_max = getattr(getattr(config, "noise_gate", None), "alarm_bus_queue_max", 0)
     if type(bus_queue_max) is int and bus_queue_max > 0:
@@ -425,7 +425,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     # 그대로 새어 나와 「Application shutdown failed」로 아래 정리 단계를 건너뛰었다.
     import asyncio as _asyncio
 
-    # 종료 시: 루프 정지 감시 태스크 정리(plans/207 A0-b — 켰을 때만 있다)
+    # 종료 시: 루프 정지 감시 태스크 정리(plans/208 A0-b — 켰을 때만 있다)
     if loop_lag_task:
         loop_lag_task.cancel()
         try:
@@ -677,7 +677,7 @@ def _start_file_log_retention(config: AppConfig) -> Any:
 
 
 def _start_loop_lag_monitor(config: AppConfig) -> Any:
-    """기동 단계 — 이벤트 루프 정지 감시 태스크(plans/207 A0-b · `OBS_LOOP_LAG_MONITOR_ENABLED`).
+    """기동 단계 — 이벤트 루프 정지 감시 태스크(plans/208 A0-b · `OBS_LOOP_LAG_MONITOR_ENABLED`).
 
     정확히 `True`일 때만 띄운다(`_metrics_endpoint_enabled`와 같은 이유 — `MagicMock` 설정 오판
     방지).
@@ -724,7 +724,7 @@ def _start_alarm_worker(config: AppConfig) -> Any:
         워커 태스크 또는 None.
     """
     alarm_worker_task = None
-    # (plans/207 W5 · C-7) `ALARM_WORKER_IN_PROCESS=false`면 본체는 워커를 띄우지 않는다 — 정확히
+    # (plans/208 W5 · C-7) `ALARM_WORKER_IN_PROCESS=false`면 본체는 워커를 띄우지 않는다 — 정확히
     # False일 때만(기본 true · `MagicMock` 설정은 종전대로 본체 안).
     if config.alarm.enabled and getattr(config.alarm, "worker_in_process", True) is False:
         logger.info(
@@ -939,7 +939,7 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     application.state.alarm_card_flow_enabled = (
         getattr(getattr(config, "alarm_card_flow", None), "enabled", False) is True
     )
-    # (plans/207 M-1·M-2) 관제 메타모니터링 집계 루프 밖 실행·공유 캐시 — 켰을 때만 객체가 있다
+    # (plans/208 M-1·M-2) 관제 메타모니터링 집계 루프 밖 실행·공유 캐시 — 켰을 때만 객체가 있다
     # (기동 시 1회 · 없으면 `/admin/noise/health`·`/alarm/metrics`가 종전 동기 경로).
     from src.api.noise_aggregate_cache import build_noise_aggregate_cache
 

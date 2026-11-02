@@ -93,7 +93,7 @@ async def notification_gate_node(
     if store is not None:
         _record_decision(
             store, decision, event, result, state, gate_cfg, app_impact_audit,
-            # (plans/207 W0) 워커 구간 계측 콜백 — 계측 off면 키가 없어 None(비트 동일).
+            # (plans/208 W0) 워커 구간 계측 콜백 — 계측 off면 키가 없어 None(비트 동일).
             timing_view=configurable.get("alarm_timing"),
         )
 
@@ -245,7 +245,7 @@ def _record_decision(
 ) -> None:
     """감사 기록 단계 — 최종 판정을 decision_store에 남긴다(실패는 warning 후 무시).
 
-    `timing_view`(plans/207 W0)는 워커 구간 계측 콜백이다 — 주어지면 기록 시점까지의 구간 소요를
+    `timing_view`(plans/208 W0)는 워커 구간 계측 콜백이다 — 주어지면 기록 시점까지의 구간 소요를
     `timing`으로 싣고, None(계측 off)이면 인자 자체를 넘기지 않는다(레코드 비트 동일).
     콜백은 예외를 내지 않아야 한다 — 아래 try 안에서 불리므로 예외가 나면 감사 레코드 전체가 빠진다.
     """

@@ -162,7 +162,7 @@ async def _annotate_root_text_similarity_async(
     noise_cfg: Any,  # NoiseGateConfig
     embedding_provider: Any,  # AlarmEmbeddingProvider | None
 ) -> None:
-    """`_annotate_root_text_similarity`의 async 변형 — 유사도 계산만 스레드로 (plans/207 W4 C-6).
+    """`_annotate_root_text_similarity`의 async 변형 — 유사도 계산만 스레드로 (plans/208 W4 C-6).
 
     산출 조건 미충족(off·provider 미주입·root 부재)이면 스레드 왕복 없이 끝난다. 실제 임베딩
     호출(`similarity`)만 `asyncio.to_thread`로 돌리고, ctx 첨부는 호출한 루프 스레드에서 한다.
@@ -266,7 +266,7 @@ async def enrich_noise_context(
         )
         # (B-7 L-4) root 귀속 신뢰도 설명 보강 주석 — root(연쇄 근본원인)가 산출된 다홉 경로에서만
         # 의미 있으므로 여기서 산출한다. off/provider 미주입/inert/root 부재면 미첨부(회귀 0).
-        # (plans/207 W4 C-6) 유사도 계산만 스레드로 — 조건 미충족이면 스레드 왕복 없음.
+        # (plans/208 W4 C-6) 유사도 계산만 스레드로 — 조건 미충족이면 스레드 왕복 없음.
         await _annotate_root_text_similarity_async(event, ctx, noise_cfg, embedding_provider)
 
     return ctx

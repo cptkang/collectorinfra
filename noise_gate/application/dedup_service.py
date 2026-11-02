@@ -300,7 +300,7 @@ class DedupService:
     async def annotate_semantic_dedup_async(
         self, event: AlarmEvent, fingerprint: str, now: float
     ) -> dict[str, Any] | None:
-        """`annotate_semantic_dedup`의 async 변형 — 유사도 계산만 스레드로 (plans/207 W4 C-6).
+        """`annotate_semantic_dedup`의 async 변형 — 유사도 계산만 스레드로 (plans/208 W4 C-6).
 
         결과(주석 값)·최근 텍스트 상태 갱신은 동기 판과 같다. 차이는 `provider.most_similar`
         (임베딩 인코딩 — CPU 구간)를 `asyncio.to_thread`로 실행해 이벤트 루프를 막지 않는 것뿐이다.

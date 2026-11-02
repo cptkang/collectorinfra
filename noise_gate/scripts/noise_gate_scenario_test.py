@@ -129,7 +129,7 @@ def inject_redis(ctx: dict, payload: dict) -> None:
 # ─── 결정 감사 확인 ───────────────────────────────────────────────────────────
 
 def log_offset(ctx: dict[str, Any]) -> tuple[int, int, int]:
-    """판정 파일 끝 위치(장치·inode·크기) — 주입 뒤 붙은 줄만 보는 기준점(plans/207 M-3)."""
+    """판정 파일 끝 위치(장치·inode·크기) — 주입 뒤 붙은 줄만 보는 기준점(plans/208 M-3)."""
     from noise_gate.infrastructure.decision_store import decision_cursor
 
     return decision_cursor(Path(ctx["decision_log"]))

@@ -42,7 +42,7 @@ from noise_gate.domain.notification_policy import (
 from noise_gate.infrastructure import jsonl_tail
 from noise_gate.infrastructure.metrics import record_decision
 
-try:  # 회전 배타 잠금(plans/207 M-3) — Windows 등 fcntl 없는 플랫폼은 회전을 끄고 읽기만 한다
+try:  # 회전 배타 잠금(plans/208 M-3) — Windows 등 fcntl 없는 플랫폼은 회전을 끄고 읽기만 한다
     import fcntl
 except ImportError:  # pragma: no cover - POSIX 밖
     fcntl = None  # type: ignore[assignment]
@@ -81,7 +81,7 @@ _REVERSE_SCAN_BLOCK_BYTES = 64 * 1024
 _REVERSE_SCAN_SLACK_SECONDS = 600
 _SCAN_STOP_CHECK_EVERY = 256
 
-# (plans/207 M-3) 판정 파일 회전 조각 이름 — `<현재 파일 이름>.<회전 시각 UTC>[-<순번>]`.
+# (plans/208 M-3) 판정 파일 회전 조각 이름 — `<현재 파일 이름>.<회전 시각 UTC>[-<순번>]`.
 # 회전 시각은 마이크로초까지라 이름순 = 시간순이고, 같은 시각·시계 역행이면 순번을 올려
 # 순서를 지킨다.
 # 조각은 지우지 않는다(감사 기록 — 삭제·보존 기한은 범위 밖).
@@ -104,7 +104,7 @@ _LISTING_WARNED: set[str] = set()
 
 
 def decision_fragments(path: str | os.PathLike[str]) -> list[Path]:
-    """판정 파일의 회전 조각 목록(오래된 것 → 최신 · 없으면 빈 목록 · plans/207 M-3).
+    """판정 파일의 회전 조각 목록(오래된 것 → 최신 · 없으면 빈 목록 · plans/208 M-3).
 
     회전이 꺼져 있었으면 조각은 없다 — 이 목록이 비면 읽는 쪽은 종전과 같이 현재 파일 하나만 읽는다.
     """
@@ -180,7 +180,7 @@ def open_decision_chain(
 
 
 def iter_decision_lines(path: str | os.PathLike[str]) -> Iterator[str]:
-    """판정 기록 전체를 오래된 것부터 텍스트 줄로 내준다 — 회전 조각 → 현재 파일(plans/207 M-3).
+    """판정 기록 전체를 오래된 것부터 텍스트 줄로 내준다 — 회전 조각 → 현재 파일(plans/208 M-3).
 
     조각이 없으면 종전 `open(path, "r", encoding="utf-8")` 순회와 같다(파일이 없으면 아무것도 내지
     않는다). 읽는 중 사라진 조각(운영자가 옮김)은 건너뛴다. 그 밖의 읽기 오류는 그대로 던진다.
@@ -223,7 +223,7 @@ def decision_cursor(path: str | os.PathLike[str]) -> DecisionCursor:
 def iter_decision_lines_since(
     path: str | os.PathLike[str], cursor: DecisionCursor | int
 ) -> Iterator[str]:
-    """`cursor` 뒤에 붙은 판정 기록 줄을 오래된 것부터 내준다(plans/207 M-3).
+    """`cursor` 뒤에 붙은 판정 기록 줄을 오래된 것부터 내준다(plans/208 M-3).
 
     기준 파일이 그 뒤 회전돼 조각이 됐으면 그 조각의 나머지 → 그 뒤 조각 → 현재 파일 순으로
     잇는다. 기준 시점에 파일이 없었으면(`(0, 0, 0)`) 지금 있는 기록 전부가 새 줄이다. 기준 파일을
@@ -335,7 +335,7 @@ def _as_tier_set(tier: object) -> frozenset[str]:
 
 
 class DecisionScanStoppedError(Exception):
-    """전량 순회가 중단 신호로 멈췄다(plans/207 M-1 — 부분 집계를 내지 않으려고 던진다)."""
+    """전량 순회가 중단 신호로 멈췄다(plans/208 M-1 — 부분 집계를 내지 않으려고 던진다)."""
 
 
 class DecisionStore:
@@ -363,7 +363,7 @@ class DecisionStore:
         커져도 화면 응답이 무너지지 않게 한다. 기존 `aggregate`/`meta_alerts`는 종전대로
         전량 스캔한다(운영 지표의 의미가 바뀌면 안 되므로).
 
-        (plans/207 M-3 · 전부 기본 off = 종전과 같다)
+        (plans/208 M-3 · 전부 기본 off = 종전과 같다)
         recent_scan: 창을 준 `aggregate`·`meta_alerts`·`health_snapshot`을 파일 끝에서 거꾸로 읽다가
             창 하한보다 `_REVERSE_SCAN_SLACK_SECONDS` 넘게 오래된 결정 레코드에서 멈춘다(창 안
             레코드 수에 비례). 창 없는(None) 집계는 계속 전량이다.
@@ -470,7 +470,7 @@ class DecisionStore:
         조사하는 재료다. 호출부는 `investigation_manual_enabled`일 때만 넘긴다 — 빈 값이면 키를 넣지
         않아 기존 스냅샷과 비트 동일하다.
 
-        timing(plans/207 W0): 워커 구간 계측(`ALARM_WORKER_TIMING_ENABLED`)이 켜졌을 때 기록
+        timing(plans/208 W0): 워커 구간 계측(`ALARM_WORKER_TIMING_ENABLED`)이 켜졌을 때 기록
         시점까지의 구간 소요(ms) `{p1_ms, p2_ms, p3_ms, p4_until_audit_ms}`를 최상위 필드로
         싣는다. 측정 전용이며 판정과 무관하다. 호출부는 계측 on일 때만 넘긴다 — None이면 키를 넣지
         않아 비트 동일하다.
@@ -531,7 +531,7 @@ class DecisionStore:
             logger.warning("결정 감사 기록 실패(무시): %s", exc)
 
     def _append_line(self, line: str) -> None:
-        """JSONL 한 줄을 현재 파일에 append 한다 — 회전 조건이면 먼저 회전한다(plans/207 M-3).
+        """JSONL 한 줄을 현재 파일에 append 한다 — 회전 조건이면 먼저 회전한다(plans/208 M-3).
 
         회전이 꺼져 있으면(기본) 종전과 같은 열기·쓰기 1회다. 쓰기 실패(OSError)는 호출부가 경고로
         처리한다. 회전 실패는 여기서 경고만 남기고 현재 파일에 이어 쓴다(기록을 막지 않는다).
@@ -554,7 +554,7 @@ class DecisionStore:
     def _rotate_if_due(self) -> None:
         """조건이면 현재 파일을 회전 조각 이름으로 바꾼다(지우지 않는다 · 쓰기 주체 여럿이어도 1회).
 
-        쓰기 주체가 여러 스레드·프로세스일 수 있어(워커 별도 프로세스 · plans/207 W5) 현재 파일에
+        쓰기 주체가 여러 스레드·프로세스일 수 있어(워커 별도 프로세스 · plans/208 W5) 현재 파일에
         배타 잠금(`flock`)을 건 뒤, 잠근 파일이 아직 그 경로의 파일이고 여전히 조건에 걸리는지 다시
         본다 — 다른 주체가 먼저 회전했으면 아무것도 하지 않는다. 이름 바꾸기는 같은 디렉터리 안
         `rename`이라 원자적이다. 회전 직후 다음 append 전까지 현재 파일이 잠깐 없을 수 있으며, 읽는
@@ -630,7 +630,7 @@ class DecisionStore:
     def _iter_window_reverse(
         self, cutoff_ts: float, should_stop: Callable[[], bool] | None
     ) -> Iterator[dict[str, Any]]:
-        """창 안 레코드(비-decision `type` 레코드 포함)를 최신부터 내준다(plans/207 M-3).
+        """창 안 레코드(비-decision `type` 레코드 포함)를 최신부터 내준다(plans/208 M-3).
 
         `iter_recent_decisions`와 같은 종료 규칙이다 — 창 하한보다 `_REVERSE_SCAN_SLACK_SECONDS`
         넘게 오래된 **결정** 레코드를 만나면 멈춘다. 창 판정은 `_within_window`(시각 없음·파싱
@@ -866,7 +866,7 @@ class DecisionStore:
     def last_l3_state(self, fingerprint: str) -> Optional[dict]:
         """같은 알람 지문의 **최근** L3 상태지문(없으면 None). 파일을 뒤에서부터 훑는다.
 
-        (plans/207 M-3) 회전 조각이 있으면 현재 파일 → 최신 조각 → … 순으로 찾다가 처음 맞는
+        (plans/208 M-3) 회전 조각이 있으면 현재 파일 → 최신 조각 → … 순으로 찾다가 처음 맞는
         것을 쓴다.
         """
         if not self.enabled or not fingerprint or not self._exists():
@@ -937,13 +937,13 @@ class DecisionStore:
     ) -> tuple[dict[str, Any], int]:
         """`aggregate` 본체 — 집계 dict와 (count_failed면) 창 내 수집 실패 건수를 한 순회로 센다.
 
-        (plans/207 M-1·M-2) `health_snapshot`이 `meta_alerts`의 재순회 없이 같은 값을 얻도록
+        (plans/208 M-1·M-2) `health_snapshot`이 `meta_alerts`의 재순회 없이 같은 값을 얻도록
         나눴다. 수집 실패 건수는 `_collection_failed_counts`와 같은 대상(창 내 결정 레코드)이고,
         그 분모는 집계 `total`과 같다. `should_stop`이 주어지면 `_SCAN_STOP_CHECK_EVERY`줄마다
         확인해 참이면 `DecisionScanStoppedError`를 던진다(부분 집계를 내지 않는다). 둘 다 기본값이면
         종전 `aggregate`와 같다.
 
-        (plans/207 M-3) `recent_scan`이 켜졌고 창이 있으면 끝에서 거꾸로 읽다가 창 밖에서 멈춘다
+        (plans/208 M-3) `recent_scan`이 켜졌고 창이 있으면 끝에서 거꾸로 읽다가 창 밖에서 멈춘다
         (`_iter_window_reverse`). 창 안 레코드만 쓰는 값이라 결과는 같다 — 「최근 결정 시각」도
         창 안 최댓값이고, 같은 시각이 여럿이면 파일에서 앞선 것을 고르는 종전 규칙을 거꾸로
         읽기에서도 지킨다. 다른 점은 멈춘 지점보다 앞에 있는 시각 없는 레코드(종전은 위치와 무관하게
@@ -1094,7 +1094,7 @@ class DecisionStore:
         collection_failed_ratio_threshold: float = 0.0,
         should_stop: Callable[[], bool] | None = None,
     ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
-        """`aggregate(window)`와 `meta_alerts(...)`를 **파일 한 번 순회**로 낸다(plans/207 M-2).
+        """`aggregate(window)`와 `meta_alerts(...)`를 **파일 한 번 순회**로 낸다(plans/208 M-2).
 
         종전 두 호출은 같은 파일을 2~3회 전량 순회했다(`meta_alerts` 안의 `aggregate` 재호출 ·
         수집 실패율 스캔). 값은 같다 — 창 판정 시각이 한 번이라 두 호출 사이의 미세한 시차만 없다.
@@ -1184,7 +1184,7 @@ class DecisionStore:
         """창 내 결정 레코드의 (수집 실패 건수, 전체 건수)를 센다(plans/162 R4).
 
         `aggregate`와 같은 전량 스캔·창 규칙이다 — 손상된 줄과 비-decision 레코드(`type` 보유)는
-        제외한다. 파일 부재·비활성·읽기 실패면 (0, 0)이다. (plans/207 M-3) `recent_scan`이면
+        제외한다. 파일 부재·비활성·읽기 실패면 (0, 0)이다. (plans/208 M-3) `recent_scan`이면
         `aggregate`와 같이 끝에서 거꾸로 읽다가 창 밖에서 멈춘다.
         """
         if not self.enabled or not self._exists():
@@ -1283,7 +1283,7 @@ class DecisionStore:
         return records
 
     def _tail_chain(self) -> list[dict[str, Any]]:
-        """현재 파일과 회전 조각을 이어 끝 `max_lines`줄의 JSON 객체 레코드를 낸다(plans/207 M-3).
+        """현재 파일과 회전 조각을 이어 끝 `max_lines`줄의 JSON 객체 레코드를 낸다(plans/208 M-3).
 
         현재 파일의 줄이 모자라면 최신 조각부터 모자란 줄 수만큼 거슬러 채운다 — 조각이 없으면
         종전 `jsonl_tail.tail_records(현재 파일)`과 같다. 파일마다 경로 단위 증분 캐시를 쓰며,
@@ -1409,7 +1409,7 @@ class DecisionStore:
         중단 신호는 `should_stop`(없으면 인스턴스 `scan_should_stop`)이며, 건너뛰는 줄을 포함해
         `_SCAN_STOP_CHECK_EVERY`줄마다 확인한다 — 참이면 그 자리에서 조용히 끝난다(소비처가 중단을 안다).
 
-        (plans/207 M-3) 회전 조각이 있으면 현재 파일 → 최신 조각 → … 순으로 이어서 거꾸로 읽는다.
+        (plans/208 M-3) 회전 조각이 있으면 현재 파일 → 최신 조각 → … 순으로 이어서 거꾸로 읽는다.
         """
         if not self.enabled or not self._exists():
             return

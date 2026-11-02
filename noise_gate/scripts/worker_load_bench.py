@@ -1,4 +1,4 @@
-"""알람 워커 부하 하네스 (plans/207 트랙 B W0 · C-0 — 측정 전용 · 실 LLM·실 Redis 0).
+"""알람 워커 부하 하네스 (plans/208 트랙 B W0 · C-0 — 측정 전용 · 실 LLM·실 Redis 0).
 
 가짜 스트림에 알람 M건을 넣고 워커(`AlarmWorker._process`)로 처리해 **처리량(건/s)** ·
 **stream lag 최대값**(스트림에 들어왔으나 워커가 아직 읽지 않은 건수) · **미처리 최대값**(들어왔으나
@@ -289,7 +289,7 @@ async def _main_async(args: argparse.Namespace) -> list[BenchResult]:
 
 def main(argv: Sequence[str] | None = None) -> int:
     """CLI 진입점."""
-    parser = argparse.ArgumentParser(description="알람 워커 부하 하네스 (plans/207 W0·W2)")
+    parser = argparse.ArgumentParser(description="알람 워커 부하 하네스 (plans/208 W0·W2)")
     parser.add_argument("--scenario", choices=(*SCENARIOS, "both"), default="both")
     parser.add_argument("--count", type=int, default=40, help="시나리오당 알람 수 (기본 40)")
     parser.add_argument("--executor", choices=sorted(EXECUTORS), default="serial")

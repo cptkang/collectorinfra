@@ -1,4 +1,4 @@
-"""plans/207 A1 — HolmesGPT MCP 잠금 범위 · 조사별 전역 자리 몫 · APM 조사별 owner (D-358).
+"""plans/208 A1 — HolmesGPT MCP 잠금 범위 · 조사별 전역 자리 몫 · APM 조사별 owner (D-359).
 
 - 기본값(셋 다): 훅을 설치하지 않고 워커에 컨텍스트가 없다 · holmes 잠금 객체가 종전과 같다.
 - `SRE_HOLMES_MCP_LOCK_SCOPE=investigation`: 다른 조사끼리 병렬 · 같은 조사 직렬 · 조사 밖·다른
@@ -34,7 +34,7 @@ from sre_agent.infrastructure import holmes_mcp_scope as hs
 from sre_agent.infrastructure import investigation_context as ic
 from sre_agent.infrastructure import mcp_tool_client as mc
 from sre_agent.settings import AgentSettings
-from tests.test_plan207_investigation_metrics import make_job, make_settings, ok_result
+from tests.test_plan208_investigation_metrics import make_job, make_settings, ok_result
 
 PURL = "http://polestar-mcp:9099/sse"
 AURL = "http://apm-gw:9096/sse"

@@ -85,7 +85,7 @@ async def read_pending_messages(
     after: bytes | str = "0",
     count: int = 10,
 ) -> list[tuple[bytes, dict[Any, Any]]]:
-    """이 소비자에게 배달됐으나 ACK되지 않은(pending) 메시지를 다시 읽는다(plans/207 W3 · C-5).
+    """이 소비자에게 배달됐으나 ACK되지 않은(pending) 메시지를 다시 읽는다(plans/208 W3 · C-5).
 
     `XREADGROUP … {stream: after}` — `>`가 아닌 id를 주면 Redis는 새 메시지 대신 그 소비자의
     pending 중 id가 `after`보다 큰 것을 돌려준다(블로킹 없음). 처음엔 `"0"`, 다음엔 직전 묶음의

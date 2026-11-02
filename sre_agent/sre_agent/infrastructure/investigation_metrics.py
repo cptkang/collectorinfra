@@ -1,4 +1,4 @@
-"""조사별 동시성 계측 (plans/207 A0-a · 옵트인 `SRE_INVESTIGATION_METRICS_ENABLED`).
+"""조사별 동시성 계측 (plans/208 A0-a · 옵트인 `SRE_INVESTIGATION_METRICS_ENABLED`).
 
 조사 여러 건이 동시에 돌 때 무엇이 늘어나는지(LLM 뒤단 지연 · 전역 도구 자리 대기 · 프로세스 CPU)를
 조사 1건 단위로 잰다. 결과는 dispatcher가 감사 `investigation_metrics` 이벤트 1건으로 남긴다.
@@ -235,7 +235,7 @@ class _TimedLock:
         try:
             return self._lock.__enter__()
         finally:
-            # 획득 실패(조사 범위 잠금의 자리 대기 초과 예외 — plans/207 A1)도 기다린 시간은 대기다.
+            # 획득 실패(조사 범위 잠금의 자리 대기 초과 예외 — plans/208 A1)도 기다린 시간은 대기다.
             waited = time.monotonic() - t0
             metrics.add_slot_wait(HOLMES_MCP_AXIS, waited)
             _TLS.lock_wait = getattr(_TLS, "lock_wait", 0.0) + waited

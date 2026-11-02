@@ -229,14 +229,14 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/201 W2 DUTY_WELCOME_HINTS_ENABLED +1(duty_area) · WELCOME_GUIDE_ENABLED +1(신규 그룹 welcome_guide)
     # plans/201 W5 DUTY_ACTION_ASSIST_ENABLED +1(duty_area) · ALARM_CARD_FLOW_ENABLED +1(신규 그룹 alarm_card_flow)
     # plans/201 W6 DUTY_DAILY_SUMMARY_ENABLED +1(duty_area — 그룹 수 불변)
-    # plans/207 A0-b OBS_LOOP_LAG_{MONITOR_ENABLED,THRESHOLD_MS,REPORT_SECONDS} +3
-    # plans/207 트랙 C NOISE_AGGREGATE_{OFFLOAD_ENABLED,TIMEOUT_SECONDS,CACHE_SECONDS}
+    # plans/208 A0-b OBS_LOOP_LAG_{MONITOR_ENABLED,THRESHOLD_MS,REPORT_SECONDS} +3
+    # plans/208 트랙 C NOISE_AGGREGATE_{OFFLOAD_ENABLED,TIMEOUT_SECONDS,CACHE_SECONDS}
     # · NOISE_ALARM_BUS_QUEUE_MAX +4 (noise_gate 기존 그룹)
-    # plans/207 트랙 B W0 ALARM_WORKER_TIMING_ENABLED +1 (alarm 기존 그룹)
-    # plans/207 트랙 B W2 ALARM_WORKER_MAX_CONCURRENCY +1 (alarm 기존 그룹 — 작업 트리 실측 471)
-    # plans/207 트랙 C M-3 NOISE_DECISION_STORE_{RECENT_SCAN_ENABLED,ROTATE_MAX_BYTES,
+    # plans/208 트랙 B W0 ALARM_WORKER_TIMING_ENABLED +1 (alarm 기존 그룹)
+    # plans/208 트랙 B W2 ALARM_WORKER_MAX_CONCURRENCY +1 (alarm 기존 그룹 — 작업 트리 실측 471)
+    # plans/208 트랙 C M-3 NOISE_DECISION_STORE_{RECENT_SCAN_ENABLED,ROTATE_MAX_BYTES,
     # ROTATE_DAILY} +3 (noise_gate 기존 그룹)
-    # plans/207 트랙 B W5 ALARM_WORKER_{IN_PROCESS,SINGLETON_GUARD} +2 (alarm 기존 그룹)
+    # plans/208 트랙 B W5 ALARM_WORKER_{IN_PROCESS,SINGLETON_GUARD} +2 (alarm 기존 그룹)
     assert len(items) == 478  # plans/198 W0 +1 · W8 +1 · W7 +2 · plans/199 W1 +1 · plans/195 W2 +1
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
@@ -421,15 +421,15 @@ def test_t2_group_and_field_counts():
     # plans/201 W2 DUTY_WELCOME_HINTS_ENABLED +1(duty_area) · WELCOME_GUIDE_ENABLED +1(신규 그룹 welcome_guide)
     # plans/201 W5 DUTY_ACTION_ASSIST_ENABLED +1(duty_area) · ALARM_CARD_FLOW_ENABLED +1(신규 그룹 alarm_card_flow)
     # plans/201 W6 DUTY_DAILY_SUMMARY_ENABLED +1(duty_area — 그룹 수 불변)
-    # plans/207 A0-b OBS_LOOP_LAG_{MONITOR_ENABLED,THRESHOLD_MS,REPORT_SECONDS} +3
+    # plans/208 A0-b OBS_LOOP_LAG_{MONITOR_ENABLED,THRESHOLD_MS,REPORT_SECONDS} +3
     # (observability 기존 그룹)
-    # plans/207 트랙 C NOISE_AGGREGATE_{OFFLOAD_ENABLED,TIMEOUT_SECONDS,CACHE_SECONDS}
+    # plans/208 트랙 C NOISE_AGGREGATE_{OFFLOAD_ENABLED,TIMEOUT_SECONDS,CACHE_SECONDS}
     # · NOISE_ALARM_BUS_QUEUE_MAX +4 (noise_gate 기존 그룹)
-    # plans/207 트랙 B W0 ALARM_WORKER_TIMING_ENABLED +1 (alarm 기존 그룹)
-    # plans/207 트랙 B W2 ALARM_WORKER_MAX_CONCURRENCY +1 (alarm 기존 그룹 — 작업 트리 실측 471)
-    # plans/207 트랙 C M-3 NOISE_DECISION_STORE_{RECENT_SCAN_ENABLED,ROTATE_MAX_BYTES,
+    # plans/208 트랙 B W0 ALARM_WORKER_TIMING_ENABLED +1 (alarm 기존 그룹)
+    # plans/208 트랙 B W2 ALARM_WORKER_MAX_CONCURRENCY +1 (alarm 기존 그룹 — 작업 트리 실측 471)
+    # plans/208 트랙 C M-3 NOISE_DECISION_STORE_{RECENT_SCAN_ENABLED,ROTATE_MAX_BYTES,
     # ROTATE_DAILY} +3 (noise_gate 기존 그룹)
-    # plans/207 트랙 B W5 ALARM_WORKER_{IN_PROCESS,SINGLETON_GUARD} +2 (alarm 기존 그룹)
+    # plans/208 트랙 B W5 ALARM_WORKER_{IN_PROCESS,SINGLETON_GUARD} +2 (alarm 기존 그룹)
     assert len(index) == 478  # plans/198 W0 +1 · W8 +1 · W7 +2 · plans/199 W1 +1 · plans/195 W2 +1
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 21

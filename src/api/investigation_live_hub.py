@@ -92,10 +92,10 @@ _CLIP_KEYS: tuple[str, ...] = (
 _STATUS_RUNNING = "running"
 #: 목록 「엔진」 칸에 싣는 엔진 이름(W14 교정 — 그 밖의 값은 버린다).
 LIST_ENGINES: frozenset[str] = frozenset({"playbook", "holmes"})
-#: (plans/207 A1b) 조사당 사용자 경로 가림 결과를 둘 마스크 함수 수 상한 — 라우트는 마스크 꼴마다
+#: (plans/208 A1b) 조사당 사용자 경로 가림 결과를 둘 마스크 함수 수 상한 — 라우트는 마스크 꼴마다
 #: 같은 함수를 넘기므로 보통 1개다. 넘치면 먼저 든 것부터 버린다.
 USER_MASK_CACHE_MAX_FNS = 4
-#: (plans/207 A1b) 아직 안 가린 이벤트가 이보다 많으면 이벤트 루프 밖(스레드)에서 가린다 —
+#: (plans/208 A1b) 아직 안 가린 이벤트가 이보다 많으면 이벤트 루프 밖(스레드)에서 가린다 —
 #: 진행 중 조사에 처음 붙을 때의 300건 묶음. 폴링 1회 증분처럼 작은 묶음은 루프 위에서 가린다.
 USER_MASK_INLINE_MAX = 16
 
@@ -231,7 +231,7 @@ class LiveEntry:
     archived: bool = False
     task: asyncio.Task[None] | None = None
     lock: asyncio.Lock = field(default_factory=asyncio.Lock)
-    #: (plans/207 A1b) 사용자 경로 가림 결과 — 마스크 함수별 · 구독자·상세 조회가 같은 결과를
+    #: (plans/208 A1b) 사용자 경로 가림 결과 — 마스크 함수별 · 구독자·상세 조회가 같은 결과를
     #: 나눠 쓴다(같은 이벤트를 구독자마다 다시 가리지 않는다). 버퍼와 함께 sweep 된다.
     user_cache: dict[Callable[[str], str] | None, _UserCache] = field(default_factory=dict)
     mask_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
@@ -276,7 +276,7 @@ class LiveEntry:
     async def prepare_user_events(
         self, since: int, mask_fn: Callable[[str], str] | None
     ) -> None:
-        """`seq > since` 이벤트의 사용자 경로 가림을 미리 채운다(plans/207 A1b).
+        """`seq > since` 이벤트의 사용자 경로 가림을 미리 채운다(plans/208 A1b).
 
         아직 안 가린 것이 `USER_MASK_INLINE_MAX`건 이하면 아무것도 하지 않는다(읽을 때 루프
         위에서 가린다). 많으면 이벤트 루프 밖(스레드)에서 한 번만 가린다 — 같은 순간 깨어난
@@ -906,7 +906,7 @@ async def stream_events(
             if hub.clock() - started >= STREAM_MAX_SECONDS:
                 break
             if not ctx.operator:
-                # (plans/207 A1b) 큰 묶음 가림은 루프 밖에서 먼저 — 아래 프레임 조립은 결과를 쓴다.
+                # (plans/208 A1b) 큰 묶음 가림은 루프 밖에서 먼저 — 아래 프레임 조립은 결과를 쓴다.
                 for investigation_id in ctx.watch:
                     entry = hub.entry(investigation_id)
                     if investigation_id not in done and entry is not None:

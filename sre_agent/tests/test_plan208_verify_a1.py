@@ -1,4 +1,4 @@
-"""plans/207 A1 독립 검증(verifier) — 기본값 비트 동일 · 상한 곱셈 없음 · 누수 · URL 판별 · 공정성.
+"""plans/208 A1 독립 검증(verifier) — 기본값 비트 동일 · 상한 곱셈 없음 · 누수 · URL 판별 · 공정성.
 
 `xfail(strict=True)`는 **결함 재현**이다 — 고치면 XPASS로 실패하므로 그때 표지를 지운다.
 실 LLM·MCP 호출 0.
@@ -23,7 +23,7 @@ from sre_agent.application.investigation_dispatcher import InvestigationDispatch
 from sre_agent.infrastructure import holmes_mcp_scope as hs
 from sre_agent.infrastructure import investigation_context as ic
 from sre_agent.infrastructure import mcp_tool_client as mc
-from tests.test_plan207_a1_tool_scope import (
+from tests.test_plan208_a1_tool_scope import (
     PURL,
     FakeTool,
     Gauge,
@@ -32,7 +32,7 @@ from tests.test_plan207_a1_tool_scope import (
     run_threads,
     scope_settings,
 )
-from tests.test_plan207_investigation_metrics import make_job, make_settings, ok_result
+from tests.test_plan208_investigation_metrics import make_job, make_settings, ok_result
 
 
 @pytest.fixture
@@ -142,7 +142,7 @@ def test_axis_matches_holmes_normalized_url(restore: None, configured: str) -> N
     assert hs._CONFIG.axis_of(lock_string) == "polestar"
 
 
-# 배치·HolmesGPT 자리 공정성 재현은 `test_plan207_a1_tool_scope.py`
+# 배치·HolmesGPT 자리 공정성 재현은 `test_plan208_a1_tool_scope.py`
 # `test_holmes_waiters_do_not_starve_batch_poller`가 대신한다 — 이 파일의 원 재현은
 # 자리 1개를 쥔 채 재시도해 자기와 다투는 구조라 어떤 수정으로도 통과할 수 없었다.
 

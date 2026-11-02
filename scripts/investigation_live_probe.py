@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""조사 실시간 허브 부하 프로브 — 본체 이벤트 루프 정지 측정 (plans/207 트랙 A0-b).
+"""조사 실시간 허브 부하 프로브 — 본체 이벤트 루프 정지 측정 (plans/208 트랙 A0-b).
 
 실제 `InvestigationLiveHub`와 `stream_events`(SSE 제너레이터)를 띄우고, 조사 서비스 호출
 (`investigation_poll.fetch_poll`)만 가짜로 바꿔 미종결 조사 K건(= 폴러 K개)과 SSE 구독자를 돌린다.

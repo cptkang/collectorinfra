@@ -1,6 +1,6 @@
-"""plans/207 트랙 C M-3 독립 검증 — 판정 파일 역방향 집계 · 회전 · 조각 횡단 읽기.
+"""plans/208 트랙 C M-3 독립 검증 — 판정 파일 역방향 집계 · 회전 · 조각 횡단 읽기.
 
-구현자 테스트(`noise_gate/tests/test_plan207_m3_rotation.py`·`test_plan207_m3_decision_scan.py`)와
+구현자 테스트(`noise_gate/tests/test_plan208_m3_rotation.py`·`test_plan208_m3_decision_scan.py`)와
 겹치지 않는 축만 본다.
 
 1. 플래그 off = 기준 SHA(`afc5626c`)와 비트 동일 — 기준 SHA의 `decision_store.py`를 git에서 꺼내

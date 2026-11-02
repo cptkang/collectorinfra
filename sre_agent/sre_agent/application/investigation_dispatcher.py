@@ -660,10 +660,10 @@ class InvestigationDispatcher:
         # kind별 기대 소스(plans/198 I-10) — 미조회 소스 표기가 켜졌을 때 처음 쓸 때 1회 읽는다.
         self._expected: ExpectedSources | None = None
         self._expected_loaded = False
-        # 조사별 동시성 계측(plans/207 A0-a) — 플래그는 기동 시 1회. 끄면 훅을 설치하지 않고 워커가
+        # 조사별 동시성 계측(plans/208 A0-a) — 플래그는 기동 시 1회. 끄면 훅을 설치하지 않고 워커가
         # 계측 객체를 만들지 않는다(감사 비트 동일).
         self._metrics_enabled = bool(getattr(settings, "sre_investigation_metrics_enabled", False))
-        # 조사 컨텍스트 전파(plans/207 A1 · D-358 — HolmesGPT MCP 잠금 범위 · 조사별 자리 몫 · APM
+        # 조사 컨텍스트 전파(plans/208 A1 · D-359 — HolmesGPT MCP 잠금 범위 · 조사별 자리 몫 · APM
         # owner). 신규 설정이 모두 기본값이면 훅을 설치하지 않고 워커에 컨텍스트를 붙이지 않는다
         # (비트 동일). 계측 훅보다 먼저 설치한다 — 계측 잠금 대기 래퍼가 조사 범위 잠금을 감싸게.
         self._context_enabled = holmes_mcp_scope.context_needed(settings)
@@ -864,9 +864,9 @@ class InvestigationDispatcher:
         # 협조적 중단 신호(plans/194 W3 · D-347) — 조사 함수가 잡에서 읽는다
         # (심층 잡 사본도 같은 객체).
         job.cancel_event = threading.Event()  # type: ignore[attr-defined]
-        # 조사별 계측(plans/207 A0-a) — off면 None(무동작).
+        # 조사별 계측(plans/208 A0-a) — off면 None(무동작).
         metrics = investigation_metrics.start() if self._metrics_enabled else None
-        # 조사 컨텍스트(plans/207 A1) — off면 None(무동작).
+        # 조사 컨텍스트(plans/208 A1) — off면 None(무동작).
         ctx = investigation_context.bind(job.investigation_id) if self._context_enabled else None
         try:
             self._acquire_slot(job)  # 동시 상한

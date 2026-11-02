@@ -1,4 +1,4 @@
-"""plans/207 트랙 B W5 · C-7 — 본체 기동 분기 `ALARM_WORKER_IN_PROCESS`.
+"""plans/208 트랙 B W5 · C-7 — 본체 기동 분기 `ALARM_WORKER_IN_PROCESS`.
 
 - 기본(true · 필드 없음 · `MagicMock` 설정): 본체가 종전처럼 워커 태스크를 만든다(비트 동일).
 - false: `ALARM_ENABLED=true`여도 워커를 만들지 않고 INFO 1줄(별도 프로세스 안내).

@@ -1,4 +1,4 @@
-"""알람 워커 동시 처리의 순서 장치 (plans/207 트랙 B W2 · C-2·C-3 — N≥2 경로 전용).
+"""알람 워커 동시 처리의 순서 장치 (plans/208 트랙 B W2 · C-2·C-3 — N≥2 경로 전용).
 
 `ALARM_WORKER_MAX_CONCURRENCY`가 2 이상일 때만 워커가 쓴다. 1(기본)이면 이 모듈을 거치지 않는다.
 
@@ -60,7 +60,7 @@ def resolve_max_concurrency(raw: Any) -> int:
 def conflict_keys(
     event: AlarmEvent, *, fanout: bool, episodes: bool
 ) -> frozenset[Hashable]:
-    """P2(서버명 역조회) 뒤 이벤트의 충돌 키 집합(plans/207 §1.4 「충돌 키 집합」).
+    """P2(서버명 역조회) 뒤 이벤트의 충돌 키 집합(plans/208 §1.4 「충돌 키 집합」).
 
     - 호스트 키 `host_key_of(db_id, server_name or hostname)` — 항상
     - 캐시 키 `(db_id, server_name, alarm_name)` — 항상(server_name이 빈 알람의 노이즈 캐시 공유)

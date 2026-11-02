@@ -185,7 +185,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--concurrency", type=_ks, default=None, metavar="K[,K…]",
                    help="--run: 동시 조사 측정(예: 1,2,5) — 호스트가 겹치지 않는 세계 K개를 "
                         "한 실험군에 동시 접수 · 혼자(K=1) 대비 배율 → concurrency.{jsonl,md} · "
-                        "채점 생략(plans/207 A0-a · 미지정 = 종전 실행)")
+                        "채점 생략(plans/208 A0-a · 미지정 = 종전 실행)")
     p.add_argument("--test", action="store_true", help="가짜 LLM(backend=fake) 허용 — 테스트 전용")
     p.add_argument("--allow-billed", metavar="APPROVAL",
                    help="과금 평면 허용 — 사용자 승인 문구를 그대로 적는다"

@@ -1,4 +1,4 @@
-"""plans/207 트랙 C M-3 (a) — 억제기 상태 집계의 「최근 구간만 읽기」.
+"""plans/208 트랙 C M-3 (a) — 억제기 상태 집계의 「최근 구간만 읽기」.
 
 설정 `NOISE_DECISION_STORE_RECENT_SCAN_ENABLED`.
 

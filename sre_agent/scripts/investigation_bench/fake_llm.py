@@ -14,7 +14,7 @@ holmes(litellm `openai/…`)가 부르는 그대로 받아 **현재 세계의 �
   `tools` 키가 없는 마지막 턴에도 낸다 · §4.11 대본 주의), 아니면 답변으로 끝낸다.
 - 세계가 지정되지 않았으면(사전 점검의 tool-calling 왕복) 받은 첫 도구를 한 번 부르고 답한다.
 - 응답에 `usage`를 싣는다(holmes가 그대로 누적 — 토큰 칸 검증용). 바인딩은 127.0.0.1 고정.
-- 동시 모드(plans/207 A0-a): 제어 경로에 `{worlds: [{world_id, trial, arm, script}, …]}`를 주면 세계
+- 동시 모드(plans/208 A0-a): 제어 경로에 `{worlds: [{world_id, trial, arm, script}, …]}`를 주면 세계
   여럿이 동시에 활성이다. 요청마다 대화 본문에 나온 세계 호스트(`World.host_set` — 동시 세계
   끼리는 겹치지 않게 고른다)로 세계를 가른다. 못 가르면 세계 미지정 응답이다. 단일 지정은 동시
   목록을 지운다.
@@ -318,7 +318,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=19180)
     p.add_argument("--log", type=Path, default=None, help="요청 요약 JSONL(선택)")
     p.add_argument("--delay-s", type=float, default=0.0,
-                   help="응답 1회당 고정 지연(초 · 기본 0 = 지연 없음 · plans/207 A0-a)")
+                   help="응답 1회당 고정 지연(초 · 기본 0 = 지연 없음 · plans/208 A0-a)")
     args = p.parse_args(argv)
     fake = FakeLLM(load_worlds(args.worlds), args.log, delay_s=args.delay_s)
     uvicorn.run(fake.build_app(), host=BIND_HOST, port=args.port, log_level="warning")

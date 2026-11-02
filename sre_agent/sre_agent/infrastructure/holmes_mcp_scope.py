@@ -1,9 +1,9 @@
-"""HolmesGPT MCP 호출의 조사 범위화 (plans/207 A1 · D-358 · 기본 off).
+"""HolmesGPT MCP 호출의 조사 범위화 (plans/208 A1 · D-359 · 기본 off).
 
 holmes 0.36.0 `toolset_mcp.RemoteMCPTool._invoke`는 같은 MCP URL 호출을 **프로세스 전역 잠금
 하나**(`get_server_lock(url)`)로 직렬화한다(호출마다 SSE 새 연결 · 응답까지 잠금 보유). 동시 조사
 K건의 HolmesGPT 도구 호출이 모두 이 잠금 앞에 줄을 서고, 이 경로는 전역 도구 상한
-(`sre_tool_global_concurrency`) 밖이다(A0 측정 · plans/207 §8.6).
+(`sre_tool_global_concurrency`) 밖이다(A0 측정 · plans/208 §8.6).
 
 **공유 상태 확인(holmes 0.36.0 · mcp 1.x 소스)**: `_invoke_async`는 호출마다
 `get_initialized_mcp_session`으로 새 `httpx.AsyncClient`(`create_mcp_http_client_factory`)·새 SSE
@@ -161,7 +161,7 @@ def _acquire_slot(sem: threading.BoundedSemaphore, share: ShareGate | None,
 
     배치 경로(`mcp_tool_client._acquire_global`)와 **같은 간격의 비차단 획득 반복**이다. 차단
     대기(`acquire(timeout=…)`)는 반환 즉시 통지받아 간격마다 엿보는 배치 쪽을 늘 앞질러 굶긴다 —
-    두 경로가 같은 방식으로 다퉈야 공정하다(plans/207 A1 verifier 지적).
+    두 경로가 같은 방식으로 다퉈야 공정하다(plans/208 A1 verifier 지적).
     """
     deadline = time.monotonic() + max(0.0, timeout_seconds)
     if share is not None:

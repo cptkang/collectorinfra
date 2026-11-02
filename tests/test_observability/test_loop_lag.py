@@ -1,4 +1,4 @@
-"""plans/207 A0-b — 이벤트 루프 정지 계측(`src/observability/loop_lag.py`) · 본체 옵트인 배선 ·
+"""plans/208 A0-b — 이벤트 루프 정지 계측(`src/observability/loop_lag.py`) · 본체 옵트인 배선 ·
 프로브."""
 
 from __future__ import annotations

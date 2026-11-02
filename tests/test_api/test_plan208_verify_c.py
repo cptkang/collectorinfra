@@ -1,4 +1,4 @@
-"""plans/207 트랙 C(M-1·M-2·M-4) 독립 검증 — verifier 작성.
+"""plans/208 트랙 C(M-1·M-2·M-4) 독립 검증 — verifier 작성.
 
 - 기준 SHA(afc5626c)의 `DecisionStore`를 임시 모듈로 로드해 off 경로(`aggregate`·`meta_alerts`)와
   on 경로(`health_snapshot`)의 결과·예외를 같은 입력으로 대조한다.

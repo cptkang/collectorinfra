@@ -1,6 +1,6 @@
-"""plans/207 트랙 B W5 · C-7 독립 검증.
+"""plans/208 트랙 B W5 · C-7 독립 검증.
 
-구현자 테스트(`test_plan207_w5_worker_process.py`)와 겹치지 않는 관점.
+구현자 테스트(`test_plan208_w5_worker_process.py`)와 겹치지 않는 관점.
 
 - 가드 off(기본): 실제 `run()` + 실제 `_consume_stream` 직렬 루프 — 잠금 객체 생성·
   잠금 Redis 호출 0, 읽기 인자(count=10·block_ms=2000·consumer)·처리 순서·

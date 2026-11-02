@@ -395,17 +395,17 @@ class AlarmWorker:
         """
         self._config = config
         self._process_kind_classifier = process_kind_classifier
-        # (plans/207 W0 · C-0) 구간 계측 — 기동 시 1회 해석. off(기본)면 타이머를 만들지 않아
+        # (plans/208 W0 · C-0) 구간 계측 — 기동 시 1회 해석. off(기본)면 타이머를 만들지 않아
         # 측정 호출·DEBUG 줄·감사 `timing` 키가 모두 없다(비트 동일).
         self._timing_enabled = bool(
             getattr(getattr(config, "alarm", None), "worker_timing_enabled", False)
         )
-        # (plans/207 W2 · C-2) 동시 처리 상한 N — 기동 시 1회 해석(1~16 밖은 자르고 WARNING).
+        # (plans/208 W2 · C-2) 동시 처리 상한 N — 기동 시 1회 해석(1~16 밖은 자르고 WARNING).
         # 1(기본)이면 `run()`이 기존 직렬 소비 루프를 그대로 탄다(비트 동일).
         self._max_concurrency = resolve_max_concurrency(
             getattr(getattr(config, "alarm", None), "worker_max_concurrency", 1)
         )
-        # (plans/207 W3 · C-5) 종료 드레인 시간(N≥2 전용 · 음수는 0) · 기동 시 미ACK 회수(옵트인 ·
+        # (plans/208 W3 · C-5) 종료 드레인 시간(N≥2 전용 · 음수는 0) · 기동 시 미ACK 회수(옵트인 ·
         # 기본 off = 회수 호출 0) — 기동 시 1회 해석.
         self._drain_timeout = max(0.0, float(
             getattr(getattr(config, "alarm", None), "worker_drain_timeout_seconds", 30.0)
@@ -415,7 +415,7 @@ class AlarmWorker:
             getattr(getattr(config, "alarm", None), "worker_reclaim_pending_on_start", False)
             is True
         )
-        # (plans/207 W5 · C-7) 단일 인스턴스 잠금(옵트인 · 기본 off = 잠금 Redis 호출 0) —
+        # (plans/208 W5 · C-7) 단일 인스턴스 잠금(옵트인 · 기본 off = 잠금 Redis 호출 0) —
         # 기동 시 1회 해석.
         self._singleton_guard = (
             getattr(getattr(config, "alarm", None), "worker_singleton_guard", False) is True
@@ -423,7 +423,7 @@ class AlarmWorker:
         # 잠금 때문에 멈췄으면 그 사유(`OUTCOME_LOST`·`OUTCOME_NOT_ACQUIRED`) — 별도 프로세스
         # 진입점이 종료 코드로 바꾼다(정상 정지와 구분). 그 밖에는 None.
         self.lock_outcome: str | None = None
-        # (plans/207 W2) PAGE 레지스트리 키 상한 배리어가 걸려 있는가 — 상태가 바뀔 때만 로그 1줄.
+        # (plans/208 W2) PAGE 레지스트리 키 상한 배리어가 걸려 있는가 — 상태가 바뀔 때만 로그 1줄.
         self._page_cap_barrier = False
         self._graph = None
         self._history_repo = None
@@ -802,7 +802,7 @@ class AlarmWorker:
         self._annotation_classifier = self._build_annotation_classifier()
         dedup: dict[str, float] = {}
 
-        # (plans/207 W5 · C-7) 단일 인스턴스 잠금 — 켜졌을 때만 소비(요약 루프 포함) 전에 잡는다.
+        # (plans/208 W5 · C-7) 단일 인스턴스 잠금 — 켜졌을 때만 소비(요약 루프 포함) 전에 잡는다.
         # 못 잡으면 소비하지 않고 끝낸다(본체 안 모드면 본체는 계속 뜬다 — 이 태스크만 끝).
         lock: WorkerSingletonLock | None = None
         if self._singleton_guard:
@@ -856,16 +856,16 @@ class AlarmWorker:
     ) -> None:
         """`run()`의 소비 본체 — (옵트인) pending 회수 뒤 N≥2 동시 처리 또는 직렬 루프.
 
-        plans/207 W5에서 `run()`의 `try` 본문을 그대로 옮겼다(잠금 감시가 이 본체를 태스크로 감싸
+        plans/208 W5에서 `run()`의 `try` 본문을 그대로 옮겼다(잠금 감시가 이 본체를 태스크로 감싸
         멈출 수 있게). 취소를 받으면 지금처럼 새로 읽지 않고 끝낸다(N≥2는 W3 드레인).
         """
         if self._reclaim_pending_on_start:
-            # (plans/207 W3 · C-5) 옵트인 — 직전 종료·장애가 남긴 자기 소비자 pending을
+            # (plans/208 W3 · C-5) 옵트인 — 직전 종료·장애가 남긴 자기 소비자 pending을
             # 먼저 처리한다.
             await self._reclaim_pending(r, stream_key, group, dedup)
         if self._max_concurrency >= 2:
-            # (plans/207 W2) N≥2 — 동시 처리 실행기. 1이면 아래 직렬 루프(무변경).
-            # (plans/207 W3) 종료 취소를 받으면 진행 중을 드레인 시간만큼 기다린다.
+            # (plans/208 W2) N≥2 — 동시 처리 실행기. 1이면 아래 직렬 루프(무변경).
+            # (plans/208 W3) 종료 취소를 받으면 진행 중을 드레인 시간만큼 기다린다.
             await self._consume_concurrent(
                 r, stream_key, group, dedup, max_concurrency=self._max_concurrency,
                 drain_timeout=self._drain_timeout,
@@ -883,7 +883,7 @@ class AlarmWorker:
                 await self._process(r, stream_key, group, msg_id, fields, dedup)
 
     def _singleton_lock_for(self, r: aioredis.Redis) -> WorkerSingletonLock:
-        """(plans/207 W5) 단일 인스턴스 잠금 — 워커 Redis 연결을 같이 쓴다(테스트 seam)."""
+        """(plans/208 W5) 단일 인스턴스 잠금 — 워커 Redis 연결을 같이 쓴다(테스트 seam)."""
         return WorkerSingletonLock(r)
 
     async def _consume_guarded(
@@ -894,7 +894,7 @@ class AlarmWorker:
         group: str,
         dedup: dict[str, float],
     ) -> None:
-        """(plans/207 W5 · C-7) 잠금을 감시하며 소비한다 — 잠금을 잃으면 새로 읽지 않고 멈춘다.
+        """(plans/208 W5 · C-7) 잠금을 감시하며 소비한다 — 잠금을 잃으면 새로 읽지 않고 멈춘다.
 
         소비 본체(`_consume_stream`)와 잠금 감시(`lock.watch`)를 함께 돌린다.
 
@@ -946,7 +946,7 @@ class AlarmWorker:
         stop_when_drained: bool = False,
         drain_timeout: float = 0.0,
     ) -> None:
-        """동시 처리 소비 루프(plans/207 W2 · C-2 — `run()`의 N≥2 분기와 동등성 하네스가 같이 쓴다).
+        """동시 처리 소비 루프(plans/208 W2 · C-2 — `run()`의 N≥2 분기와 동등성 하네스가 같이 쓴다).
 
         메시지마다 `_process`를 태스크로 띄우되 진행 중 태스크가 `max_concurrency`를 넘지 않게 남은
         자리 수만큼만 읽는다(백프레셔). 순서 보장(P3 수신 순서 직렬 · 충돌 키 대기 · 전역 배리어)은
@@ -1021,7 +1021,7 @@ class AlarmWorker:
 
     @staticmethod
     async def _drain_inflight(tasks: set[asyncio.Task[None]], timeout: float) -> None:
-        """(plans/207 W3 · C-5) 종료 드레인 — 진행 중 태스크를 `timeout`초까지 기다린다.
+        """(plans/208 W3 · C-5) 종료 드레인 — 진행 중 태스크를 `timeout`초까지 기다린다.
 
         새로 읽지 않으므로 대기 중(P3 전) 건도 앞 건이 끝나면 이어서 처리된다. 결과는 로그 1줄로
         남긴다. 남은 것의 취소는 호출자가 한다(취소된 건은 ACK하지 않는다 — pending).
@@ -1050,7 +1050,7 @@ class AlarmWorker:
         *,
         consumer: str = _CONSUMER_NAME,
     ) -> int:
-        """(plans/207 W3 · C-5) 기동 시 자기 소비자의 pending(배달됐으나 ACK 안 된 메시지)을
+        """(plans/208 W3 · C-5) 기동 시 자기 소비자의 pending(배달됐으나 ACK 안 된 메시지)을
         먼저 처리한다.
 
         `ALARM_WORKER_RECLAIM_PENDING_ON_START`가 켜졌을 때만 `run()`이 부른다. 10건씩 수신 순서대로
@@ -1076,7 +1076,7 @@ class AlarmWorker:
         return total
 
     async def _enter_serial_stage(self, slot: StageSlot, event: AlarmEvent) -> None:
-        """(plans/207 W2 · C-3) P3 직렬 구간에 들어간다 — 순번 · 충돌 키 · 전역 배리어 대기.
+        """(plans/208 W2 · C-3) P3 직렬 구간에 들어간다 — 순번 · 충돌 키 · 전역 배리어 대기.
 
         충돌 키는 P2(서버명 역조회) 뒤 이벤트로 계산한다. 배리어는 PAGE 레지스트리의 주기 정리
         기한이거나 키 상한에 닿을 수 있을 때(진행 중 반영 수 포함) 진행 중 전부의 P5를 기다린다.
@@ -1129,7 +1129,7 @@ class AlarmWorker:
 
         파싱 → 중복 제거 → 심각도 필터 → 그래프 실행 → ACK 순서로 진행한다.
         예외 발생 시에도 ACK하여 메시지가 무한 재처리되지 않도록 한다.
-        (plans/207 W0) 구간 계측이 켜져 있으면 P1~P6 소요를 ACK 뒤 DEBUG 1줄로 남긴다.
+        (plans/208 W0) 구간 계측이 켜져 있으면 P1~P6 소요를 ACK 뒤 DEBUG 1줄로 남긴다.
 
         Args:
             r: Redis 클라이언트
@@ -1138,11 +1138,11 @@ class AlarmWorker:
             msg_id: 메시지 ID
             fields: 메시지 필드 딕셔너리 (b"data" 키에 JSON 문자열)
             dedup: 중복 제거용 alarm_id → 마지막 처리 시각 딕셔너리
-            slot: (plans/207 W2) 동시 처리 실행기(N≥2)의 순번 자리. None(N=1)이면 순서 장치를
+            slot: (plans/208 W2) 동시 처리 실행기(N≥2)의 순번 자리. None(N=1)이면 순서 장치를
                 거치지 않는다(비트 동일).
         """
         timer = StageTimer() if self._timing_enabled else None
-        # (plans/207 W3 · C-5) N≥2(slot 있음)에서 취소된 건은 ACK하지 않는다 — pending으로 남아
+        # (plans/208 W3 · C-5) N≥2(slot 있음)에서 취소된 건은 ACK하지 않는다 — pending으로 남아
         # 기동 시 회수 대상이 된다. N=1(slot 없음)은 현행 그대로 취소돼도 `finally`에서 ACK한다.
         ack_on_exit = True
         try:
@@ -1207,7 +1207,7 @@ class AlarmWorker:
             if timer is not None:
                 timer.mark("p2")
             if slot is not None:
-                # (plans/207 W2) N≥2 — P3 직렬 구간 진입(수신 순서 · 충돌 키 · 전역 배리어).
+                # (plans/208 W2) N≥2 — P3 직렬 구간 진입(수신 순서 · 충돌 키 · 전역 배리어).
                 await self._enter_serial_stage(slot, event)
 
             gate_on = bool(self._config.noise_gate.enable_noise_gate)
@@ -1253,7 +1253,7 @@ class AlarmWorker:
 
             if gate_on:
                 # ── Plan 52 게이트 활성 경로 ──
-                # (plans/207 W2) N≥2면 P3 진입 판정 시각 — 정리 배리어 판정과 같은 값.
+                # (plans/208 W2) N≥2면 P3 진입 판정 시각 — 정리 배리어 판정과 같은 값.
                 now = time.time() if slot is None or slot.entered_at is None else slot.entered_at
                 if self._apm_noise_ctx is not None and is_apm_source(event):
                     # (plans/144 §4.3) 지문·해소 짝맞춤·정책 조회에 정규화 유형을 쓴다
@@ -1394,7 +1394,7 @@ class AlarmWorker:
                 # provider 미주입(off/inert)이면 내부에서 즉시 skip(비용 0). 결정적 dedup 판정·
                 # 억제 지문·티어 판정은 이 호출과 무관하게 위에서 이미 확정됐다(주석은 병렬 관측).
                 if not event.is_clear:
-                    # (plans/207 W4 C-6) 유사도 계산만 스레드로 — 최근 텍스트 상태 갱신은 루프에서,
+                    # (plans/208 W4 C-6) 유사도 계산만 스레드로 — 최근 텍스트 상태 갱신은 루프에서,
                     # 순서는 위 P3 직렬 구간이 보장한다. provider 미가용이면 스레드 왕복 없음.
                     semantic_annotation = await self._annotate_semantic_dedup_async(
                         event, fingerprint, now
@@ -1455,7 +1455,7 @@ class AlarmWorker:
             if timer is not None:
                 timer.mark("p3")
             if slot is not None:
-                # (plans/207 W2) P3 끝 — 순번을 다음 건으로 넘긴다(충돌 키는 P5 끝까지 쥔다).
+                # (plans/208 W2) P3 끝 — 순번을 다음 건으로 넘긴다(충돌 키는 P5 끝까지 쥔다).
                 # 아래 그래프 입력과 `active_firings` 복사본은 첫 await 전에 만들어지므로 P3 끝
                 # 시점 상태다.
                 slot.leave_serial()
@@ -1546,7 +1546,7 @@ class AlarmWorker:
                         "incident_publisher": self._incident_publisher,
                         # (Plan 60 E4) 인히비션 활성 상태 참조 전달(읽기전용) — enricher가
                         # root_notified(다홉 하이브리드) 산출에 소비. 신규 저장소 불필요.
-                        # (plans/207 W2) N≥2면 P3 끝 시점 복사본 — 뒤 알람의 P3가 그래프 실행 중에
+                        # (plans/208 W2) N≥2면 P3 끝 시점 복사본 — 뒤 알람의 P3가 그래프 실행 중에
                         # 바꾸지 못하게 한다(근본원인 스코프는 키로 못 막는다). N=1은 참조 그대로.
                         "active_firings": (
                             self._active_firings if slot is None else dict(self._active_firings)
@@ -1568,7 +1568,7 @@ class AlarmWorker:
                             {"process_kind_classifier": self._process_kind_classifier}
                             if self._process_kind_classifier is not None else {}
                         ),
-                        # (plans/207 W0) 구간 계측 — 게이트 노드가 감사 레코드 `timing`에 싣는다.
+                        # (plans/208 W0) 구간 계측 — 게이트 노드가 감사 레코드 `timing`에 싣는다.
                         # 계측 off면 키 없음(비트 동일).
                         **({"alarm_timing": timer.audit_view} if timer is not None else {}),
                     }
@@ -1603,14 +1603,14 @@ class AlarmWorker:
             try:
                 await self._dead_letter(r, stream_key, msg_id, fields, exc)
             except asyncio.CancelledError:
-                # (plans/207 W3 · C-5) 적재 중 취소 — 위 형제 절이 못 잡으므로 여기서도 N≥2면
+                # (plans/208 W3 · C-5) 적재 중 취소 — 위 형제 절이 못 잡으므로 여기서도 N≥2면
                 # ACK하지 않는다(pending 유지). N=1은 현행 그대로 ACK.
                 if slot is not None:
                     ack_on_exit = False
                 raise
         finally:
             if slot is not None:
-                # (plans/207 W2) 조기 반환·예외·취소에서도 순번을 넘기고 충돌 키를 놓는다
+                # (plans/208 W2) 조기 반환·예외·취소에서도 순번을 넘기고 충돌 키를 놓는다
                 # (교착 방지).
                 slot.finish()
             if ack_on_exit:
@@ -1702,14 +1702,14 @@ class AlarmWorker:
     ) -> Optional[dict]:
         """`DedupService.annotate_semantic_dedup` 위임 — 테스트 seam(plans/177).
 
-        `_process`는 W4부터 `_annotate_semantic_dedup_async`를 쓴다(plans/207).
+        `_process`는 W4부터 `_annotate_semantic_dedup_async`를 쓴다(plans/208).
         """
         return _dedup_service(self).annotate_semantic_dedup(event, fingerprint, now)
 
     async def _annotate_semantic_dedup_async(
         self, event: AlarmEvent, fingerprint: str, now: float
     ) -> dict[str, Any] | None:
-        """`DedupService.annotate_semantic_dedup_async` 위임 — `_process` P3 경로(plans/207 W4)."""
+        """`DedupService.annotate_semantic_dedup_async` 위임 — `_process` P3 경로(plans/208 W4)."""
         return await _dedup_service(self).annotate_semantic_dedup_async(
             event, fingerprint, now
         )

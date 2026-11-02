@@ -1,4 +1,4 @@
-"""plans/207 트랙 C M-1·M-2 — 관제 메타모니터링 집계의 루프 밖 실행 · 공유 캐시 · 단일 비행.
+"""plans/208 트랙 C M-1·M-2 — 관제 메타모니터링 집계의 루프 밖 실행 · 공유 캐시 · 단일 비행.
 
 - 플래그 off(`app.state.noise_aggregate_cache` 없음): 두 라우트가 종전 `aggregate` + `meta_alerts`
   경로 그대로다(새 경로 미호출 · 응답 키 동일).

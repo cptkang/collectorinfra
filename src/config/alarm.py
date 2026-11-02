@@ -39,33 +39,33 @@ class AlarmConfig(BaseSettings):
     # 상시 동작 — `_enabled` 플래그는 두지 않는다(실패·타임아웃은 graceful로 충분).
     server_identity_timeout_seconds: float = 3.0
     server_identity_cache_ttl_seconds: int = 3600   # Redis 캐시 TTL(초, 0=미캐시)
-    # ── plans/207 W0 · D-358: 워커 구간 계측(측정 전용) ──
+    # ── plans/208 W0 · D-359: 워커 구간 계측(측정 전용) ──
     # 켜면 알람 1건마다 P1~P6(파싱·서버명 역조회·게이트 사전 판정·그래프·후처리·ACK) 소요(ms)를 DEBUG 1줄로,
     # 판정 감사 레코드에는 기록 시점까지 아는 구간을 `timing` 키로 남긴다. 기본 off = 측정 호출·로그·키 없음
     # (비트 동일 · D-162). 기동 시 1회 해석.
     worker_timing_enabled: bool = False
-    # ── plans/207 W2: 워커 동시 처리 상한(N) ──
+    # ── plans/208 W2: 워커 동시 처리 상한(N) ──
     # 1(기본) = 현행 소비 루프(한 건씩 직렬)를 그대로 탄다(비트 동일). 2 이상이면 서버명 역조회는 메시지별
     # 동시 · 게이트 사전 판정은 수신 순서대로 직렬 · 그래프~ACK는 최대 N건 동시이며, 같은 호스트·같은 사건
     # 등 충돌 키가 겹치는 알람은 앞 건의 후처리가 끝난 뒤에 판정한다. 워커 쪽 LLM 동시 호출도 N으로 묶인다.
     # 범위 1~16 밖은 경계값으로 자르고 WARNING 1줄. 기동 시 1회 해석.
     worker_max_concurrency: int = 1
-    # ── plans/207 W3: 워커 종료 드레인(N≥2 전용) ──
+    # ── plans/208 W3: 워커 종료 드레인(N≥2 전용) ──
     # 종료(취소) 시 새로 읽지 않고 진행 중 알람을 이 시간(초)만큼 기다린 뒤 남은 것을 취소한다. 끝낸 건은 ACK,
     # 취소된 건은 ACK하지 않아 pending으로 남는다(아래 회수 대상). N=1(기본)은 쓰지 않는다(현행 그대로 —
     # 처리 중 1건은 취소돼도 ACK). 0이면 기다리지 않고 바로 취소. 기동 시 1회 해석.
     worker_drain_timeout_seconds: float = 30.0
-    # ── plans/207 W3: 기동 시 미ACK(pending) 회수 ──
+    # ── plans/208 W3: 기동 시 미ACK(pending) 회수 ──
     # 켜면 기동 직후 이 워커 소비자의 pending(직전 종료·장애 때 처리 중이던 알람)을 먼저 처리한 뒤 새 알람을
     # 읽는다. 재기동 뒤라 중복 억제 상태가 비어 있어 이미 통보한 알람이 다시 통보될 수 있다. 기본 off =
     # 현행(pending은 남겨 둔다 · 비트 동일). 기동 시 1회 해석.
     worker_reclaim_pending_on_start: bool = False
-    # ── plans/207 W5: 워커 실행 위치 ──
+    # ── plans/208 W5: 워커 실행 위치 ──
     # true(기본) = 현행 — 본체(uvicorn) 안에서 워커 태스크를 띄운다(비트 동일). false면 `ALARM_ENABLED=true`여도 본체는
     # 워커를 띄우지 않고 INFO 1줄만 남긴다 — 워커는 별도 프로세스 `python -m noise_gate.worker`로 띄운다(API와 다른
     # 이벤트 루프·코어). 두 프로세스는 같은 `.env`/`.encenv`를 읽는다. 운영 전환은 plans/162 W0-H 뒤. 기동 시 1회 해석.
     worker_in_process: bool = True
-    # ── plans/207 W5: 워커 단일 인스턴스 잠금 ──
+    # ── plans/208 W5: 워커 단일 인스턴스 잠금 ──
     # 켜면 워커가 소비 전에 Redis 잠금(`alarm:worker:lock` · 값 `<호스트>:<pid>` · 30초 만료 · 10초마다 자기 값일 때만
     # 갱신)을 잡는다. 못 잡으면 소비하지 않고 ERROR 1줄 뒤 끝낸다(본체 안 모드면 본체는 계속 뜬다). 실행 중 잃으면 새로
     # 읽지 않고 멈춘다. 본체 안·별도 프로세스 두 모드 같은 가드. 기본 off = 잠금 Redis 호출 0(비트 동일). 운영에서
@@ -307,18 +307,18 @@ class NoiseGateConfig(BaseSettings):
     # (Plan 54) 관제 화면 조회가 파일 끝에서 되짚는 줄 수 상한 — 감사 파일은 그대로 두고
     # 화면 응답만 보호한다. 운영 지표(aggregate/meta_alerts)는 종전대로 전량 스캔한다.
     decision_store_max_lines: int = 20000
-    # (plans/207 트랙 C M-3 · D-358 부기 1) 창을 준 메타모니터링 집계(`aggregate`·`meta_alerts` —
+    # (plans/208 트랙 C M-3 · D-359 부기 1) 창을 준 메타모니터링 집계(`aggregate`·`meta_alerts` —
     # `/admin/noise/health`·`/alarm/metrics`)를 파일 끝에서 거꾸로 읽다가 창 하한보다 10분 넘게 앞선 결정
     # 레코드에서 멈춘다(창 안 레코드 수에 비례). 기본 off = 종전 전량 순회(비트 동일). 기동 시 1회 해석.
     decision_store_recent_scan_enabled: bool = False
-    # (plans/207 M-3) 판정 파일 회전 — 기록 직전 현재 파일이 이 바이트 이상이면 `<이름>.<회전 시각 UTC>`로
+    # (plans/208 M-3) 판정 파일 회전 — 기록 직전 현재 파일이 이 바이트 이상이면 `<이름>.<회전 시각 UTC>`로
     # 이름을 바꾸고 새 파일에 쓴다. 조각은 지우지 않는다(감사 기록). 0(기본) = 회전 없음(비트 동일).
     # 읽는 쪽(집계·관제 조회·추적·복원·스크립트)은 조각을 가로질러 읽는다. 기동 시 1회 해석.
     decision_store_rotate_max_bytes: int = 0
-    # (plans/207 M-3) 날짜 기준 회전 — 켜면 기록 직전 현재 파일의 마지막 수정일(서버 지역 날짜)이 오늘보다
+    # (plans/208 M-3) 날짜 기준 회전 — 켜면 기록 직전 현재 파일의 마지막 수정일(서버 지역 날짜)이 오늘보다
     # 앞이면 회전한다(크기 기준과 함께 쓸 수 있다). 기본 off = 회전 없음. 기동 시 1회 해석.
     decision_store_rotate_daily: bool = False
-    # (plans/207 트랙 C M-1·M-2 · D-358) 메타모니터링 집계(`/admin/noise/health`·`/alarm/metrics`)를
+    # (plans/208 트랙 C M-1·M-2 · D-359) 메타모니터링 집계(`/admin/noise/health`·`/alarm/metrics`)를
     # 이벤트 루프 밖(스레드)에서 파일 1회 순회로 돌리고, 결과를 사용자 모두가 짧게 나눠 쓴다(같은 집계를
     # 동시에 부르면 계산 1회). 기본 off = 두 라우트가 종전처럼 루프 위에서 매 요청 전량 순회(비트 동일).
     # 기동 시 1회 해석. 상한 시간 초과·실패는 503 + 사유(직전 캐시로 대신하지 않는다).
@@ -329,7 +329,7 @@ class NoiseGateConfig(BaseSettings):
     # 공유 캐시 유지(초 · 켰을 때만 쓴다) — 화면 집계 주기(60초)보다 짧아 사용자 수와 무관하게 창당
     # 순회가 15초에 1회 이하가 된다. 0이면 캐시 없이 동시 호출만 합친다.
     aggregate_cache_seconds: float = 15.0
-    # (plans/207 트랙 C M-4) 실시간 알림 버스(`AlarmNotificationBus`) 구독자 큐 상한. 0(기본) = 무상한
+    # (plans/208 트랙 C M-4) 실시간 알림 버스(`AlarmNotificationBus`) 구독자 큐 상한. 0(기본) = 무상한
     # (현행과 비트 동일). 양수면 넘칠 때 가장 오래된 이벤트를 버리고 구독자별 버림 수를 경고로 남긴다
     # — 관제 화면 피드는 30초 재동기화가 메우지만 포털 알람 카드 스트림은 메우지 않는다. 포털 스트림은 존
     # 필터를 큐에서 꺼낸 뒤 걸므로, 볼 수 없는 존의 이벤트도 큐 자리를 차지해 존 제한 사용자의 카드가 더

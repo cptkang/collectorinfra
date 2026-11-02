@@ -20,7 +20,7 @@
   등록 때 1회 부르고 실패하면 그 toolset을 프로세스 수명 내내 끈다(W0 실측).
 - 모든 호출을 `world_calls.jsonl`에 한 줄씩 쓴다(§4.9). 바인딩은 127.0.0.1 고정, 제어 경로는
   루프백 클라이언트만 받는다.
-- 동시 모드(plans/207 A0-a): 제어 경로에 `{worlds: [{world_id, trial, arm}, …]}`를 주면 세계 여럿이
+- 동시 모드(plans/208 A0-a): 제어 경로에 `{worlds: [{world_id, trial, arm}, …]}`를 주면 세계 여럿이
   동시에 활성이다. 호출의 호스트 인자로 세계를 가르고(`World.host_set` — 동시 세계끼리 겹치지
   않게 고른다) 호출 로그 행에 그 세계를 싣는다. 활성 세계가 하나면 호스트 인자가 없어도 그
   세계다. 둘 이상인데 호스트 인자가 없으면 세계 미지정(`matcher` 없음 · 로그
@@ -531,7 +531,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--port", type=int, default=19190, help="polestar 엔드포인트(+제어 경로)")
     p.add_argument("--apm-port", type=int, default=None, help="apm 엔드포인트(지정할 때만 띄운다)")
     p.add_argument("--tool-delay-s", type=float, default=0.0,
-                   help="도구 호출 1건당 고정 지연(초 · 기본 0 = 지연 없음 · plans/207 A0-a)")
+                   help="도구 호출 1건당 고정 지연(초 · 기본 0 = 지연 없음 · plans/208 A0-a)")
     args = p.parse_args(argv)
     server = WorldServer(schema.load_snapshot(args.snapshot), load_worlds(args.worlds), args.log,
                          tool_delay_s=args.tool_delay_s)

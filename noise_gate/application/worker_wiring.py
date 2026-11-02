@@ -251,7 +251,7 @@ def build_decision_store(config: Any) -> Any:
         return DecisionStore(
             ng.decision_store_path,
             ng.decision_store_enabled,
-            # (plans/207 M-3) 판정 파일 회전 — 기본 0·off = 회전 없음(종전과 같다)
+            # (plans/208 M-3) 판정 파일 회전 — 기본 0·off = 회전 없음(종전과 같다)
             rotate_max_bytes=getattr(ng, "decision_store_rotate_max_bytes", 0),
             rotate_daily=getattr(ng, "decision_store_rotate_daily", False),
         )

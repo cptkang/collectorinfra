@@ -111,7 +111,7 @@ def record(wait_s: int) -> None:
 def copy_decisions(src: Path, dst: Path | None = None) -> bool:
     """녹화한 결정 기록을 픽스처로 옮긴다 — 기록이 없으면 False.
 
-    (plans/207 M-3) 회전 조각이 있으면 조각부터 이어 한 파일로 쓴다(없으면 종전 복사와 같다).
+    (plans/208 M-3) 회전 조각이 있으면 조각부터 이어 한 파일로 쓴다(없으면 종전 복사와 같다).
     끝 줄에 개행이 없는 조각(쓰기 중단)이 다음 파일 첫 줄과 붙지 않게 줄마다 개행을 보장한다.
     """
     dst = dst or OUT / "decisions.jsonl"

@@ -93,7 +93,7 @@ class AlarmEmbeddingProvider:
         self._timeout_seconds = timeout_seconds
         self._cache_max = cache_max
         self._lock = threading.Lock()
-        # (plans/207 W4) 모델 encode 전용 Lock — W4부터 P3·P4가 서로 다른 스레드에서 encode를 부를
+        # (plans/208 W4) 모델 encode 전용 Lock — W4부터 P3·P4가 서로 다른 스레드에서 encode를 부를
         # 수 있어 모델 호출을 직렬화한다. 캐시 Lock과 분리해 캐시 적중 경로는 encode 대기에 막히지
         # 않는다.
         self._encode_lock = threading.Lock()

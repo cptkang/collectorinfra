@@ -100,7 +100,7 @@ MODULE_LAYER_MAP: dict[str, Layer] = {
     "noise_gate.alarm_server.__main__":          "entry",
     "noise_gate.alarm_server.config":            "config",
     "noise_gate.alarm_server":                   "infrastructure",
-    # 알람 분석 워커 독립 프로세스 진입점(plans/207 W5 · `python -m noise_gate.worker`).
+    # 알람 분석 워커 독립 프로세스 진입점(plans/208 W5 · `python -m noise_gate.worker`).
     "noise_gate.worker":                         "entry",
 }
 

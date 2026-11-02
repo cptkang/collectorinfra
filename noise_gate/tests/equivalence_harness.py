@@ -1,4 +1,4 @@
-"""알람 워커 동등성 하네스 (plans/207 트랙 B W1 · C-1 — 테스트 유틸 · 제품 코드 무변경).
+"""알람 워커 동등성 하네스 (plans/208 트랙 B W1 · C-1 — 테스트 유틸 · 제품 코드 무변경).
 
 같은 입력 알람 순서를 워커(`AlarmWorker._process`)로 처리해 **판정 감사 레코드 집합**과 그래프
 입력·그래프 뒤 상태 요약을 정규화해 돌려준다. 두 실행의 결과가 같은지로 동등성을 판정한다
@@ -280,13 +280,13 @@ class FakeStreamRedis:
         return out
 
     def pending_ids(self, stream_key: str) -> list[bytes]:
-        """(plans/207 W3) 배달됐고 ACK되지 않은 id — 소비자 1개(워커)의 PEL 흉내."""
+        """(plans/208 W3) 배달됐고 ACK되지 않은 id — 소비자 1개(워커)의 PEL 흉내."""
         acked = set(self.acked)
         delivered = self._streams.get(stream_key, [])[: self._cursor.get(stream_key, 0)]
         return [msg_id for msg_id, _ in delivered if msg_id not in acked]
 
     def _read_pending(self, streams: dict[str, Any], count: int | None) -> list[list[Any]]:
-        """(plans/207 W3) `XREADGROUP id≠">"` 흉내 — pending 중 id가 주어진 id보다 큰 것.
+        """(plans/208 W3) `XREADGROUP id≠">"` 흉내 — pending 중 id가 주어진 id보다 큰 것.
 
         블로킹하지 않고, 실 Redis처럼 더 없으면 스트림 키와 빈 목록을 돌려준다. 소비자 구분은
         하지 않는다(워커 1개).
@@ -485,7 +485,7 @@ async def serial_executor(
 
 
 def concurrent_executor(max_concurrency: int) -> Executor:
-    """(plans/207 W2) N=k 실행기 — `run()`의 N≥2 분기와 같은 소비 루프(`_consume_concurrent`)를
+    """(plans/208 W2) N=k 실행기 — `run()`의 N≥2 분기와 같은 소비 루프(`_consume_concurrent`)를
     빈 읽기(`block_ms=0`)에서 진행 중을 마저 끝내고 돌아오게 부른다."""
 
     async def executor(
