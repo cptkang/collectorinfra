@@ -8,6 +8,9 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-11-02 | D-356 | ⑤ 추가 — 다중 사용자 공정 동시성(호출자 키 = 주체+owner · 호출자별 동시 상한 4 · owner별 실행 작업 2 · 일 보존 · 대기 가시화 · 기본 on) · `plans/205` W3b |
+| 2026-11-02 | D-357 | 신규 — MCP 서버 동시성(다중 워커·stateless 전환 미채택 — SSE 세션 · D-347 ③ 상한 곱셈 · DB2 연결 풀 `pool_enabled` 기본 on — D-162 예외 · 소스별 프로세스 분리는 폐쇄망 측정 판정 뒤) · `plans/206` |
+| 2026-11-02 | D-356 | 신규 — APM 게이트웨이 조회 가속(도구 안 독립 호출 동시 `APM_FANOUT_CONCURRENCY` 4 · 큰 응답 파싱·검사 프로세스 풀 `APM_PARSE_WORKERS` · 기본 on — D-162 예외 · 다중 워커 비채택) · `plans/205` |
 | 2026-10-30 | D-354 | 부기 11 — `plans/201` W7 사례 매뉴얼(U-82~84 · 가상 예시 · 캡처 대기 · 판정 조합 실 경로 테스트 · 절 공유 별칭 금지 · 잔여·후속 후보 기록) |
 | 2026-10-30 | D-354 | 부기 10 — `plans/201` W6 구현: `DUTY_DAILY_SUMMARY_ENABLED`(유효 = `DUTY_AREA_ENABLED` AND) 기본 off 비트 동일 · `/auth/me` `duty_daily_summary` · `GET /auth/duty-areas/daily-summary`(존·억제는 `event_visible_to` 재사용 · 비관리자 suppress 키 없음) · `duty_overlap` · `iter_recent_decisions` 역방향 집계 · verifier Major(전량 읽기·중단 미작동) 교정 |
 | 2026-10-30 | D-354 | 부기 9 — `plans/201` W5 구현: `DUTY_ACTION_ASSIST_ENABLED`(유효 = `DUTY_AREA_ENABLED` AND)·`ALARM_CARD_FLOW_ENABLED`(독립) 기본 off 비트 동일 · `/auth/me` `duty_action_assist` · capabilities `card_flow_enabled` · `checklists`(플레이북 id 키) · 인계 요약(조회 0 · 마스킹 뷰) · 카드 3묶음 + 진행 표시(localStorage) |
