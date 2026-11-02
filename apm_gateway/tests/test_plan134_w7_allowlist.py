@@ -243,7 +243,9 @@ async def test_sensitive_and_management_gets_go_out_with_exact_queries(
     base, state = mock_server_factory(synthetic_dir, "connected")
     w7_state(state).individual[f"{DOMAIN}/OUTOFMEMORY/1001"] = True
     w7_state(state).compare_404 = True
-    tools, _ = make_tools(base)
+    # 나간 요청을 순서까지 대조한다 — 도구 안 동시 호출(plans/205 W2)은 도착 순서가 흔들려
+    # 순차로 고정
+    tools, _ = make_tools(base, extra={"APM_FANOUT_CONCURRENCY": "1"})
     manage = ManageTools(tools)
     outs = [
         await manage.apm_users(),

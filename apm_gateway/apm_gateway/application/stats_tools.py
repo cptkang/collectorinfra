@@ -11,7 +11,8 @@ from apm_gateway.adapters.jennifer.api import STATUS_KINDS, JenniferApi
 from apm_gateway.application.apm_core import ApmCore
 from apm_gateway.application.masking import mask_sql, mask_text, mask_url
 from apm_gateway.application.resolver import Resolution
-from apm_gateway.application.sources import STATUS_OK, STATUS_UNAVAILABLE
+from apm_gateway.application.parallel import contract_violation
+from apm_gateway.application.sources import STATUS_OK, STATUS_UNAVAILABLE, gather_per_source
 from apm_gateway.application.tool_common import (
     SERIES_DEFAULT_MINUTES,
     SERIES_INTERVAL_NOTE,
@@ -178,42 +179,58 @@ class StatsTools:
         limits: Limits,
     ) -> tuple[list[list[dict[str, Any]]], list[tuple[str, ApmError]]]:
         """(소스, 도메인) 묶음마다 시 단위 통계를 받는다. (묶음별 원천 순서 행, 정렬 기준을 거부해
-        조건 없이 다시 받은 묶음). 묶음 실패는 `[한계]` · 전부 실패면 오류다."""
+        조건 없이 다시 받은 묶음). 묶음 실패는 `[한계]` · 전부 실패면 오류다. 묶음 호출(정렬 거부
+        재조회 포함)은 소스 폭으로 겹치고 결과는 묶음 순서대로 처리한다(plans/205 W2 #7)."""
         received: list[list[dict[str, Any]]] = []  # (소스, 도메인) 묶음별 원천 순서
         failures: list[tuple[str, ApmError]] = []
         refused: list[tuple[str, ApmError]] = []  # 정렬 기준을 거부해 조건 없이 다시 받은 묶음
         groups = group_by_domain(res)
         expect_calls(len(groups))
-        for (sid, domain_id), ids in groups.items():
-            where = self.core.sources.where(sid, domain_id)
+        items = list(groups.items())
+
+        async def fetch(
+            item: tuple[tuple[str, int], list[int]],
+        ) -> tuple[list[dict[str, Any]], ApmError | None]:
+            (sid, domain_id), ids = item
             api = self.core.api(sid)
             try:
-                try:
-                    batch = await api.status_stats(
-                        kind,
-                        domain_id,
-                        ids,
-                        start,
-                        end,
-                        sort_by=sort_name,
-                        max_row=None if full else top_n,
-                        application_name=app_name or None,
-                    )
-                except ApmError as e:
-                    if not (sort_name and e.code == API_ERROR):
-                        raise
-                    # 원천이 정렬 기준을 받지 않았다 — 그 조건 없이·행 수 없이 다시 받아
-                    # 로컬에서 정렬한다(W2V-B2 · 선택 조건 하나로 보기를 막지 않는다)
-                    expect_calls(1)
-                    batch = await api.status_stats(
-                        kind, domain_id, ids, start, end, application_name=app_name or None
-                    )
-                    refused.append((where, e))
+                batch = await api.status_stats(
+                    kind,
+                    domain_id,
+                    ids,
+                    start,
+                    end,
+                    sort_by=sort_name,
+                    max_row=None if full else top_n,
+                    application_name=app_name or None,
+                )
             except ApmError as e:
-                notice = limit_notice(e, f"{kind} 통계", f"({where})", self.core.reason_tail(e))
-                failures.append((where, e))
+                if not (sort_name and e.code == API_ERROR):
+                    raise
+                # 원천이 정렬 기준을 받지 않았다 — 그 조건 없이·행 수 없이 다시 받아
+                # 로컬에서 정렬한다(W2V-B2 · 선택 조건 하나로 보기를 막지 않는다)
+                expect_calls(1)
+                batch = await api.status_stats(
+                    kind, domain_id, ids, start, end, application_name=app_name or None
+                )
+                return batch, e
+            return batch, None
+
+        results = await gather_per_source(
+            items, lambda it: self.core.sources.get(it[0][0]), fetch, stop=contract_violation
+        )
+        for ((sid, domain_id), _ids), got in zip(items, results, strict=True):
+            where = self.core.sources.where(sid, domain_id)
+            if isinstance(got, ApmError):
+                notice = limit_notice(
+                    got, f"{kind} 통계", f"({where})", self.core.reason_tail(got)
+                )
+                failures.append((where, got))
                 limits.fail(notice)
                 continue
+            batch, refusal = got
+            if refusal is not None:
+                refused.append((where, refusal))
             received.append([{"source_id": sid, "domain_id": domain_id, **r} for r in batch])
         if failures and len(failures) == len(groups):
             raise self.core.all_failed(failures)
@@ -381,39 +398,46 @@ class StatsTools:
         rows: list[dict[str, Any]] = []
         empty: list[str] = []
         failures: list[tuple[str, ApmError]] = []
-        attempted = 0
         expect_calls(sum(len(plan.get(i["source_id"], [])) for i in res.instances))
-        for inst in res.instances:
+        # (인스턴스, 지표)마다 1호출 — 소스 폭으로 겹치고 결과는 입력 순서대로(plans/205 W2 #8)
+        units = [
+            (inst, metric_id)
+            for inst in res.instances
+            for metric_id, _label in plan.get(inst["source_id"], [])
+        ]
+        attempted = len(units)
+        results = await gather_per_source(
+            units,
+            lambda u: self.core.sources.get(u[0]["source_id"]),
+            lambda u: self.core.api(u[0]["source_id"]).instance_metric_series(
+                u[0]["domain_id"],
+                u[0]["instance_id"],
+                u[1],
+                interval,
+                window.start_ms,
+                window.end_ms,
+            ),
+            stop=contract_violation,
+        )
+        for (inst, metric_id), points in zip(units, results, strict=True):
             label = self.core.inst_label(inst_key(inst))
-            for metric_id, _label in plan.get(inst["source_id"], []):
-                attempted += 1
-                try:
-                    points = await self.core.api(inst["source_id"]).instance_metric_series(
-                        inst["domain_id"],
-                        inst["instance_id"],
-                        metric_id,
-                        interval,
-                        window.start_ms,
-                        window.end_ms,
-                    )
-                except ApmError as e:
-                    notice = limit_notice(
-                        e, f"지표 {metric_id}", f"(인스턴스 {label})", self.core.reason_tail(e)
-                    )
-                    failures.append((f"인스턴스 {label} 지표 {metric_id}", e))
-                    limits.fail(notice)
-                    continue
-                if not points:
-                    empty.append(f"{label}:{metric_id}")
-                rows += [
-                    {
-                        **inst_meta(inst),
-                        "metric": metric_id,
-                        "time_ms": p["time_ms"],
-                        "value": p["value"],
-                    }
-                    for p in points
-                ]
+            if isinstance(points, ApmError):
+                tail = self.core.reason_tail(points)
+                notice = limit_notice(points, f"지표 {metric_id}", f"(인스턴스 {label})", tail)
+                failures.append((f"인스턴스 {label} 지표 {metric_id}", points))
+                limits.fail(notice)
+                continue
+            if not points:
+                empty.append(f"{label}:{metric_id}")
+            rows += [
+                {
+                    **inst_meta(inst),
+                    "metric": metric_id,
+                    "time_ms": p["time_ms"],
+                    "value": p["value"],
+                }
+                for p in points
+            ]
         if attempted and len(failures) == attempted:
             raise self.core.all_failed(failures)
         if empty:

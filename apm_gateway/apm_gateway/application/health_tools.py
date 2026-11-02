@@ -10,9 +10,11 @@ from typing import Any
 from apm_gateway.adapters.jennifer.allowlist import ALLOWED
 from apm_gateway.adapters.jennifer.api import JenniferApi
 from apm_gateway.application.apm_core import ApmCore
+from apm_gateway.application.parallel import contract_violation
 from apm_gateway.application.resolver import SHORT_CACHE_SECONDS
 from apm_gateway.application.sources import (
     JenniferSource,
+    gather_per_source,
 )
 from apm_gateway.application.tool_common import (
     HEALTH_DEFAULT_LOOKBACK,
@@ -102,32 +104,39 @@ class HealthTools:
                     "[한계] interval_minute 허용값은 미공개다(W10) — 서버가 거부하면 그 사유를"
                     " 그대로 싣는다"
                 )
-            expect_calls(sum(len(plan.get(i["source_id"], [])) for i in res.instances))
-            for inst in res.instances:  # 정합된 인스턴스 전부(종전 2개 상한 제거 · W1 N-4)
-                trend: dict[str, list[dict[str, Any]]] = {}
-                for metric_id, label in plan.get(inst["source_id"], []):
-                    try:
-                        trend[label] = await self.core.api(
-                            inst["source_id"]
-                        ).instance_metric_series(
-                            inst["domain_id"],
-                            inst["instance_id"],
-                            metric_id,
-                            interval,
-                            window.start_ms,
-                            window.end_ms,
+            # 정합된 인스턴스 전부(종전 2개 상한 제거 · W1 N-4) × 지표 — 호출은 소스 폭으로 겹치고
+            # 결과는 (인스턴스, 지표) 순서대로 처리한다(plans/205 W2)
+            calls = [
+                (inst, metric_id, label)
+                for inst in res.instances
+                for metric_id, label in plan.get(inst["source_id"], [])
+            ]
+            expect_calls(len(calls))
+            series = await gather_per_source(
+                calls,
+                lambda c: self.core.sources.get(c[0]["source_id"]),
+                lambda c: self.core.api(c[0]["source_id"]).instance_metric_series(
+                    c[0]["domain_id"],
+                    c[0]["instance_id"],
+                    c[1],
+                    interval,
+                    window.start_ms,
+                    window.end_ms,
+                ),
+                stop=contract_violation,
+            )
+            for (inst, _, label), got in zip(calls, series, strict=True):
+                if isinstance(got, ApmError):
+                    limits.fail(
+                        limit_notice(
+                            got,
+                            f"추세 {label}",
+                            f"(인스턴스 {self.core.inst_label(inst_key(inst))})",
+                            self.core.reason_tail(got),
                         )
-                    except ApmError as e:
-                        limits.fail(
-                            limit_notice(
-                                e,
-                                f"추세 {label}",
-                                f"(인스턴스 {self.core.inst_label(inst_key(inst))})",
-                                self.core.reason_tail(e),
-                            )
-                        )
-                if trend:
-                    trends[inst_key(inst)] = trend
+                    )
+                    continue
+                trends.setdefault(inst_key(inst), {})[label] = got
         if not current and not trends:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits) or "APM 런타임 데이터 조회 실패")
         rows: list[dict[str, Any]] = []
@@ -193,16 +202,21 @@ class HealthTools:
         active_ok = False
         groups = group_by_domain(res)
         expect_calls(len(groups))
-        for (sid, domain_id), ids in groups.items():
-            try:
-                for svc in tag_records(
-                    await self.core.api(sid).active_services(domain_id, ids), sid
-                ):
-                    services.setdefault(inst_key(svc), []).append(svc)
-                active_ok = True
-            except ApmError as e:
+        items = list(groups.items())  # 호출은 소스 폭으로 겹치고 결과는 묶음 순서대로(plans/205 W2)
+        results = await gather_per_source(
+            items,
+            lambda it: self.core.sources.get(it[0][0]),
+            lambda it: self.core.api(it[0][0]).active_services(it[0][1], it[1]),
+            stop=contract_violation,
+        )
+        for ((sid, domain_id), _ids), got in zip(items, results, strict=True):
+            if isinstance(got, ApmError):
                 where = self.core.sources.where(sid, domain_id)
-                limits.fail(limit_notice(e, "액티브 서비스", f"({where})"))
+                limits.fail(limit_notice(got, "액티브 서비스", f"({where})"))
+                continue
+            for svc in tag_records(got, sid):
+                services.setdefault(inst_key(svc), []).append(svc)
+            active_ok = True
         if not current and not active_ok:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
         rows: list[dict[str, Any]] = []
@@ -265,8 +279,13 @@ class HealthTools:
         body["api_calls_total"] = src.api.calls_total
         return body, limits
 
+    def _congestion(self) -> list[dict[str, Any]]:
+        """소스별 자리 혼잡 현황(plans/205 W3b ④ — 캐시하지 않는 현재 값 · 호출자 키 값 없음)."""
+        return [{"source_id": s.source_id, **s.api.congestion()} for s in self.core.sources]
+
     async def gateway_health(self) -> dict[str, Any]:
-        """소스별 행 · 전체 상태 `ok`(모두 정상) / `degraded`(하나라도) / `not_configured`(0개)."""
+        """소스별 행 · 전체 상태 `ok`(모두 정상) / `degraded`(하나라도) / `not_configured`(0개) ·
+        소스별 자리 혼잡 `congestion`(떠 있는 수·대기 수·호출자 수 — 매번 현재 값)."""
         tool = "gateway_health"
         now = self.core.clock()
         if self._health_cache and now - self._health_cache[0] < _HEALTH_CACHE_SECONDS:
@@ -274,6 +293,7 @@ class HealthTools:
             cached["poller"] = (
                 self.core.poller_status() if self.core.poller_status else {"enabled": False}
             )
+            cached["congestion"] = self._congestion()
             return cached
         results = await asyncio.gather(*(self._source_health(src) for src in self.core.sources))
         rows = [body for body, _ in results]
@@ -289,4 +309,5 @@ class HealthTools:
         result["poller"] = (
             self.core.poller_status() if self.core.poller_status else {"enabled": False}
         )
+        result["congestion"] = self._congestion()
         return result

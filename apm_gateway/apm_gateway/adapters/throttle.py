@@ -9,6 +9,10 @@
 - 대기자가 없고 간격이 지났으면 바로 나간다(대기열 태스크를 만들지 않는다).
 - 동시 실행 상한(`PrioritySlots` · plans/194 W4b · D-347): 속도 제어는 시작 간격만 지켜 응답이
   느리면 떠 있는 요청이 `rate × 지연`만큼 쌓인다. 자리 대기도 같은 우선순위·에이징으로 판다.
+- 호출자 공정 분배(`PrioritySlots` · plans/205 W3b · D-356 ⑤): 같은 유효 순위 안에서는 지금
+  자리를 가장 적게 쥔 호출자(주체·owner)에게 먼저 준다. 호출자별 상한에 닿은 대기자는 같은 순위의
+  다른 호출자가 기다리는 동안 뒤로 선다(순위·에이징이 먼저 · 없으면 상한을 넘겨 준다 — 일
+  보존). 상한 0 = 끔(종전 순서).
 """
 
 from __future__ import annotations
@@ -19,7 +23,11 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass, field
 
-from apm_gateway.domain.call_context import PRIORITY_INTERACTIVE, PRIORITY_RANK
+from apm_gateway.domain.call_context import (
+    PRIORITY_INTERACTIVE,
+    PRIORITY_POLLER,
+    PRIORITY_RANK,
+)
 
 
 @dataclass
@@ -28,6 +36,8 @@ class _Waiter:
     seq: int
     since: float
     future: asyncio.Future[None] = field(repr=False)
+    caller: str = ""
+    exempt: bool = True  # 공정 분배·호출자 상한 제외(poller · 호출자 키 없음 · 상한 끔)
 
 
 def _effective_rank(waiter: _Waiter, now: float, aging: float) -> int:
@@ -105,6 +115,16 @@ class PrioritySlots:
 
     `asyncio.Semaphore`는 먼저 온 순서라 background 요청이 쌓이면 poller·interactive가 그 뒤에
     선다 — 그래서 속도 제어와 같은 순위 규칙으로 판다(plans/194 W4b · D-347).
+
+    호출자 공정 분배(plans/205 W3b · D-356 ⑤) — `per_caller`(None = `max(1, limit // 2)` · 0 = 끔):
+
+    - 같은 유효 순위 안에서는 지금 자리를 가장 적게 쥔 호출자를 먼저 준다(동률은 먼저 온 순서).
+    - 쥔 자리가 `per_caller` 이상인 호출자의 대기자는 **같은 유효 순위의** 상한 아래 대기자 뒤로
+      선다 — 순위가 먼저다(poller·interactive 우선 불변 · D-347). 같은 순위에 상한 아래 대기자가
+      없으면 그대로 준다(자리가 남는데 아무도 못 받는 상태 금지).
+    - poller와 호출자 키가 없는 호출(`caller == ""`)은 상한·공정 분배에서 빠진다(쥔 자리 0으로
+      본다).
+    - 빈 자리가 있고 대기자가 없으면 상한과 관계없이 바로 준다(일 보존).
     """
 
     def __init__(
@@ -112,14 +132,21 @@ class PrioritySlots:
         limit: int,
         aging_seconds: float = 10.0,
         *,
+        per_caller: int | None = None,
         clock: Callable[[], float] = time.monotonic,
     ) -> None:
         if limit <= 0:
             raise ValueError("동시 실행 상한은 0보다 커야 한다")
         self.limit = int(limit)
+        if per_caller is None:
+            per_caller = max(1, self.limit // 2)
+        if per_caller < 0:
+            raise ValueError("호출자별 동시 상한은 0 이상이어야 한다")
+        self.per_caller = int(per_caller)
         self._aging = float(aging_seconds)
         self._clock = clock
         self._held = 0
+        self._held_by: dict[str, int] = {}  # 호출자 키 → 쥔 자리(키 없는 호출은 세지 않는다)
         self._waiters: list[_Waiter] = []
         self._seq = itertools.count()
 
@@ -131,17 +158,47 @@ class PrioritySlots:
     def waiting(self) -> int:
         return len(self._waiters)
 
-    async def acquire(self, priority: str = PRIORITY_INTERACTIVE) -> None:
+    def held_by(self, caller: str) -> int:
+        """호출자 `caller`가 지금 쥔 자리 수."""
+        return self._held_by.get(caller, 0)
+
+    @property
+    def callers(self) -> int:
+        """자리를 쥐었거나 기다리는 호출자 수(키 없는 호출은 하나로 센다)."""
+        keys = {k for k, n in self._held_by.items() if n > 0}
+        keys.update(w.caller for w in self._waiters)
+        return len(keys)
+
+    def snapshot(self) -> dict[str, int]:
+        """혼잡 현황(상태 표면용) — 호출자 키 값은 싣지 않는다."""
+        return {
+            "limit": self.limit,
+            "per_caller_limit": self.per_caller,
+            "in_flight": self._held,
+            "waiting": len(self._waiters),
+            "callers": self.callers,
+        }
+
+    def _take(self, caller: str) -> None:
+        """자리 1개를 `caller`에게 셈한다(빠른 경로·넘김 공통)."""
+        if caller:
+            self._held_by[caller] = self._held_by.get(caller, 0) + 1
+
+    async def acquire(self, priority: str = PRIORITY_INTERACTIVE, caller: str = "") -> None:
         """자리 하나를 얻는다(빈 자리가 있고 대기자가 없으면 바로 돌아온다). 받은 자리는 반드시
-        `release`로 돌려준다."""
+        같은 `caller`로 `release`해 돌려준다."""
         if self._held < self.limit and not self._waiters:
             self._held += 1
+            self._take(caller)
             return
+        rank = PRIORITY_RANK.get(priority, PRIORITY_RANK[PRIORITY_INTERACTIVE])
         waiter = _Waiter(
-            PRIORITY_RANK.get(priority, PRIORITY_RANK[PRIORITY_INTERACTIVE]),
+            rank,
             next(self._seq),
             self._clock(),
             asyncio.get_running_loop().create_future(),
+            caller,
+            not (self.per_caller and caller) or rank == PRIORITY_RANK[PRIORITY_POLLER],
         )
         self._waiters.append(waiter)
         try:
@@ -150,16 +207,35 @@ class PrioritySlots:
             if waiter in self._waiters:
                 self._waiters.remove(waiter)
             elif waiter.future.done() and not waiter.future.cancelled():
-                self.release()  # 자리를 넘겨받은 직후 취소(대기 상한 초과 등) — 다음 대기자에게
+                # 자리를 넘겨받은 직후 취소(대기 상한 초과 등) — 다음 대기자에게
+                self.release(caller)
             raise
 
-    def release(self) -> None:
+    def _pick(self, now: float) -> _Waiter:
+        if not self.per_caller:  # 끔 — 종전 순서(유효 순위 → 먼저 온 순서)
+            return min(self._waiters, key=lambda w: (_effective_rank(w, now, self._aging), w.seq))
+
+        def key(w: _Waiter) -> tuple[int, int, int, int]:
+            held = 0 if w.exempt else self._held_by.get(w.caller, 0)
+            # (유효 순위, 상한 도달 1/아래·제외 0, 쥔 자리 수, 먼저 온 순서) — 순위가 먼저다
+            return (_effective_rank(w, now, self._aging), int(held >= self.per_caller), held, w.seq)
+
+        return min(self._waiters, key=key)
+
+    def release(self, caller: str = "") -> None:
         """자리를 돌려준다 — 대기자가 있으면 자리 수를 줄이지 않고 바로 넘긴다."""
+        if caller and caller in self._held_by:
+            left = self._held_by[caller] - 1
+            if left > 0:
+                self._held_by[caller] = left
+            else:
+                del self._held_by[caller]
         now = self._clock()
         while self._waiters:
-            best = min(self._waiters, key=lambda w: (_effective_rank(w, now, self._aging), w.seq))
+            best = self._pick(now)
             self._waiters.remove(best)
             if not best.future.done():
+                self._take(best.caller)
                 best.future.set_result(None)
                 return
         self._held -= 1

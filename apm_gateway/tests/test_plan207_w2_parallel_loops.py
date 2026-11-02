@@ -96,6 +96,8 @@ def _tools(fake: SlowFleet, tmp_path, cap: int, rate: float = 0.0) -> ApmTools:
         fake.env(
             APM_SPOOL_DIR=str(tmp_path / "spool"),
             JENNIFER_MAX_INFLIGHT_PER_SOURCE=str(cap),
+            # 폭 = min(도구 안 폭, 자리) — 자리 수가 폭을 정하게 한다(plans/205 · D-356 ①)
+            APM_FANOUT_CONCURRENCY=str(cap),
             JENNIFER_RATE_LIMIT_PER_SEC=str(rate),
         )
     )

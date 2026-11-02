@@ -24,6 +24,7 @@ from apm_gateway.config import (
     GatewayConfig,
     JenniferApiConfig,
     JobConfig,
+    PerfConfig,
     load_config,
 )
 
@@ -361,4 +362,7 @@ def test_from_config_takes_slowest_source_in_flight():
     mgr = JobManager.from_config(cfg, envelope=tools.ok, error_envelope=tools.err)
     assert mgr.max_in_flight == 2
     single = JobManager.from_config(GatewayConfig(), envelope=tools.ok, error_envelope=tools.err)
-    assert single.max_in_flight == JenniferApiConfig().max_inflight_per_source
+    # 폭 = min(소스 자리 수, 도구 안 폭 상한 APM_FANOUT_CONCURRENCY — plans/205 · D-356 ①)
+    assert single.max_in_flight == min(
+        JenniferApiConfig().max_inflight_per_source, PerfConfig().fanout_concurrency
+    )

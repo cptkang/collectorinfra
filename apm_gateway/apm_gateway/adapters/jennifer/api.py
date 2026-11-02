@@ -60,6 +60,9 @@ class JenniferApi:
     def max_in_flight(self) -> int:
         return self.client.max_in_flight
 
+    def congestion(self) -> dict[str, int]:
+        return self.client.congestion()
+
     async def domains(self) -> list[dict[str, Any]]:
         body = await self.client.get_json("/api/domain")
         return [jf.parse_domain(d) for d in jf.result_list(body)]
