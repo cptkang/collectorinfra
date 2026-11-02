@@ -138,6 +138,10 @@ def _module_literal(path: Path, name: str):
     raise AssertionError(f"{path.name}에 {name}이 없다")
 
 
+#: 증상 질의로 고르지 않는 플레이북 — 호스트 공통 점검 · APM 공통 점검(plans/196 D2 ②).
+_NOT_BY_SYMPTOM = frozenset({"fallback", "was.fallback"})
+
+
 def _playbooks() -> dict[str, dict]:
     out: dict[str, dict] = {}
     for path in sorted(_SRE_PLAYBOOKS.glob("*.yaml")):
@@ -155,7 +159,7 @@ def test_surface_terms_match_playbook_yaml():
     expected = {
         pid: tuple((doc.get("match") or {}).get("surface_terms") or ())
         for pid, doc in books.items()
-        if pid != "fallback"
+        if pid not in _NOT_BY_SYMPTOM
     }
     assert expected == sr.PLAYBOOK_SURFACE_TERMS
 
@@ -172,7 +176,7 @@ def test_alarm_kinds_match_playbook_yaml():
 
 def test_virtual_events_cover_every_playbook():
     """가상 알람 표가 비fallback 플레이북 전부를 덮는다(선택 결과 대조는 sre_agent 테스트)."""
-    assert set(sr.VIRTUAL_EVENTS) == {pid for pid in _playbooks() if pid != "fallback"}
+    assert set(sr.VIRTUAL_EVENTS) == {pid for pid in _playbooks() if pid not in _NOT_BY_SYMPTOM}
     # sre_agent 테스트가 ast로 읽는다 — 리터럴이어야 한다.
     literal = _module_literal(_ROOT / "src" / "domain" / "symptom_router.py", "VIRTUAL_EVENTS")
     assert literal == sr.VIRTUAL_EVENTS

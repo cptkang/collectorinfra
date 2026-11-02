@@ -1020,6 +1020,31 @@ body:has(.chat-layout.history-collapsed) {
     margin-top: 8px;
 }
 
+/* (plans/198 W0 I-1) 완료 조사 하단 「실제 원인」 1줄 */
+.dv-cause {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px;
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 0.8125rem;
+}
+.dv-cause [hidden] { display: none; }
+.dv-cause-note { flex: 1 1 220px; min-width: 160px; }
+.dv-cause .dv-note { flex-basis: 100%; }
+
+/* (plans/198 W7 I-8) 완료 조사 하단 「비슷한 과거 조사」 */
+.dv-similar {
+    margin-top: 10px;
+    padding-top: 8px;
+    border-top: 1px solid var(--border);
+    font-size: 0.8125rem;
+}
+.dv-similar-list { margin: 4px 0; padding-left: 18px; }
+.dv-similar-open { color: var(--text-muted); }
+
 /* (plans/187 W20 · G-50) 「조사 흐름」·「실행 기록」 전환 · 단계 카드 */
 .dv-modes { display: flex; gap: 2px; margin: 6px 0 8px; border-bottom: 1px solid var(--border); }
 .dv-mode {
@@ -1109,6 +1134,84 @@ body:has(.chat-layout.history-collapsed) {
 .dv-card > .dv-flow-toggle { margin-left: 18px; }
 .dv-caution { margin: 2px 0 0 22px; padding-left: 16px; font-size: 0.75rem; color: var(--text-secondary); }
 .dv-flow-engine { margin-top: 8px; }
+/* (plans/196) 운영자 상세 · 판정 없음 때 HolmesGPT 요약 · 폴스타 서버 선택 */
+.dv-detail[hidden],
+.dv-sofar-ai[hidden] { display: none; }
+.dv-detail { margin: 2px 0 0 22px; font-size: 0.75rem; color: var(--text-secondary); overflow-wrap: anywhere; }
+.dv-sofar-ai { display: inline-flex; gap: 6px; align-items: baseline; }
+.dv-host {
+    margin: 6px 0 0 22px;
+    padding: 6px 8px;
+    border: 1px solid var(--border);
+    border-radius: 4px;
+    background: var(--surface);
+    color: var(--text);
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+.dv-flow-body > .dv-host { margin: 6px 0; }
+.dv-host-cand { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; cursor: pointer; }
+.dv-host-grade {
+    font-size: 0.6875rem;
+    padding: 0 5px;
+    border-radius: 4px;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+}
+.dv-host-name { font-weight: 700; overflow-wrap: anywhere; }
+.dv-host-why { flex-basis: 100%; margin-left: 22px; font-size: 0.75rem; color: var(--text-secondary); }
+.dv-host-field { display: flex; gap: 6px; align-items: baseline; }
+.dv-host-actions { display: flex; flex-wrap: wrap; gap: 6px; }
+/* (plans/195 W3) 「질의응답에서 확인」 — 장애 진단 단계 카드(.dv-requery) · 조사 대화 고정 카드(.bv-requery) 공용 항목(.rq-*) */
+.dv-requery { margin: 6px 0 0 22px; display: flex; flex-direction: column; gap: 4px; }
+.rq-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.rq-item { display: flex; flex-direction: column; gap: 3px; font-size: 0.8rem; }
+.rq-step { display: flex; gap: 6px; align-items: baseline; font-size: 0.75rem; color: var(--text-secondary); }
+.rq-row { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.rq-text { color: var(--text); overflow-wrap: anywhere; }
+.rq-live {
+    font-size: 0.6875rem;
+    padding: 0 5px;
+    border-radius: 4px;
+    border: 1px solid var(--tone-amber);
+    color: var(--tone-amber);
+}
+.rq-actions { display: flex; flex-wrap: wrap; gap: 6px; align-items: baseline; }
+.rq-copy,
+.rq-run {
+    font-size: 0.72rem;
+    padding: 2px 8px;
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    border: 1px solid var(--border);
+    color: var(--text-secondary);
+    background: var(--surface);
+}
+.rq-run { border-color: var(--accent-dim); color: var(--accent); background: var(--accent-glow); }
+.rq-run:disabled { cursor: not-allowed; opacity: 0.5; }
+.rq-msg { font-size: 0.72rem; color: var(--text-muted); }
+.rq-why { font-size: 0.75rem; color: var(--warning); overflow-wrap: anywhere; }
+
+/* (plans/199 W5a · §3.10) 기능 켜짐 — 전환 탭 대신 세로 배치 · 접힘 섹션 머리 한 줄 · 실행 기록 전체 폭 */
+.dv-sum-box { margin: 6px 0 4px; }
+.dv-sum-box[hidden],
+.dv-log-bar[hidden],
+.dv-rows[hidden] { display: none; }
+.dv-sec { margin-top: 8px; }
+.dv-sec-bar { display: flex; flex-wrap: wrap; align-items: baseline; gap: 8px; padding: 2px 0 4px; }
+.dv-sec-toggle {
+    background: transparent;
+    border: none;
+    padding: 0;
+    font-size: 0.8125rem;
+    font-weight: 700;
+    color: var(--text);
+    cursor: pointer;
+}
+.dv-sec-caret { margin-left: 4px; color: var(--accent); }
+.dv-sec-info { font-size: 0.75rem; color: var(--text-muted); overflow-wrap: anywhere; }
+.dv-why-more { color: var(--text-secondary); }
 
 /* 알람 카드 [장애 진단에서 보기] · 관제 드로어 「장애 진단에서 보기」(공용 렌더 밖 진입 버튼) */
 .diagnosis-open,
@@ -2414,6 +2517,124 @@ body.auth-pending .auth-splash {
     color: var(--on-accent);
 }
 
+/* plans/201 W2 첫 화면 상황 안내(WELCOME_GUIDE_ENABLED) · 담당별 예시 제목(DUTY_WELCOME_HINTS_ENABLED).
+   둘 다 켠 기동에서 app.js가 붙일 때만 생긴다 — 끄면 이 규칙이 닿는 요소가 없다. */
+.chat-welcome-guide {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    width: 100%;
+    max-width: 600px;
+    margin-top: 20px;
+    text-align: left;
+}
+
+.chat-welcome-guide-title,
+.chat-welcome-hints-title {
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.chat-welcome-hints-title {
+    margin-top: 20px;
+    margin-bottom: -16px;
+}
+
+.chat-welcome-guide-item {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 4px 8px;
+    align-items: baseline;
+    padding: 8px 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+    text-align: left;
+    cursor: pointer;
+    transition: all 0.2s ease;
+}
+
+.chat-welcome-guide-item:hover {
+    border-color: var(--border-accent);
+    background: var(--accent-glow);
+}
+
+.chat-welcome-guide-lead {
+    font-weight: 600;
+    color: var(--text);
+}
+
+.chat-welcome-guide-item--disabled,
+.chat-welcome-guide-item--disabled:hover {
+    cursor: not-allowed;
+    opacity: 0.6;
+    background: var(--surface);
+    border-color: var(--border);
+}
+
+.chat-welcome-guide-reason {
+    flex-basis: 100%;
+    font-size: 0.75rem;
+    color: var(--text-muted);
+}
+
+/* ─── plans/201 W6 첫 화면 「지난 24시간 · 내 담당」 요약 카드 (app.js가 `duty_daily_summary`일 때만 만든다) ─── */
+.duty-summary-card {
+    width: 100%;
+    max-width: 600px;
+    margin-bottom: 20px;
+    padding: 10px 14px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    text-align: left;
+    font-size: 0.8125rem;
+    color: var(--text-secondary);
+}
+
+.duty-summary-head {
+    display: flex;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 6px 10px;
+}
+
+.duty-summary-title {
+    flex: 1;
+    font-weight: 600;
+    color: var(--text);
+}
+
+.duty-summary-tiers {
+    margin-top: 6px;
+}
+
+.duty-summary-section-title {
+    margin-top: 8px;
+    font-size: 0.75rem;
+    font-weight: 600;
+    color: var(--text-muted);
+}
+
+.duty-summary-list {
+    margin: 2px 0 0;
+    padding-left: 18px;
+}
+
+.duty-summary-hint,
+.duty-summary-empty,
+.duty-summary-unavailable {
+    color: var(--text-muted);
+}
+
+.duty-summary-repeat,
+.duty-summary-unavailable {
+    margin-top: 6px;
+}
+
 /* ─── Zone Clarification (Plan 75 §4 — 존 선택 역질문 체크박스) ─── */
 .zone-clarify {
     margin-top: 12px;
@@ -3644,6 +3865,8 @@ body.auth-pending .auth-splash {
 .bv-badge--live { border-color: var(--info); color: var(--info); background: var(--info-bg); }
 .bv-badge--hypo { border-color: var(--secondary); color: var(--secondary); background: transparent; }
 .bv-opinion { font-size: 0.75rem; color: var(--text-secondary); overflow-wrap: anywhere; }
+/* [서술 보기] — 심층 답변 원문은 여러 줄 마크다운 평문이라 줄바꿈을 살리고 길면 안에서 스크롤 */
+.bv-engine-narr .bv-opinion { white-space: pre-wrap; max-height: 360px; overflow: auto; }
 .bv-pb-actions { display: flex; justify-content: flex-end; }
 .bv-open-conv, .bv-choice {
     font-size: 0.72rem; padding: 3px 10px; border-radius: var(--radius-sm); cursor: pointer;
@@ -3687,6 +3910,66 @@ body.auth-pending .auth-splash {
 .bv-engine-col .bv-item { grid-template-columns: 5.6em 1fr; }
 .bv-engine-choice { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .bv-engine-choice .bv-meta, .bv-engine-choice .bv-note { flex-basis: 100%; }
+/* plans/199 W4 — [서술 보기] 4줄 요약 · 원문 안전 렌더(briefing-view.js renderMarkdownSafe) */
+.bv-md-sum { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+.bv-md-raw { margin-top: 4px; }
+.bv-md-raw > summary { cursor: pointer; font-size: 0.72rem; }
+.bv-md { display: flex; flex-direction: column; gap: 3px; font-size: 0.75rem; color: var(--text-secondary); overflow-wrap: anywhere; max-height: 360px; overflow: auto; }
+/* 원문이 360px를 넘으면 flex 축소로 overflow 자식(표 감싸개)이 높이 0이 된다 — 자식은 줄이지 않고 바깥이 스크롤 */
+.bv-md > * { flex-shrink: 0; }
+.bv-md-h { font-weight: 700; color: var(--text); margin-top: 4px; }
+.bv-md ul, .bv-md ol { margin: 0; padding-left: 1.2em; }
+.bv-md ol { list-style: none; padding-left: 0.4em; }
+.bv-md code { font-family: var(--font-mono); font-size: 0.95em; padding: 0 3px; border-radius: 3px; background: var(--track); }
+.bv-md-tbl { overflow-x: auto; }
+.bv-md table { border-collapse: collapse; font-size: 0.7rem; }
+.bv-md th, .bv-md td { border: 1px solid var(--border); padding: 1px 6px; text-align: left; white-space: nowrap; }
+.bv-md-toc { padding: 3px 6px; border: 1px dashed var(--border); border-radius: var(--radius-sm); }
+.bv-md-short { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+
+/* plans/199 W1 · D-352 — 「한눈에 보기」 카드(briefing-view.js summaryCardHtml) · 테마 토큰만 쓴다 */
+.bv-sum {
+    display: flex; flex-direction: column; gap: 4px; padding: 6px 8px;
+    border: 1px solid var(--accent-dim); border-radius: var(--radius-sm); background: var(--surface);
+}
+.bv-sum-head { display: flex; align-items: center; flex-wrap: wrap; gap: 6px; }
+.bv-sum-title { font-weight: 700; font-size: 0.76rem; margin-right: auto; }
+.bv-sum-rows { display: flex; flex-direction: column; gap: 3px; }
+.bv-sum-row { display: grid; grid-template-columns: 5.6em 1fr; gap: 8px; }
+.bv-sum-alt { font-size: 0.7rem; color: var(--warning); }
+.bv-sum-must { margin: 0; padding: 0; list-style: none; }
+.bv-sum-must-item--warn::before { content: "\26A0  "; color: var(--warning); }
+.bv-sum-must-item--info::before { content: "\24D8  "; color: var(--info); }
+.bv-sum-must-item--run::before { content: "\25CC  "; color: var(--info); }
+.bv-sum-must-item--more { color: var(--text-muted); }
+.bv-sum-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.bv-sum-actions:empty { display: none; }
+/* plans/199 W2 — [전달문 복사] · 「원문 포함」(운영자 화면) · [전달문 보기] 읽기 전용 미리보기(펼치면 한 줄 전체) */
+.bv-handoff > summary { display: inline-block; list-style: none; }
+.bv-handoff > summary::-webkit-details-marker { display: none; }
+.bv-handoff > summary::after { content: " \25BE"; }
+.bv-handoff[open] { flex-basis: 100%; text-align: right; }
+.bv-handoff-text { text-align: left; user-select: text; }
+.bv-handoff-raw {
+    align-self: center; padding: 0 4px; font-size: 0.68rem; color: var(--warning);
+    border: 1px solid var(--warning); border-radius: var(--radius-sm);
+}
+/* plans/199 W3 — 상세형 ② 근거 요약 · ③ 상세(접힘 단) · 단계 스트립 · 미니 타임라인(인라인 SVG) · 테마 토큰만 */
+.bv-ev { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 4px 8px; }
+.bv-ev > .bv-ev-head { cursor: pointer; font-weight: 700; font-size: 0.74rem; }
+.bv-ev-body { display: flex; flex-direction: column; gap: 6px; margin-top: 4px; }
+.bv-ev-hypo { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 8px; }
+.bv-ev-hcol { display: flex; flex-direction: column; gap: 3px; }
+.bv-ev-hlist { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 3px; }
+.bv-ev-hitem { overflow-wrap: anywhere; }
+.bv-strip-chip { cursor: pointer; font-family: inherit; }
+.bv-strip-no { font-size: 0.85em; opacity: 0.7; font-family: var(--font-mono); }
+.bv-tl { width: 100%; max-width: 600px; height: auto; color: var(--text-muted); }
+.bv-tl-lane { stroke: var(--border); }
+.bv-tl-zero { stroke: var(--warning); stroke-dasharray: 3 2; }
+.bv-tl-label, .bv-tl-tick { fill: currentColor; font-size: 10px; }
+.bv-tl-dot--infra { fill: var(--tone-sky); }
+.bv-tl-dot--apm { fill: var(--tone-amber); }
 
 /* plans/187 FE-2 — 추가 조사 · 이 알람 분석 · 알려진 문제 피드백 · KB 꼬리 */
 .bv-pre {
@@ -3696,10 +3979,15 @@ body.auth-pending .auth-splash {
 .bv-ke-feedback { margin-top: 4px; }
 .bv-fu-form { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
 .bv-input {
-    font-size: 0.74rem; padding: 3px 6px; border: 1px solid var(--border); border-radius: var(--radius-sm);
-    background: var(--surface); color: var(--text); max-width: 100%;
+    /* background 단축 속성을 쓰면 전역 select 캐럿 이미지가 지워진다 — background-color로 */
+    font-size: 0.74rem; padding: 0 6px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background-color: var(--surface); color: var(--text); max-width: 100%;
 }
 input.bv-input { min-width: 16em; }
+input.bv-input[type="text"] { width: auto; padding: 0 6px; font-size: 0.74rem; border-radius: var(--radius-sm); }
+select.bv-input { width: auto; padding-right: 22px; background-position: right 6px center; }
+/* 추가 조사 요청 한 줄 — 초점 select · 보충 입력 · 요청 버튼 높이를 맞춘다 */
+.bv-fu-form .bv-input, .bv-fu-form .bv-open-conv { height: 28px; box-sizing: border-box; line-height: 1; }
 .bv-fu-item { padding: 4px 6px; border-left: 2px solid var(--accent-dim); }
 
 /* 조사 대화 첫 고정 카드(app.js) — 브리핑 본문은 위 공용 스타일 */
@@ -6650,10 +6938,14 @@ select:focus {
 
 .db-scope-chip {
     position: relative;
-    display: flex;
+    /* DB·제니퍼 두 칩이 한 줄에 나란히 — 폭이 모자라면 다음 줄로 넘어간다 */
+    display: inline-flex;
+    vertical-align: middle;
+    max-width: 100%;
     align-items: center;
     flex-wrap: wrap;
     gap: 6px;
+    margin-right: 12px;
     margin-bottom: 8px;
     font-size: 0.78rem;
     color: var(--text-secondary);

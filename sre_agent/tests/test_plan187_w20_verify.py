@@ -438,7 +438,7 @@ def test_activity_off_hostcpu_has_no_flow_keys(monkeypatch: pytest.MonkeyPatch) 
             snaps.append(json.loads(json.dumps(job.partial_briefing)))
         return caller(calls)
 
-    d = build(make_settings(), snap_caller, llm=FakeLLM())
+    d = build(make_settings(sre_activity_log_enabled=False), snap_caller, llm=FakeLLM())
     d(job)
     d.wait_workers(30)
     assert job.status == "done"

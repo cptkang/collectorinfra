@@ -196,7 +196,8 @@ window.NOISE_HELP = {
                 + "읽고 만든 추정 원인·권고입니다. 둘을 섞어 한 문장으로 만들지 않습니다.",
             read: "위 칸을 먼저 따르십시오. AI 추정은 노이즈 판정 **전에** 만들어져, 억제·강등된 알람에서는 "
                 + "처리 안내와 어긋날 수 있습니다.",
-            caution: "AI 추정은 검증되지 않은 서술입니다. 저장 기능이 꺼져 있던 시점의 판단에는 AI 추정이 없습니다.",
+            caution: "AI 추정은 검증되지 않은 서술입니다. 저장 기능이 꺼져 있던 시점의 판단에는 AI 추정이 없습니다. "
+                + "실시간 피드 카드도 저장된 AI 추정만 보여 줍니다.",
             keys: ["NOISE_DECISION_ANALYSIS_TEXT_ENABLED"],
         },
         "panel.bucket": {
@@ -451,7 +452,8 @@ window.NOISE_HELP = {
         aiHead: "AI 추정 원인·권고",
         aiBadge: "AI 추정 · 알람 문구 기반 · 검증 안 됨",
         aiLead: "아래 AI 추정은 노이즈 판정 전에 알람 문구만으로 만든 것입니다",
-        aiNotStored: "이 판단이 기록될 때는 AI 추정을 저장하지 않았습니다",
+        aiNotStored: "이 판단이 기록될 때는 AI 추정을 저장하지 않았습니다 — 저장하려면 "
+            + "NOISE_DECISION_ANALYSIS_TEXT_ENABLED를 켜세요",
         aiFailed: "AI 분석 실패",
         fields: { summary: "요약", probable_cause: "추정 원인", recommended_action: "권고 조치" },
         // 목록 열 · 실시간 피드 줄

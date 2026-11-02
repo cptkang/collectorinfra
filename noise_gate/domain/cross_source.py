@@ -289,6 +289,9 @@ class Episode:
     # 1회)와 제출된 조사 id(빈 값 = 없음).
     episode_investigation_status: str = ""
     episode_investigation_id: str = ""
+    # (plans/198 I-11) 이 사건 멤버가 마지막으로 제출한 단독 조사 id — 같은 서버 알람 합류의
+    # 기준(빈 값 = 없음 · 사건 단위 조사 플래그 on에서만 채운다).
+    incident_investigation_id: str = ""
 
     def member(self, alarm_id: str) -> EpisodeMember | None:
         """alarm_id로 멤버를 찾는다(같은 id가 여럿이면 마지막)."""
@@ -397,14 +400,18 @@ def episode_snapshot(
     }
 
 
-def episode_investigation_due(ep: Episode) -> bool:
+def episode_investigation_due(ep: Episode, *, cause_confirmed: bool = False) -> bool:
     """사건 종합 조사를 지금 낼 조건인가(plans/153 §4.5 · G-6 (a)).
 
     전부 만족해야 True: 아직 시도 안 함 · 폴스타·제니퍼 멤버 각 ≥1 · 결합 링크(link·demote) ≥1 ·
     멤버 중 최종 티어 PAGE·TICKET ≥1(아무도 통보받지 않은 사건은 조사하지 않는다 — 예산 보호).
     판정에는 쓰지 않는다(관측·조사 입력만).
+
+    `cause_confirmed`(plans/198 I-11 · 증상 선착)는 결합 링크 조건을 대신한다 — 증상이 먼저 와
+    링크가 없더라도, 원인 알람이 `observe()`에서 통보된 연관 증상(`related_effects`)을 얻었으면
+    사건이 확정된 것으로 본다. 기본 False면 종전과 같다.
     """
-    if ep.episode_investigation_status or not ep.links:
+    if ep.episode_investigation_status or not (ep.links or cause_confirmed):
         return False
     sources = {m.alarm.source for m in ep.members}
     if SOURCE_POLESTAR not in sources or SOURCE_JENNIFER not in sources:

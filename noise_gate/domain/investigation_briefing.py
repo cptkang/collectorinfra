@@ -28,6 +28,7 @@ BRIEFING_CONTRACT_KEYS: frozenset[str] = frozenset({
 _ORDERED: tuple[tuple[str, str], ...] = (
     ("severity", "중요도"),
     ("summary", "요약"),
+    ("duty_view", "영역별 점검"),
     ("timeline", "타임라인"),
     ("bottleneck", "병목"),
     ("cause", "원인"),
@@ -137,6 +138,10 @@ def _render_value(key: str, val: object) -> str:
         return _render_severity(val)
     if key == "cross_source" and isinstance(val, dict):
         return _render_cross_source(val)
+    if key == "duty_view" and isinstance(val, dict):
+        # (plans/201 W4) 동기 챗 경로는 인계 문구 1줄만 — 영역 표는 웹 조사 결과 화면이 그린다.
+        handoff = val.get("handoff")
+        return str(handoff) if isinstance(handoff, str) else ""
     if isinstance(val, dict):
         if "items" in val:  # 권고 형태 {"items": [...], "note": "..."}
             lines = [str(i) for i in (val.get("items") or []) if not _is_empty(i)]
@@ -155,6 +160,8 @@ def render_briefing_lines(briefing: dict) -> list[tuple[str, str]]:
     - 순서 키는 `_ORDERED` 순, 그 외 키는 원 키명으로 말미에 정렬 렌더한다.
     - (plans/153 §4.7) `cross_source`(선택 키)는 원 키 나열 대신 「크로스소스」 라벨의 결정적 요약
       줄로 편다 — 키가 없으면 출력은 종전과 비트 동일하다.
+    - (plans/201 W4) `duty_view`(선택 키)는 「영역별 점검」 라벨로 인계 문구 1줄만 편다 — 키가 없으면
+      출력은 종전과 비트 동일하다.
     - 빈 값(`None`·`""`·`[]`·`{}`·`False`)은 라벨째 생략한다.
     - `_SUPPRESSED`는 출력하지 않는다. 스텁 판정은 호출자 몫이다.
     """

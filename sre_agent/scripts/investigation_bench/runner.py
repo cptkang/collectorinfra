@@ -61,7 +61,7 @@ TERMINAL_AUDIT_EVENTS = frozenset({"done", "timeout", "failed", "rejected", "stu
 PREFETCH_EVENTS = frozenset({"prefetch", "prefetch_failed"})
 INSTRUMENTATION_KEYS: tuple[str, ...] = (
     "incomplete", "elapsed_s", "prefetch_s", "steps", "tool_calls_n", "model", "max_steps",
-    "tool_calls",
+    "tool_calls", "tool_batch_sizes", "max_tools_per_turn", "turns_n",
 )
 ECHO_MISSING = "settings_echo_missing"
 # sre_agent 조사 시간 초과 상태 · 폴링 초과 무효표 접두 — 이 둘로 끝나면 버려진 holmes 스레드가

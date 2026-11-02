@@ -164,7 +164,7 @@ sre_agent/
 
 ### 3.1 MCP 도구 5종 (submit/poll 비동기 잡 계약 — D-123)
 
-조사는 최대 300초까지 걸리는데 collectorinfra의 MCP 호출 타임아웃은 60초다. 동기 호출로는
+조사는 최대 600초까지 걸리는데 collectorinfra의 MCP 호출 타임아웃은 60초다. 동기 호출로는
 계약이 성립하지 않으므로 **submit/poll**로 나눈다.
 
 | 도구 | 인자 | 반환(JSON) |
@@ -233,7 +233,7 @@ accepted ─► running ─┬─► done      조사 완주 + 후처리 완료(
   후처리는 이를 "가설/한계"로 표기하며 **escalate 신호로 취급하지 않는다**(미완주가 상향 근거가
   되면 오탐이 폭주한다).
 - `max_steps` 기본 **40**. 실측상 10은 다중 메트릭 조사에서 미완주, 20은 포커스 질의만 완주,
-  30도 브로드 트리아지에서 초과했다. 하드 백스톱은 dispatcher의 전체 타임아웃(300s)이다.
+  30도 브로드 트리아지에서 초과했다. 하드 백스톱은 dispatcher의 전체 타임아웃(600s)이다.
 - **원시 출력 보존**: `DiagnosisResult.tool_outputs`가 `ToolCallRecord`(tool_name/status/
   **output**/error/return_code)를 담는다. 중요도 판정이 LLM 서술이 아니라 raw 출력에
   매칭하기 때문에 필수다.
@@ -290,11 +290,12 @@ VM_DIAG_ALLOW = [*LIGHT_DIAG_COMMANDS, *(guarded(c) for c in HEAVY_DIAG_COMMANDS
 |---|---|---|---|---|
 | 1 | fingerprint dedup TTL | `investigation_dedup_ttl_seconds` | `None`(off) | `rejected: dedup_ttl_active` |
 | 2 | 동시 조사 상한(세마포어) | `investigation_max_concurrent` | `2` | 대기 |
-| 3 | **조사 1건 전체** 타임아웃 | `investigation_timeout_seconds` | `300` | `timeout` |
+| 3 | **조사 1건 전체** 타임아웃 | `investigation_timeout_seconds` | `600` | `timeout` |
 | 4 | 시간당 예산 | `investigation_hourly_budget` | `None`(off) | `rejected: hourly_budget_exceeded` |
 | 5 | 동일 호스트 in-flight(L-4) | — (항상 on) | — | `rejected: host_investigation_in_flight` |
 
 - **③은 per-call이 아니라 전체**다(`asyncio.wait_for`). per-call만으로는 폴링 루프를 못 막는다.
+  시간 사슬: 수집 예산 240 + 소견 60 + 종합 90 = 390 ≤ 600 · plans/187 W22.
 - **⑤는 ①과 목적이 다르다**: ①은 *같은 알람*의 재조사를 TTL로 억제하고, ⑤는 *다른 알람이라도
   같은 호스트*의 **동시** 조사를 막는다(부하는 곱해진다). 대기가 아니라 **거부**하는 이유는
   조사가 분 단위(실측 161s)라 submit을 붙들면 MCP 동기 타임아웃(60s)을 넘기기 때문이다.
@@ -396,13 +397,18 @@ escalate = level > baseline                  # 엄밀 상향일 때만 True
 | `polestar_mcp_url` | `POLESTAR_MCP_URL` | `http://localhost:9099/sse` | mcp_server SSE 엔드포인트 |
 | `polestar_mcp_token` | `POLESTAR_MCP_TOKEN` | `None` | mcp_server Bearer(D-125) |
 | `service_bearer_token` | `SERVICE_BEARER_TOKEN` | `None` | 조사 서비스 자체 인증. None이면 무인증 |
-| `investigation_timeout_seconds` | — | `300` | 조사 1건 전체 타임아웃 |
+| `investigation_timeout_seconds` | — | `600` | 조사 1건 전체 타임아웃 |
 | `investigation_dedup_ttl_seconds` | — | `None` | fingerprint dedup TTL(off) |
 | `investigation_max_concurrent` | — | `2` | 동시 조사 상한 |
 | `investigation_hourly_budget` | — | `None` | 시간당 조사 상한(off) |
 | `bash_write_guard_enabled` | `BASH_WRITE_GUARD_ENABLED` | `True` | bash 쓰기 형태(리다이렉트·`sort -o`·`tee` …) 검증 경계 거부(D-235). 기본 on — off면 읽기 전용 프로파일이 파일을 쓸 수 있다 |
 | `severity_judge_enabled` | — | `False` | 중요도 2차 판정 |
 | `remediation_recommender_enabled` | — | `False` | 조치 권고 |
+| `citation_value_check_enabled` | `CITATION_VALUE_CHECK_ENABLED` | `False` | 값 대조 인용 검증(plans/198 I-4 · 154 H-4) — 잡마다 증거 원장(도구 호출 1건 = 1행 + 사전수집 상관·알람 페이로드)을 만들고 서술의 수치·시각·호스트명을 대조(호스트명은 원장에 같은 꼴 — 영문자 부분이 같은 — 이름이 있을 때만 · `IPv4`·`TLSv1.2`·`G1GC` 같은 기술 용어는 대조 불가) · 원장에 없는 값이 있는 단정은 가설 강등 + 한계 「원장에 없는 값: …」 · `citations_verified`는 대조 결과 · `citation_check`·`evidence_ledger` 키 가산. off면 비트 동일 |
+| `partial_briefing_on_incomplete` · `stall_stop_enabled`(`stall_repeat_threshold` 3 · `stall_idle_steps` 4) · `unchecked_source_limitation_enabled` | `PARTIAL_BRIEFING_ON_INCOMPLETE` · `STALL_STOP_ENABLED`(`STALL_REPEAT_THRESHOLD` · `STALL_IDLE_STEPS`) · `UNCHECKED_SOURCE_LIMITATION_ENABLED` | `False` | 실패 모드 가드(plans/198 I-10 · 154 H-5 · HolmesGPT 조사 경로) — ① 미완주(step 상한·정체)·타임아웃이면 stub·미완주 문구 대신 회수한 도구 결과(원장 행 · 타임아웃은 실행 기록)로 결정적 부분 브리핑(`[미결]` 요약 · 가산 키 `partial`·`evidence_ledger` · 감사 `partial_briefing`) ② 같은 도구·정규화 인자(키 정렬·앞뒤 공백·None 제거 · 대소문자 구분) N회 또는 새 근거 없는 도구 step M회 연속이면 조사를 협조적으로 중단(holmes 0.36.0은 실행 중 지시 주입 통로가 없다) — 한계에 사유(인자는 실행 기록과 같은 가림) · 요약 `[미결]` · 감사 `stalled` ③ kind별 기대 소스(`config/expected_sources.yaml` — host = polestar·prometheus, was = apm·polestar) 중 호출 0인 소스를 한계 「확인하지 않은 소스: …」 · 감사 `unchecked_sources`. 셋 다 off면 비트 동일 |
+| `sre_playbook_discriminator_enabled` · `sre_playbook_discriminator_top_n` | `SRE_PLAYBOOK_DISCRIMINATOR_ENABLED` · `SRE_PLAYBOOK_DISCRIMINATOR_TOP_N` | `False` · `2` | 판별 조회 1회 루프(plans/198 I-2 · D-350 ①) — 수집 뒤 남은 예산 안에서 상위 판단 보류 가설 N개의 판별 스텝(플레이북에 없는 단계만)을 1회 돌려 규칙으로만 다시 판정 · `hypotheses[].verification` 가산. off면 비트 동일 |
+| `evidence_topology_neighbors_enabled` · `evidence_topology_neighbors_max` | `EVIDENCE_TOPOLOGY_NEIGHBORS_ENABLED` · `EVIDENCE_TOPOLOGY_NEIGHBORS_MAX` | `False` · `5` | 토폴로지 1홉 이웃(plans/198 I-7 · D-350 ④) — 사전수집(`EVIDENCE_CORRELATION_ENABLED` 필요) 배치 말미에 `polestar_topology`(1홉) 1건 + 이웃 알람 배치 1회(이웃당 1건 · 상한 N대). 이웃은 폴스타 토폴로지·D-348 이전 확정 연결만(추정·선택 대기 제외) · 이웃 첫 알람이 대상보다 앞서면 외부 원인 후보(선행 순) · 브리핑 `neighbors`(도구 호출 수 포함)·`external_cause_candidates` 가산 · 지침에 이웃 목록·선행 판정·이웃 밖 호스트 탐색 금지 · 가설 순위 불변 · 플레이북 모드 미적용. off면 비트 동일 |
+| `sop_anchor_enabled` · `kind_toolset_narrowing_enabled` | `SOP_ANCHOR_ENABLED` · `KIND_TOOLSET_NARROWING_ENABLED` | `False` | SOP 앵커·kind별 툴셋(plans/198 I-9 · D-341 ⑮) — ① 플레이북 모드 심층 조사 지시에 그 플레이북의 스텝 순서(서술 초점 · 액션 ID · 조건부 표시 · 종합 단계 제외)를 조사 계획 앵커로 넣는다(정적 지시만 — 실행 결과·판정 미포함) ② 알람 조사 잡(크로스소스 사건 제외)의 HolmesGPT 도구를 `config/expected_sources.yaml` `allowed`(host = polestar·prometheus, was = apm·polestar)로 그 잡만 좁힌다 — 소스 접두어에 안 걸리는 도구는 그대로 · 허용 밖 소스의 프로메테우스 앵커·APM 노트는 싣지 않고 「추가 조사 필요: <소스> — <이유>」를 쓰라는 범위 노트를 넣는다(실행하지 않음). 허용 키 없는 kind·YAML 적재 실패면 종전 툴셋. 둘 다 off면 비트 동일 |
 
 **주의**: `.env` 계열 파일에 **인라인 주석 금지**(주석은 별도 줄). pydantic-settings가 값에
 포함시킨다. list/dict 필드는 JSON 배열 형식(`["a","b"]`)으로 쓴다.

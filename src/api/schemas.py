@@ -9,7 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Literal, Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, SerializerFunctionWrapHandler, model_serializer
 
 
 class OutputFormat(str, Enum):
@@ -252,6 +252,11 @@ class UserRegisterRequest(BaseModel):
     )
     password: str = Field(..., min_length=8, description="비밀번호 (최소 8자)")
     department: Optional[str] = Field(None, max_length=100, description="부서")
+    # 담당 업무(plans/201 W1 · D-354) — 선택 · 권한 아님.
+    # `DUTY_AREA_ENABLED` off면 받아도 저장하지 않는다.
+    duty_areas: list[str] | None = Field(
+        None, description="담당 업무 코드 목록(config/duty_areas.yaml) · 선택 — 빈 목록=미지정"
+    )
 
 
 class UserLoginRequest(BaseModel):
@@ -273,6 +278,48 @@ class UserInfoResponse(BaseModel):
     is_protected: bool = False
     status: str = "active"
     last_login_at: Optional[str] = None
+    # 담당 업무(plans/201 W1 · D-354) — `DUTY_AREA_ENABLED` 켠 기동에서 라우트가
+    # **명시로 채울 때만** 응답 JSON에 실린다(아래 직렬화기). 끄면 키 자체가 없어
+    # 현행 응답과 같다.
+    duty_areas: list[str] | None = None
+    # 영역 메타 `[{code, label}]` — 화면은 영역 문자열을 갖지 않고 이 값만 읽는다
+    # (`/auth/me` 전용)
+    duty_area_options: list[dict[str, str]] | None = None
+    # (plans/201 W3) 알람 화면 담당 강조 메타 — `DUTY_ALARM_FOCUS_ENABLED`까지 켠 기동의 `/auth/me`에서만
+    # 명시로 채운다(끄면 키 부재 · W1 응답과 같다). 인가 판정은 이 값을 읽지 않는다.
+    duty_alarm_focus: dict[str, Any] | None = None
+    # (plans/201 W2) 첫 화면 담당별 예시 질의 `[{area, area_label, label, query}]` — `DUTY_WELCOME_HINTS_ENABLED`까지
+    # 켠 기동의 `/auth/me`에서만 명시로 채운다(끄면 키 부재). 미지정 사용자는 빈 목록(화면은 현행 버튼 유지).
+    duty_welcome_queries: list[dict[str, str]] | None = None
+    # (plans/201 W5) 조치 지원 메타 `{requery_axes, checklists}` — `DUTY_ACTION_ASSIST_ENABLED`까지 켠 기동의
+    # `/auth/me`에서만 명시로 채운다(끄면 키 부재). 인가 판정은 이 값을 읽지 않는다.
+    duty_action_assist: dict[str, Any] | None = None
+    # (plans/201 W6) 첫 화면 24시간 요약 카드 표시 여부(담당 지정 AND 알람 존 있음) — `DUTY_DAILY_SUMMARY_ENABLED`까지
+    # 켠 기동의 `/auth/me`에서만 명시로 채운다(끄면 키 부재). 인가 판정은 이 값을 읽지 않는다.
+    duty_daily_summary: bool | None = None
+    # (plans/201 W2 P2) 첫 화면 상황 안내 — `WELCOME_GUIDE_ENABLED` 켠 기동의 `/auth/me`에서만 `true`로 채운다
+    # (담당 업무와 독립 · 끄면 키 부재).
+    welcome_guide: bool | None = None
+
+    # 반환 주석을 일부러 달지 않는다 — 달면 응답 OpenAPI 스키마가 필드 없는 dict로 바뀐다(실측).
+    @model_serializer(mode="wrap")
+    def _omit_unset_duty_fields(  # type: ignore[no-untyped-def]
+        self, handler: SerializerFunctionWrapHandler
+    ):
+        """담당 업무·첫 화면 키는 명시로 채운 경우에만 직렬화한다(플래그 off = 응답 키 부재)."""
+        data = handler(self)
+        if isinstance(data, dict):
+            for key in _DUTY_RESPONSE_KEYS:
+                if key not in self.model_fields_set:
+                    data.pop(key, None)
+        return data
+
+
+#: 명시로 채울 때만 응답에 싣는 키(plans/201 W1 담당 업무 · W2 예시 질의·상황 안내 · W5 조치 지원 · W6 24시간 요약).
+_DUTY_RESPONSE_KEYS: tuple[str, ...] = (
+    "duty_areas", "duty_area_options", "duty_alarm_focus", "duty_welcome_queries", "duty_action_assist",
+    "duty_daily_summary", "welcome_guide",
+)
 
 
 class AdminUserInfoResponse(UserInfoResponse):
@@ -310,6 +357,11 @@ class UpdateUserRequest(BaseModel):
     # Plan 59 §17: 알림 지역 스코프(중복 할당 가능). 예: ["gongjon","bankjon"]. []=수신 안 함.
     alarm_zones: Optional[list[str]] = Field(
         None, description="알림 수신 존 목록(gongjon/bankjon). 빈 목록=수신 안 함"
+    )
+    # 담당 업무(plans/201 W1 · D-354) — 권한 아님. 빈 목록=미지정.
+    # `DUTY_AREA_ENABLED` off면 무시한다.
+    duty_areas: list[str] | None = Field(
+        None, description="담당 업무 코드 목록(config/duty_areas.yaml). 빈 목록=미지정"
     )
 
 

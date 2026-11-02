@@ -108,8 +108,10 @@ def node_run(prelude: str, defs: str, body: str) -> Any:
             "})().catch(function (e) { console.error((e && e.stack) || e); process.exit(1); });",
         ]
     )
+    # 스크립트는 명령줄(-e)이 아니라 stdin으로 넘긴다 — Windows 명령줄 한도(32K) 회피(plans/201 W2)
     done = subprocess.run(
-        ["node", "-e", script], capture_output=True, text=True, timeout=30, check=False
+        ["node", "-"], input=script, capture_output=True, text=True,
+        encoding="utf-8", timeout=30, check=False,
     )
     assert done.returncode == 0, done.stderr
     return json.loads(done.stdout)
@@ -749,6 +751,8 @@ var document = { createElement: function (t) {
 var IS_BREAK_GLASS = false;
 var liveViewOn = false;
 function liveViewNow() { return liveViewOn; }  // (plans/193 W1) liveView 인자 없음 = 종전
+var summaryViewOn = false;
+function summaryViewNow() { return summaryViewOn; }  // (plans/199 W1) 한눈에 보기 거짓 = 종전
 var opts = {};  // (plans/193 W4) mount 인자 생략 = 독립 페이지 → 「(새 탭)」 표지
 var investigationHead = { kids: [],
     querySelector: function () { return this.kids[0] || null; },
@@ -814,6 +818,8 @@ window.BriefingView = Object.assign({}, BVreal, {
 var IS_BREAK_GLASS = false;
 var liveViewOn = false;
 function liveViewNow() { return liveViewOn; }  // (plans/193 W1) liveView 인자 없음 = 종전
+var summaryViewOn = false;
+function summaryViewNow() { return summaryViewOn; }  // (plans/199 W1) 한눈에 보기 거짓 = 종전
 var opts = {};  // (plans/193 W4) mount 인자 생략 = 독립 페이지 → 「(새 탭)」 표지
 var manualOnlyMode = Promise.resolve(false);
 var investigationPanel = null;

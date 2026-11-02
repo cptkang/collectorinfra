@@ -13,7 +13,8 @@ dispatcher 배선은 W4다(이 모듈만으로는 기존 경로 무변경).
   기준선 창 = 사건창을 하루·이레 앞으로 옮긴 창(자정·주 경계는 `timedelta`로 넘는다).
 - 스텝은 YAML 순서대로 「단계(stage)」로 묶어 실행한다. 대상 확정 액션(S0·S0′)은 단독 단계이고,
   `when`이 같은 단계의 스텝을 참조하면 새 단계가 된다. 같은 단계의 스텝은 서로 독립이라
-  스레드풀로 병렬 실행하며, 결과는 YAML 순서로 모은다(결정적).
+  스레드풀로 병렬 실행하며, 결과는 YAML 순서로 모은다(결정적). `dag_scheduling`이면 단계 대신 스텝별
+  실행 의존(`playbook_schedule`)으로 준비된 스텝을 바로 제출한다(plans/200 I-2 · `_run_dag`).
 - 판독(R-A~R-H)은 단계마다 다시 계산해 `when` 문맥에 넣는다(판독 이름 · 스텝 ID 아래 보조 사실).
 - `when` 3값: TRUE 실행 · FALSE `skipped(when_false)` · UNKNOWN은 **실행**하고 사유를 남긴다.
 - 스텝마다 개별 try/except · 스텝 타임아웃 · 결손은 `missing` + 사유 · 남은 예산이 없으면 이후 스텝
@@ -25,8 +26,10 @@ dispatcher 배선은 W4다(이 모듈만으로는 기존 경로 무변경).
 
 from __future__ import annotations
 
+import json
 import logging
-import re
+import queue
+import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
@@ -42,8 +45,14 @@ from sre_agent.application.playbook_narrator import (
     PlaybookNarrator,
     StepNarration,
 )
+from sre_agent.application.playbook_schedule import ancestors, deps_of
+
+# 판독 참조 규칙의 정본은 스케줄 모듈이다(plans/200 W2 — 실행기 사본 제거 · 이름만 유지).
+from sre_agent.application.playbook_schedule import reading_refs as _reading_refs
 from sre_agent.application.playbook_steps import (
     ACTION_TITLES,
+    POLESTAR_AXIS_ACTIONS,
+    POLESTAR_UNRESOLVED,
     SCOPE_ACTIONS,
     STEP_LIBRARY,
     BaselineWindow,
@@ -52,6 +61,9 @@ from sre_agent.application.playbook_steps import (
     StepContext,
     StepFn,
     StepResult,
+    polestar_unresolved_text,
+    scope_polestar_reason,
+    step_queries,
 )
 from sre_agent.domain.activity_log import ActivityLog, safe_append
 from sre_agent.domain.correlation import correlate
@@ -70,20 +82,25 @@ from sre_agent.domain.known_error import (
     workaround_items,
 )
 from sre_agent.domain.playbook import AlarmFacts, Playbook, StepSpec, WindowSpec
-from sre_agent.domain.playbook_expr import READING_NAMES, Tri
+from sre_agent.domain.playbook_expr import Tri
 from sre_agent.domain.playbook_hypotheses import (
     REFUTED,
     Action,
+    Discriminator,
     Hypothesis,
     build_followups,
+    discriminator_targets,
     hypothesis_context,
     is_top_inconclusive,
     pin_hypotheses,
     rank_hypotheses,
+    reverify_hypotheses,
     select_actions,
 )
 from sre_agent.domain.playbook_readings import (
     READING_ACTIONS,
+    READING_RULES,
+    ReadingEvidence,
     Readings,
     compute_readings,
     enabled_readings,
@@ -93,6 +110,7 @@ from sre_agent.domain.step_findings import (
     BUDGET_SKIP,
     default_because,
     skip_because,
+    step_status_label,
     summarize,
     when_because,
 )
@@ -116,6 +134,18 @@ _SYNTHESIZE = "synthesize"
 #: 응답시간·지연 이벤트 유형(제니퍼 원문 — `was_signals`에 지연 kind가 없어 이벤트로 매칭한다 ·
 #: §2.3).
 LATENCY_EVENT_TYPES = frozenset({"TX_BAD_RESPONSE"})
+#: SQL 패턴 이벤트 유형(정규화 값 — plans/196 D2 · Q2 권고 `was.sql`). 제니퍼 이벤트 카탈로그
+#: (plans/87 §2.3)의 SQL·JDBC 계열 + 내부망 실화면의 `SQL_TOOMANY_FETCH`. 게이트웨이 시그니처
+#: 매핑에 없는 유형이라 지연 유형처럼 이벤트로 매칭한다.
+SQL_EVENT_TYPES = frozenset({
+    "SQL_TOOMANY_FETCH",
+    "DB_TOOMANY_FETCH",
+    "DB_BAD_RESPONSE",
+    "JDBC_BAD_RESPONSE",
+    "JDBC_STMT_EXCEPTION",
+})
+#: SQL 패턴 이벤트의 정규화 kind(`was.sql` 플레이북 `any_kind`).
+SQL_PATTERN_KIND = "was_sql_pattern"
 _LATENCY_WORDS = (
     "응답시간",
     "응답 시간",
@@ -137,6 +167,10 @@ _DISK_IO_WORDS = (
     "await",
 )
 _FS_WORDS = ("filesystem", "file system", "파일시스템", "volume", "inode", "mount", "용량")
+#: 파일시스템 계열 resourceType(소문자 비교) — 알람명에 표면어가 없어도 `filesystem`으로 본다(plans/204 후속).
+#: 정확 일치 값과, 표시 이름 부분 일치 표면어를 따로 둔다. 「디스크」(`server.Disks`)는 대상이 아니다.
+_FS_RESOURCE_TYPES = ("server.filesystem", "server.filesystems", "개별 파일시스템")
+_FS_RESOURCE_TYPE_WORDS = ("파일시스템",)
 
 #: 이벤트 유형(접두 `ERROR_`·`WARNING_` 제거 후 대문자) → 게이트웨이 시그니처 kind.
 #: **리터럴 사본** — 출처 `apm_gateway/apm_gateway/adapters/jennifer/fields.py` `EVENT_TYPE_SIGNALS`
@@ -198,6 +232,7 @@ def alarm_facts_from_payload(payload: Mapping[str, Any]) -> AlarmFacts:
     - kinds: 이벤트 유형(`meta.hints.event_type` · 알람명)이 응답시간·지연이면
       `latency`·`response_time`.
       디스크 알람은 I/O 표면어면 `disk_io`, 파일시스템 표면어면 `filesystem`으로 가른다.
+      I/O 표면어가 없고 resourceType이 파일시스템 계열(`_is_fs_resource_type`)이어도 `filesystem`이다.
     - WAS 시그니처 kind(W4): 게이트웨이가 준 kind(`meta.episode` 멤버의 `was_kinds`)가
       있으면 그것을, 없으면 이벤트 유형(`meta.hints.event_type` → 알람명)을 게이트웨이
       매핑 사본(`GATEWAY_EVENT_SIGNAL_KINDS`)으로 정규화한 kind를 더한다.
@@ -221,12 +256,22 @@ def alarm_facts_from_payload(payload: Mapping[str, Any]) -> AlarmFacts:
         or any(w in haystack for w in _LATENCY_WORDS)
     ):
         kinds += ["latency", "response_time"]
+    if any(normalize_event_type(raw) in SQL_EVENT_TYPES for raw in (event_type, alarm_name)):
+        kinds.append(SQL_PATTERN_KIND)
     if alarm_kind == "disk":
         if any(w in haystack for w in _DISK_IO_WORDS):
             kinds.append("disk_io")
-        elif any(w in haystack for w in _FS_WORDS):
+        elif any(w in haystack for w in _FS_WORDS) or _is_fs_resource_type(resource_type):
             kinds.append("filesystem")
     return AlarmFacts(resource_type=resource_type, alarm_kind=alarm_kind, kinds=tuple(kinds))
+
+
+def _is_fs_resource_type(resource_type: str | None) -> bool:
+    """resourceType이 파일시스템 계열인지(소문자 비교) — `server.FileSystem(s)`·「개별 파일시스템」 등."""
+    text = (resource_type or "").strip().lower()
+    if not text:
+        return False
+    return text in _FS_RESOURCE_TYPES or any(w in text for w in _FS_RESOURCE_TYPE_WORDS)
 
 
 # ── 시간창 · 범위 ───────────────────────────────────────────────────────────
@@ -256,35 +301,191 @@ def compute_windows(alarm_time: str, spec: WindowSpec) -> RunWindows:
     )
 
 
-#: 폴스타 소스를 정할 수 없는 사유(§8 위험 1 · plans/165 F3).
-POLESTAR_BRIDGE_MISSING = (
+#: 폴스타 소스를 정할 수 없는 사유 — 사용자 문장(plans/196 D6 · §5.3). 운영자 상세(필드명·계획
+#: 번호)는 `POLESTAR_BRIDGE_MISSING_DETAIL`이며 섹션 `reason_detail`로 간다.
+POLESTAR_BRIDGE_MISSING = "제니퍼 대상 서버를 폴스타에서 찾지 못해 폴스타 조회를 건너뜀"
+POLESTAR_BRIDGE_MISSING_DETAIL = (
     "APM 알람 페이로드에 폴스타 소스(meta.episode.infra_db_ids)가 없고 설정된 폴스타 소스도 없다 — "
     "APM 호스트 → 폴스타 서버 브리지 미구현(plans/165 F3)"
 )
+#: 폴스타 알람인데 소스가 없을 때의 사유 — 사용자 문장 · 운영자 상세(D6).
+POLESTAR_SOURCE_MISSING = "알람에 폴스타 소스 정보가 없어 폴스타 조회를 건너뜀"
+POLESTAR_SOURCE_MISSING_DETAIL = "페이로드에 폴스타 소스(event.dbId) 없음"
+#: 사용자 문장 → 운영자 상세(D6 — 섹션 `reason_detail`).
+POLESTAR_REASON_DETAILS: dict[str, str] = {
+    POLESTAR_BRIDGE_MISSING: POLESTAR_BRIDGE_MISSING_DETAIL,
+    POLESTAR_SOURCE_MISSING: POLESTAR_SOURCE_MISSING_DETAIL,
+}
+
+#: 연결 힌트(`meta.hints.polestar_link` — plans/196 §5.2) 문장. 근거는 침묵 대체 금지
+#: (`POLESTAR_MAPPED_BASIS`와 같은 자리 — run notes·S0·S4 사유).
+POLESTAR_LINK_BASIS: dict[str, str] = {
+    "previous_confirmed": "이전 확정 연결 — {by}·{at}",
+    "user_selected": "사용자 선택으로 연결 — {by}·{at}",
+    # plans/202 · D-355 ② — 알람마다 판정하는 자동 연결(저장하지 않는다)
+    "node_address": "제니퍼 노드 주소 일치 — {host_address} (알람 시점 · 자동)",
+}
+#: 노드 주소 연결이 저장된 확정 연결과 다를 때 근거 뒤에 붙이는 문장(D-355 ③ — 둘 다 적는다).
+POLESTAR_LINK_PREVIOUS = "저장된 확정 연결 {server_name}({db_id})과 다름 — 노드 주소 우선"
+#: 일부 존 조회 실패 중 나머지 존 1대 일치로 연결했을 때 근거 뒤에 붙이는 문장(D-355 부기 2).
+POLESTAR_LINK_UNCHECKED = "일부 존 확인 못 함({db_ids}) — 나머지 존에서 1대 일치"
+#: 파드 미확정(D-355 ④) 사유 — 폴스타 축 생략 카드에 그대로 나오는 문장(「서버 선택 대기」 자리).
+#: 설정 매핑으로 대체하지 않는다. `{node}`는 「 10.0.0.1」 꼴.
+POLESTAR_POD_UNRESOLVED = f"{POLESTAR_UNRESOLVED} — K8s 파드(노드{{node}} — {{why}})"
+#: 연결 힌트 `reason` → 사유(`{why}`). `node_lookup_<상태>`는 `POLESTAR_POD_LOOKUP`이 정한다.
+POLESTAR_POD_REASONS: dict[str, str] = {
+    "node_not_registered": "노드 IP 폴스타 미등록",
+    "node_ambiguous": "노드 IP가 여러 서버에 일치",
+    "node_unchecked": "일부 존 확인 못 함",
+}
+POLESTAR_POD_LOOKUP_PREFIX = "node_lookup_"
+#: 노드 주소 조회 실패 상태(게이트웨이 `apm.host_address_status`) → 사유. 로그인·형태·시간 초과를
+#: 구분한다(`error`는 응답 형태 검증 실패와 시간 초과를 함께 담는다 — 게이트웨이 어휘).
+POLESTAR_POD_LOOKUP: dict[str, str] = {
+    "stale": "노드 주소 조회 실패(재조회 실패 — 오래된 값은 자동 연결 안 함)",
+    "not_found": "노드 주소 조회 실패(제니퍼 웹 목록에 인스턴스 없음)",
+    "disabled": "노드 주소 조회 실패(제니퍼 웹 조회 계정 미설정)",
+    "login_failed": "노드 주소 조회 실패(제니퍼 웹 로그인 실패)",
+    "login_blocked": "노드 주소 조회 실패(제니퍼 웹 로그인 연속 실패로 일시 정지)",
+    "error": "노드 주소 조회 실패(응답 형태 오류 또는 시간 초과)",
+}
+POLESTAR_POD_LOOKUP_OTHER = "노드 주소 조회 실패({status})"
+POLESTAR_POD_OTHER = "노드 미확정"
+_TRUE_WORDS = frozenset({"true", "1", "yes"})
+#: 평문 칸으로 옮기지 않는 힌트 키 — 파드 여부(`link["pod"] = "true"`로 정규화)·중첩 연결.
+_LINK_NESTED = frozenset({"pod", "previous_link"})
+#: 위 두 값 밖의 `basis` — 근거를 비우지 않는다(침묵 대체 금지).
+POLESTAR_LINK_BASIS_OTHER = "확정 연결 — {by}·{at}"
+POLESTAR_LINK_ABSENT = "폴스타 미등록(사용자 확인 · {by}·{at})"
+POLESTAR_LINK_UNRESOLVED = "폴스타 서버 선택 대기 — 조사 화면에서 후보를 골라 다시 조회"
+_LINK_STATUSES = frozenset({"linked", "absent", "unresolved"})
+_UNKNOWN = "미상"
+
+
+def polestar_link(payload: Mapping[str, Any]) -> dict[str, str] | None:
+    """APM 알람의 연결 힌트 `meta.hints.polestar_link`(plans/196 §5.2). 없거나 형식이 맞지 않으면
+    None(= 현행 동작). `linked`는 `db_id`·`server_name`이 모두 있어야 유효하다(모호하면 승격하지
+    않는다 · D-188)."""
+    if not is_apm_trigger(payload):
+        return None
+    raw = _hints(payload).get("polestar_link")
+    if not isinstance(raw, Mapping):
+        return None
+    status = str(raw.get("status") or "").strip()
+    if status not in _LINK_STATUSES:
+        return None
+    # 중첩 값(`previous_link`)·dict 값은 문자열로 바꾸지 않는다 — `polestar_previous_link`가 따로 읽는다
+    link = {
+        str(k): str(v).strip()
+        for k, v in raw.items()
+        if v is not None
+        and k not in _LINK_NESTED
+        and not isinstance(v, Mapping)
+        and str(v).strip()
+    }
+    link["status"] = status
+    if _truthy(raw.get("pod")):  # bool True·문자열 "True"/"true" 모두 파드(plans/202)
+        link["pod"] = "true"
+    if status == "linked" and not (link.get("db_id") and link.get("server_name")):
+        return None
+    return link
+
+
+def _truthy(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    return str(value or "").strip().lower() in _TRUE_WORDS
+
+
+def polestar_previous_link(payload: Mapping[str, Any]) -> dict[str, str] | None:
+    """노드 주소 연결 힌트에 함께 실린 저장 확정 연결 `previous_link: {db_id, server_name}`
+    (plans/202 · D-355 ③). linked 힌트가 아니거나 두 값 중 하나라도 없으면 None. JSON 문자열로
+    직렬화돼 와도 읽는다."""
+    link = polestar_link(payload)
+    if link is None or link["status"] != "linked":
+        return None
+    raw = _hints(payload).get("polestar_link")
+    prev = raw.get("previous_link") if isinstance(raw, Mapping) else None
+    if isinstance(prev, str):
+        try:
+            prev = json.loads(prev)
+        except ValueError:
+            return None
+    if not isinstance(prev, Mapping):
+        return None
+    db_id = str(prev.get("db_id") or "").strip()
+    server = str(prev.get("server_name") or "").strip()
+    if not db_id or not server:
+        return None
+    return {"db_id": db_id, "server_name": server}
+
+
+def is_pod_unresolved(link: Mapping[str, str] | None) -> bool:
+    """파드로 판정됐는데 노드 서버를 정하지 못한 힌트인가(D-355 ④ — `unresolved` + `pod`)."""
+    return link is not None and link.get("status") == "unresolved" and link.get("pod") == "true"
+
+
+def pod_unresolved_reason(link: Mapping[str, str]) -> str:
+    """파드 미확정 사유 문장(「폴스타 서버 미확정 — K8s 파드(…)」) — 힌트 `reason`별로 다르다."""
+    reason = str(link.get("reason") or "").strip()
+    if reason.startswith(POLESTAR_POD_LOOKUP_PREFIX):
+        state = reason[len(POLESTAR_POD_LOOKUP_PREFIX):]
+        why = POLESTAR_POD_LOOKUP.get(state) or POLESTAR_POD_LOOKUP_OTHER.format(
+            status=state or _UNKNOWN
+        )
+    else:
+        why = POLESTAR_POD_REASONS.get(reason) or (
+            f"{POLESTAR_POD_OTHER}({reason})" if reason else POLESTAR_POD_OTHER
+        )
+    host = str(link.get("host_address") or "").strip()
+    return POLESTAR_POD_UNRESOLVED.format(node=f" {host}" if host else "", why=why)
+
+
+def _link_text(template: str, link: Mapping[str, str]) -> str:
+    return template.format(
+        by=link.get("by") or _UNKNOWN,
+        at=link.get("at") or _UNKNOWN,
+        host_address=link.get("host_address") or _UNKNOWN,
+    )
 
 
 def resolve_polestar_source(
     payload: Mapping[str, Any],
     configured: str | None = None,
 ) -> tuple[str | None, str | None]:
-    """폴스타 소스(db_id)와 미확정 사유. 결정적으로 정할 수 없으면 (None, 사유).
+    """폴스타 소스(db_id)와 미확정 사유(사용자 문장). 결정적으로 정할 수 없으면 (None, 사유).
 
-    APM 트리거: `meta.episode.infra_db_ids[0]` → 호출자가 명시한 `configured` → 미확정.
+    APM 트리거: `meta.episode.infra_db_ids[0]` → 연결 힌트 `meta.hints.polestar_link`가 linked면
+    그 `db_id`(노드 주소 연결 포함 · plans/202) → absent면 미확정(미등록 사유) → unresolved +
+    `pod`면 미확정(파드 사유 — 설정 매핑 대체 금지 · D-355 ④) → 호출자가 명시한 `configured` → unresolved면
+    미확정(선택 대기 사유) → 미확정(plans/196 §5.2 — 플래그를 켜도 현행보다 나빠지지 않게
+    unresolved는 설정 매핑을 이기지 않는다).
     폴스타 알람: `event.dbId`(또는 pull 진단 `db_id`) → `configured` → 미확정.
     """
     if is_apm_trigger(payload):
         episode = episode_from_payload(payload)
         if episode is not None and episode.infra_db_ids:
             return episode.infra_db_ids[0], None
+        link = polestar_link(payload)
+        status = link["status"] if link is not None else None
+        if link is not None and status == "linked":
+            return link["db_id"], None
+        if link is not None and status == "absent":
+            return None, _link_text(POLESTAR_LINK_ABSENT, link)
+        if link is not None and is_pod_unresolved(link):
+            # 파드 미확정은 설정 매핑으로 대체하지 않는다(D-355 ④ — 틀린 존 0건이 미확인보다 나쁘다)
+            return None, pod_unresolved_reason(link)
         if configured:
             return configured, None
+        if status == "unresolved":
+            return None, POLESTAR_LINK_UNRESOLVED
         return None, POLESTAR_BRIDGE_MISSING
     source = str(_event(payload).get("dbId") or payload.get("db_id") or "").strip()
     if source:
         return source, None
     if configured:
         return configured, None
-    return None, "페이로드에 폴스타 소스(event.dbId) 없음"
+    return None, POLESTAR_SOURCE_MISSING
 
 
 #: 설정 매핑으로 폴스타 소스를 대체했을 때의 근거 문장(plans/187 W21 P6 — 결정적).
@@ -338,6 +539,33 @@ def initial_scope(
         if apm
         else (str(event.get("serverName") or payload.get("server_name") or "").strip() or None)
     )
+    # 연결 힌트(plans/196 §5.2) — 실제로 소스 결정에 쓰였을 때만 반영한다(infra_db_ids 우선)
+    link = polestar_link(payload)
+    link_status: str | None = None
+    basis: str | None = None
+    if link is not None:
+        if link["status"] == "linked" and polestar_source == link["db_id"]:
+            episode = episode_from_payload(payload)
+            if episode is None or not episode.infra_db_ids:
+                link_status = "linked"
+                server = link["server_name"]  # 폴스타 등록명(D-046)
+                template = POLESTAR_LINK_BASIS.get(
+                    link.get("basis") or "", POLESTAR_LINK_BASIS_OTHER
+                )
+                basis = _link_text(template, link)
+                previous = polestar_previous_link(payload)
+                if previous is not None and (
+                    previous["db_id"], previous["server_name"]
+                ) != (link["db_id"], link["server_name"]):
+                    # 노드 주소 연결이 저장 확정 연결과 다르다 — 둘 다 적는다(D-355 ③)
+                    basis = f"{basis} · {POLESTAR_LINK_PREVIOUS.format(**previous)}"
+                if link.get("unchecked_db_ids"):
+                    basis = (
+                        f"{basis} · "
+                        f"{POLESTAR_LINK_UNCHECKED.format(db_ids=link['unchecked_db_ids'])}"
+                    )
+        elif link["status"] != "linked" and polestar_source is None:
+            link_status = link["status"]
     return RunScope(
         alarm_instance=instance,
         host=host,
@@ -350,18 +578,10 @@ def initial_scope(
         ]
         if instance
         else [],
+        polestar_basis=basis,
+        polestar_reason_detail=POLESTAR_REASON_DETAILS.get(reason or ""),
+        polestar_link=link_status,
     )
-
-
-_QUOTED = re.compile(r"'[^']*'|\"[^\"]*\"")
-_ROOT_NAME = re.compile(r"(?<![.\w])([A-Za-z_]\w*)")
-
-
-def _reading_refs(when: str | None) -> frozenset[str]:
-    """`when`이 경로 루트로 참조하는 판독 이름(따옴표 문자열 · `S2.scope` 같은 하위 경로 제외)."""
-    if not when:
-        return frozenset()
-    return frozenset(_ROOT_NAME.findall(_QUOTED.sub(" ", when))) & READING_NAMES
 
 
 def plan_stages(playbook: Playbook) -> list[list[StepSpec]]:
@@ -423,10 +643,91 @@ def _readings_of(playbook: Playbook, results: Mapping[str, StepResult]) -> Readi
     }
     readings = compute_readings(steps, enabled=enabled_readings(playbook), params=params)
     readings.notes.extend(param_notes)
+    _apply_prior_readings(playbook, results, readings)
     return readings
 
 
+#: 재조회에서 부모 판독을 쓴 메모 — 결정적(침묵 대체 금지).
+RERUN_READINGS_NOTE = "재조회 — 재사용 단계가 낸 판독 {n}건은 부모 조사 값 사용({names})"
+
+
+def _evidence_of(raw: Mapping[str, Any], rule: str) -> ReadingEvidence:
+    """브리핑 `readings.evidence` 1건(dict) → `ReadingEvidence`."""
+    kwargs: dict[str, Any] = {}
+    if raw.get("source"):
+        kwargs["source"] = str(raw["source"])
+    values = raw.get("values")
+    return ReadingEvidence(
+        str(raw.get("rule") or rule),
+        tuple(str(x) for x in raw.get("steps") or ()),
+        dict(values) if isinstance(values, Mapping) else {},
+        raw.get("reason"),
+        **kwargs,
+    )
+
+
+def _apply_prior_readings(
+    playbook: Playbook, results: Mapping[str, StepResult], readings: Readings
+) -> None:
+    """재조회(plans/196 §5.2 `rerun.prior_readings`) — 재사용 단계만이 내는 판독·보조 사실은
+    부모 값으로 바꾼다. 재사용 섹션에는 원자료(`data`)가 없어 다시 계산하면 비기 때문이다.
+    다시 돈 단계가 하나라도 입력인 판독은 새로 계산한 값을 그대로 둔다."""
+    reused = {
+        sid for sid, r in results.items() if r.reused_from and "prior_readings" in r.artifacts
+    }
+    if not reused:
+        return
+    prior = results[next(iter(reused))].artifacts["prior_readings"]
+    values = prior.get("values")
+    if not isinstance(values, Mapping):
+        return
+    evidence = prior.get("evidence") if isinstance(prior.get("evidence"), Mapping) else {}
+    enabled = enabled_readings(playbook)
+    used: list[str] = []
+    for name, actions in READING_ACTIONS.items():
+        if name not in enabled or name not in values:
+            continue
+        producers = {st.id for st in playbook.steps if st.action in actions}
+        if not producers or not producers <= reused:
+            continue
+        readings.values[name] = values[name]
+        ev = evidence.get(name)
+        if isinstance(ev, Mapping):
+            readings.evidence[name] = _evidence_of(ev, READING_RULES[name])
+        used.append(name)
+    facts = prior.get("facts") if isinstance(prior.get("facts"), Mapping) else {}
+    fact_ev = (
+        prior.get("fact_evidence") if isinstance(prior.get("fact_evidence"), Mapping) else {}
+    )
+    for sid in sorted(reused):
+        if isinstance(facts.get(sid), Mapping):
+            readings.facts[sid] = dict(facts[sid])
+            for key, ev in fact_ev.items():
+                if str(key).startswith(f"{sid}.") and isinstance(ev, Mapping):
+                    readings.fact_evidence[str(key)] = _evidence_of(ev, "fact")
+    if used:
+        readings.notes.append(RERUN_READINGS_NOTE.format(n=len(used), names=", ".join(used)))
+
+
 # ── 결과 ────────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Discrimination:
+    """판별 조회 결과(plans/198 I-2 · D-350 ①) — 실행기가 채우고 실행 후 처리가 재판정에 쓴다.
+
+    targets:  (가설 규칙 ID, 그 가설의 판별 스텝) — 1차 평가의 상위 판단 보류 가설 순위 순서.
+    specs:    실제로 돈 판별 스텝(판독 계산 때 플레이북 스텝 뒤에 붙인다 · 실행 순서).
+    results:  스텝 ID → 결과(돈 것만).
+    skipped:  스텝 ID → 돌지 않은 사유(이미 있는 단계 · 예산 소진).
+    contexts: 스텝 ID → 실행 문맥(도구 원문·호출 기록 재료).
+    """
+
+    targets: list[tuple[str, tuple[Discriminator, ...]]]
+    specs: list[StepSpec] = field(default_factory=list)
+    results: dict[str, StepResult] = field(default_factory=dict)
+    skipped: dict[str, str] = field(default_factory=dict)
+    contexts: dict[str, StepContext] = field(default_factory=dict, repr=False)
 
 
 @dataclass
@@ -443,6 +744,10 @@ class PlaybookRun:
     synthesis:    종합(가설 순위·대응·추가 확인·서술) — 실행 후 처리 전에는 None.
     runbook:      브리핑 `playbook.runbook`(W8 · §5.7.2) — 실행 후 처리 전에는 None.
     known_errors: 브리핑 `playbook.known_errors[]`(W8 · §5.7.6 — 표시 상태 · 불일치 제외).
+    discrimination: 판별 조회(plans/198 I-2) — 켜졌을 때만 실행기가 채운다(직렬화하지 않는다 —
+                  실행 후 처리가 `hypotheses[].verification`으로 싣는다).
+    stage_wall_s: 단계별 벽시계 초(plans/200 I-0 — `plan_stages` 순서 · 실 단조 시계 · 재시도·판별
+                  조회 제외). 계측 전용이라 직렬화하지 않는다(`to_dict`·브리핑에 없다).
     """
 
     playbook_id: str
@@ -461,6 +766,8 @@ class PlaybookRun:
     synthesis: dict[str, Any] | None = None
     runbook: dict[str, Any] | None = None
     known_errors: list[dict[str, Any]] = field(default_factory=list)
+    discrimination: Discrimination | None = None
+    stage_wall_s: list[float] = field(default_factory=list, repr=False)
 
     def section(self, step_id: str) -> StepResult | None:
         return next((s for s in self.sections if s.step == step_id), None)
@@ -559,6 +866,9 @@ def run_playbook(
     activity: ActivityLog | None = None,
     on_skip: Callable[[StepResult, str], None] | None = None,
     retry_timed_out: bool = False,
+    discriminate_top_n: int = 0,
+    dag_scheduling: bool = False,
+    axis_concurrency: bool = False,
 ) -> PlaybookRun:
     """플레이북을 실행한다. 예외를 내지 않는다 — 실패는 섹션의 상태·사유로 남긴다.
 
@@ -570,6 +880,7 @@ def run_playbook(
                      예산보다 길지 않고, 단계 제출 시각부터 잰다 · W21 P3). 타임아웃 스텝은
                      중단 신호(이후 새 호출 0)와 함께 missing + 진행 계수 사유(W21 P4).
     max_workers:     같은 단계 병렬 스레드 수(1이면 YAML 순서대로 하나씩 — 호출 순서 결정적).
+                     `dag_scheduling`이면 동시에 도는 스텝 수(슬롯).
     for_each_max:    `for_each: targets` 스텝이 도는 대상 수 상한(None = S0 대상 전원).
     polestar_source: 페이로드에 없을 때 쓸 폴스타 소스(호출자가 결정적으로 아는 경우만 — 없으면
     미확정).
@@ -590,6 +901,15 @@ def run_playbook(
     retry_timed_out: 참이면 수집 단계 뒤 남은 예산 안에서 「스텝 타임아웃」 결손 스텝만 YAML 순서로
                      1회씩 다시 돈다(plans/187 W22 · `retry_timed_out_steps`).
                      기본 거짓 = 종전 동일.
+    discriminate_top_n: 1 이상이면 수집(·재시도) 뒤 남은 예산 안에서 1차 평가의 상위 판단
+                     보류 가설 이 수만큼 판별 스텝을 1회 돌린다(plans/198 I-2 ·
+                     `Discrimination`). 재판정은 실행 후 처리가 한다. 재조회(plans/196)에서는
+                     돌지 않는다. 기본 0 = 종전 동일.
+    dag_scheduling:  참이면 단계 장벽 대신 스텝별 실행 의존(`playbook_schedule`)으로 준비된 스텝을
+                     `max_workers` 슬롯에 바로 제출한다(plans/200 I-2 · `_run_dag`). 기본 거짓 =
+                     `plan_stages` 단계 실행(종전 동일).
+    axis_concurrency: 스텝 안 독립 축 동시 조회(plans/200 I-3 — `StepContext` 인자로 넘긴다).
+                     기본 거짓 = 축 순차(종전 동일).
     """
     started = clock()
     library = STEP_LIBRARY if steps is None else steps
@@ -617,6 +937,9 @@ def run_playbook(
             activity=activity,
             on_skip=on_skip,
             retry_timed_out=retry_timed_out,
+            discriminate_top_n=discriminate_top_n,
+            dag_scheduling=dag_scheduling,
+            axis_concurrency=axis_concurrency,
         )
     finally:
         if own_cache:
@@ -624,6 +947,138 @@ def run_playbook(
     if synthesize or narrator is not None:
         finalize_playbook_run(run, playbook, narrator=narrator, clock=clock)
     return run
+
+
+#: 재조회(plans/196 §5.2 `rerun`) 문장 — 결정적.
+RERUN_NOTE = (
+    "재조회 — 폴스타 축 단계만 다시 조회 · 나머지 {n}단계는 부모 조사({parent}) 결과 재사용"
+)
+RERUN_NO_PRIOR = "재조회 — 부모 조사에 이 단계 결과가 없어 다시 조회하지 않음"
+
+
+@dataclass(frozen=True)
+class RerunHint:
+    """재조회 힌트 `meta.hints.rerun` — 부모 조사 id와 부모 섹션(스텝 ID → 섹션 원본)·부모 판독
+    (`prior_readings` = 부모 `briefing.playbook.readings` · 없을 수 있음)."""
+
+    parent_investigation_id: str
+    sections: Mapping[str, Mapping[str, Any]]
+    readings: Mapping[str, Any] | None = None
+
+
+def rerun_hint(payload: Mapping[str, Any]) -> RerunHint | None:
+    """`meta.hints.rerun`(plans/196 §5.2) — `axes`에 `polestar`가 있고 부모 id·`prior_sections`
+    목록이 있을 때만. 아니면 None(= 현행 동작)."""
+    raw = _hints(payload).get("rerun")
+    if not isinstance(raw, Mapping):
+        return None
+    parent = str(raw.get("parent_investigation_id") or "").strip()
+    axes = raw.get("axes")
+    prior = raw.get("prior_sections")
+    if not parent or not isinstance(axes, list) or "polestar" not in axes:
+        return None
+    if not isinstance(prior, list):
+        return None
+    sections = {
+        str(sec["step"]): sec
+        for sec in prior
+        if isinstance(sec, Mapping) and str(sec.get("step") or "").strip()
+    }
+    readings = raw.get("prior_readings")
+    return RerunHint(
+        parent_investigation_id=parent,
+        sections=sections,
+        readings=readings if isinstance(readings, Mapping) else None,
+    )
+
+
+_STEP_STATUSES = frozenset({"ok", "missing", "skipped"})
+
+
+def _reused_section(
+    step: StepSpec,
+    prior: Mapping[str, Any] | None,
+    parent: str,
+    *,
+    scope: RunScope | None = None,
+    prior_readings: Mapping[str, Any] | None = None,
+) -> StepResult:
+    """부모 조사 섹션을 그대로 쓴 결과(도구 호출 0 · `reused_from` 표지). 부모 소견은 실행 후
+    처리가 다시 부르지 않고 쓰도록 `artifacts["prior_opinion"]`에 둔다(LLM 추가 호출 0).
+
+    부모 섹션에는 판독 원자료(`data`)가 없다(브리핑 섹션) — 부모 판독(`prior_readings`)을
+    `artifacts["prior_readings"]`에 두어 판독 계산이 쓰게 한다(`_apply_prior_readings`).
+    대상 확정 단계(S0)의 사유 속 폴스타 토막은 지금 범위(`scope`) 기준으로 바꾼다 — 부모의
+    「선택 대기」 문장이 새 연결과 어긋나지 않게.
+    """
+    if prior is None:
+        res = _placeholder(step, "skipped", RERUN_NO_PRIOR)
+        res.reused_from = parent
+        return res
+    status = str(prior.get("status") or "")
+    table = prior.get("table")
+    axis = prior.get("axis_status")
+    res = StepResult(
+        step=step.id,
+        action=step.action,
+        title=ACTION_TITLES.get(step.action, step.action),
+        status=status if status in _STEP_STATUSES else "missing",  # type: ignore[arg-type]
+        verdict=prior.get("verdict"),
+        verdict_source=prior.get("verdict_source"),
+        table=dict(table) if isinstance(table, Mapping) else None,
+        badges=[str(b) for b in prior.get("badges") or []],
+        tools=[str(t) for t in prior.get("tools") or []],
+        missing=[str(m) for m in prior.get("missing") or []],
+        reason=prior.get("reason"),
+        reason_detail=prior.get("reason_detail"),
+        reused_from=parent,
+        queries=_prior_queries(prior.get("queries")),
+        axis_status=(
+            {str(k): str(v) for k, v in axis.items()} if isinstance(axis, Mapping) else None
+        ),
+    )
+    if scope is not None and step.action == "scope.resolve_was_targets":
+        res.reason = _refresh_polestar_reason(res.reason, scope)
+        res.reason_detail = None if scope.polestar_source else scope.polestar_reason_detail
+    if prior_readings is not None:
+        res.artifacts["prior_readings"] = prior_readings
+    res.artifacts["prior_opinion"] = Opinion(
+        text=str(prior.get("opinion") or ""),
+        dropped_reason=prior.get("opinion_dropped_reason"),
+        guard=[str(g) for g in prior.get("opinion_guard") or []],
+    )
+    return res
+
+
+def _prior_queries(raw: Any) -> list[dict[str, str]]:
+    """부모 섹션의 `queries`를 그대로 옮긴다(plans/195 W4 — 구버전 부모·형식 밖 원소는 버린다)."""
+    out: list[dict[str, str]] = []
+    for q in raw if isinstance(raw, list) else []:
+        if not isinstance(q, Mapping) or not isinstance(q.get("tool"), str):
+            continue
+        phrase = q.get("phrase")
+        out.append(
+            {"tool": q["tool"], "phrase": phrase} if isinstance(phrase, str) and phrase
+            else {"tool": q["tool"]}
+        )
+    return out
+
+
+#: S0 사유에서 폴스타 토막이 시작하는 표지(`scope_polestar_reason` 문장 · 맨 끝 토막).
+_POLESTAR_REASON_MARKS: tuple[str, ...] = (
+    f"{POLESTAR_UNRESOLVED} — ",
+    *(t.split("{")[0] for t in POLESTAR_LINK_BASIS.values()),
+    POLESTAR_LINK_BASIS_OTHER.split("{")[0],
+    POLESTAR_MAPPED_BASIS.split("{")[0],
+)
+
+
+def _refresh_polestar_reason(reason: str | None, scope: RunScope) -> str | None:
+    """S0 사유의 폴스타 토막(맨 끝)을 지금 범위 기준 문장으로 바꾼다. 나머지 토막은 그대로."""
+    text = reason or ""
+    cuts = [i for i in (text.find(m) for m in _POLESTAR_REASON_MARKS) if i >= 0]
+    head = text[: min(cuts)].rstrip(" ·") if cuts else text
+    return " · ".join(p for p in (head, scope_polestar_reason(scope)) if p) or None
 
 
 def _placeholder(step: StepSpec, status: str, reason: str | None) -> StepResult:
@@ -658,12 +1113,20 @@ def _run(
     activity: ActivityLog | None = None,
     on_skip: Callable[[StepResult, str], None] | None = None,
     retry_timed_out: bool = False,
+    discriminate_top_n: int = 0,
+    dag_scheduling: bool = False,
+    axis_concurrency: bool = False,
 ) -> PlaybookRun:
     notes: list[str] = []
     source, source_reason = resolve_polestar_source(payload, polestar_source)
     scope = initial_scope(payload, source, source_reason)
     if source is None:
-        notes.append(f"폴스타 서버 미확정 — {source_reason}")
+        notes.append(polestar_unresolved_text(source_reason))
+        if scope.polestar_reason_detail:  # 운영자 상세는 서버 로그로(D6)
+            logger.info("폴스타 서버 미확정 상세: %s", scope.polestar_reason_detail)
+    elif scope.polestar_basis:
+        # 연결 힌트로 정한 서버 — 근거를 남긴다(plans/196 §5.2 · 침묵 대체 금지)
+        notes.append(scope.polestar_basis)
     elif polestar_source_basis and resolve_polestar_source(payload)[0] is None:
         # 페이로드에 소스가 없어 호출자 대체값을 썼다 — 근거를 남긴다(W21 P6 · 침묵 대체 금지)
         scope.polestar_basis = polestar_source_basis
@@ -685,11 +1148,51 @@ def _run(
         )
 
     windows = compute_windows(alarm_time, playbook.window)
+    rerun = rerun_hint(payload)
+    if rerun is not None:
+        reused = [
+            st for st in playbook.steps
+            if st.action != _SYNTHESIZE and st.action not in POLESTAR_AXIS_ACTIONS
+        ]
+        notes.append(
+            RERUN_NOTE.format(n=len(reused), parent=rerun.parent_investigation_id)
+        )
     # 실행기는 단계마다 새로 만든다(W21 교정) — 타임아웃으로 중단된 스텝 스레드가 워커를 붙잡아
     # 다음 단계 스텝이 늦게 시작하지 않게 한다(중단된 스레드는 새 호출을 내지 않는다).
     executor: ThreadPoolExecutor | None = None
+    # 단계 시작 시각(plans/200 I-0 계측 — 단계 벽시계 = 다음 단계 시작까지 · 실 단조 시계)
+    stage_starts: list[float] = []
+    stages_end: float | None = None
+    dag_walls: list[float] | None = None
     try:
-        for stage in plan_stages(playbook):
+        if dag_scheduling:
+            # 의존 기반 실행(plans/200 I-2) — 단계 장벽 없이 준비된 스텝을 슬롯에 바로 제출한다.
+            # 재시도·판별·종합 자리·마감은 아래 현행 경로 그대로다.
+            scope, dag_walls = _run_dag(
+                payload, playbook, scope=scope, windows=windows, rerun=rerun,
+                polestar=polestar, apm=apm, clock=clock, now=now, started=started,
+                budget_s=budget_s, step_timeout_s=step_timeout_s, max_workers=max_workers,
+                for_each_max=for_each_max, library=library,
+                xview_confirm_over=xview_confirm_over, axis_concurrency=axis_concurrency,
+                activity=activity, on_skip=on_skip,
+                results=results, contexts=contexts, timed_out=timed_out,
+            )
+        for stage in [] if dag_scheduling else plan_stages(playbook):
+            stage_starts.append(time.monotonic())
+            if rerun is not None:
+                # 재조회 — 폴스타 축이 아닌 단계는 부모 섹션 그대로(도구 호출 0 · plans/196 §5.2)
+                for step in stage:
+                    if step.action not in POLESTAR_AXIS_ACTIONS:
+                        results[step.id] = _reused_section(
+                            step,
+                            rerun.sections.get(step.id),
+                            rerun.parent_investigation_id,
+                            scope=scope,
+                            prior_readings=rerun.readings,
+                        )
+                stage = [st for st in stage if st.id not in results]
+                if not stage:
+                    continue
             remaining = budget_s - (clock() - started)
             if remaining <= 0:
                 for step in stage:
@@ -740,7 +1243,10 @@ def _run(
                     now=now,
                     prior=dict(results),
                     xview_confirm_over=xview_confirm_over,
+                    axis_concurrency=axis_concurrency,
                 )
+                # 실행 기록의 스텝 ID를 미리 단다(plans/200 — 래퍼가 액션별 대기열로 배정하지 않게)
+                ctx.step_id = step.id
                 contexts[step.id] = ctx
                 limit = step_wait_s(step, step_timeout_s, remaining)
                 submitted.append(
@@ -766,6 +1272,7 @@ def _run(
                 new_scope = res.artifacts.get("scope") if step.action in SCOPE_ACTIONS else None
                 if isinstance(new_scope, RunScope):
                     scope = new_scope
+        stages_end = time.monotonic()
         if retry_timed_out and timed_out:
             for step in playbook.steps:
                 if step.id not in timed_out:
@@ -780,7 +1287,7 @@ def _run(
                     targets=[name for name, _ in picked],
                     target_sources=[src for _, src in picked],
                     polestar=polestar, apm=apm, now=now, prior=dict(results),
-                    xview_confirm_over=xview_confirm_over,
+                    xview_confirm_over=xview_confirm_over, axis_concurrency=axis_concurrency,
                 )
                 ctx.step_id, ctx.retry_of = step.id, first
                 # 재시도마다 새 실행기 — 앞 재시도가 다시 타임아웃돼 중단된 스레드가 워커를
@@ -801,14 +1308,363 @@ def _run(
         if executor is not None:
             executor.shutdown(wait=False, cancel_futures=True)
 
+    disc: Discrimination | None = None
+    if discriminate_top_n > 0 and rerun is None:
+        disc = _discriminate(
+            playbook, results, discriminate_top_n, payload=payload, windows=windows, scope=scope,
+            polestar=polestar, apm=apm, now=now, library=library, clock=clock, started=started,
+            budget_s=budget_s, step_timeout_s=step_timeout_s, for_each_max=for_each_max,
+            xview_confirm_over=xview_confirm_over, activity=activity, on_skip=on_skip,
+            axis_concurrency=axis_concurrency,
+        )
+
     for step in playbook.steps:
         if step.action == _SYNTHESIZE:
             results[step.id] = _placeholder(
                 step, "pending_synthesis", "종합은 단계 소견기·종합기(W3) 담당"
             )
-    return _finish(
+    run = _finish(
         playbook, matched_by, scope, windows, results, contexts, notes, clock, started, budget_s
     )
+    if dag_walls is not None:
+        run.stage_wall_s = dag_walls
+    elif stages_end is not None:
+        bounds = [*stage_starts[1:], stages_end]
+        run.stage_wall_s = [round(e - s, 3) for s, e in zip(stage_starts, bounds)]
+    if disc is not None:
+        run.discrimination = disc
+        for sid, dctx in disc.contexts.items():
+            run.tool_outputs.extend(dctx.outputs)
+            run.tool_calls.extend({"step": sid, "tool": t, "args": a} for t, a in dctx.calls)
+            run.notes.extend(n for n in list(dctx.limits) if n not in run.notes)
+    return run
+
+
+@dataclass
+class _DagSlot:
+    """DAG 실행기에서 도는 스텝 1개 — 슬롯 1개를 쓴다(타임아웃이면 즉시 반환)."""
+
+    step: StepSpec
+    ctx: StepContext
+    fut: Future[StepResult]
+    note: str | None
+    limit: float
+    budget_end: float
+
+    def deadline(self) -> float:
+        """대기 마감 — 시작 시각 + 상한과 제출 시점 예산 끝 중 이른 것(시작 전이면 예산 끝)."""
+        if self.ctx.started_at is None:
+            return self.budget_end
+        return min(self.ctx.started_at + self.limit, self.budget_end)
+
+
+def _dag_worker(
+    step: StepSpec,
+    ctx: StepContext,
+    library: Mapping[str, StepFn],
+    clock: Callable[[], float],
+    fut: Future[StepResult],
+    done: queue.SimpleQueue[str],
+) -> None:
+    """스텝 스레드 본체 — 결과를 `fut`에 싣고 완료를 알린다(취소된 자리면 시작하지 않는다)."""
+    if not fut.set_running_or_notify_cancel():
+        return
+    try:
+        fut.set_result(_exec_step(step, ctx, library, clock))
+    except BaseException as e:  # noqa: BLE001 — 실행기 스레드풀과 같게 결과 쪽으로 넘긴다
+        fut.set_exception(e)
+    finally:
+        done.put(step.id)
+
+
+def _run_dag(
+    payload: Mapping[str, Any],
+    playbook: Playbook,
+    *,
+    scope: RunScope,
+    windows: RunWindows,
+    rerun: RerunHint | None,
+    polestar: BatchCaller | None,
+    apm: BatchCaller | None,
+    clock: Callable[[], float],
+    now: Callable[[], datetime],
+    started: float,
+    budget_s: float,
+    step_timeout_s: float,
+    max_workers: int,
+    for_each_max: int | None,
+    library: Mapping[str, StepFn],
+    xview_confirm_over: int | None,
+    axis_concurrency: bool,
+    activity: ActivityLog | None,
+    on_skip: Callable[[StepResult, str], None] | None,
+    results: dict[str, StepResult],
+    contexts: dict[str, StepContext],
+    timed_out: dict[str, tuple[str, str | None]],
+) -> tuple[RunScope, list[float]]:
+    """의존 기반 수집(plans/200 I-2) — `results`·`contexts`·`timed_out`을 채우고 (최종 범위, 위상
+    레벨별 벽시계 초)를 돌려준다.
+
+    - 직접 의존(`deps_of`)이 모두 끝난 스텝이 준비된다. 준비된 스텝은 YAML 순서로 처리하고, 실행할
+      스텝은 빈 슬롯(`max_workers`)에 스텝별 스레드로 제출한다. 의존이 모두 YAML상 앞 스텝이라
+      슬롯 1개면 YAML 순서 실행과 같다.
+    - 결정성: `when` 문맥과 `prior`는 그 스텝의 조상(`ancestors`) 결과로만 만든다. 범위도 조상 중
+      YAML상 마지막 대상 확정 스텝이 낸 범위(없으면 초기 범위)다 — 완료 순서와 무관하다.
+    - 대기는 가장 이른 마감까지 완료 통지를 기다린다(바쁜 폴링 없음). 마감(시작 시각 + 스텝
+      상한 · 제출 시점 예산 끝 중 이른 것)을 넘긴 스텝은 `_timed_out`(중단 신호)으로 끝내고 슬롯을
+      즉시 돌려준다 — 그 스레드는 기다리지 않는다(W21 교정과 같은 의도).
+    - 예산은 제출 시점에 본다(`skipped(budget)`). `when` 거짓은 슬롯 없이 바로 건너뛴다. 재조회
+      힌트면 폴스타 축이 아닌 스텝은 준비된 즉시 부모 섹션을 쓴다(도구 0 · 슬롯 0).
+    - 끝나면 `results`·`contexts`를 YAML 순서로 다시 넣는다(섹션·호출 목록 순서가 단계 실행과 같게).
+    """
+    order = [st for st in playbook.steps if st.action != _SYNTHESIZE]
+    deps = {st.id: deps_of(st, playbook) for st in order}
+    anc = ancestors(playbook)
+    level: dict[str, int] = {}
+    for st in order:
+        level[st.id] = 1 + max((level[d] for d in deps[st.id]), default=-1)
+    initial = scope
+    waiting: list[StepSpec] = list(order)
+    #: `when`을 통과해 슬롯을 기다리는 스텝 → (메모, 조상 결과)
+    gated: dict[str, tuple[str | None, dict[str, StepResult]]] = {}
+    running: dict[str, _DagSlot] = {}
+    done: queue.SimpleQueue[str] = queue.SimpleQueue()
+    spans: dict[str, tuple[float, float]] = {}
+    begun: dict[str, float] = {}
+
+    def scope_of(sid: str) -> RunScope:
+        out = initial
+        for st in order:
+            if st.id in anc[sid] and st.action in SCOPE_ACTIONS:
+                new_scope = results[st.id].artifacts.get("scope")
+                if isinstance(new_scope, RunScope):
+                    out = new_scope
+        return out
+
+    def settle(step: StepSpec, res: StepResult) -> None:
+        results[step.id] = res
+        t = time.monotonic()
+        spans[step.id] = (begun.pop(step.id, t), t)
+        waiting.remove(step)
+
+    def budget_skip(step: StepSpec) -> None:
+        gated.pop(step.id, None)
+        settle(step, _placeholder(
+            step, "skipped", f"budget — 남은 예산 없음(예산 {budget_s:.0f}s 소진)"
+        ))
+        _notify_skip(results[step.id], BUDGET_SKIP, activity, on_skip)
+
+    def submit(step: StepSpec, note: str | None, prior: dict[str, StepResult],
+               remaining: float) -> None:
+        step_scope = scope_of(step.id)
+        picked = _step_targets(step, step_scope, for_each_max)
+        ctx = StepContext(
+            payload=payload, windows=windows, scope=step_scope, args=step.args,
+            targets=[name for name, _ in picked],
+            target_sources=[src for _, src in picked],
+            polestar=polestar, apm=apm, now=now, prior=prior,
+            xview_confirm_over=xview_confirm_over, axis_concurrency=axis_concurrency,
+        )
+        ctx.step_id = step.id
+        contexts[step.id] = ctx
+        # 실제 대기는 실시간 단조 시계로 잰다(`clock`은 주입된 가짜일 수 있다).
+        slot = _DagSlot(step, ctx, Future(), note, step_wait_s(step, step_timeout_s, remaining),
+                        time.monotonic() + remaining)
+        running[step.id] = slot
+        begun[step.id] = time.monotonic()
+        threading.Thread(
+            target=_dag_worker, args=(step, ctx, library, clock, slot.fut, done),
+            name=f"playbook-step-{step.id}", daemon=True,
+        ).start()
+        # 스레드는 곧바로 시작한다 — 시작 시각이 서야 마감(시작 + 상한)을 잴 수 있다.
+        ctx.started.wait(max(0.0, slot.budget_end - time.monotonic()))
+
+    def advance() -> None:
+        """준비된 스텝을 YAML 순서로 처리한다 — 즉시 끝나는 것(재사용·건너뜀)이 새 준비를 만들면
+        처음부터 다시 훑는다."""
+        changed = True
+        while changed:
+            changed = False
+            for step in list(waiting):
+                if step.id in running or not deps[step.id] <= results.keys():
+                    continue
+                if step.id not in gated:
+                    if rerun is not None and step.action not in POLESTAR_AXIS_ACTIONS:
+                        settle(step, _reused_section(
+                            step, rerun.sections.get(step.id), rerun.parent_investigation_id,
+                            scope=scope_of(step.id), prior_readings=rerun.readings,
+                        ))
+                        changed = True
+                        continue
+                    if budget_s - (clock() - started) <= 0:
+                        budget_skip(step)
+                        changed = True
+                        continue
+                    prior = {st.id: results[st.id] for st in order if st.id in anc[step.id]}
+                    when_ctx = _when_context(prior, _readings_of(playbook, prior))
+                    verdict = (
+                        step.when_expr.evaluate(when_ctx)
+                        if step.when_expr is not None else Tri.TRUE
+                    )
+                    if verdict is Tri.FALSE:
+                        settle(step, _placeholder(step, "skipped", f"when_false — {step.when}"))
+                        if activity is not None or on_skip is not None:
+                            assert step.when_expr is not None
+                            because = skip_because(step.when_expr, when_ctx, _titles(playbook))
+                            _notify_skip(results[step.id], because, activity, on_skip)
+                        changed = True
+                        continue
+                    # UNKNOWN은 실행한다(단계 실행과 같은 이유 — 결손이 진단 단계를 침묵 생략시키지
+                    # 않게).
+                    gated[step.id] = (
+                        f"when 판정 불가(결손) — 조건 `{step.when}` 무시하고 실행"
+                        if verdict is Tri.UNKNOWN else None,
+                        prior,
+                    )
+                if len(running) >= max_workers:
+                    continue
+                remaining = budget_s - (clock() - started)
+                if remaining <= 0:
+                    budget_skip(step)
+                    changed = True
+                    continue
+                note, prior = gated.pop(step.id)
+                submit(step, note, prior, remaining)
+
+    advance()
+    while running:
+        nearest = min(slot.deadline() for slot in running.values())
+        try:
+            done.get(timeout=max(0.0, nearest - time.monotonic()))
+        except queue.Empty:
+            pass
+        for step in [st for st in order if st.id in running]:
+            slot = running[step.id]
+            if slot.fut.done():
+                res = slot.fut.result()
+            elif time.monotonic() >= slot.deadline():
+                res = _timed_out(step, slot.fut, slot.ctx, slot.limit)
+                if (slot.ctx.abort_reason or "").startswith(STEP_TIMEOUT_PREFIX):
+                    timed_out[step.id] = (slot.ctx.abort_reason or "", slot.note)
+            else:
+                continue
+            del running[step.id]
+            res.reason = _join(slot.note, res.reason)
+            settle(step, res)
+        advance()
+
+    final = initial
+    for st in order:
+        new_scope = results[st.id].artifacts.get("scope") if st.action in SCOPE_ACTIONS else None
+        if isinstance(new_scope, RunScope):
+            final = new_scope
+    by_yaml = {st.id: results[st.id] for st in order}
+    results.clear()
+    results.update(by_yaml)
+    ctx_by_yaml = {st.id: contexts[st.id] for st in order if st.id in contexts}
+    contexts.clear()
+    contexts.update(ctx_by_yaml)
+    walls: list[float] = []
+    for lv in sorted({level[sid] for sid in spans}):
+        members = [spans[sid] for sid in spans if level[sid] == lv]
+        walls.append(round(max(e for _, e in members) - min(b for b, _ in members), 3))
+    return final, walls
+
+
+#: 판별 조회 사유(plans/198 I-2 · 결정적).
+DISCRIMINATOR_PRESENT = "플레이북에 이미 있는 단계 — 판별 조회는 재수집하지 않음"
+DISCRIMINATOR_BUDGET = "budget — 남은 예산 없음(예산 {budget:.0f}s 소진) — 판별 조회 생략"
+DISCRIMINATOR_NONE = "판별 스텝 없음 — 결손 조건을 가르는 추가 조회가 규칙표에 없음"
+
+
+def _discriminate(
+    playbook: Playbook,
+    results: Mapping[str, StepResult],
+    top_n: int,
+    *,
+    payload: Mapping[str, Any],
+    windows: RunWindows,
+    scope: RunScope,
+    polestar: BatchCaller | None,
+    apm: BatchCaller | None,
+    now: Callable[[], datetime],
+    library: Mapping[str, StepFn],
+    clock: Callable[[], float],
+    started: float,
+    budget_s: float,
+    step_timeout_s: float,
+    for_each_max: int | None,
+    xview_confirm_over: int | None,
+    activity: ActivityLog | None = None,
+    on_skip: Callable[[StepResult, str], None] | None = None,
+    axis_concurrency: bool = False,
+) -> Discrimination:
+    """판별 조회 1회(plans/198 I-2 · 결정적 · LLM 0) — 수집 결과로 가설을 1차 평가해 상위 `top_n`개
+    판단 보류 가설의 판별 스텝을 순위 순서대로 하나씩 돈다.
+
+    같은 스텝은 한 번만 돈다(여러 가설이 공유). 플레이북에 이미 있는 스텝 ID·액션은 돌지 않는다
+    (재수집은 W22 재시도 담당 — 중복 실행 금지). 남은 예산이 없으면 건너뛰고 사유를 남긴다. 루프는
+    이 1회뿐이다 — 판별 결과로 다시 판별 대상을 고르지 않는다.
+
+    실행 기록은 플레이북 스텝과 같은 경로다(재검토 Minor6): 문맥에 판별 스텝 ID를 달아 두면 실행기
+    래퍼가 그 ID로 단계 시작·끝·도구 호출을 기록하고, 예산 소진 건너뜀은 `_notify_skip`으로 알린다.
+    이미 있는 단계라 건너뛴 것은 그 단계가 이미 기록돼 있으므로 다시 알리지 않는다.
+    """
+    ctx = hypothesis_context(
+        _readings_of(playbook, results), {sid: r.verdict for sid, r in results.items()}
+    )
+    hyps = rank_hypotheses(ctx, present_steps=list(results))
+    disc = Discrimination(
+        targets=[(h.rule_id, ds) for h, ds in discriminator_targets(hyps, top_n)]
+    )
+    present_ids = {st.id for st in playbook.steps} | set(results)
+    present_actions = {st.action for st in playbook.steps}
+    for _, discs in disc.targets:
+        for d in discs:
+            if d.step in disc.results or d.step in disc.skipped:
+                continue
+            if d.step in present_ids or d.action in present_actions:
+                disc.skipped[d.step] = DISCRIMINATOR_PRESENT
+                continue
+            spec = StepSpec(id=d.step, action=d.action, args=dict(d.args), for_each=d.for_each)
+            remaining = budget_s - (clock() - started)
+            if remaining <= 0:
+                disc.skipped[d.step] = DISCRIMINATOR_BUDGET.format(budget=budget_s)
+                if activity is not None or on_skip is not None:
+                    _notify_skip(_placeholder(spec, "skipped", disc.skipped[d.step]),
+                                 BUDGET_SKIP, activity, on_skip)
+                continue
+            picked = _step_targets(spec, scope, for_each_max)
+            sctx = StepContext(
+                payload=payload, windows=windows, scope=scope, args=spec.args,
+                targets=[name for name, _ in picked],
+                target_sources=[src for _, src in picked],
+                polestar=polestar, apm=apm, now=now, prior={**results, **disc.results},
+                xview_confirm_over=xview_confirm_over, axis_concurrency=axis_concurrency,
+            )
+            sctx.step_id = d.step   # 실행 기록의 스텝 ID(래퍼가 액션 이름 대신 이 ID로 기록)
+            limit = step_wait_s(spec, step_timeout_s, remaining)
+            executor = ThreadPoolExecutor(
+                max_workers=1, thread_name_prefix="playbook-discriminator"
+            )
+            try:
+                fut = executor.submit(_exec_step, spec, sctx, library, clock)
+                deadline = time.monotonic() + limit
+                sctx.started.wait(max(0.0, deadline - time.monotonic()))
+                end = (
+                    deadline if sctx.started_at is None
+                    else min(sctx.started_at + limit, deadline)
+                )
+                try:
+                    res = fut.result(timeout=max(0.0, end - time.monotonic()))
+                except FutureTimeout:
+                    res = _timed_out(spec, fut, sctx, limit)
+            finally:
+                executor.shutdown(wait=False, cancel_futures=True)
+            disc.specs.append(spec)
+            disc.results[d.step] = res
+            disc.contexts[d.step] = sctx
+    return disc
 
 
 def _step_targets(
@@ -868,6 +1724,7 @@ def _retry_step(
         ctx.abort(reason)
         res = _placeholder(step, "missing", reason)
         res.tools = list(ctx.tools)
+        res.queries = step_queries(ctx.calls)
         res.elapsed_ms = int(limit * 1000)
         return res
     return _retry_step_result(step, res, first)
@@ -929,6 +1786,7 @@ def _timed_out(
     ctx.abort(reason)
     res = _placeholder(step, "missing", reason)
     res.tools = list(ctx.tools)
+    res.queries = step_queries(ctx.calls)
     res.elapsed_ms = int(limit * 1000)
     return res
 
@@ -1043,6 +1901,7 @@ def _exec_step(
     res.action = step.action
     res.title = ACTION_TITLES.get(step.action, step.action)
     res.tools = list(ctx.tools)
+    res.queries = step_queries(ctx.calls)
     res.elapsed_ms = int((clock() - t0) * 1000)
     return res
 
@@ -1062,7 +1921,14 @@ def _correlation(results: Sequence[StepResult], alarm_time: str | None) -> dict[
         elif r.action == "xsource.related_alarms":
             alarms = list(r.artifacts.get("alarms") or [])
             points = list(r.artifacts.get("episode_points") or [])
-            alarm_axis = "polestar_incident_alarms" not in r.missing
+            axes = r.data.get("axes") if isinstance(r.data, Mapping) else None
+            pol = axes.get("polestar") if isinstance(axes, Mapping) else None
+            # 축 상태가 있으면 그것으로(연결 생략은 결손이 아니지만 알람 축도 아니다 · plans/196)
+            alarm_axis = (
+                pol.get("status") == "ok"
+                if isinstance(pol, Mapping)
+                else "polestar_incident_alarms" not in r.missing
+            )
             found = True
     if not found:
         return None
@@ -1169,7 +2035,7 @@ def _narration_plan(
         sec = sections.get(step.id)
         if sec is None or sec.status != "ok":
             status = sec.status if sec is not None else "missing"
-            skipped[step.id] = STEP_STATUS_NO_OPINION.format(status=status)
+            skipped[step.id] = STEP_STATUS_NO_OPINION.format(status=step_status_label(status))
             continue
         eligible.append(step)
     ordered = sorted(
@@ -1251,6 +2117,60 @@ def _known_error_actions(
     return out
 
 
+def _reverify(
+    disc: Discrimination,
+    playbook: Playbook,
+    collected: Mapping[str, StepResult],
+    hyps: Sequence[Hypothesis],
+) -> tuple[list[Hypothesis], dict[str, dict[str, Any]]]:
+    """판별 조회 결과로 대상 가설만 다시 판정한다(plans/198 I-2 · 규칙만 · 심층 결과 무관 —
+    D-350 ①) → (재정렬한 가설, 규칙 ID → `verification`).
+
+    재판정 문맥 = 플레이북 스텝 + 판별 스텝으로 다시 계산한 판독·판정. 판별 스텝을 하나도 못 돈
+    가설은 1차 상태 그대로다. 브리핑 판독(`readings`)·대응 `when` 문맥은 1차 값을 쓴다.
+    """
+    before = {h.rule_id: h.status for h in hyps}
+    ran = {
+        rid for rid, discs in disc.targets if any(d.step in disc.results for d in discs)
+    }
+    if ran:
+        merged = {**collected, **disc.results}
+        augmented = playbook.model_copy(update={"steps": [*playbook.steps, *disc.specs]})
+        ctx = hypothesis_context(
+            _readings_of(augmented, merged), {sid: s.verdict for sid, s in merged.items()}
+        )
+        hyps = reverify_hypotheses(hyps, ctx, ran)
+    after = {h.rule_id: h.status for h in hyps}
+    out: dict[str, dict[str, Any]] = {}
+    for rid, discs in disc.targets:
+        if rid not in before:
+            continue
+        steps: list[dict[str, Any]] = []
+        for d in discs:
+            res = disc.results.get(d.step)
+            steps.append({
+                "step": d.step,
+                "action": d.action,
+                "title": ACTION_TITLES.get(d.action, d.action),
+                "condition": d.condition,
+                "status": res.status if res is not None else "skipped",
+                "verdict": res.verdict if res is not None else None,
+                "reason": res.reason if res is not None else disc.skipped.get(d.step),
+            })
+        skip_reasons = list(dict.fromkeys(
+            disc.skipped[d.step] for d in discs if d.step in disc.skipped
+        ))
+        out[rid] = {
+            "ran": rid in ran,
+            "steps": steps,
+            "before": before[rid],
+            "after": after[rid],
+            "reason": None if rid in ran
+            else (" · ".join(skip_reasons) if skip_reasons else DISCRIMINATOR_NONE),
+        }
+    return list(hyps), out
+
+
 def finalize_playbook_run(
     run: PlaybookRun,
     playbook: Playbook,
@@ -1286,6 +2206,9 @@ def finalize_playbook_run(
     verdicts = {sid: s.verdict for sid, s in collected.items()}
     ctx = hypothesis_context(readings, verdicts)
     hyps = rank_hypotheses(ctx, present_steps=list(collected))
+    verifications: dict[str, dict[str, Any]] = {}
+    if run.discrimination is not None:
+        hyps, verifications = _reverify(run.discrimination, playbook, collected, hyps)
 
     # 알려진 오류(W8) — 평가 문맥 = 가설 문맥 + 1위 느린 거래 수치(`S3.top1`)
     ke_ctx: dict[str, Any] = dict(ctx)
@@ -1335,6 +2258,13 @@ def finalize_playbook_run(
     limit = len(playbook.steps) if cap is None else cap
     planned, skipped = _narration_plan(playbook, collected, hyps, limit)
     opinions: dict[str, Opinion] = {sid: Opinion(dropped_reason=r) for sid, r in skipped.items()}
+    # 재조회(plans/196 §5.2)로 재사용한 섹션은 부모 소견을 그대로 쓴다(소견기 재호출 0)
+    reused_ops = {
+        sid: op for sid, s in collected.items()
+        if isinstance(op := s.artifacts.get("prior_opinion"), Opinion)
+    }
+    if reused_ops:
+        step_opinions = {**reused_ops, **(step_opinions or {})}
     if step_opinions is not None:
         for step in planned:
             if step.id in step_opinions:
@@ -1361,6 +2291,9 @@ def finalize_playbook_run(
         opinions.update(narrator.narrate_steps(requests))
 
     hyp_dicts = [h.to_dict() for h in hyps]
+    for d in hyp_dicts:
+        if d["rule_id"] in verifications:
+            d["verification"] = verifications[d["rule_id"]]
     action_dicts = [a.to_dict() for a in actions]
     top_title = hyps[0].title if hyps else None
     if narrator is None:
@@ -1403,7 +2336,11 @@ def finalize_playbook_run(
         "hypotheses": [
             {
                 k: d[k]
-                for k in ("rank", "title", "status", "status_label", "evidence_steps", "rule_id")
+                for k in (
+                    "rank", "title", "status", "status_label", "evidence_steps", "rule_id",
+                    "verification",
+                )
+                if k in d
             }
             for d in hyp_dicts
         ],
@@ -1423,17 +2360,36 @@ __all__ = [
     "DEFAULT_BUDGET_S",
     "DEFAULT_MAX_WORKERS",
     "DEFAULT_STEP_TIMEOUT_S",
+    "DISCRIMINATOR_BUDGET",
+    "DISCRIMINATOR_NONE",
+    "DISCRIMINATOR_PRESENT",
+    "Discrimination",
     "GATEWAY_EVENT_SIGNAL_KINDS",
     "LATENCY_EVENT_TYPES",
     "POLESTAR_BRIDGE_MISSING",
+    "POLESTAR_BRIDGE_MISSING_DETAIL",
+    "POLESTAR_LINK_ABSENT",
+    "POLESTAR_LINK_BASIS",
+    "POLESTAR_LINK_PREVIOUS",
+    "POLESTAR_LINK_UNRESOLVED",
+    "POLESTAR_POD_LOOKUP",
+    "POLESTAR_POD_REASONS",
     "PlaybookRun",
+    "RerunHint",
+    "SQL_EVENT_TYPES",
+    "SQL_PATTERN_KIND",
     "alarm_facts_from_payload",
     "compute_windows",
     "finalize_playbook_run",
     "flow_readings",
     "initial_scope",
+    "is_pod_unresolved",
     "normalize_event_type",
     "plan_stages",
+    "pod_unresolved_reason",
+    "polestar_link",
+    "polestar_previous_link",
+    "rerun_hint",
     "resolve_polestar_source",
     "run_playbook",
     "step_because",

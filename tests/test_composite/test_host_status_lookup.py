@@ -72,7 +72,7 @@ class TestSqlShape:
 
     def test_배치_SQL은_IN절_하나로_조립된다(self):
         sql = build_host_status_sql("polestar_cm_gp", ["a-01", "b-02"])
-        assert sql.count("IN (") == 2  # name IN (...) OR hostname IN (...)
+        assert sql.count(" IN (") == 2  # name IN (...) OR hostname IN (...)
         assert "'a-01'" in sql and "'b-02'" in sql
         assert "LIMIT" not in sql  # max_rows가 안전망 — _server_list_sql 선례
 
@@ -87,6 +87,62 @@ class TestSqlShape:
     def test_postgresql은_스키마_한정(self):
         sql = build_host_status_sql("polestar_cm_gp", ["a-01"], "postgresql")
         assert "cmm_resource" in sql
+
+
+class TestMaintenanceJoin:
+    """plans/197 F2 — PostgreSQL은 자원 테이블에 유지보수 칼럼이 없다(운영 스키마 실측)."""
+
+    _DB2_HOSTNAME_LEGACY = (
+        "SELECT r.hostname AS hostname, r.name AS name,\n"
+        "       r.avail_status AS avail_status, r.is_maintenance AS is_maintenance\n"
+        "FROM POLESTAR.cmm_resource r\n"
+        "WHERE r.resource_type = 'server.Server'\n"
+        "  AND r.dtime IS NULL\n"
+        "  AND (r.name = 'a-01' OR r.hostname = 'a-01')\n"
+        "ORDER BY CASE WHEN r.name = 'a-01' THEN 0 ELSE 1 END\n"
+        "FETCH FIRST 1 ROWS ONLY"
+    )
+    _DB2_STATUS_LEGACY = (
+        "SELECT r.hostname AS hostname, r.name AS name,\n"
+        "       r.avail_status AS avail_status, r.is_maintenance AS is_maintenance\n"
+        "FROM POLESTAR.cmm_resource r\n"
+        "WHERE r.resource_type = 'server.Server'\n"
+        "  AND r.dtime IS NULL\n"
+        "  AND (r.name IN ('a-01') OR r.hostname IN ('a-01'))"
+    )
+
+    @pytest.mark.parametrize("db_id", ["polestar_cm_gp", "polestar_cm_yd", "polestar"])
+    def test_postgresql_joins_maintenance_table(self, db_id):
+        for sql in (
+            build_hostname_sql(db_id, "a-01"),
+            build_host_status_sql(db_id, ["a-01"]),
+        ):
+            assert "r.is_maintenance" not in sql
+            assert (
+                "LEFT JOIN (SELECT resource_id, MAX(is_maintenance) AS is_maintenance" in sql
+            )
+            assert "FROM polestar.cmm_resource_maintenance GROUP BY resource_id) m" in sql
+            assert "ON m.resource_id = r.id" in sql
+            assert "m.is_maintenance AS is_maintenance" in sql  # 출력 alias 불변
+
+    def test_db2_keeps_legacy_string(self):
+        # W0 실측 전 현행 유지(plans/197)
+        assert build_hostname_sql("polestar_b0", "a-01", "db2") == self._DB2_HOSTNAME_LEGACY
+        assert (
+            build_host_status_sql("polestar_b0", ["a-01"], "db2") == self._DB2_STATUS_LEGACY
+        )
+
+    def test_generated_sql_passes_sql_guard(self):
+        from src.security.sql_guard import SQLGuard
+
+        guard = SQLGuard()
+        for engine in ("postgresql", "db2"):
+            for sql in (
+                build_hostname_sql("polestar_cm_gp", "a-01", engine),
+                build_host_status_sql("polestar_cm_gp", ["a-01", "b-02"], engine),
+            ):
+                ok, reason = guard.is_safe_select(sql)
+                assert ok, reason
 
 
 @pytest.mark.asyncio

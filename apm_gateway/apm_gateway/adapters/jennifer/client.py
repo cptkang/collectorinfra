@@ -121,7 +121,7 @@ class JenniferClient:
 
     @property
     def max_in_flight(self) -> int:
-        """동시 호출 자리 수 — 병렬 루프의 폭(plans/197 · D-347 상한 재사용)."""
+        """동시 호출 자리 수 — 병렬 루프의 폭(plans/207 · D-347 상한 재사용)."""
         return self._slots.limit
 
     def _http(self) -> httpx.AsyncClient:

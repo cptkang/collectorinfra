@@ -4,6 +4,7 @@
 > **상태**: **TODO** — 사용자 지시 「별도 기록으로만 남겨두고」(2026-10-14). 시연(`testdata/demo/sessions.yaml` · D-326 부기)은 질의 원칙·세션 분리로 다섯 건을 모두 피해 간다. 착수하려면 범위·정책을 정해 계획서를 보강하고 D-번호를 잡는다.
 > **발견 경위**: 장애 대응 연계 시연 카탈로그(D-326 2026-10-14 부기)를 폐쇄망 LLM temperature ≠ 0 전제로 코드 검토하던 중.
 > **실측 기준**: main `9ccc44f`. `file:line`은 이 시점 값이다.
+> **196과의 범위 정리(2026-10-27)**: F3(text2sql 제니퍼 → 폴스타 승계 · `assembler.py` HAVING · `key_bridge.py` 정규화)는 **이 계획에 남는다**. 조사 쪽 브리지(sre_agent·noise_gate 유사 호스트 후보·확정 연결)와 **공용 hostname 정규화 함수 정의**(`src/domain/host_names.py` — stdlib 순수 · D-139 부기)는 `plans/196`이 소유한다. F3 착수 시 정규화는 196 산출물을 그대로 쓴다(새 정의 금지 · 의존). 196의 확정 연결을 F3의 「일치」로 쓰는 안은 F3 착수 때 판단한다.
 > **관련 결정**: D-326(시연) · D-334(APM 대상 승계) · D-202(알람 결정적 조립) · D-046(server_name ≠ hostname) · D-161(경로 판정) · D-179(overfit) · D-274(게이트웨이 경계)
 
 ---
@@ -40,6 +41,7 @@
 - `src/db_adapters/polestar/assembler.py:1152-1158` `HAVING MAX(CASE … c.hostname END) IN (...)` 정확 일치. 제니퍼 hostname은 `resolver.reverse`(`fleet_tools.py:498,519`) 원표기(대문자·FQDN 가능), 실패 시 `""` → `query_gen_common.py:1398`에서 침묵 누락.
 - 정규화(LOWER·짧은 이름)는 `key_bridge.py:330-358`에만 있고 `CROSS_SYSTEM_KEY_BRIDGE_ENABLED`(기본 off) 뒤에 있다. `query_generator.py:596-615`는 hostname 칼럼이면 HAVING 경로를 우선한다.
 - 반대 방향(폴스타 → 제니퍼)은 게이트웨이 `_host_equal`이 대소문자 무시·짧은 이름 비교 — **비대칭**.
+- **의존(2026-10-27)**: 정규화 규칙(대소문자·FQDN 짧은 이름)은 `plans/196`이 만드는 `src/domain/host_names.py`를 쓴다 — 여기서 새로 정의하지 않는다.
 - **수정안**: HAVING 비교를 양쪽 `LOWER(짧은 이름)`으로 · 빠진 hostname은 「n건 중 m건 hostname 미확인」 고지.
 - **트레이드오프**: 짧은 이름 충돌(`web01.a`·`web01.b`) · 정확 일치 단언 테스트 갱신 · 0건 → 행 있음으로 바뀌므로 「기본 off = 비트 동일」 원칙 예외로 결함 수정 처리할지 사용자 결정 필요.
 

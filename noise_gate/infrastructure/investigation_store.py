@@ -155,6 +155,9 @@ PLAYBOOK_CLIPPED_NOTE = "저장 상한(32KB)으로 플레이북 일부 생략 �
 _SECTION_HEAD_KEYS: tuple[str, ...] = (
     "step", "action", "title", "status", "verdict", "verdict_source",
 )
+#: `deep_dive.narrative`(심층 답변 원문)를 줄일 때 남기는 앞부분 글자 수와 표지.
+DEEP_NARRATIVE_CLIP_CHARS = 2000
+DEEP_NARRATIVE_CLIPPED_NOTE = "\n…(저장 상한 32KB로 이하 생략)"
 #: `deep_dive`를 줄일 때 남기는 키(앞쪽이 상태 · 뒤쪽이 우선 보존 서술).
 _DEEP_DIVE_KEEP_KEYS: tuple[tuple[str, ...], ...] = (
     ("status", "mode", "reason", "label", "summary", "cause"),
@@ -186,9 +189,10 @@ def _clip_section_rows(section: dict[str, Any]) -> dict[str, Any]:
 def _playbook_candidates(pb: dict[str, Any]) -> list[dict[str, Any]]:
     """플레이북을 저장 상한에 맞추는 결정적 축소 후보(덜 줄인 것부터). `synthesis`는 끝까지 둔다.
 
-    ① 섹션 표 앞 N행 · `readings_detail`·`timings` 제거 ② 섹션의 표·소견 제거(머리·배지·사유·도구만)
-    ③ `id`·`version`·`matched_by`·`scope`·`readings`·`synthesis`·`notes` + 섹션 머리만
-    ④ ③에서 `scope`·`readings` 제거.
+    ① 섹션 표 앞 N행 · `readings_detail`·`timings` 제거 ② 섹션의 표·소견 제거(머리·배지·사유·도구·
+    조회 `queries`만) ③ `id`·`version`·`matched_by`·`scope`·`readings`·`synthesis`·`notes` + 섹션
+    머리만 ④ ③에서 `scope`·`readings` 제거.
+    (plans/195 W4) 섹션 `queries`는 도구 목록과 같은 높이다 — 표·소견보다 오래 남고 ③에서 빠진다.
     """
     sections = [s for s in pb.get("sections") or [] if isinstance(s, dict)]
     lvl1 = {k: v for k, v in pb.items() if k not in ("readings_detail", "timings")}
@@ -212,7 +216,14 @@ def _dict_candidates(key: str, value: dict[str, Any]) -> list[dict[str, Any]]:
     if key == "playbook":
         return _playbook_candidates(value)
     if key == "deep_dive":
-        return [{k: value[k] for k in keys if k in value} for keys in _DEEP_DIVE_KEEP_KEYS]
+        # 답변 원문(`narrative` — [서술 보기])부터 줄인다: 앞부분만 → 원문 없이 → 종전 단계.
+        narr = value.get("narrative")
+        lead: list[dict[str, Any]] = []
+        if isinstance(narr, str) and len(narr) > DEEP_NARRATIVE_CLIP_CHARS:
+            lead.append({**value, "narrative": narr[:DEEP_NARRATIVE_CLIP_CHARS] + DEEP_NARRATIVE_CLIPPED_NOTE})
+        if "narrative" in value:
+            lead.append({k: v for k, v in value.items() if k != "narrative"})
+        return lead + [{k: value[k] for k in keys if k in value} for keys in _DEEP_DIVE_KEEP_KEYS]
     return []
 
 
@@ -295,12 +306,20 @@ def _mask_lines(text: str, mask_fn: Callable[[str], str]) -> str:
     return "\n".join(mask_fn(line) for line in text.split("\n"))
 
 
+#: (plans/196 §5.3) 섹션의 개발자 사유 키 — 운영자 뷰에만 남는다.
+SECTION_DEV_REASON_KEY = "reason_detail"
+#: (plans/196 §5.3) `scope`의 개발자 사유 키 — 섹션 사유와 같이 운영자 뷰에만 남는다.
+SCOPE_DEV_REASON_KEYS: frozenset[str] = frozenset({"polestar_reason_detail"})
 #: (plans/187 W5a) 플레이북 브리핑 사용자 뷰에 싣는 키 — 6요소 원문은 싣지 않는다(D-325 ③).
-PLAYBOOK_VIEW_KEYS: tuple[str, ...] = ("partial", "playbook", "deep_dive", "engine_agreement")
+#: (plans/201 W4) `duty_view`(영역별 점검 결과 · 선택 키)도 싣는다 — 빠지면 웹 표가 그려지지 않는다.
+PLAYBOOK_VIEW_KEYS: tuple[str, ...] = (
+    "partial", "playbook", "deep_dive", "engine_agreement", "duty_view",
+)
 #: 마스킹하지 않는 구조 값의 키 — 식별자·enum(판독 맵 `readings` 포함). 그 외 문자열은 전부 가린다.
 _PLAYBOOK_ENUM_KEYS: frozenset[str] = frozenset({
     "id", "version", "matched_by", "step", "action", "status", "verdict", "verdict_source",
     "rule_id", "mode", "result", "readings", "source", "key", "layer",
+    "code",  # (plans/201 W4) duty_view 영역 코드
 })
 
 
@@ -327,14 +346,36 @@ def playbook_user_view(
     `playbook` 키가 있을 때만 `PLAYBOOK_VIEW_KEYS`의 사본을 돌려준다. 섹션 표 셀·소견·종합 서술·
     가설 제목·대응 문장·`scope`·`notes`·런북·알려진 오류·심층 결과의 문자열을 `mask_fn`으로 가리고,
     구조 키·enum·수치는 그대로 둔다. 플레이북이 없으면 None(종전 사용자 뷰와 비트 동일).
+    (plans/196 §5.3 · D-325 ③) 섹션의 개발자 사유 `reason_detail`과 `scope`의
+    `SCOPE_DEV_REASON_KEYS`는 사용자 뷰에서 뺀다 — 운영자 뷰는 원 브리핑을 그대로 싣는다.
+    (plans/201 W4) 저장 축소로 `playbook`이 빠졌어도 `duty_view`가 남아 있으면 그 키만 가려서 싣는다
+    (표시용 키뿐이라 화면은 사용자 뷰로 판정한다).
     """
-    if not isinstance(briefing, Mapping) or not isinstance(briefing.get("playbook"), dict):
+    if not isinstance(briefing, Mapping):
         return None
-    return {
+    if not isinstance(briefing.get("playbook"), dict):
+        duty = briefing.get("duty_view")
+        if not isinstance(duty, dict):
+            return None
+        return {"duty_view": _mask_playbook_value(duty, mask_fn)}
+    view = {
         key: _mask_playbook_value(briefing[key], mask_fn)
         for key in PLAYBOOK_VIEW_KEYS
         if key in briefing
     }
+    sections = view["playbook"].get("sections")
+    if isinstance(sections, list):
+        view["playbook"]["sections"] = [
+            {k: v for k, v in sec.items() if k != SECTION_DEV_REASON_KEY}
+            if isinstance(sec, dict) else sec
+            for sec in sections
+        ]
+    scope = view["playbook"].get("scope")
+    if isinstance(scope, dict):
+        view["playbook"]["scope"] = {
+            k: v for k, v in scope.items() if k not in SCOPE_DEV_REASON_KEYS
+        }
+    return view
 
 
 def investigation_view(

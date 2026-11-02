@@ -84,6 +84,8 @@ class CorrelationResult:
     leading_signal: str | None
     notes: tuple[str, ...] = field(default_factory=tuple)
     change_finding: dict | None = None   # plans/91 1-2 — 변경 오버레이 off/미수집이면 None(키 자체를 내지 않는다)
+    # plans/198 I-7 — 토폴로지 1홉 이웃. off면 None(키 자체를 내지 않는다)
+    neighbors: dict | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -98,6 +100,8 @@ class CorrelationResult:
         }
         if self.change_finding is not None:
             out["change_finding"] = self.change_finding
+        if self.neighbors is not None:
+            out["neighbors"] = self.neighbors
         return out
 
 
@@ -115,6 +119,16 @@ def format_offset(t_offset_min: int) -> str:
     """상대 분 → `T-15m` / `T+2m` / `T+0m`."""
     sign = "-" if t_offset_min < 0 else "+"
     return f"T{sign}{abs(int(t_offset_min))}m"
+
+
+def leads(offset: int, first_alarm: int | None, anchor: int | None = None) -> bool:
+    """선행 판정 — 다른 서버의 첫 알람 offset이 대표 첫 알람보다 앞서는가.
+
+    대표 알람이 없으면 `anchor`(대신 쓸 대표 시점 offset)와 비교하고, 그것도 없으면 선행으로 본다
+    (`anchor` 미지정 = 연관 서버 종전 규칙 · plans/91 1-3).
+    """
+    ref = first_alarm if first_alarm is not None else anchor
+    return ref is None or offset < ref
 
 
 def metric_finding(series: MetricSeries, reference_time: str) -> tuple[dict, list[str]]:
@@ -248,6 +262,7 @@ def correlate(
     related_alarms: dict[str, list[AlarmPoint]] | None = None,
     episode_points: list[EpisodePoint] | None = None,
     alarm_axis: bool = True,
+    lead_anchor: int | None = None,
 ) -> CorrelationResult:
     """§6.1~6.4 — 알람·지표(·변경·연관 서버 알람)를 병합해 선행 신호와 한계를 결정적으로 산출한다.
 
@@ -256,6 +271,8 @@ def correlate(
     `episode_points`(plans/153 §4.6 — 사건 스냅샷 멤버)도 타임라인에만 실린다.
     `alarm_axis=False`는 알람 축을 조회하지 않은 경우다 — 「알람 0건」 노트를 내지 않는다
     (조회하지 않은 것을 0건으로 단정하지 않는다).
+    `lead_anchor`(plans/198 I-7 — 이웃 조회 시에만)는 대표 알람이 없을 때 연관 서버 선행 판정의
+    기준 offset이다 — None이면 종전대로 「대표 알람 없음 = 선행」.
     """
     all_notes: list[str] = list(notes or [])
     findings: dict[str, dict] = {}
@@ -288,7 +305,7 @@ def correlate(
         pts = [p if p.server else AlarmPoint(p.time, p.severity, p.name, p.resource, p.status, host) for p in points]
         timeline_alarms.extend(pts)
         offsets = [offset_minutes(reference_time, p.time) for p in pts]
-        if offsets and (first_alarm is None or min(offsets) < first_alarm):
+        if offsets and leads(min(offsets), first_alarm, lead_anchor):
             all_notes.append(f"연관 서버 {host}의 첫 알람 {format_offset(min(offsets))} — 대표보다 선행")
 
     precisions = sorted({s.granularity_minutes for s in series})
@@ -312,5 +329,6 @@ __all__ = [
     "Z_THRESHOLD", "SUSTAINED_MIN_POINTS", "BASELINE_MIN_POINTS",
     "AlarmPoint", "ChangePoint", "EpisodePoint", "MetricSeries", "TimelineItem",
     "CorrelationResult",
-    "offset_minutes", "format_offset", "metric_finding", "alarm_summary", "change_finding", "merge_timeline", "correlate",
+    "offset_minutes", "format_offset", "leads", "metric_finding", "alarm_summary", "change_finding",
+    "merge_timeline", "correlate",
 ]

@@ -152,6 +152,12 @@
                     <label for="department">부서 (선택)</label>
                     <input type="text" id="department" name="department" maxlength="100" placeholder="소속 부서">
                 </div>
+                <!-- plans/201 W1: 담당 업무(선택 · 권한 아님). DUTY_AREA_ENABLED 켠 기동에서만 서버 메타로 채워 보인다 -->
+                <div class="form-group" id="dutyAreaGroup" hidden>
+                    <label>담당 업무 (선택 · 여러 개 가능)</label>
+                    <div id="dutyAreaOptions" style="display:flex;flex-wrap:wrap;gap:6px 14px;font-size:0.8125rem"></div>
+                    <div class="form-hint">담당 영역 중심으로 예시 질문·알람·조사 결과를 정리합니다. 권한이 아니며 아무것도 숨기지 않습니다. 가입 뒤 변경은 관리자에게 요청하세요.</div>
+                </div>
                 <button type="submit" class="auth-btn" id="registerBtn">가입하기</button>
             </form>
 
@@ -169,6 +175,31 @@
         var errorEl = document.getElementById("registerError");
         var successEl = document.getElementById("registerSuccess");
         var registerBtn = document.getElementById("registerBtn");
+        var dutyGroup = document.getElementById("dutyAreaGroup");
+        var dutyOptions = document.getElementById("dutyAreaOptions");
+        var dutyEnabled = false;
+
+        // plans/201 W1: 담당 업무 영역은 서버 메타만 읽는다(영역 문자열 사본 없음). 404 = 기능 off → 그리지 않는다.
+        fetch("/api/v1/auth/duty-areas")
+            .then(function(res) { return res.ok ? res.json() : null; })
+            .then(function(data) {
+                var options = (data && data.options) || [];
+                if (!options.length) return;
+                options.forEach(function(opt) {
+                    var label = document.createElement("label");
+                    label.style.cssText = "display:inline-flex;align-items:center;gap:4px;font-weight:normal";
+                    var chk = document.createElement("input");
+                    chk.type = "checkbox";
+                    chk.className = "duty-area-chk";
+                    chk.value = opt.code;
+                    label.appendChild(chk);
+                    label.appendChild(document.createTextNode(opt.label));
+                    dutyOptions.appendChild(label);
+                });
+                dutyEnabled = true;
+                dutyGroup.hidden = false;
+            })
+            .catch(function() { /* 메타를 못 받으면 담당 선택 없이 가입한다 */ });
 
         form.addEventListener("submit", function(e) {
             e.preventDefault();
@@ -193,6 +224,12 @@
                 password: password,
                 department: document.getElementById("department").value.trim() || null
             };
+            if (dutyEnabled) {
+                body.duty_areas = Array.prototype.map.call(
+                    dutyOptions.querySelectorAll(".duty-area-chk:checked"),
+                    function(c) { return c.value; }
+                );
+            }
 
             fetch("/api/v1/auth/register", {
                 method: "POST",

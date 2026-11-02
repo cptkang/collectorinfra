@@ -1,0 +1,2527 @@
+{
+  "fixture_version": 1,
+  "scenario": "host_cpu",
+  "title": "호스트 CPU 과다",
+  "alarm_time": "2026-10-19T10:00:00",
+  "tool_reference_time": "2026-10-19T10:10:00",
+  "incident_window": {
+    "start": "2026-10-19T09:30:00",
+    "end": "2026-10-19T10:10:00",
+    "minutes": 40
+  },
+  "baseline_windows": {
+    "prev_day": "2026-10-18T09:30:00",
+    "prev_week": "2026-10-12T09:30:00"
+  },
+  "notes": [
+    "plans/200 W0 합성 — 실행 시간축 측정용(하네스 `playbook_timeline.py`). case3_cpu_loop 응답 모양을 재사용했다.",
+    "A1 app_health에 was_signals(was_service_queuing)를 넣어 S0r를 degraded로 만든다 — S1·S5·S7 제니퍼 축이 돈다.",
+    "A2 런타임·풀은 A1 응답의 인스턴스만 바꾼 사본이고 프로세스 CPU를 낮췄다(CPU 주인 = A1)."
+  ],
+  "alarm": {
+    "contract_version": "1",
+    "event": {
+      "dbId": "polestar",
+      "serverName": "wasdemo01",
+      "hostname": "wasdemo01",
+      "alarmId": "polestar:p199_host_cpu",
+      "severity": 2,
+      "alarmName": "CPU 사용률 95%",
+      "resourceType": "server",
+      "resourceName": "wasdemo01",
+      "alarmTime": "20261019100000",
+      "conditions": "CPU 사용률 > 90",
+      "conditionLog": "CPU 사용률 95%"
+    },
+    "decision": {
+      "tier": "page",
+      "reason": "PAGE 판정",
+      "fingerprint": "fp-p199-host-cpu",
+      "signals": {
+        "severity": 2
+      }
+    },
+    "meta": {
+      "recurrence": null,
+      "cluster": null,
+      "root_resource": null,
+      "source": "collectorinfra",
+      "hints": {}
+    }
+  },
+  "tool_responses": {
+    "apm_instance_map": [
+      {
+        "args": {
+          "hostname": "wasdemo01"
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "domain_id": 3000,
+              "domain_name": "demo-acct",
+              "domain_description": "계좌 도메인",
+              "host_name": "wasdemo01",
+              "ip_address": "10.10.0.21",
+              "platform": "JAVA",
+              "status": "RUNNING",
+              "agent_version": "5.6.5",
+              "config_file_path": "/opt/apm/agent/A1.conf",
+              "description": "계좌조회 WAS A1",
+              "port": null,
+              "kind": null,
+              "match_confidence": "high",
+              "match_reason": "host_name"
+            },
+            {
+              "source_id": "default",
+              "instance_id": 2002,
+              "instance_name": "A2",
+              "domain_id": 3000,
+              "domain_name": "demo-acct",
+              "domain_description": "계좌 도메인",
+              "host_name": "wasdemo01",
+              "ip_address": "10.10.0.21",
+              "platform": "JAVA",
+              "status": "RUNNING",
+              "agent_version": "5.6.5",
+              "config_file_path": "/opt/apm/agent/A2.conf",
+              "description": "계좌조회 WAS A2",
+              "port": null,
+              "kind": null,
+              "match_confidence": "high",
+              "match_reason": "host_name"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_instance_map",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "host_name",
+            "instances": [
+              2001,
+              2002
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001
+              },
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2002
+              }
+            ]
+          },
+          "limits": [],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "row_count": 2,
+          "total_row_count": 2
+        }
+      }
+    ],
+    "apm_app_health": [
+      {
+        "args": {
+          "instance_name": "A1",
+          "reference_time": "2026-10-19T10:10:00",
+          "lookback_minutes": 40
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "domain_id": 3000,
+              "window": {
+                "calls": 23800,
+                "errors": 20,
+                "error_rate": 0.0008403361344537816,
+                "response_time_p50_ms": 2600.0,
+                "response_time_p95_ms": 9800.0,
+                "response_time_max_ms": 12400
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_app_health",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "window": {
+            "start": "2026-10-19T09:30:00+09:00",
+            "end": "2026-10-19T10:10:00+09:00",
+            "minutes": 40
+          },
+          "was_signals": [
+            {
+              "kind": "was_service_queuing",
+              "level": "critical",
+              "category": "strong",
+              "label": "WAS 서비스 큐잉(유입 대기·PLC 거절)",
+              "evidence": "reject_rate=0.02(PLC 거절 발생)",
+              "instance_id": 2001,
+              "source_tool": "apm_app_health",
+              "source_id": "default"
+            }
+          ],
+          "limits": [
+            "[한계] 과거 기준시각 — 실시간 스냅샷 생략(현재값은 사건 시점 증거가 아니다)",
+            "[한계] 시 단위 통계 — 사건창보다 넓은 시간 경계로 집계된 값",
+            "[한계] 시 단위 통계 행 수는 서버 기본값이다(미공개 — W10) · 합계는 받은 전 애플리케이션 행으로 냈다 · top_applications는 평균 응답시간 상위 5개 요약(전 애플리케이션 목록이 아니다)"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "hourly": {
+            "calls": 47600,
+            "failures": 40,
+            "failure_rate": 0.0008403361344537816,
+            "response_time_avg_ms": 2860.0,
+            "max_response_time_ms": 12400,
+            "application_count": 1,
+            "top_applications": [
+              {
+                "application": "/acct/inquiry",
+                "calls": 47600,
+                "failures": 40,
+                "bad_responses": 238,
+                "response_time_avg_ms": 2860.0,
+                "max_response_time_ms": 12400,
+                "response_time_stddev_ms": 120.5,
+                "cpu_ms_per_tx": 40.0,
+                "sql_ms_per_tx": 200.0,
+                "fetch_ms_per_tx": 20.0,
+                "external_ms_per_tx": 10.0,
+                "sqls": 190400,
+                "sqls_per_tx": 4.0,
+                "fetches": 47600,
+                "fetches_per_tx": 1.0,
+                "external_calls": 23800,
+                "external_calls_per_tx": 0.5,
+                "frontend_measurements": 0,
+                "frontend_ms": 0,
+                "network_ms": 3000,
+                "total_response_ms": 136136000,
+                "total_cpu_ms": 1904000,
+                "total_sql_ms": 9520000,
+                "total_fetch_ms": 952000,
+                "total_external_ms": 476000,
+                "source_id": "default"
+              }
+            ],
+            "hour_start": "2026-10-19T09:00:00+09:00",
+            "hour_end": "2026-10-19T11:00:00+09:00"
+          },
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      },
+      {
+        "args": {
+          "instance_name": "A2",
+          "reference_time": "2026-10-19T10:10:00",
+          "lookback_minutes": 40
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2002,
+              "instance_name": "A2",
+              "domain_id": 3000,
+              "window": {
+                "calls": 24000,
+                "errors": 20,
+                "error_rate": 0.0008333333333333334,
+                "response_time_p50_ms": 310.0,
+                "response_time_p95_ms": 790.0,
+                "response_time_max_ms": 2100
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_app_health",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2002
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2002,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "window": {
+            "start": "2026-10-19T09:30:00+09:00",
+            "end": "2026-10-19T10:10:00+09:00",
+            "minutes": 40
+          },
+          "was_signals": [],
+          "limits": [
+            "[한계] 과거 기준시각 — 실시간 스냅샷 생략(현재값은 사건 시점 증거가 아니다)",
+            "[한계] 시 단위 통계 — 사건창보다 넓은 시간 경계로 집계된 값",
+            "[한계] 시 단위 통계 행 수는 서버 기본값이다(미공개 — W10) · 합계는 받은 전 애플리케이션 행으로 냈다 · top_applications는 평균 응답시간 상위 5개 요약(전 애플리케이션 목록이 아니다)"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "hourly": {
+            "calls": 48000,
+            "failures": 40,
+            "failure_rate": 0.0008333333333333334,
+            "response_time_avg_ms": 341.0,
+            "max_response_time_ms": 2100,
+            "application_count": 1,
+            "top_applications": [
+              {
+                "application": "/acct/inquiry",
+                "calls": 48000,
+                "failures": 40,
+                "bad_responses": 240,
+                "response_time_avg_ms": 341.0,
+                "max_response_time_ms": 2100,
+                "response_time_stddev_ms": 120.5,
+                "cpu_ms_per_tx": 40.0,
+                "sql_ms_per_tx": 200.0,
+                "fetch_ms_per_tx": 20.0,
+                "external_ms_per_tx": 10.0,
+                "sqls": 192000,
+                "sqls_per_tx": 4.0,
+                "fetches": 48000,
+                "fetches_per_tx": 1.0,
+                "external_calls": 24000,
+                "external_calls_per_tx": 0.5,
+                "frontend_measurements": 0,
+                "frontend_ms": 0,
+                "network_ms": 3000,
+                "total_response_ms": 16368000,
+                "total_cpu_ms": 1920000,
+                "total_sql_ms": 9600000,
+                "total_fetch_ms": 960000,
+                "total_external_ms": 480000,
+                "source_id": "default"
+              }
+            ],
+            "hour_start": "2026-10-19T09:00:00+09:00",
+            "hour_end": "2026-10-19T11:00:00+09:00"
+          },
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      },
+      {
+        "args": {
+          "instance_name": "A1",
+          "reference_time": "2026-10-18T10:10:00",
+          "lookback_minutes": 40
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "domain_id": 3000,
+              "window": {
+                "calls": 24000,
+                "errors": 20,
+                "error_rate": 0.0008333333333333334,
+                "response_time_p50_ms": 300.0,
+                "response_time_p95_ms": 800.0,
+                "response_time_max_ms": 2200
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_app_health",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "window": {
+            "start": "2026-10-18T09:30:00+09:00",
+            "end": "2026-10-18T10:10:00+09:00",
+            "minutes": 40
+          },
+          "was_signals": [],
+          "limits": [
+            "[한계] 과거 기준시각 — 실시간 스냅샷 생략(현재값은 사건 시점 증거가 아니다)",
+            "[한계] 시 단위 통계 — 사건창보다 넓은 시간 경계로 집계된 값",
+            "[한계] 시 단위 통계 행 수는 서버 기본값이다(미공개 — W10) · 합계는 받은 전 애플리케이션 행으로 냈다 · top_applications는 평균 응답시간 상위 5개 요약(전 애플리케이션 목록이 아니다)"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "hourly": {
+            "calls": 48000,
+            "failures": 40,
+            "failure_rate": 0.0008333333333333334,
+            "response_time_avg_ms": 330.0,
+            "max_response_time_ms": 2200,
+            "application_count": 1,
+            "top_applications": [
+              {
+                "application": "/acct/inquiry",
+                "calls": 48000,
+                "failures": 40,
+                "bad_responses": 240,
+                "response_time_avg_ms": 330.0,
+                "max_response_time_ms": 2200,
+                "response_time_stddev_ms": 120.5,
+                "cpu_ms_per_tx": 40.0,
+                "sql_ms_per_tx": 200.0,
+                "fetch_ms_per_tx": 20.0,
+                "external_ms_per_tx": 10.0,
+                "sqls": 192000,
+                "sqls_per_tx": 4.0,
+                "fetches": 48000,
+                "fetches_per_tx": 1.0,
+                "external_calls": 24000,
+                "external_calls_per_tx": 0.5,
+                "frontend_measurements": 0,
+                "frontend_ms": 0,
+                "network_ms": 3000,
+                "total_response_ms": 15840000,
+                "total_cpu_ms": 1920000,
+                "total_sql_ms": 9600000,
+                "total_fetch_ms": 960000,
+                "total_external_ms": 480000,
+                "source_id": "default"
+              }
+            ],
+            "hour_start": "2026-10-18T09:00:00+09:00",
+            "hour_end": "2026-10-18T11:00:00+09:00"
+          },
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      },
+      {
+        "args": {
+          "instance_name": "A1",
+          "reference_time": "2026-10-12T10:10:00",
+          "lookback_minutes": 40
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "domain_id": 3000,
+              "window": {
+                "calls": 23500,
+                "errors": 20,
+                "error_rate": 0.000851063829787234,
+                "response_time_p50_ms": 305.0,
+                "response_time_p95_ms": 790.0,
+                "response_time_max_ms": 2300
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_app_health",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "window": {
+            "start": "2026-10-12T09:30:00+09:00",
+            "end": "2026-10-12T10:10:00+09:00",
+            "minutes": 40
+          },
+          "was_signals": [],
+          "limits": [
+            "[한계] 과거 기준시각 — 실시간 스냅샷 생략(현재값은 사건 시점 증거가 아니다)",
+            "[한계] 시 단위 통계 — 사건창보다 넓은 시간 경계로 집계된 값",
+            "[한계] 시 단위 통계 행 수는 서버 기본값이다(미공개 — W10) · 합계는 받은 전 애플리케이션 행으로 냈다 · top_applications는 평균 응답시간 상위 5개 요약(전 애플리케이션 목록이 아니다)"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "hourly": {
+            "calls": 47000,
+            "failures": 40,
+            "failure_rate": 0.000851063829787234,
+            "response_time_avg_ms": 335.5,
+            "max_response_time_ms": 2300,
+            "application_count": 1,
+            "top_applications": [
+              {
+                "application": "/acct/inquiry",
+                "calls": 47000,
+                "failures": 40,
+                "bad_responses": 235,
+                "response_time_avg_ms": 335.5,
+                "max_response_time_ms": 2300,
+                "response_time_stddev_ms": 120.5,
+                "cpu_ms_per_tx": 40.0,
+                "sql_ms_per_tx": 200.0,
+                "fetch_ms_per_tx": 20.0,
+                "external_ms_per_tx": 10.0,
+                "sqls": 188000,
+                "sqls_per_tx": 4.0,
+                "fetches": 47000,
+                "fetches_per_tx": 1.0,
+                "external_calls": 23500,
+                "external_calls_per_tx": 0.5,
+                "frontend_measurements": 0,
+                "frontend_ms": 0,
+                "network_ms": 3000,
+                "total_response_ms": 15768500,
+                "total_cpu_ms": 1880000,
+                "total_sql_ms": 9400000,
+                "total_fetch_ms": 940000,
+                "total_external_ms": 470000,
+                "source_id": "default"
+              }
+            ],
+            "hour_start": "2026-10-12T09:00:00+09:00",
+            "hour_end": "2026-10-12T11:00:00+09:00"
+          },
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      }
+    ],
+    "apm_period_compare": [
+      {
+        "args": {
+          "instance_name": "A1",
+          "current_start": "2026-10-19T09:30:00",
+          "current_end": "2026-10-19T10:10:00",
+          "baseline_start": "2026-10-18T09:30:00",
+          "baseline_end": "2026-10-18T10:10:00"
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "domain_id": 3000,
+              "current": {
+                "calls": 47000,
+                "failures": 60,
+                "failure_rate": 0.001276595744680851,
+                "avg_response_ms": 2800.0,
+                "max_response_ms": 12400,
+                "total_response_ms": 131600000.0,
+                "application_count": 1
+              },
+              "baseline": {
+                "calls": 47000,
+                "failures": 60,
+                "failure_rate": 0.001276595744680851,
+                "avg_response_ms": 340.0,
+                "max_response_ms": 2600,
+                "total_response_ms": 15980000.0,
+                "application_count": 1
+              },
+              "delta": {
+                "calls": {
+                  "abs": 0,
+                  "pct": 0.0
+                },
+                "failures": {
+                  "abs": 0,
+                  "pct": 0.0
+                },
+                "failure_rate": {
+                  "abs": 0.0,
+                  "pct": 0.0
+                },
+                "avg_response_ms": {
+                  "abs": 2460.0,
+                  "pct": 723.5
+                },
+                "max_response_ms": {
+                  "abs": 9800,
+                  "pct": 376.9
+                }
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_period_compare",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "limits": [
+            "[한계] 시 단위 통계 — 현재 구간을 시 경계로 맞췄다",
+            "[한계] 시 단위 통계 — 기준 구간을 시 경계로 맞췄다",
+            "[한계] p95는 싣지 않았다 — 시 단위 통계에는 응답시간 분포가 없다(구간 p95의 평균은 계산하지 않는다)",
+            "[한계] 시 단위 통계 행 수는 서버 기본값이다(미공개 — W10) · 합계는 받은 전 애플리케이션 행으로 냈다"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "summary": {
+            "current": {
+              "start": "2026-10-19T09:30:00+09:00",
+              "end": "2026-10-19T10:10:00+09:00",
+              "hour_start": "2026-10-19T09:00:00+09:00",
+              "hour_end": "2026-10-19T11:00:00+09:00",
+              "hours": 2.0,
+              "calls": 47000,
+              "failures": 60,
+              "failure_rate": 0.001276595744680851,
+              "avg_response_ms": 2800.0,
+              "max_response_ms": 12400,
+              "total_response_ms": 131600000.0
+            },
+            "baseline": {
+              "start": "2026-10-18T09:30:00+09:00",
+              "end": "2026-10-18T10:10:00+09:00",
+              "hour_start": "2026-10-18T09:00:00+09:00",
+              "hour_end": "2026-10-18T11:00:00+09:00",
+              "hours": 2.0,
+              "calls": 47000,
+              "failures": 60,
+              "failure_rate": 0.001276595744680851,
+              "avg_response_ms": 340.0,
+              "max_response_ms": 2600,
+              "total_response_ms": 15980000.0
+            },
+            "delta": {
+              "calls": {
+                "abs": 0,
+                "pct": 0.0
+              },
+              "failures": {
+                "abs": 0,
+                "pct": 0.0
+              },
+              "failure_rate": {
+                "abs": 0.0,
+                "pct": 0.0
+              },
+              "avg_response_ms": {
+                "abs": 2460.0,
+                "pct": 723.5
+              },
+              "max_response_ms": {
+                "abs": 9800,
+                "pct": 376.9
+              }
+            },
+            "instances": 1
+          },
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      },
+      {
+        "args": {
+          "instance_name": "A1",
+          "current_start": "2026-10-19T09:30:00",
+          "current_end": "2026-10-19T10:10:00",
+          "baseline_start": "2026-10-12T09:30:00",
+          "baseline_end": "2026-10-12T10:10:00"
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "domain_id": 3000,
+              "current": {
+                "calls": 47000,
+                "failures": 60,
+                "failure_rate": 0.001276595744680851,
+                "avg_response_ms": 2800.0,
+                "max_response_ms": 12400,
+                "total_response_ms": 131600000.0,
+                "application_count": 1
+              },
+              "baseline": {
+                "calls": 46500,
+                "failures": 50,
+                "failure_rate": 0.001075268817204301,
+                "avg_response_ms": 330.0,
+                "max_response_ms": 2200,
+                "total_response_ms": 15345000.0,
+                "application_count": 1
+              },
+              "delta": {
+                "calls": {
+                  "abs": 500,
+                  "pct": 1.1
+                },
+                "failures": {
+                  "abs": 10,
+                  "pct": 20.0
+                },
+                "failure_rate": {
+                  "abs": 0.000201,
+                  "pct": 18.7
+                },
+                "avg_response_ms": {
+                  "abs": 2470.0,
+                  "pct": 748.5
+                },
+                "max_response_ms": {
+                  "abs": 10200,
+                  "pct": 463.6
+                }
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_period_compare",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "limits": [
+            "[한계] 시 단위 통계 — 현재 구간을 시 경계로 맞췄다",
+            "[한계] 시 단위 통계 — 기준 구간을 시 경계로 맞췄다",
+            "[한계] p95는 싣지 않았다 — 시 단위 통계에는 응답시간 분포가 없다(구간 p95의 평균은 계산하지 않는다)",
+            "[한계] 시 단위 통계 행 수는 서버 기본값이다(미공개 — W10) · 합계는 받은 전 애플리케이션 행으로 냈다"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "summary": {
+            "current": {
+              "start": "2026-10-19T09:30:00+09:00",
+              "end": "2026-10-19T10:10:00+09:00",
+              "hour_start": "2026-10-19T09:00:00+09:00",
+              "hour_end": "2026-10-19T11:00:00+09:00",
+              "hours": 2.0,
+              "calls": 47000,
+              "failures": 60,
+              "failure_rate": 0.001276595744680851,
+              "avg_response_ms": 2800.0,
+              "max_response_ms": 12400,
+              "total_response_ms": 131600000.0
+            },
+            "baseline": {
+              "start": "2026-10-12T09:30:00+09:00",
+              "end": "2026-10-12T10:10:00+09:00",
+              "hour_start": "2026-10-12T09:00:00+09:00",
+              "hour_end": "2026-10-12T11:00:00+09:00",
+              "hours": 2.0,
+              "calls": 46500,
+              "failures": 50,
+              "failure_rate": 0.001075268817204301,
+              "avg_response_ms": 330.0,
+              "max_response_ms": 2200,
+              "total_response_ms": 15345000.0
+            },
+            "delta": {
+              "calls": {
+                "abs": 500,
+                "pct": 1.1
+              },
+              "failures": {
+                "abs": 10,
+                "pct": 20.0
+              },
+              "failure_rate": {
+                "abs": 0.000201,
+                "pct": 18.7
+              },
+              "avg_response_ms": {
+                "abs": 2470.0,
+                "pct": 748.5
+              },
+              "max_response_ms": {
+                "abs": 10200,
+                "pct": 463.6
+              }
+            },
+            "instances": 1
+          },
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      }
+    ],
+    "apm_runtime_health": [
+      {
+        "args": {
+          "instance_name": "A1",
+          "reference_time": "2026-10-19T10:10:00",
+          "lookback_minutes": 40
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "domain_id": 3000,
+              "trend": {
+                "heap_used_mb": [
+                  {
+                    "time_ms": 1792369800000,
+                    "value": 900.0
+                  },
+                  {
+                    "time_ms": 1792370100000,
+                    "value": 940.0
+                  },
+                  {
+                    "time_ms": 1792370400000,
+                    "value": 980.0
+                  },
+                  {
+                    "time_ms": 1792370700000,
+                    "value": 900.0
+                  },
+                  {
+                    "time_ms": 1792371000000,
+                    "value": 940.0
+                  },
+                  {
+                    "time_ms": 1792371300000,
+                    "value": 980.0
+                  },
+                  {
+                    "time_ms": 1792371600000,
+                    "value": 900.0
+                  },
+                  {
+                    "time_ms": 1792371900000,
+                    "value": 940.0
+                  }
+                ],
+                "heap_committed_mb": [
+                  {
+                    "time_ms": 1792369800000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792370100000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792370400000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792370700000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792371000000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792371300000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792371600000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792371900000,
+                    "value": 2048.0
+                  }
+                ],
+                "gc_time_usage_pct": [
+                  {
+                    "time_ms": 1792369800000,
+                    "value": 1.0
+                  },
+                  {
+                    "time_ms": 1792370100000,
+                    "value": 1.2
+                  },
+                  {
+                    "time_ms": 1792370400000,
+                    "value": 0.9
+                  },
+                  {
+                    "time_ms": 1792370700000,
+                    "value": 1.1
+                  },
+                  {
+                    "time_ms": 1792371000000,
+                    "value": 1.0
+                  },
+                  {
+                    "time_ms": 1792371300000,
+                    "value": 1.3
+                  },
+                  {
+                    "time_ms": 1792371600000,
+                    "value": 1.1
+                  },
+                  {
+                    "time_ms": 1792371900000,
+                    "value": 1.0
+                  }
+                ]
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_runtime_health",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "window": {
+            "start": "2026-10-19T09:30:00+09:00",
+            "end": "2026-10-19T10:10:00+09:00",
+            "minutes": 40
+          },
+          "was_signals": [],
+          "limits": [
+            "[한계] 과거 기준시각 — 실시간 스냅샷 생략(현재값은 사건 시점 증거가 아니다)"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      },
+      {
+        "args": {
+          "instance_name": "A1",
+          "reference_time": "2026-10-19T10:10:00",
+          "lookback_minutes": 40,
+          "metrics": [
+            "proc_cpu",
+            "active_service"
+          ]
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "domain_id": 3000,
+              "trend": {
+                "process_cpu_pct": [
+                  {
+                    "time_ms": 1792369800000,
+                    "value": 30.0
+                  },
+                  {
+                    "time_ms": 1792370100000,
+                    "value": 55.0
+                  },
+                  {
+                    "time_ms": 1792370400000,
+                    "value": 78.0
+                  },
+                  {
+                    "time_ms": 1792370700000,
+                    "value": 88.0
+                  },
+                  {
+                    "time_ms": 1792371000000,
+                    "value": 91.0
+                  },
+                  {
+                    "time_ms": 1792371300000,
+                    "value": 92.0
+                  },
+                  {
+                    "time_ms": 1792371600000,
+                    "value": 92.0
+                  },
+                  {
+                    "time_ms": 1792371900000,
+                    "value": 93.0
+                  }
+                ],
+                "active_services": [
+                  {
+                    "time_ms": 1792369800000,
+                    "value": 5.0
+                  },
+                  {
+                    "time_ms": 1792370100000,
+                    "value": 8.0
+                  },
+                  {
+                    "time_ms": 1792370400000,
+                    "value": 12.0
+                  },
+                  {
+                    "time_ms": 1792370700000,
+                    "value": 14.0
+                  },
+                  {
+                    "time_ms": 1792371000000,
+                    "value": 15.0
+                  },
+                  {
+                    "time_ms": 1792371300000,
+                    "value": 16.0
+                  },
+                  {
+                    "time_ms": 1792371600000,
+                    "value": 16.0
+                  },
+                  {
+                    "time_ms": 1792371900000,
+                    "value": 16.0
+                  }
+                ]
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_runtime_health",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "window": {
+            "start": "2026-10-19T09:30:00+09:00",
+            "end": "2026-10-19T10:10:00+09:00",
+            "minutes": 40
+          },
+          "was_signals": [],
+          "limits": [
+            "[한계] 과거 기준시각 — 실시간 스냅샷 생략(현재값은 사건 시점 증거가 아니다)"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      },
+      {
+        "args": {
+          "instance_name": "A2",
+          "reference_time": "2026-10-19T10:10:00",
+          "lookback_minutes": 40
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2002,
+              "instance_name": "A2",
+              "domain_id": 3000,
+              "trend": {
+                "heap_used_mb": [
+                  {
+                    "time_ms": 1792369800000,
+                    "value": 900.0
+                  },
+                  {
+                    "time_ms": 1792370100000,
+                    "value": 940.0
+                  },
+                  {
+                    "time_ms": 1792370400000,
+                    "value": 980.0
+                  },
+                  {
+                    "time_ms": 1792370700000,
+                    "value": 900.0
+                  },
+                  {
+                    "time_ms": 1792371000000,
+                    "value": 940.0
+                  },
+                  {
+                    "time_ms": 1792371300000,
+                    "value": 980.0
+                  },
+                  {
+                    "time_ms": 1792371600000,
+                    "value": 900.0
+                  },
+                  {
+                    "time_ms": 1792371900000,
+                    "value": 940.0
+                  }
+                ],
+                "heap_committed_mb": [
+                  {
+                    "time_ms": 1792369800000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792370100000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792370400000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792370700000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792371000000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792371300000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792371600000,
+                    "value": 2048.0
+                  },
+                  {
+                    "time_ms": 1792371900000,
+                    "value": 2048.0
+                  }
+                ],
+                "gc_time_usage_pct": [
+                  {
+                    "time_ms": 1792369800000,
+                    "value": 1.0
+                  },
+                  {
+                    "time_ms": 1792370100000,
+                    "value": 1.2
+                  },
+                  {
+                    "time_ms": 1792370400000,
+                    "value": 0.9
+                  },
+                  {
+                    "time_ms": 1792370700000,
+                    "value": 1.1
+                  },
+                  {
+                    "time_ms": 1792371000000,
+                    "value": 1.0
+                  },
+                  {
+                    "time_ms": 1792371300000,
+                    "value": 1.3
+                  },
+                  {
+                    "time_ms": 1792371600000,
+                    "value": 1.1
+                  },
+                  {
+                    "time_ms": 1792371900000,
+                    "value": 1.0
+                  }
+                ]
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_runtime_health",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2002
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2002,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "window": {
+            "start": "2026-10-19T09:30:00+09:00",
+            "end": "2026-10-19T10:10:00+09:00",
+            "minutes": 40
+          },
+          "was_signals": [],
+          "limits": [
+            "[한계] 과거 기준시각 — 실시간 스냅샷 생략(현재값은 사건 시점 증거가 아니다)"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      },
+      {
+        "args": {
+          "instance_name": "A2",
+          "reference_time": "2026-10-19T10:10:00",
+          "lookback_minutes": 40,
+          "metrics": [
+            "proc_cpu",
+            "active_service"
+          ]
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2002,
+              "instance_name": "A2",
+              "domain_id": 3000,
+              "trend": {
+                "process_cpu_pct": [
+                  {
+                    "time_ms": 1792369800000,
+                    "value": 8.0
+                  },
+                  {
+                    "time_ms": 1792370100000,
+                    "value": 8.0
+                  },
+                  {
+                    "time_ms": 1792370400000,
+                    "value": 8.0
+                  },
+                  {
+                    "time_ms": 1792370700000,
+                    "value": 8.0
+                  },
+                  {
+                    "time_ms": 1792371000000,
+                    "value": 8.0
+                  },
+                  {
+                    "time_ms": 1792371300000,
+                    "value": 8.0
+                  },
+                  {
+                    "time_ms": 1792371600000,
+                    "value": 8.0
+                  },
+                  {
+                    "time_ms": 1792371900000,
+                    "value": 8.0
+                  }
+                ],
+                "active_services": [
+                  {
+                    "time_ms": 1792369800000,
+                    "value": 5.0
+                  },
+                  {
+                    "time_ms": 1792370100000,
+                    "value": 8.0
+                  },
+                  {
+                    "time_ms": 1792370400000,
+                    "value": 12.0
+                  },
+                  {
+                    "time_ms": 1792370700000,
+                    "value": 14.0
+                  },
+                  {
+                    "time_ms": 1792371000000,
+                    "value": 15.0
+                  },
+                  {
+                    "time_ms": 1792371300000,
+                    "value": 16.0
+                  },
+                  {
+                    "time_ms": 1792371600000,
+                    "value": 16.0
+                  },
+                  {
+                    "time_ms": 1792371900000,
+                    "value": 16.0
+                  }
+                ]
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_runtime_health",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2002
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2002,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "window": {
+            "start": "2026-10-19T09:30:00+09:00",
+            "end": "2026-10-19T10:10:00+09:00",
+            "minutes": 40
+          },
+          "was_signals": [],
+          "limits": [
+            "[한계] 과거 기준시각 — 실시간 스냅샷 생략(현재값은 사건 시점 증거가 아니다)"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      }
+    ],
+    "apm_resource_pool": [
+      {
+        "args": {
+          "instance_name": "A1"
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "domain_id": 3000,
+              "db_pool_active": 4.0,
+              "db_pool_idle_avg": 26.0,
+              "db_pool_configured_avg": 30.0,
+              "db_pool_usage_ratio": 0.13,
+              "thread_current": 180.0,
+              "active_services": 16.0,
+              "active_by_running_mode": {
+                "METHOD": 14
+              },
+              "active_by_datasource": {
+                "jdbc/acctDS": 14
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_resource_pool",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "was_signals": [],
+          "limits": [
+            "[한계] 현재값 전용 — 과거 사건의 증거로 쓰지 않는다",
+            "[한계] WAS 스레드 풀 상한 필드 없음 — thread_current(JVM 전체)·active_services로 근사"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      },
+      {
+        "args": {
+          "instance_name": "A2"
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "instance_id": 2002,
+              "instance_name": "A2",
+              "domain_id": 3000,
+              "db_pool_active": 4.0,
+              "db_pool_idle_avg": 26.0,
+              "db_pool_configured_avg": 30.0,
+              "db_pool_usage_ratio": 0.13,
+              "thread_current": 180.0,
+              "active_services": 16.0,
+              "active_by_running_mode": {
+                "METHOD": 14
+              },
+              "active_by_datasource": {
+                "jdbc/acctDS": 14
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_resource_pool",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2002
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2002,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "was_signals": [],
+          "limits": [
+            "[한계] 현재값 전용 — 과거 사건의 증거로 쓰지 않는다",
+            "[한계] WAS 스레드 풀 상한 필드 없음 — thread_current(JVM 전체)·active_services로 근사"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      }
+    ],
+    "polestar_metric_trend": [
+      {
+        "args": {
+          "source": "polestar",
+          "server_name": "wasdemo01",
+          "reference_time": "2026-10-19T10:10:00",
+          "lookback_minutes": 40,
+          "kind": "cpu",
+          "granularity": "h",
+          "periods": 2,
+          "baseline_periods": 24
+        },
+        "response": {
+          "rows": [
+            {
+              "stat_date": "2026101809",
+              "avg_val": 24.0,
+              "min_val": 19.2,
+              "max_val": 27.6
+            },
+            {
+              "stat_date": "2026101810",
+              "avg_val": 26.5,
+              "min_val": 21.2,
+              "max_val": 30.47
+            },
+            {
+              "stat_date": "2026101811",
+              "avg_val": 24.0,
+              "min_val": 19.2,
+              "max_val": 27.6
+            },
+            {
+              "stat_date": "2026101812",
+              "avg_val": 26.5,
+              "min_val": 21.2,
+              "max_val": 30.47
+            },
+            {
+              "stat_date": "2026101813",
+              "avg_val": 24.0,
+              "min_val": 19.2,
+              "max_val": 27.6
+            },
+            {
+              "stat_date": "2026101814",
+              "avg_val": 26.5,
+              "min_val": 21.2,
+              "max_val": 30.47
+            },
+            {
+              "stat_date": "2026101815",
+              "avg_val": 24.0,
+              "min_val": 19.2,
+              "max_val": 27.6
+            },
+            {
+              "stat_date": "2026101816",
+              "avg_val": 26.5,
+              "min_val": 21.2,
+              "max_val": 30.47
+            },
+            {
+              "stat_date": "2026101817",
+              "avg_val": 24.0,
+              "min_val": 19.2,
+              "max_val": 27.6
+            },
+            {
+              "stat_date": "2026101818",
+              "avg_val": 26.5,
+              "min_val": 21.2,
+              "max_val": 30.47
+            },
+            {
+              "stat_date": "2026101819",
+              "avg_val": 24.0,
+              "min_val": 19.2,
+              "max_val": 27.6
+            },
+            {
+              "stat_date": "2026101820",
+              "avg_val": 26.5,
+              "min_val": 21.2,
+              "max_val": 30.47
+            },
+            {
+              "stat_date": "2026101821",
+              "avg_val": 24.0,
+              "min_val": 19.2,
+              "max_val": 27.6
+            },
+            {
+              "stat_date": "2026101822",
+              "avg_val": 26.5,
+              "min_val": 21.2,
+              "max_val": 30.47
+            },
+            {
+              "stat_date": "2026101823",
+              "avg_val": 24.0,
+              "min_val": 19.2,
+              "max_val": 27.6
+            },
+            {
+              "stat_date": "2026101900",
+              "avg_val": 26.5,
+              "min_val": 21.2,
+              "max_val": 30.47
+            },
+            {
+              "stat_date": "2026101901",
+              "avg_val": 24.0,
+              "min_val": 19.2,
+              "max_val": 27.6
+            },
+            {
+              "stat_date": "2026101902",
+              "avg_val": 26.5,
+              "min_val": 21.2,
+              "max_val": 30.47
+            },
+            {
+              "stat_date": "2026101903",
+              "avg_val": 24.0,
+              "min_val": 19.2,
+              "max_val": 27.6
+            },
+            {
+              "stat_date": "2026101904",
+              "avg_val": 26.5,
+              "min_val": 21.2,
+              "max_val": 30.47
+            },
+            {
+              "stat_date": "2026101905",
+              "avg_val": 24.0,
+              "min_val": 19.2,
+              "max_val": 27.6
+            },
+            {
+              "stat_date": "2026101906",
+              "avg_val": 26.5,
+              "min_val": 21.2,
+              "max_val": 30.47
+            },
+            {
+              "stat_date": "2026101907",
+              "avg_val": 24.0,
+              "min_val": 19.2,
+              "max_val": 27.6
+            },
+            {
+              "stat_date": "2026101908",
+              "avg_val": 26.5,
+              "min_val": 21.2,
+              "max_val": 30.47
+            },
+            {
+              "stat_date": "2026101909",
+              "avg_val": 88.0,
+              "min_val": 70.4,
+              "max_val": 100.0
+            },
+            {
+              "stat_date": "2026101910",
+              "avg_val": 95.0,
+              "min_val": 76.0,
+              "max_val": 100.0
+            }
+          ],
+          "row_count": 26,
+          "queried_at": "2026-10-19T10:12:00",
+          "source_kind": "polestar_db",
+          "source": "polestar",
+          "engine": "postgresql",
+          "kind": "cpu",
+          "granularity": "h",
+          "window": {
+            "reference_time": "2026-10-19T10:10:00",
+            "incident_from": "2026-10-19T09:30:00",
+            "baseline_from": "2026-10-18T09:30:00",
+            "stat_date_to": "2026101910",
+            "stat_date_incident_from": "2026101909",
+            "stat_date_from": "2026101809"
+          }
+        }
+      }
+    ],
+    "polestar_incident_alarms": [
+      {
+        "args": {
+          "source": "polestar",
+          "server_name": "wasdemo01",
+          "reference_time": "2026-10-19T10:10:00",
+          "lookback_minutes": 40
+        },
+        "response": {
+          "rows": [
+            {
+              "alarm_id": 990000,
+              "alarm_time": "2026-10-19 09:52:00",
+              "severity": 3,
+              "alarm_status": 1,
+              "alarm_name": "CPU 사용률 임계 초과",
+              "resource_name": "wasdemo01",
+              "resource_type": "server.Cpus"
+            }
+          ],
+          "row_count": 1,
+          "queried_at": "2026-10-19T10:12:00",
+          "source_kind": "polestar_db",
+          "source": "polestar",
+          "engine": "postgresql",
+          "window": {
+            "reference_time": "2026-10-19T10:10:00",
+            "incident_from": "2026-10-19T09:30:00",
+            "stat_date_to": "2026101910",
+            "stat_date_incident_from": "2026101909",
+            "stat_date_from": "2026101909"
+          }
+        }
+      }
+    ],
+    "apm_events": [
+      {
+        "args": {
+          "instance_name": "A1",
+          "reference_time": "2026-10-19T10:10:00",
+          "lookback_minutes": 40
+        },
+        "response": {
+          "rows": [
+            {
+              "time_ms": 1792371600000,
+              "level": "warning",
+              "event_type": "TX_BAD_RESPONSE",
+              "event_kind": "event",
+              "value": 1.0,
+              "message": "bad response transaction",
+              "source_id": "default",
+              "domain_id": 3000,
+              "domain_name": "demo-acct",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "application": "/acct/inquiry",
+              "profile_ref": null,
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_events",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "window": {
+            "start": "2026-10-19T09:30:00+09:00",
+            "end": "2026-10-19T10:10:00+09:00",
+            "minutes": 40
+          },
+          "was_signals": [],
+          "limits": [],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "record": "event",
+          "errors_by_type": [],
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      }
+    ],
+    "polestar_process_snapshot": [
+      {
+        "args": {
+          "hostname": "wasdemo01",
+          "top_n": 10,
+          "sort": "cpu"
+        },
+        "response": {
+          "rows": [
+            {
+              "name": "java",
+              "pid": 31001,
+              "ppid": 1,
+              "user": "wasadm",
+              "p100cpu": 92.0,
+              "pcpu": 92.0,
+              "pmem": 20.0,
+              "rss": 3200000,
+              "args": "/opt/java/bin/java -Dapm.instance=A1 -Xmx2g ..."
+            },
+            {
+              "name": "java",
+              "pid": 31002,
+              "ppid": 1,
+              "user": "wasadm",
+              "p100cpu": 8.0,
+              "pcpu": 8.0,
+              "pmem": 15.0,
+              "rss": 2400000,
+              "args": "/opt/java/bin/java -Dapm.instance=A2 -Xmx2g ..."
+            },
+            {
+              "name": "sshd",
+              "pid": 900,
+              "ppid": 1,
+              "user": "root",
+              "p100cpu": 0.3,
+              "pcpu": 0.3,
+              "pmem": 0.1,
+              "rss": 16000,
+              "args": "/usr/sbin/sshd -D"
+            },
+            {
+              "name": "polestar-agent",
+              "pid": 1200,
+              "ppid": 1,
+              "user": "root",
+              "p100cpu": 0.8,
+              "pcpu": 0.8,
+              "pmem": 0.6,
+              "rss": 96000,
+              "args": "/opt/agent/bin/agent"
+            },
+            {
+              "name": "crond",
+              "pid": 700,
+              "ppid": 1,
+              "user": "root",
+              "p100cpu": 0.0,
+              "pcpu": 0.0,
+              "pmem": 0.0,
+              "rss": 0,
+              "args": "/usr/sbin/crond -n"
+            }
+          ],
+          "row_count": 5,
+          "total_processes": 212,
+          "captured_at": "2026-10-19 10:12:00",
+          "queried_at": "2026-10-19T10:12:00",
+          "source_kind": "polestar_process_realtime",
+          "note": "실시간 단면 — 조회 시점의 프로세스 상태(과거 이력 아님)"
+        }
+      }
+    ],
+    "apm_source_changes": [
+      {
+        "args": {
+          "instance_name": "A1",
+          "reference_time": "2026-10-19T10:10:00"
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "domain_id": 3000,
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "change_detected_ms": 1792368600000,
+              "change_detected_at": "2026-10-19T09:10:00+09:00",
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_source_changes",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "window": {
+            "start": "2026-10-18T10:10:00+09:00",
+            "end": "2026-10-19T10:10:00+09:00",
+            "minutes": 1440
+          },
+          "limits": [
+            "[한계] 변경 감지(데이터 서버가 소스코드·리소스 변경을 인지한 시각) — 배포 확정 아님"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      }
+    ],
+    "apm_change_impact": [
+      {
+        "args": {
+          "instance_name": "A1",
+          "reference_time": "2026-10-19T10:10:00"
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "domain_id": 3000,
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "change_detected_ms": 1792368600000,
+              "change_detected_at": "2026-10-19T09:10:00+09:00",
+              "width_minutes": 60,
+              "before": {
+                "start_ms": 1792365000000,
+                "end_ms": 1792368600000,
+                "calls": 2400,
+                "tx_errors": 1,
+                "error_rate": 0.0004166666666666667,
+                "avg_response_ms": 320.0,
+                "p95_response_ms": 830.0,
+                "max_response_ms": 1245,
+                "error_records": 1,
+                "errors_by_type": []
+              },
+              "after": {
+                "start_ms": 1792368600000,
+                "end_ms": 1792372200000,
+                "calls": 2390,
+                "tx_errors": 1,
+                "error_rate": 0.00041841004184100416,
+                "avg_response_ms": 2500.0,
+                "p95_response_ms": 9600.0,
+                "max_response_ms": 14400,
+                "error_records": 1,
+                "errors_by_type": []
+              },
+              "delta": {
+                "calls": {
+                  "abs": -10,
+                  "pct": -0.4
+                },
+                "tx_errors": {
+                  "abs": 0,
+                  "pct": 0.0
+                },
+                "error_rate": {
+                  "abs": 1.7433751743374656e-06,
+                  "pct": 0.4
+                },
+                "avg_response_ms": {
+                  "abs": 2180.0,
+                  "pct": 681.2
+                },
+                "p95_response_ms": {
+                  "abs": 8770.0,
+                  "pct": 1056.6
+                },
+                "error_records": {
+                  "abs": 0,
+                  "pct": 0.0
+                }
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_change_impact",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "window": {
+            "start": "2026-10-18T10:10:00+09:00",
+            "end": "2026-10-19T10:10:00+09:00",
+            "minutes": 1440
+          },
+          "limits": [
+            "[한계] 변경 감지 시각 전후의 동반 변화다 — 원인 확정이 아니다",
+            "[한계] 변경 감지(데이터 서버가 소스코드·리소스 변경을 인지한 시각) — 배포 확정 아님"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "summary": {
+            "changes": 1,
+            "compared": 1,
+            "window": {
+              "start": "2026-10-18T10:10:00+09:00",
+              "end": "2026-10-19T10:10:00+09:00",
+              "minutes": 1440
+            },
+            "width_minutes": 60
+          },
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      }
+    ],
+    "polestar_change_history": [
+      {
+        "args": {
+          "source": "polestar",
+          "server_name": "wasdemo01",
+          "reference_time": "2026-10-19T10:10:00",
+          "lookback_minutes": 1440
+        },
+        "response": {
+          "rows": [],
+          "row_count": 0,
+          "queried_at": "2026-10-19T10:12:00",
+          "source_kind": "polestar_db",
+          "source": "polestar",
+          "engine": "postgresql",
+          "window": {
+            "reference_time": "2026-10-19T10:10:00",
+            "incident_from_epoch": 1792285800,
+            "reference_epoch": 1792372200
+          }
+        }
+      }
+    ],
+    "apm_active_services": [
+      {
+        "args": {
+          "instance_name": "A1"
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "domain_id": 3000,
+              "domain_name": "demo-acct",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "application": "/acct/batch/recalc",
+              "application_alias": "/acct/batch/recalc",
+              "status": "RUNNING",
+              "status_name": "RUNNING",
+              "status_message": "",
+              "elapsed_ms": 2400000,
+              "status_elapsed_ms": 2400000,
+              "running_ms": 2400000,
+              "cpu_ms": 2300000,
+              "sql_count": 0,
+              "fetch_count": 0,
+              "running_mode": "METHOD",
+              "running_text": "com.example.acct.Recalc.loop",
+              "running_hash": 55000,
+              "running_sherpa_oracle_instance": "",
+              "running_sherpa_oracle_seq": null,
+              "datasource": "",
+              "client_ip": "192.168.*.*",
+              "txid": "880000",
+              "session_id": null,
+              "thread_hash": 66000,
+              "start_time_ms": 1792369920000,
+              "business_ids": [
+                41
+              ],
+              "business_names": [
+                "계좌조회"
+              ],
+              "active_ref": {
+                "source_id": "default",
+                "domain_id": 3000,
+                "txid": "880000",
+                "session_id": null,
+                "thread_hash": 66000
+              },
+              "hostname": "wasdemo01"
+            },
+            {
+              "source_id": "default",
+              "domain_id": 3000,
+              "domain_name": "demo-acct",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "application": "/acct/batch/recalc",
+              "application_alias": "/acct/batch/recalc",
+              "status": "RUNNING",
+              "status_name": "RUNNING",
+              "status_message": "",
+              "elapsed_ms": 2399000,
+              "status_elapsed_ms": 2399000,
+              "running_ms": 2399000,
+              "cpu_ms": 2299000,
+              "sql_count": 0,
+              "fetch_count": 0,
+              "running_mode": "METHOD",
+              "running_text": "com.example.acct.Recalc.loop",
+              "running_hash": 55001,
+              "running_sherpa_oracle_instance": "",
+              "running_sherpa_oracle_seq": null,
+              "datasource": "",
+              "client_ip": "192.168.*.*",
+              "txid": "880001",
+              "session_id": null,
+              "thread_hash": 66001,
+              "start_time_ms": 1792369921000,
+              "business_ids": [
+                41
+              ],
+              "business_names": [
+                "계좌조회"
+              ],
+              "active_ref": {
+                "source_id": "default",
+                "domain_id": 3000,
+                "txid": "880001",
+                "session_id": null,
+                "thread_hash": 66001
+              },
+              "hostname": "wasdemo01"
+            },
+            {
+              "source_id": "default",
+              "domain_id": 3000,
+              "domain_name": "demo-acct",
+              "instance_id": 2001,
+              "instance_name": "A1",
+              "application": "/acct/batch/recalc",
+              "application_alias": "/acct/batch/recalc",
+              "status": "RUNNING",
+              "status_name": "RUNNING",
+              "status_message": "",
+              "elapsed_ms": 2398000,
+              "status_elapsed_ms": 2398000,
+              "running_ms": 2398000,
+              "cpu_ms": 2298000,
+              "sql_count": 0,
+              "fetch_count": 0,
+              "running_mode": "METHOD",
+              "running_text": "com.example.acct.Recalc.loop",
+              "running_hash": 55002,
+              "running_sherpa_oracle_instance": "",
+              "running_sherpa_oracle_seq": null,
+              "datasource": "",
+              "client_ip": "192.168.*.*",
+              "txid": "880002",
+              "session_id": null,
+              "thread_hash": 66002,
+              "start_time_ms": 1792369922000,
+              "business_ids": [
+                41
+              ],
+              "business_names": [
+                "계좌조회"
+              ],
+              "active_ref": {
+                "source_id": "default",
+                "domain_id": 3000,
+                "txid": "880002",
+                "session_id": null,
+                "thread_hash": 66002
+              },
+              "hostname": "wasdemo01"
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_active_services",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "instance_name",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001,
+                "hostname": "wasdemo01"
+              }
+            ]
+          },
+          "was_signals": [],
+          "limits": [
+            "[한계] 현재값 전용 — 과거 사건의 증거로 쓰지 않는다",
+            "[한계] elapsed_ms는 경과 시간 필드 단위 미기재로 ms로 가정(U-12)"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "summary": {
+            "total": 3,
+            "by_running_mode": {
+              "METHOD": 3
+            },
+            "by_status": {
+              "RUNNING": 3
+            }
+          },
+          "row_count": 3,
+          "total_row_count": 3
+        }
+      }
+    ],
+    "apm_active_detail": [
+      {
+        "args": {
+          "txid": "880000"
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "domain_id": 3000,
+              "txid": "880000",
+              "session_id": null,
+              "thread_hash": 66000,
+              "user_id": null,
+              "guid": null,
+              "sql": null,
+              "http_method": "POST",
+              "http_query": null
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_active_detail",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "active_ref",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001
+              }
+            ]
+          },
+          "limits": [
+            "[한계] 현재값 전용 — 과거 사건의 증거로 쓰지 않는다"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      },
+      {
+        "args": {
+          "txid": "880001"
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "domain_id": 3000,
+              "txid": "880001",
+              "session_id": null,
+              "thread_hash": 66001,
+              "user_id": null,
+              "guid": null,
+              "sql": null,
+              "http_method": "POST",
+              "http_query": null
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_active_detail",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "active_ref",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001
+              }
+            ]
+          },
+          "limits": [
+            "[한계] 현재값 전용 — 과거 사건의 증거로 쓰지 않는다"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      },
+      {
+        "args": {
+          "txid": "880002"
+        },
+        "response": {
+          "rows": [
+            {
+              "source_id": "default",
+              "domain_id": 3000,
+              "txid": "880002",
+              "session_id": null,
+              "thread_hash": 66002,
+              "user_id": null,
+              "guid": null,
+              "sql": null,
+              "http_method": "POST",
+              "http_query": null
+            }
+          ],
+          "queried_at": "2026-10-19T10:12:00+09:00",
+          "source_kind": "apm_api",
+          "source": "jennifer",
+          "tool": "apm_active_detail",
+          "instance_resolution": {
+            "matched": true,
+            "confidence": "high",
+            "reason": "active_ref",
+            "instances": [
+              2001
+            ],
+            "instance_refs": [
+              {
+                "source_id": "default",
+                "domain_id": 3000,
+                "instance_id": 2001
+              }
+            ]
+          },
+          "limits": [
+            "[한계] 현재값 전용 — 과거 사건의 증거로 쓰지 않는다"
+          ],
+          "sources": [
+            {
+              "source_id": "default",
+              "status": "ok",
+              "reason": ""
+            }
+          ],
+          "row_count": 1,
+          "total_row_count": 1
+        }
+      }
+    ]
+  },
+  "expected": {
+    "playbook_id": "host.cpu",
+    "s0": {
+      "host": "wasdemo01",
+      "polestar_source": "polestar",
+      "polestar_server": "wasdemo01",
+      "targets": [
+        {
+          "instance": "A1",
+          "verdict": "degraded"
+        }
+      ]
+    },
+    "readings": {
+      "cpu_owner": "was_logic",
+      "host_saturation": "cpu"
+    },
+    "section_order": [
+      "S4",
+      "S6",
+      "S0r",
+      "S1",
+      "S2",
+      "S3a",
+      "S3b",
+      "S5",
+      "S7",
+      "S9"
+    ],
+    "section_status": {
+      "S4": "ok",
+      "S6": "ok",
+      "S0r": "ok",
+      "S1": "ok",
+      "S2": "ok",
+      "S3a": "ok",
+      "S3b": "ok",
+      "S5": "ok",
+      "S7": "ok",
+      "S9": "ok"
+    },
+    "top_hypothesis": "특정 서비스 로직 CPU 과다(배포 근접 — 상관 후보)"
+  }
+}

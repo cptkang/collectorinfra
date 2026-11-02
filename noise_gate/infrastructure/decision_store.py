@@ -14,7 +14,7 @@ from __future__ import annotations
 
 import json
 import logging
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Iterator
 from datetime import UTC, datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
@@ -66,6 +66,13 @@ _PAGE_REVIEW_POINTER_KEYS: tuple[str, ...] = (
     "representative_alarm_id",
 )
 
+# (plans/201 W6) `iter_recent_decisions` 역방향 읽기 — 블록 크기 · 종료 여유 · 중단 확인 주기.
+# 레코드는 append 시각 순이지만 워커 동시 처리·`ts` 인자 지정 호출로 몇 초~몇 분 어긋날 수 있다.
+# 창 하한보다 10분 넘게 오래된 결정 레코드를 만나면 그 앞(더 오래된 쪽)은 창 안일 수 없다고 보고 멈춘다.
+_REVERSE_SCAN_BLOCK_BYTES = 64 * 1024
+_REVERSE_SCAN_SLACK_SECONDS = 600
+_SCAN_STOP_CHECK_EVERY = 256
+
 # 화면에 내보내기 전 마스킹하는 최상위 문자열 키.
 _MASKED_TEXT_KEYS: tuple[str, ...] = (
     "alarm_name",
@@ -110,6 +117,10 @@ def _as_tier_set(tier: object) -> frozenset[str]:
 
 class DecisionStore:
     """발송 판단을 JSONL로 적재하고 티어별 집계·억제율을 산출하는 경량 감사 저장소."""
+
+    # (plans/201 W6) `iter_recent_decisions` 기본 중단 신호(없음). 인스턴스를 여러 순회가 공유하면
+    # 서로 덮어쓰므로 공유 인스턴스에는 꽂지 말고 `should_stop` 인자를 쓴다.
+    scan_should_stop: Callable[[], bool] | None = None
 
     def __init__(
         self, path: str, enabled: bool = True, max_lines: int = 20000
@@ -787,6 +798,122 @@ class DecisionStore:
             return []
         return records
 
+    def count_recent_values(self, window_seconds: int, field: str) -> tuple[dict[str, int], int]:
+        """최근 `window_seconds` 안 결정 레코드의 `field` 값별 건수를 센다(읽기 전용 · 스트리밍).
+
+        (plans/201 W1) 관리자 매핑 점검용 — 레코드를 메모리에 쌓지 않고 값별 수만 남긴다.
+        `recent_decisions`와 같은 규칙(비-decision `type` 레코드·손상 줄 제외 · 시간 창)이다.
+        값은 앞뒤 공백을 지운 문자열이고, 빈 값·키 없음은 두 번째 반환값으로 따로 센다.
+        파일 부재·비활성·읽기 실패는 `({}, 0)`이다(읽기 실패는 경고 1줄).
+
+        (plans/201 W3) `field`에 점(`.`)이 있으면 중첩 경로다(예 `stage_evidence.apm_policy.event_type_norm`)
+        — 중간이 dict가 아니거나 키가 없으면 빈 값으로 센다. 점 없는 이름은 종전과 같다(최상위 필드).
+        """
+        if not self.enabled or not self.path.exists():
+            return {}, 0
+        path = field.split(".") if "." in field else None
+        cutoff_ts = datetime.now(UTC).timestamp() - window_seconds
+        counts: dict[str, int] = {}
+        empty = 0
+        try:
+            with self.path.open("r", encoding="utf-8") as fh:
+                for line in fh:
+                    line = line.strip()
+                    if not line:
+                        continue
+                    try:
+                        rec = json.loads(line)
+                    except json.JSONDecodeError:
+                        continue
+                    if not isinstance(rec, dict) or rec.get("type"):
+                        continue
+                    if not self._within_window(rec, cutoff_ts):
+                        continue
+                    raw = rec.get(field) if path is None else self._nested_value(rec, path)
+                    value = str(raw or "").strip()
+                    if value:
+                        counts[value] = counts.get(value, 0) + 1
+                    else:
+                        empty += 1
+        except OSError as exc:
+            logger.warning("결정 기록 값 집계 읽기 실패(무시): %s", exc)
+            return {}, 0
+        return counts, empty
+
+    def iter_recent_decisions(
+        self, window_seconds: int, *, should_stop: Callable[[], bool] | None = None
+    ) -> Iterator[dict[str, Any]]:
+        """최근 `window_seconds` 안 결정 레코드를 **최신부터** 한 건씩 내준다(읽기 전용 · 제너레이터).
+
+        (plans/201 W6) 첫 화면 24시간 요약용 — 레코드를 메모리에 쌓지 않고 소비처가 한 건씩 센다.
+        결정 기록은 보존 상한 없이 쌓이고 시간 창은 파일 끝에 있으므로 **파일 끝에서 블록 단위로
+        거꾸로** 읽고, 창 하한보다 `_REVERSE_SCAN_SLACK_SECONDS` 이상 오래된 결정 레코드를 만나면
+        멈춘다(그보다 앞 줄은 읽지 않는다). 줄 수 상한은 두지 않는다 — 창 안 레코드는 모두 센다.
+
+        제외 규칙은 `count_recent_values`와 같다: 비-decision `type` 레코드·손상 줄 제외 · 시간 창
+        (`ts` 없음·파싱 실패는 포함 · 종료 판정에는 쓰지 않음). 파일 부재·비활성이면 아무것도 내지
+        않는다. 읽기 실패는 경고 1줄 뒤 멈춘다(그때까지 내준 레코드는 소비처 몫).
+
+        중단 신호는 `should_stop`(없으면 인스턴스 `scan_should_stop`)이며, 건너뛰는 줄을 포함해
+        `_SCAN_STOP_CHECK_EVERY`줄마다 확인한다 — 참이면 그 자리에서 조용히 끝난다(소비처가 중단을 안다).
+        """
+        if not self.enabled or not self.path.exists():
+            return
+        stop = should_stop or getattr(self, "scan_should_stop", None)
+        cutoff_ts = datetime.now(UTC).timestamp() - window_seconds
+        floor_ts = cutoff_ts - _REVERSE_SCAN_SLACK_SECONDS
+        seen = 0
+        try:
+            for raw in self._reverse_lines():
+                seen += 1
+                if stop is not None and seen % _SCAN_STOP_CHECK_EVERY == 0 and stop():
+                    return
+                line = raw.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except (json.JSONDecodeError, UnicodeDecodeError):
+                    continue
+                if not isinstance(rec, dict) or rec.get("type"):
+                    continue
+                if not self._within_window(rec, cutoff_ts):
+                    parsed = self._parse_ts(rec.get("ts"))
+                    if parsed is not None and parsed.timestamp() < floor_ts:
+                        return
+                    continue
+                yield rec
+        except OSError as exc:
+            logger.warning("결정 기록 순회 읽기 실패(무시): %s", exc)
+
+    def _reverse_lines(self) -> Iterator[bytes]:
+        """파일 줄을 끝에서부터 내준다(블록 단위 역방향 읽기 · 줄 끝 개행 제외 · UTF-8 바이트)."""
+        with self.path.open("rb") as fh:
+            fh.seek(0, 2)
+            pos = fh.tell()
+            rest = b""
+            while pos > 0:
+                size = min(_REVERSE_SCAN_BLOCK_BYTES, pos)
+                pos -= size
+                fh.seek(pos)
+                chunk = fh.read(size) + rest
+                parts = chunk.split(b"\n")
+                rest = parts[0]  # 블록 경계에 걸린 줄 앞부분 — 다음(앞쪽) 블록과 이어 붙인다
+                for part in reversed(parts[1:]):
+                    yield part
+            if rest:
+                yield rest
+
+    @staticmethod
+    def _nested_value(rec: dict[str, Any], path: list[str]) -> Any:
+        """점 경로로 중첩 값을 꺼낸다(중간이 dict가 아니면 None · plans/201 W3)."""
+        node: Any = rec
+        for key in path:
+            if not isinstance(node, dict):
+                return None
+            node = node.get(key)
+        return node
+
     @staticmethod
     def _stage_of(rec: dict) -> str:
         """레코드의 결정 단계를 돌려준다(구 레코드는 사유 접두로 폴백)."""
@@ -1092,6 +1219,8 @@ class DecisionStore:
         size: int = 50,
         mask_fn=None,  # noqa: ANN001 — Callable[[str], str] | None (덕 타이핑)
         operator_view: bool = False,
+        solution: str | None = None,
+        solution_of: Callable[[str], str] | None = None,
     ) -> dict:
         """결정 레코드를 필터·페이지로 조회한다 (Plan 54 모듈 3 — 근거 조회).
 
@@ -1109,6 +1238,9 @@ class DecisionStore:
             (plans/187 W18) `alarm_q`는 알람명, `server_q`는 서버명·hostname의 부분일치
             (대소문자 무시) — 장애 진단 탭 「이벤트 찾아 조사」가 칸을 나눠 거른다.
             미지정이면 종전과 같다.
+            (D-351) `solution_of`(db_id → 솔루션 코드 · 라우트가 레지스트리로 주입)를 주면
+            `facets.solutions`(**solution 필터만 뺀** 집합 · 0보다 큰 키만)를 싣고, `solution`이
+            있으면 그 코드로 거른다. 저장소는 레지스트리를 모른다(계층). 미주입이면 종전과 같다.
             목록·facets·related는 **파일 1회 읽기**로 만든다 — related는 창 밖 tail까지 봐야
             하므로 tail을 창 없이 한 번 읽고 창은 여기서 건다(`_tail_records(window)`와 같은 판정).
 
@@ -1127,6 +1259,8 @@ class DecisionStore:
             size: 페이지 크기.
             mask_fn: 표시 전 문자열 마스킹 함수(미주입이면 원문 그대로).
             operator_view: 운영자 전용 키(`condition_log`)를 싣는지 — 기본은 싣지 않는다.
+            solution: 솔루션 코드 필터(`solution_of`가 있을 때만 적용).
+            solution_of: db_id → 솔루션 코드 분류 함수.
 
         Returns:
             `{items, total, page, size, facets}`. 파일 부재·비활성이면 빈 목록.
@@ -1144,6 +1278,8 @@ class DecisionStore:
         tail = self._tail_records(None)
         facet_tiers: dict[str, int] = {t: 0 for t in _TIER_KEYS}
         facet_stages: dict[str, int] = {}
+        facet_solutions: dict[str, int] = {}
+        solution_codes: dict[str, str] = {}  # db_id → 코드(분류 호출을 db_id당 1회로)
         matched: list[int] = []  # tail 인덱스(시간순)
         for index, rec in enumerate(tail):
             if cutoff_ts is not None and not self._within_window(rec, cutoff_ts):
@@ -1176,11 +1312,20 @@ class DecisionStore:
             rec_stage = self._stage_of(rec)
             tier_ok = not tiers or rec_tier in tiers
             stage_ok = not stage or rec_stage == stage
-            if stage_ok and rec_tier in facet_tiers:
+            solution_ok = True
+            if solution_of is not None:
+                rec_db_id = str(rec.get("db_id", "") or "")
+                if rec_db_id not in solution_codes:
+                    solution_codes[rec_db_id] = solution_of(rec_db_id)
+                rec_solution = solution_codes[rec_db_id]
+                solution_ok = not solution or rec_solution == solution
+                if tier_ok and stage_ok:
+                    facet_solutions[rec_solution] = facet_solutions.get(rec_solution, 0) + 1
+            if stage_ok and solution_ok and rec_tier in facet_tiers:
                 facet_tiers[rec_tier] += 1
-            if tier_ok:
+            if tier_ok and solution_ok:
                 facet_stages[rec_stage] = facet_stages.get(rec_stage, 0) + 1
-            if tier_ok and stage_ok:
+            if tier_ok and stage_ok and solution_ok:
                 matched.append(index)
 
         matched.reverse()  # 최신 우선
@@ -1204,12 +1349,15 @@ class DecisionStore:
                     bundled = self._bundled_index(tail)
                 rec = self._with_bundled(rec, bundled)
             items.append(self._view(rec, mask_fn, operator_view=operator_view))
+        facets: dict[str, dict[str, int]] = {"tiers": facet_tiers, "stages": facet_stages}
+        if solution_of is not None:
+            facets["solutions"] = facet_solutions
         return {
             "items": items,
             "total": total,
             "page": page,
             "size": size,
-            "facets": {"tiers": facet_tiers, "stages": facet_stages},
+            "facets": facets,
         }
 
     @classmethod

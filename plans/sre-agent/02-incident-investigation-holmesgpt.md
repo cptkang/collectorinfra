@@ -5,7 +5,7 @@
 > **선행 계획**: `plans/01-event-noise-gate.md` — PAGE 트리거 계약(§8) 소비. 게이트 없이도 pull 경로(운영자 질의)로 단독 동작 가능. `plans/04-polestar-mcp-integration.md` — 폴스타 도구를 노출하는 MCP 서버(본 계획이 소비). `plans/05-collectorinfra-interop.md` — 본 계획의 조사 기능을 MCP 서비스로 노출(collectorinfra가 호출). `plans/06-remote-vm-access.md` — 원격 VM 데이터 경로 확정(Prometheus + 폴스타 MCP 2축, 본 계획 §8의 L3 논의를 종결).
 > **관련 결정**: D-001(HolmesGPT PyPI SDK — `DiagnosisAgent` 래퍼), D-004(VM 진단 대상·`vm_profile()` 읽기 전용 bash), D-005(계획 3종 이식 방향), D-013(폴스타 연동 MCP 일원화), D-019(원격 VM 접근 = Prometheus + 폴스타 MCP 2축, SSH 미채택)
 > **신규 결정(본 계획 예약, 구현 착수 시 등재)**: D-009(조사 루프 HolmesGPT 위임 + 결정적 후처리 경계), D-010(폴스타 MCP 서버 등록 — `Config.mcp_servers`), D-011(조치 권고 human-gated — 실행 경로 미탑재). ※ 이관 후 등재는 **collectorinfra `docs/02_decision.md` 번호 체계**를 grep해 그쪽 최댓값+1로 부여한다(아래 D-번호들은 SREAgent 체계의 예약 인용).
-> **상태**: 계획(미구현) — **통합 갱신(2026-07-24)**: 구현 위치는 collectorinfra 최상위 **독립 패키지 `sre_agent/`**(폴더 경계 원칙은 README). 트리거는 **collectorinfra 게이트 단일 소스**(Plan 05 계약 경유) — 내부 게이트 갈래는 Plan 01 대체와 함께 소멸.
+> **상태**: 구현됨 — 현행 정본은 `sre_agent/` 코드와 docs/26 · 이후 변경은 plans/154·187·198 — **통합 갱신(2026-07-24)**: 구현 위치는 collectorinfra 최상위 **독립 패키지 `sre_agent/`**(폴더 경계 원칙은 README). 트리거는 **collectorinfra 게이트 단일 소스**(Plan 05 계약 경유) — 내부 게이트 갈래는 Plan 01 대체와 함께 소멸.
 > **번호 체계 주의**: 본 문서의 D-번호는 SREAgent(이관 전) 결정 체계의 인용 — collectorinfra D-번호와 무관(폴더 README 참조).
 
 ---

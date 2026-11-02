@@ -2289,3 +2289,124 @@
 - **실수**: `noise.js` `connectStream`의 헤더 `"Bearer " + token`을 토큰 게터 `"Bearer " + currentToken()`으로 바꾸면서, 그 문자열을 정규식으로 단언하는 기존 `tests/test_api/test_noise_dashboard_api.py::test_noise_js_stream_sends_token_in_header_not_url`을 찾지 않았다. implementer 자기 테스트(지정 271·확장 1,011)는 그 파일을 고르지 않아 통과했고, 교정분 모듈 단위 회귀에서 「이번 변경 탓」 1건으로 드러났다.
 - **원인**: 정적 자산(JS) 테스트는 이 저장소에서 함수 본문을 정규식으로 단언하는 경우가 많은데, 자기 테스트 선택을 「계획 이름이 붙은 파일 + 직전 의존 목록」으로만 잡았다.
 - **방지책**: JS·CSS·HTML의 식을 바꾸면 바뀐 식의 원문(예: `"Bearer " + token`)과 함수 이름(`connectStream`)을 `tests`·`noise_gate/tests` 전체에서 grep해 단언하는 테스트를 자기 테스트에 넣는다. 단언의 의도(헤더로 싣기·URL 미부착)가 그대로면 정규식만 새 식에 맞춘다.
+
+### 2026-10-27 · (plans/196) 병렬 위임 계약에 응답 모양·직접 입력 body를 적지 않아 프론트·백엔드가 어긋남
+- **실수**: 팀 리드가 계획서 §5 계약에 관리자 목록 응답 키(`links` vs `items`)와 후보 0건 직접 입력 body(`db_id` 유무)를 적지 않고 프론트·백엔드 implementer를 병렬로 띄웠다. 둘 다 자기 테스트는 통과했지만(프론트는 응답을 목으로 꾸밈) 관리자 목록은 늘 비고 직접 입력은 늘 400이었다 — verifier가 실제 응답 모양 하네스로 Critical 2건을 잡았다.
+- **원인**: 「너그럽게 읽기」로 추정한 프론트 가정과 백엔드 실제 응답을 맞대는 단계가 없었다. 목으로 만든 응답은 계약 불일치를 덮는다.
+- **방지책**: 병렬 위임 전에 계약 절에 **모든 라우트의 요청 body·응답 최상위 키**를 적는다. 백엔드 보고의 실제 응답 키를 받으면 프론트 소비 키와 grep으로 대조한 뒤 검증에 넘긴다. UI 테스트의 목 응답은 백엔드 테스트가 고정한 모양을 그대로 쓴다.
+
+### 2026-10-27 · 플레이북 YAML 추가가 본체 사본 동등성 테스트를 깨뜨렸는데 계획 끝 회귀가 못 잡음 (plans/196)
+- **실수**: `sre_agent/config/playbooks/`에 `was.sql`·`was.fallback`을 더한 뒤 본체 `tests/test_plan187_w12_symptom_router.py`의 사본 동등성 단언 2건이 실패 상태로 남았다. 계획 끝 `regress.py --files`는 YAML·sre_agent 파일만 받아 본체의 그 테스트를 고르지 않아 「실패 0」으로 보고됐다.
+- **원인**: 사본 동등성 테스트는 sre_agent 파일을 import 없이 읽는다 — 회귀 선택기의 import·파일 참조 규칙에 걸리지 않는다. `src/domain/symptom_router.py` 사본(`PLAYBOOK_SURFACE_TERMS`·`VIRTUAL_EVENTS`)도 갱신하지 않았다.
+- **방지책**: 플레이북 YAML을 더하거나 바꾸면 `src/domain/symptom_router.py` 사본을 같이 고치고 `tests/test_plan187_w12_symptom_router.py`·`sre_agent/tests/test_plan187_w12_virtual.py`를 직접 돌린다(회귀 `--files`에 `src/domain/symptom_router.py`를 넣으면 선택된다).
+
+### 2026-10-27 · 로컬 샌드박스 DDL이 운영 스키마와 달라 `is_maintenance` 칼럼 부재 결함을 숨겼다
+- **실수**: 노이즈 컨텍스트·hostname 해소·MCP 자원 상태 SQL이 `cmm_resource.is_maintenance`를 직접 참조했다. 로컬 `testdata/pg/init/01_create_tables.sql`이 그 칼럼을 갖고 있어 테스트는 통과했지만, 운영 공동존 PostgreSQL에는 칼럼이 없고 별도 테이블 `cmm_resource_maintenance`에 있어 `polestar_cm_yd` 조회가 실패했다(중요도까지 잃음). D-175 G-4의 「b0도 보유」 근거도 같은 샌드박스 DDL이었다(plans/197 F2).
+- **원인**: 손으로 쓴 샌드박스 DDL(01)을 운영 덤프(`sample/cleaned_tables.json` → `04_create_all_tables.sql`)와 대조하지 않았고, 04의 `CREATE TABLE IF NOT EXISTS`가 01에 가려 차이가 드러나지 않았다. 샌드박스 DDL을 「실측」 근거로 인용했다.
+- **방지책**: 고정 SQL이 새 칼럼을 참조하면 `sample/cleaned_tables.json`(운영 덤프)에서 그 테이블·칼럼 존재를 먼저 grep한다. 샌드박스 DDL은 운영 스키마 근거로 인용하지 않는다(결정 근거에는 덤프 또는 내부망 실측을 쓴다). DB2(b0)는 덤프가 없으므로 W0 실측 전에는 「미확정」으로 적는다.
+
+### 2026-10-28 · 결정 색인 제목만 보고 코드 주석의 D-번호 인용을 「오기」로 보고
+- **실수**: `plans/198` 작성 중 `engine_agreement.py`·`playbook_hypotheses.py`의 「D-035」 인용을 색인 제목(「알람 이력 기반 패턴 분석」)만 보고 오기라고 사용자에게 보고했다. D-035 본문 결정문에 「통계·1차 분류는 Python 결정적, LLM은 해석만」이 있고, 저장소 전역 수십 곳이 이 원칙의 출처로 D-035를 인용한다.
+- **원인**: 결정 본문(`docs/decisions/D-NNN.md`)을 열지 않고 색인 한 줄과 직관으로 판정했다. 인용 분포를 grep하지 않았다.
+- **방지책**: D-번호 인용을 오기로 판정하기 전에 ① 결정 본문을 읽고 ② `grep -rn 'D-NNN'`으로 저장소 전역 인용 분포를 확인한다. 둘 다 하기 전에는 「확인 필요」로만 보고한다.
+
+### 2026-10-28 · 이미 실패하던 전역 가드 테스트가 새 위반을 「원래 실패」로 가림 (plans/198 W8)
+- **실수**: W8이 새 NOISE 키(`NOISE_INVESTIGATION_INCIDENT_UNIT_ENABLED`)를 `settings_catalog.SECTION_BY_KEY`에 등재하지 않았다. `test_every_noise_key_has_section`이 196·197 키 때문에 기준선에서 이미 실패 중이라 `regress.py`가 이 실패를 [원래 실패]로 귀속했고, W7 implementer 보고에서 미분류 키 목록을 읽고서야 드러났다.
+- **원인**: 실패 귀속은 테스트 ID 단위다. 같은 테스트가 기준선에서 실패하면 실패 메시지(위반 목록)가 늘어도 「원래 실패」로 분류된다.
+- **방지책**: [원래 실패]로 분류된 전역 가드·목록 단언 테스트(구획·큐레이션·카운트)는 실패 메시지의 항목 목록을 기준선과 대조해 자기 키가 섞였는지 확인한다. 새 설정 키를 추가하면 `SECTION_BY_KEY`·`config/settings_help/` 등재를 같은 Wave에서 grep으로 확인한다.
+
+### 2026-10-28 · 공용 색인에 문자열 일괄 치환을 돌려 다른 계획·결정 행까지 바꿈
+- **실수**: plans/198 커밋 전 「커밋 없음」 표기를 지우려고 `plans/INDEX.md`·`docs/02_decision.md` 전체에 `str.replace`를 돌려 무관한 D-310·D-313 등 16행·계획 12행의 상태 칸까지 고쳤다(diff로 발견해 HEAD 원문으로 행 단위 복원).
+- **원인**: 대상 행(198·D-350)을 한정하지 않고 파일 전체에 치환했다.
+- **방지책**: 공용 색인·INDEX는 대상 행(`| D-NNN |`·`| NNN |`)을 찾아 그 행만 고친다. 일괄 치환 뒤에는 `git diff -U0 <파일> | grep '^[-+]|'`로 바뀐 행이 대상뿐인지 확인한다.
+
+### 2026-10-27 · 가림 표지를 설정값 하나로만 판정 — 테스트 config가 운영 기본값과 달라 결함이 가려짐 (plans/195)
+- **실수**: 조사 질의 생성(`src/domain/investigation_requery.py` `_usable`)이 「가림 표시 섞인 대상 생략」을 `config.security.mask_pattern`(운영 기본 `***MASKED***`)만으로 판정했다. 사용자 뷰 `mask_secrets`는 부분 가림을 `log_masking.MASK="***"`로 해 `was02 Bearer ***` 같은 대상이 질의 문장에 그대로 들어갔다. W2 라우트 테스트 config가 `mask_pattern="***"`라 두 표지가 같아져 통과했다.
+- **원인**: 가림 함수가 쓰는 표지를 실측하지 않고 설정 필드 하나를 표지의 단일 출처로 가정했다. 테스트 config가 검증 대상 필드를 운영 기본값과 다른 값으로 둬 결함을 숨겼다.
+- **방지책**: 가림 여부 판정은 실제 가림 함수가 낼 수 있는 표지 전부(설정 패턴 + 부분 가림 상수)를 대조한다. 마스킹 관련 테스트는 운영 기본 `mask_pattern`으로 도는 케이스를 반드시 하나 둔다.
+
+### 2026-10-27 · DOM 덧붙이기를 querySelectorAll 순번으로 매칭 — 같은 클래스의 다른 요소(런북)가 앞에 있어 한 칸씩 밀림 (plans/195 W3)
+- **실수**: 고정 카드 `decorate`가 `details.bv-step`의 i번째에 섹션 i의 「조회한 것」 줄을 붙였는데, 런북도 `details.bv-step bv-runbook`이라 런북이 있는 조사에서 전부 한 단계씩 밀렸다. 테스트 하네스는 `querySelectorAll`을 단계 수만큼의 가짜 노드로 대체해 실제 마크업 순서를 보지 않았다.
+- **원인**: 렌더가 이미 단 식별 속성(`data-bv-step`) 대신 순번에 의존했고, 스텁이 실 마크업 형태를 재현하지 않았다(mock 통과 ≠ 실 렌더).
+- **방지책**: 렌더 뒤 DOM 덧붙이기는 식별 속성으로 매칭한다. D-190 방식 테스트도 실제 렌더 문자열(런북·선택 블록 등 같은 클래스 요소 포함)로 순서를 확인한다.
+
+### 2026-10-29 · (plans/199 W4·W5a · implementer) 정적 테스트만 통과시킨 화면 변경이 캡처에서야 레이아웃 결함 2건으로 드러남
+- **실수**: W4는 [서술 보기] 원문 상자 `.bv-md`(세로 flex·높이 상한·스크롤) 안의 표가 넘침 상황에서 높이 0으로 찌그러지는 것을, W5a는 장애 진단 진척 카드 칸(`dv-sum-box`)에 공용 `.bv` 래퍼가 없어 카드 글자가 바깥 크기로 커지는 것을 놓쳤다. 둘 다 node 정적·DOM 테스트는 통과했고 W5c 매뉴얼 캡처를 본 뒤에야 발견해 교정(`.bv-md > * { flex-shrink: 0; }` · `class="dv-sum-box bv"`)과 캡처 재촬영 라운드가 더 들었다.
+- **원인**: 화면 Wave의 검증을 마크업 문자열·DOM 단언으로만 했다. 기존 렌더 함수(`renderBody`)가 붙여 주던 공용 래퍼를 새 진입점이 우회하는지, flex 컨테이너 안에 새로 넣은 블록 요소가 줄어드는지는 문자열 단언으로 드러나지 않는다.
+- **방지책**: 새 마크업을 공용 렌더 함수 밖에서 끼울 때는 그 함수가 붙이던 래퍼 클래스를 grep으로 확인하고 단언한다. flex·grid 컨테이너에 표·긴 블록을 넣으면 `flex-shrink`·`min-height`를 명시한다. 화면 Wave는 캡처 Wave보다 먼저 대표 장면 1장을 헤드리스로 찍어 눈으로 확인한다(캡처 도구 재사용 · 서버는 자기 PID만 종료).
+
+### 2026-10-29 · (plans/199 W1 · 팀 리드 위임 누락 · 재발) 새 설정 `NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED`를 넣으면서 관리자 설정 카탈로그 구획·도움말·키 개수 단언을 갱신하지 않아 전체 회귀에서야 드러났다
+- **실수**: W1이 `src/config/alarm.py`에 필드 1개를 추가했는데 `src/api/settings_catalog.py` `SECTION_BY_KEY`·`config/settings_help/noise_gate_investigation.yaml` 큐레이션·`tests/test_api/test_settings_catalog.py`의 키 개수(453)를 그대로 두었다. 모듈 단위 회귀(2회 · 2,624·2,867 통과)는 이 테스트들을 고르지 않았고, 사용자 요청 전체 회귀에서 `test_t1_schema_endpoint_returns_catalog`·`test_t2_group_and_field_counts`가 「이번 변경 탓」으로, 구획·도움말 그물 테스트는 원래 실패 목록에 우리 키가 더해진 꼴로 나왔다. 2026-10-19 항목(plans/187)과 같은 실수의 재발이다.
+- **원인**: 팀 리드가 W1 위임 프롬프트에 「새 설정 필드 = 카탈로그 구획·도움말·개수 단언 동반」을 넣지 않았다. 앞 항목의 방지책이 implementer 쪽 지식으로만 남아 위임 템플릿에 반영되지 않았다.
+- **방지책**: `src/config/`에 필드를 추가하는 위임에는 ① `SECTION_BY_KEY` 등재 ② `config/settings_help/*.yaml` 큐레이션 ③ `test_settings_catalog.py` 개수 갱신 ④ `pytest tests/test_api/test_settings_catalog.py tests/test_api/test_settings_catalog_sections.py tests/test_api/test_settings_help.py`를 자기 테스트로 명시한다(뒤 둘은 다른 계획의 원래 실패가 있으니 실패 메시지에 자기 키가 없는지로 판정).
+
+### 2026-10-30 · (plans/199 W6 · 팀 리드) zsh 글롭 불일치로 테스트 목록이 비어 맨 `pytest`(전체 수집)가 돌았다 — 약 5분 뒤 발견해 종료
+- **실수**: `F=$(grep -rl 'settings_help' tests/ --include=*.py …); pytest $F -q`를 실행했다. zsh가 따옴표 없는 `--include=*.py`를 글롭으로 펼치려다 `no matches found`로 grep 자체를 실행하지 않았고, `$F`가 빈 문자열이 되어 인자 없는 `pytest`가 저장소 전체를 수집해 돌았다. 전체 회귀는 사용자 요청 때만 돌린다는 규칙(D-303)을 어겼다. 300초 타임아웃으로 백그라운드로 넘어간 뒤 ps로 찾아 종료했다. 작업 트리 변화는 없었고, 실 LLM 테스트는 `RUN_LOCAL_LLM`·`RUN_E2E` 가드로 건너뛰어 과금 호출도 없었다.
+- **원인**: zsh는 따옴표 없는 글롭이 맞지 않으면 명령을 실행하지 않는다. 명령 치환 결과가 비었는지 확인하지 않고 그 값을 pytest 인자로 넘겼다.
+- **방지책**: grep `--include`·find `-name`의 글롭은 항상 따옴표로 감싼다(`--include='*.py'`). 테스트 목록은 먼저 파일로 써서 줄 수를 확인하고, 0이면 실행하지 않는다(`[ -s list ] && pytest $(cat list)`). 모듈 회귀가 비Python 파일(YAML·MD)에 테스트를 고르지 않을 때는 대상 테스트 파일을 이름으로 직접 적는다.
+
+### 2026-10-30 · (plans/199 · 메인) 새 D-번호를 로컬 색인 최댓값으로만 채번해 origin/main에 먼저 푸시된 같은 번호(D-351)와 충돌했다
+- **실수**: plans/199 결정을 D-351로 등재·커밋했는데(`c2a3180f`), 같은 날 다른 개발자가 브랜치 `improve_noise_canceling`에서 D-351(노이즈 관제 결정 이력)을 만들어 origin/main에 먼저 푸시해 두었다. main 병합 직전에야 발견해 이쪽을 D-352로 재부여했다(26개 파일 참조 동반 수정).
+- **원인**: 채번 확인(`ls docs/decisions/ | tail -3`)이 로컬 작업 트리만 본다. 다른 클론·다른 개발자의 브랜치는 `git fetch` 전에는 보이지 않는다.
+- **방지책**: 새 D-번호·계획 번호를 등재하기 직전(그리고 커밋 직전)에 `git fetch origin` 뒤 `git ls-tree --name-only origin/main docs/decisions/ plans/ | tail`로 원격 최댓값도 본다. 병합 전에는 `git diff --name-only <base> origin/main`과 내 변경의 교집합에서 `docs/decisions/D-*.md`·`plans/NNN-*` 신규 파일 이름이 겹치는지 먼저 확인한다. 충돌하면 이미 푸시된 쪽이 정본이다.
+
+### 2026-10-30 · 플래그 off 경로의 호출 준비 순서를 옮겨 예외 경로 비트 동일을 깨뜨림 (plans/200 W3)
+- **실수**: 축 동시 호출(`StepContext.call_axes`)을 넣으면서 S5 related_alarms의 apm 호출 목록 생성을 off 경로에서도 축 호출보다 앞으로 옮겼다. 앞 축이 예외를 내는 경우 off의 `ctx.calls`·이벤트가 HEAD와 달라졌다. 정상 경로 테스트만 대조해 통과했다.
+- **원인**: 「off = 비트 동일」을 정상 경로 출력으로만 확인하고, 호출 준비(목록 생성·부수효과)의 순서를 동작의 일부로 보지 않았다.
+- **방지책**: 기본 off 플래그를 넣을 때는 off 분기를 원 코드 그대로 두고 on 분기만 새로 쓴다. 비트 동일 대조에는 예외 주입 케이스를 반드시 하나 넣는다(worktree 기준선과 비교).
+
+### 2026-10-30 · 결정(Q2)의 적용 범위를 넓게 지시 — 단계 끝 판독 스냅숏까지 조상으로 좁혀 자기 판독이 소실됨 (plans/200 W2)
+- **실수**: Q2(「앞 단계 결과」 줄은 조상 스텝 결과로 한정)를 팀 리드가 W2에 전하면서 `finish()`의 판독 스냅숏까지 조상으로 좁히라고 지시했다. DAG on에서 host.cpu S2의 cpu_owner처럼 비조상 스텝 데이터를 입력으로 쓰는 자기 판독이 사라졌다. 이를 실행 의존으로 메우자 의존 사슬이 길어져 DAG 단축이 0이 됐다(was.latency).
+- **원인**: 「앞 단계 결과」(서술 문맥)와 「판독 입력」(결정적 계산 입력)을 구분하지 않았다. 판독의 숨은 입력(`READING_INPUTS`)을 실행 의존 표와 대조하지 않았다.
+- **방지책**: 결정을 위임 지시로 옮길 때는 적용 대상(어느 함수·어느 필드)을 결정 원문 범위로 한정한다. 실행 순서와 해석 시점을 분리한다. 실행은 데이터 의존만 기다리고, 판독 입력이 늦게 끝나면 해석 쪽을 미룬다.
+
+### 2026-10-30 · 결과 dataclass에 필드를 더하며 테스트 대역(_FakeDrain) 속성 부재를 놓침 (plans/200 W0)
+- **실수**: `diagnosis.py`의 `_turn_metrics`가 drain 객체의 새 속성을 직접 읽어서, 그 속성이 없는 테스트 대역 `_FakeDrain`을 쓰는 기존 테스트가 깨졌다.
+- **원인**: 공개 결과 형태를 바꾸면서 같은 객체를 흉내 내는 테스트 대역을 grep하지 않았다.
+- **방지책**: 객체 속성을 새로 읽을 때는 저장소 전체에서 그 타입의 대역(`_Fake*`·`SimpleNamespace`)을 grep한다. 계측용 선택 속성은 `getattr(..., 기본값)`으로 읽는다.
+
+### 2026-10-29 · (plans/202 · 팀 리드) 계획서가 조회 「성공」의 재조회 간격만 정하고 「실패」 뒤 간격을 정하지 않아, 웹이 응답하지 않으면 폴러가 이벤트마다 5초씩 직렬로 밀리는 구현이 1차 검증까지 갔다
+- **실수**: plans/202 §2.1은 「캐시 60초 초과 시 재조회」·「조회 상한 5초」만 적었다. 구현자는 실패를 기록하지 않아 같은 도메인의 새 이벤트마다 로그인+목록 조회를 다시 했고, 전송 오류는 차단기에도 세지 않아 상한이 없었다(verifier Major · strict xfail로 재현). 이번에 함께 Windows에서 `regress.py`가 pytest-xdist 부재로 rc=4로 멈췄고, 기준 사본 실패 귀속이 「사본에서 수집 안 됨」으로만 나와 팀 리드가 기준 worktree에서 실패 ID를 직접 대조했다
+- **원인**: 외부 호출 정책을 「성공 경로의 신선도」로만 설계하고 실패 경로의 호출 빈도·대기 누적을 수용 기준에 넣지 않았다. 회귀 도구는 xdist·패키지 venv를 전제한다(2026-10-12 항목과 같은 환경 원인)
+- **방지책**: 동기 경로(폴러·요청 처리)에 외부 호출을 넣는 계획은 수용 기준에 「실패가 연속될 때 호출 수·누적 대기 상한」을 적는다(실패 상태 재사용·소스 단위 백오프). xdist 없는 환경은 `regress.split_workers`를 `(0, 0)`으로 바꾼 직렬 래퍼로 돌리고, 「사본에서 수집 안 됨」이면 `git worktree add --detach`한 기준 사본에서 실패 ID를 직접 돌려 대조한다(sre_agent `미실행` 패키지도 같은 방식)
+
+### 2026-10-30 · (plans/199 W6 테스트 · plans/201 W1 팀 리드가 발견) parametrize 값에 시각 의존 JWT를 넣어 xdist 수집이 워커마다 달라져 regress 본체 레인 전체가 0건 실행으로 끝남
+- **실수**: `tests/test_api/test_plan199_w6_breakglass.py::test_user_path_health_is_not_registered`가 `@pytest.mark.parametrize("token", [_break_glass(), _user_token(...)])`로 수집 시점에 `exp`가 든 JWT를 만든다. 워커마다 수집 시각(초)이 달라 테스트 ID가 달라지고 pytest-xdist가 「Different tests were collected between gw0 and gwN」로 워커 4개를 에러 처리 — `regress.py`(plans/201 W1 교정분)가 통과 0 · 에러 4로 끝났다. 기준선(a289818f)부터 있는 결함이다.
+- **원인**: parametrize 인자를 결정적 값이 아니라 시각에 따라 바뀌는 객체로 만들었고 `ids=`를 주지 않았다. xdist는 워커 간 수집 ID 동일을 전제한다.
+- **방지책**: parametrize에는 결정적 값(토큰 종류 문자열 등)과 `ids=`를 쓰고, 시각·난수 의존 값은 테스트 본문에서 만든다. 임시 대응: regress 래퍼로 해당 노드를 `--deselect`하고 그 파일은 직렬로 따로 돌린다(이 파일 수정은 plans/199 소유 — 후속 정리 대상).
+
+### 2026-10-30 · (plans/201 W1 · 팀 리드) 실패 귀속 대조 스크립트의 파일 목록이 빈 값이 되어 맨 `pytest`가 두 트리에서 전체 스위트로 돌았다(전체 회귀 금지 위반 · 50분×2)
+- **실수**: `failed_ids.txt`에서 파일명을 뽑는 `sed` 식에 탭·백슬래시 이스케이프를 섞어 「unterminated s command」로 실패했고, 빈 `$FILES`로 `python -m pytest`가 루트 기본 수집(본체+noise_gate 전체)을 현재 트리와 기준선 worktree에서 각각 실행했다. 사용자 요청 없는 전체 실행이다(D-303).
+- **원인**: 파이프라인 중간 단계 실패를 검사하지 않고(`set -e`·빈 값 가드 없음) 결과 변수를 그대로 pytest 인자로 넘겼다.
+- **방지책**: 대조용 파일 목록은 python으로 만들고, pytest 호출 전에 목록이 비어 있으면 중단한다(`[ -n "$FILES" ] || exit 1`). 맨 `pytest`에 가변 인자를 넘길 때는 항상 이 가드를 둔다.
+
+### 2026-10-30 · (plans/201 W3 · implementer — 팀 리드 대리 기록) 프로세스 kind 판정 테스트를 절단 전 cmdline으로만 써서 실 스냅샷 경로의 Java WAS 미탐을 못 잡았다
+- **실수**: `classify_process_kind` 테스트가 완전한 Tomcat cmdline만 넣어 통과했다. 실제 입력인 `ProcessInfo.args`는 `mask_args`가 120자로 자르므로 `org.apache.catalina.startup.Bootstrap` 같은 뒤쪽 표식이 빠지고, 이름 폴백도 `java`라 판정이 None이 된다(verifier 재현 · xfail 고정).
+- **원인**: 판정 함수의 입력을 원천(폴스타 cmdline) 형태로 가정하고, 실제 호출 경로가 넘기는 값(마스킹·절단 후 `ProcessInfo`)의 shape로 픽스처를 만들지 않았다(「mock 통과 ≠ 프로덕션」 원칙 위반).
+- **방지책**: 판정·분류 함수 테스트는 실제 호출부가 넘기는 가공 단계(마스킹·절단·정규화)를 거친 값으로 최소 1건을 쓴다. 가공이 정보를 지우는 경우는 가공 전 판정을 설계하거나 한계를 xfail·문서로 고정한다. (같은 날 교정: enricher가 마스킹 전 원 항목으로 판정 · kind만 상태에 싣는다)
+
+### 2026-10-30 · (plans/201 W4 · 팀 리드 기록) 브리핑 선택 키가 사용자 뷰 허용 목록(`PLAYBOOK_VIEW_KEYS`)에 없으면 저장 단계에서 조용히 빠진다
+- **실수**: W4가 sre_agent 브리핑에 선택 키 `duty_view`를 더했으나, noise_gate `investigation_store.py`의 사용자 뷰 투영은 `PLAYBOOK_VIEW_KEYS`(`partial`·`playbook`·`deep_dive`·`engine_agreement`)만 남기고 나머지를 경고 없이 버린다. sre_agent 단위 테스트만으로는 통과하고 웹 화면에서는 표가 그려지지 않는 구조였다(implementer가 실 경로 추적으로 발견 · 같은 날 키 추가로 해소 · 프론트 `USER_BRIEFING_KEYS`도 같은 집합).
+- **원인**: 허용 목록 투영이 「모르는 키는 무음 제거」로 동작해(침묵 폴백) 생산자(sre_agent)·투영(noise_gate)·소비자(briefing-view.js) 세 곳의 키 집합이 따로 관리된다. 선택 키 추가 계약에 투영 목록 갱신이 명시돼 있지 않았다.
+- **방지책**: 브리핑에 선택 키를 더할 때는 `PLAYBOOK_VIEW_KEYS`·`_PLAYBOOK_ENUM_KEYS`(마스킹 예외)·프론트 `USER_BRIEFING_KEYS`를 함께 grep해 갱신하고, 저장 → 조회 → 렌더 왕복 테스트를 1건 둔다. 투영에서 모르는 키를 버릴 때 디버그 로그 1줄을 남기는 개선은 후속 후보.
+
+### 2026-10-30 · (plans/201 W4 · 팀 리드) implementer 완료 보고 전에 계획 끝 회귀를 돌려 실행 중 편집과 겹쳤다
+- **실수**: 교정 중인 implementer의 파일 수정이 멎은 것(mtime)만 보고 `regress.py --base a289818f --files …`를 시작했는데, 실행 도중(18:43:44) implementer가 `duty_view.py`·`investigation_store.py`·테스트 1개를 더 고쳐 결과가 섞였다. 재실행 1회로 대체했다(시간 손실 · 결과 영향 없음).
+- **원인**: 완료 통지 대신 파일 시각으로 종료를 추정했다.
+- **방지책**: 계획 끝 회귀는 해당 implementer의 완료 보고(SubagentHandback)를 받은 뒤에만 시작한다. 기다리는 동안에는 기록·검토처럼 작업 트리를 읽기만 하는 일을 한다.
+
+### 2026-10-30 · (plans/201 W2 · 팀 리드 기록) 「기준 SHA 이후 파일 불변」 단언이 뒤 Wave의 정당한 정본 편집에 깨졌다 · node `-e` 명령줄이 Windows 한도를 넘었다
+- **실수**: ① W4 verifier가 만든 `tests/test_plan201_w4_verify.py::test_source_tables_unchanged_since_base[config/duty_areas.yaml]`는 계획 시작 SHA(`a289818f`) 대비 `git diff --stat`이 비어야 통과하는 시한부 단언이라, 커밋 이후 기준선에서도 실패하고 W2가 `welcome_queries` 섹션을 더하자 계속 깨졌다(파라미터에서 제외 · 영역 code·라벨 일치는 계약 테스트가 맡음). ② W2가 `checkAuthOnLoad`를 늘리자 `test_ui_plan192_w1_entry.py`의 `node -e <script>` 헬퍼가 Windows 명령줄 한도(32K)를 넘어 `WinError 206`으로 3건이 새로 실패했다(논리 무관 · stdin 전달로 교정 — 같은 헬퍼를 쓰던 기존 206 실패 2건도 함께 해소).
+- **원인**: ① 「이 Wave가 안 건드렸다」는 사실을 저장소 상태 단언으로 남겨, 여러 Wave가 같은 정본을 순차로 고치는 계획에서 수명이 Wave 하나뿐인 테스트가 됐다. ② 앱 함수 본문을 통째로 명령줄 인자로 넘기는 헬퍼는 대상 함수가 커질수록 플랫폼 한도에 걸린다(맥에서는 드러나지 않음).
+- **방지책**: Wave 범위 검증은 리뷰·diff로 하고, 테스트로 남길 때는 지켜야 할 **내용**(키 집합·섹션 값)을 단언한다 — SHA 대비 파일 불변 단언은 쓰지 않는다. node로 JS를 돌리는 테스트 헬퍼는 스크립트를 stdin(`["node","-"]` + `input=`)이나 임시 파일로 넘긴다.
+
+### 2026-10-30 · (plans/201 W6 · 팀 리드) 계획 끝 회귀를 verifier 검증과 병행으로 띄웠다가 교정 편집과 겹칠 위험 때문에 중단했다
+- **실수**: implementer 1차 완료 직후 verifier를 띄우면서 같은 시점에 `regress.py --base 5343f437 --files <W6 32>`를 백그라운드로 함께 돌렸다. verifier가 Major(M-1 · 결정 기록 전량 읽기)를 내 교정 편집이 확정되자, 돌고 있던 회귀가 편집 중인 파일과 겹치게 돼 자기 프로세스 트리를 직접 종료했다(결과 폐기 · 같은 회귀를 교정·재검증 뒤 다시 1회 돌림).
+- **원인**: 「verifier는 제품 코드를 안 고친다」는 것만 보고 회귀를 앞당겼다. 검증 라운드는 교정을 낳을 수 있으므로, 회귀가 재는 대상(작업 트리)이 아직 확정되지 않은 상태였다. 2026-10-30 W4 항목(완료 보고 전 회귀 금지)과 같은 계열이다.
+- **방지책**: 계획 끝 회귀는 **verifier 지적 0(교정 포함 재검증 완료) 뒤에만** 1회 돌린다 — 구현 → 검증 → 교정 → 재검증 → 회귀 순서를 지키고, 검증과 회귀를 병행하지 않는다. 기다리는 동안은 diff 검토·기록 초안처럼 작업 트리를 읽기만 하는 일을 한다.
+
+### 2026-11-02 · (plans/206 · 팀 리드) 계획 끝 `regress.py`가 mcp_server 패키지를 의존성 없는 인터프리터로 돌려 수집 에러 7·건너뜀 404를 [원래 실패]로 귀속하고 종료 코드 0을 냈다
+- **실수**: 계획 끝 회귀 결과(종료 코드 0)만 보면 mcp_server 변경이 패키지 테스트로 검증된 것처럼 보였다. 실제로는 `prometheus_client`·`aiomysql`이 없는 pyenv 3.13.1로 돌아 바뀐 모듈과 직결된 `test_plan163_s1_readonly_hardening.py`·`test_readonly_fixed_sql.py` 등이 수집 단계에서 빠졌고, 기준 SHA에서도 같은 이유로 실패하므로 전부 [원래 실패]로 귀속됐다.
+- **원인**: 이 체크아웃에는 CLAUDE.md가 가정하는 루트 `.venv`가 없다(`../.venv/bin/python` 부재). 도구는 환경 결손을 원래 실패와 구분하지 못한다.
+- **방지책**: 독립 패키지(`mcp_server`·`apm_gateway`)를 바꾼 계획은 회귀 요약의 그 패키지 줄에서 `에러`·`건너뜀` 수를 본다. 수집 에러가 있으면 의존성이 갖춰진 인터프리터로 패키지 테스트를 따로 돌려 보고에 함께 적는다(이번: 형제 체크아웃 venv + `PYTHONPATH=mcp_server` → 1190 passed). 쓴 인터프리터 경로를 보고에 남긴다.
+- **후속(2026-11-02)**: 루트 `.venv`를 만들었다(`python3 -m venv .venv` · `pip install -e ".[dev,document]"` + `aiomysql`·`markdown-it-py`(매뉴얼 빌드) — 둘 다 루트 pyproject에 빠져 있다 · `ibm_db`는 로컬 미설치 유지). 이제 `cd mcp_server && ../.venv/bin/python -m pytest`가 성립한다(1192 passed · 19 skipped · 2 xfailed).

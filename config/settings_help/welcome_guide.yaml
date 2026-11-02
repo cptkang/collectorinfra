@@ -1,0 +1,25 @@
+# 설정 옵션 상세 설명 — 첫 화면 상황 안내 (plans/201 W2 §4.0 P2 · D-354)
+# 근거: src/config/services.py WelcomeGuideConfig · src/api/routes/user_auth.py get_me · src/static/js/app.js
+
+version: 1
+group: welcome_guide
+
+settings:
+
+  WELCOME_GUIDE_ENABLED:
+    summary: 질의응답 첫 화면에 「이 화면에서 할 수 있는 일」 상황 안내 3줄을 보일지.
+    behavior: >-
+      켜면 첫 화면에 「알람을 받았다면 — 이벤트 알람 탭」 · 「원인을 찾고 있다면 — 입력창에 서버 이름과 증상」 ·
+      「보고 자료가 필요하다면 — 엑셀·워드 양식 올리기」 3줄이 나온다. 줄을 누르면 그 화면(이벤트 알람 탭 · 입력창 ·
+      파일 선택)으로 간다. 알람 수신 지역이 지정되지 않아 이벤트 알람 탭이 없는 사용자에게는 첫 줄을 숨기지 않고
+      비활성으로 두고 사유를 함께 보인다. 담당 업무와 무관하게 로그인한 모든 사용자에게 같다(인증을 켠 기동에서만 보이고, 인증을 끈 개발 기동에서는 뜨지 않는다).
+    options:
+      - value: "false"
+        label: 기본
+        effect: 상황 안내가 없고 첫 화면과 사용자 정보 응답이 종전과 같다.
+      - value: "true"
+        effect: 첫 질문을 보내기 전 첫 화면에 상황 안내 3줄이 보인다. 첫 질문을 보내면 예시 버튼과 함께 사라진다.
+    caution: >-
+      재시작해야 반영된다. DUTY_AREA_ENABLED와 독립이라 담당 업무 기능을 끈 설치에서도 켤 수 있다.
+    example: >-
+      알람 수신 지역이 없는 사용자는 「알람을 받았다면」 줄이 흐리게 보이고 「알람 수신 지역이 지정되지 않았습니다」가 붙는다.

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>운영자 대시보드 - KB AIOps 포탈</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=23">
+    <link rel="stylesheet" href="/static/css/style.css?v=26">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
     <style>
@@ -120,6 +120,9 @@
                 <button class="tab" data-tab="sourcememory">소스 선택 기억</button>
                 <button class="tab" data-tab="apmsources">제니퍼 소스</button>
                 <button class="tab" data-tab="incidentkb">조사 지식</button>
+                <button class="tab" data-tab="hostlinks">호스트 연결</button>
+                <!-- (plans/198 W0 I-1) NOISE_INVESTIGATION_LABEL_ENABLED 켜진 기동에서만 보인다(admin-investigation-accuracy.js가 연다) -->
+                <button class="tab" data-tab="invaccuracy" hidden>조사 정확도</button>
             </div>
 
             <!-- 환경변수 설정 탭 -->
@@ -336,6 +339,9 @@
                         <!-- plans/125 A-7: DB가 없는 관측 소스(APM 등)는 「조회 가능 소스」로 따로 정한다(신규 가입자 = AUTH_DEFAULT_ALLOWED_SOURCES). -->
                         「조회 가능 소스」는 DB가 없는 관측 소스(예: WAS 모니터링)의 조회 권한입니다 — 관리자 역할은 이것도 전체 허용입니다.
                     </p>
+                    <!-- plans/201 W1 §3.7: 「담당 업무 현황」(지정률 · 미지정만 보기 · 일괄 지정 · 매핑 점검).
+                         DUTY_AREA_ENABLED off면 admin.js가 채우지 않아 숨은 채로 남는다 -->
+                    <div id="dutyAreaStatusCard" hidden style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:16px"></div>
                     <div id="usersLoading" class="loading active">
                         <div class="spinner"></div>
                         <div class="loading-text">사용자 목록을 불러오는 중...</div>
@@ -741,6 +747,83 @@
                 </div>
             </div>
 
+            <!-- 호스트 연결 탭 (plans/196 §1.1 ③ · §5.5) — 제니퍼 대상 ↔ 폴스타 서버 연결 승인·삭제 -->
+            <div class="tab-content" id="tab-hostlinks">
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>호스트 연결</h2>
+                        <button class="btn btn-secondary" id="refreshHostLinksBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        장애 진단 화면에서 사람이 고른 <strong>제니퍼 대상 → 폴스타 서버</strong> 연결입니다.
+                        <strong>확정</strong> 연결은 다음 알람부터 자동으로 쓰이고, 일반 사용자가 고른 <strong>승인 대기</strong> 연결은 승인해야 확정됩니다.
+                        <strong>부정</strong>(해당 서버 없음) 연결은 30일 뒤 만료됩니다. 유사 패턴은 후보 순위·사유에만 쓰이며 자동 연결하지 않습니다.
+                        이 탭은 <code>NOISE_HOST_LINK_ENABLED</code>가 켜진 채 <strong>본체를 기동</strong>했을 때만 동작합니다.
+                    </p>
+                    <div id="hostLinksNotice" class="incident-kb-notice" style="display: none;"></div>
+                    <table class="settings-table" id="hostLinksTable">
+                        <thead>
+                            <tr>
+                                <th>상태</th>
+                                <th>제니퍼 소스 · 대상</th>
+                                <th>폴스타 서버</th>
+                                <th>등급</th>
+                                <th>선택자 · 시각</th>
+                                <th></th>
+                            </tr>
+                        </thead>
+                        <tbody id="hostLinksBody"></tbody>
+                    </table>
+                </div>
+
+                <div class="card" style="margin-top: 18px;">
+                    <div class="toolbar"><h2>유사 패턴</h2></div>
+                    <table class="settings-table" id="hostLinksPatternTable">
+                        <thead><tr><th>종류</th><th>변환</th><th>적용 건수</th></tr></thead>
+                        <tbody id="hostLinksPatternBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <!-- 조사 정확도 탭 (plans/198 W0 I-1 · D-350 ②) — 읽기·내려받기만. 집계는 규칙 기반(AI 호출 없음) -->
+            <div class="tab-content" id="tab-invaccuracy">
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>조사 정확도 — 주간</h2>
+                        <span>
+                            <button class="btn btn-secondary" id="invAccuracyExportBtn" style="padding: 8px 18px; font-size: 0.8125rem;">후보 목록 내려받기</button>
+                            <button class="btn btn-secondary" id="refreshInvAccuracyBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                        </span>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        완료된 조사에 조사 요청자·관리자가 남긴 <strong>실제 원인</strong>으로 계산합니다.
+                        <strong>후보 재현율</strong> = 정답이 가설 목록에 있었던 비율 · <strong>1순위·3순위 적중</strong> = 정답이 그 순위 안에 있었던 비율입니다.
+                        라벨이 없거나 <strong>판단 불가</strong>인 조사는 정확도 계산에서 뺍니다(분모가 0이면 「-」).
+                        <strong>입력률</strong> = 완료 조사 중 라벨이 붙은 비율 · 미완주율·조사 불가율은 끝난 조사 전체 기준입니다.
+                        후보 목록 내려받기는 조사 id·종류·엔진·라벨·가설 순위만 담습니다(알람 원문·서술 없음).
+                    </p>
+                    <div id="invAccuracyNotice" class="incident-kb-notice" style="display: none;"></div>
+                    <div id="invAccuracyWindow" class="incident-kb-window"></div>
+                    <table class="settings-table" id="invAccuracyTable">
+                        <thead>
+                            <tr>
+                                <th>구분</th>
+                                <th>끝난 조사</th>
+                                <th>완료</th>
+                                <th>입력률</th>
+                                <th>판정 라벨</th>
+                                <th>후보 재현율</th>
+                                <th>1순위 적중</th>
+                                <th>3순위 적중</th>
+                                <th>미완주율</th>
+                                <th>조사 불가율</th>
+                            </tr>
+                        </thead>
+                        <tbody id="invAccuracyBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
             <!-- 문서 검색 시험 탭 (plans/126 W4 · T-3) -->
             <div class="tab-content" id="tab-ragdocs">
                 <div class="card">
@@ -815,10 +898,12 @@
 
     <div class="footer"><img class="brand-mark" src="/static/img/kb-mark.svg" alt="">KB AIOps 포탈 v1.0 &mdash; ADMIN</div>
 
-    <script src="/static/js/admin.js?v=14"></script>
+    <script src="/static/js/admin.js?v=16"></script>
     <script src="/static/js/admin-components.js?v=1"></script>
     <script src="/static/js/admin-db-structure.js?v=1"></script>
     <script src="/static/js/admin-rag-docs.js?v=3"></script>
     <script src="/static/js/admin-incident-kb.js?v=1"></script>
+    <script src="/static/js/admin-host-links.js?v=1"></script>
+    <script src="/static/js/admin-investigation-accuracy.js?v=1"></script>
 </body>
 </html>

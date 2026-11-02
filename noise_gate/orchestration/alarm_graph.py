@@ -88,6 +88,9 @@ class AlarmState(TypedDict):
     # 없다).
     # 조사 페이로드 `meta.episode` 전용 · 판정 무관 · 선언 필수.
     episode_snapshot: dict[str, Any] | None
+    # plans/201 W3: enricher가 원 프로세스 항목(마스킹·절단 전)으로 판정한 상위 프로세스 종류(kind 이름만)
+    # (워커가 판정기를 주입한 경우 = 담당 강조 유효 on일 때만 · 그 밖에는 키가 없다). notifier SSE 전용 · 선언 필수.
+    top_process_kinds: list[str] | None
     # plans/162 · D-330: 워커 PAGE 레지스트리가 만든 재판정 재료(`PageReviewSignals`)
     # (page_review_mode≠off이고 게이트로 가는 비해소 알람일 때만 · off면 입력에 키 자체가 없다).
     # 게이트 노드의 마지막 관문 `review_page`가 소비한다 · 선언 필수.

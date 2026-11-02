@@ -50,6 +50,42 @@ class ServerConfig:
     expose_polestar_tools: bool = True
     # 폴스타 실시간 프로세스 API base_url (process_snapshot 도구용). 비면 도구가 오류 반환.
     process_api_base_url: str = ""
+    # 소스별 프로세스 API base_url — "db_id1=http://host1,db_id2=http://host2"(본체
+    # ALARM_PROCESS_API_BASE_URLS_CSV와 같은 형식). 비면 위 단일 값만 쓴다(현행 동일).
+    # env: PROCESS_API_BASE_URLS_CSV.
+    process_api_base_urls_csv: str = ""
+
+    def process_api_urls(self) -> dict[str, str]:
+        """소스별 매핑을 읽는다. 잘못된 항목(`=` 없음·빈 키·빈 URL)은 무시한다."""
+        out: dict[str, str] = {}
+        for pair in self.process_api_base_urls_csv.split(","):
+            key, sep, url = pair.strip().partition("=")
+            if sep and key.strip() and url.strip():
+                out[key.strip()] = url.strip()
+        return out
+
+    def process_api_url_for(self, source: str | None) -> tuple[str, str | None]:
+        """프로세스 API base_url과 오류 문장 — 성공이면 `(url, None)`, 실패면 `("", 사유)`.
+
+        소스별 매핑이 비었으면 단일 값을 쓴다(현행 동일). 매핑이 하나라도 있으면 매핑에 없는
+        소스는 단일 값으로 보내지 않고 오류다 — 다른 폴스타에 물어 빈 목록을 받는 침묵 오답을 막는다.
+        """
+        mapping = self.process_api_urls()
+        src = (source or "").strip()
+        if mapping:
+            if src in mapping:
+                return mapping[src], None
+            listed = ", ".join(sorted(mapping))
+            if src:
+                return "", (
+                    f"소스 {src}의 프로세스 API 미설정 — PROCESS_API_BASE_URLS_CSV에 없음"
+                    f"(설정된 소스: {listed})"
+                )
+            if not self.process_api_base_url:
+                return "", f"source 인자 필요 — 프로세스 API가 소스별로 설정됨(설정된 소스: {listed})"
+        if self.process_api_base_url:
+            return self.process_api_base_url, None
+        return "", "PROCESS_API_BASE_URL 미설정 — 프로세스 스냅샷 조회 불가"
     # 전송 구간 정적 Bearer 토큰 (Plan 04 §6-4, D-015). 빈 값이면 무인증 통과
     # (로컬/개발 — 네트워크 격리 전제). 설정 시 모든 HTTP 요청에
     # `Authorization: Bearer <token>` 헤더를 요구하고 불일치 시 401을 반환한다.
@@ -153,8 +189,16 @@ class OpenMetricsConfig:
     bridge_sources: list[OpenMetricsBridgeSource] = field(default_factory=list)
 
 
-#: 풀 없는 DB2(요청별 연결)의 동시 실행 상한 기본값(plans/194 W4a · D-347).
+#: DB2 동시 실행 상한 기본값(plans/194 W4a · D-347). DB2 연결 풀 최대 크기도 이 상한을 따른다
+#: (plans/206 W1 · D-357).
 DB2_DEFAULT_MAX_CONCURRENT = 4
+
+#: DB2 연결 풀 유휴 연결 수명 기본값(초 · plans/206 W1 · D-357).
+DB2_DEFAULT_POOL_IDLE_SECONDS = 300
+
+#: `query_timeout`이 0 이하(무제한)일 때 쓰는 대기 타임아웃(초 · D-347 부기). 대기는 무기한으로
+#: 두지 않는다 — 0을 그대로 넘기면 모든 조회가 즉시 대기 초과로 끝났다.
+DEFAULT_QUEUE_TIMEOUT_SECONDS = 30
 
 
 @dataclass
@@ -172,9 +216,16 @@ class SourceConfig:
     # 동시 실행 상한·대기 타임아웃(plans/194 W4a · D-347). None = 자동 — 아래 effective_* 참조.
     max_concurrent_queries: int | None = None
     queue_timeout_seconds: int | None = None
+    # DB2 연결 풀(plans/206 W1 · D-357) — DB2 소스에만 의미가 있다
+    # (PostgreSQL·MariaDB는 드라이버 풀).
+    # 기본 on은 D-162(신규 플래그 기본 off) 예외다 — 사용자 결정 2026-11-02 「기본값을 처음부터
+    # 켜라」 · D-357 ②. 되돌리기: `pool_enabled = false` = 종전 요청별 연결(호출 순서 비트 동일).
+    pool_enabled: bool = True
+    # 이 시간(초) 넘게 쉰 유휴 연결은 꺼낼 때 닫고 새로 맺는다.
+    pool_idle_seconds: int = DB2_DEFAULT_POOL_IDLE_SECONDS
 
     def effective_max_concurrent(self) -> int:
-        """소스 동시 실행 상한. 미기재면 풀 크기(풀 없는 DB2는 `DB2_DEFAULT_MAX_CONCURRENT`).
+        """소스 동시 실행 상한. 미기재면 풀 크기(DB2는 `DB2_DEFAULT_MAX_CONCURRENT`).
 
         풀 크기와 같게 두면 풀 크기 이하 동시 요청은 대기 없이 그대로 실행된다(현행과 같음).
         """
@@ -185,9 +236,14 @@ class SourceConfig:
         return self.pool_max_size
 
     def effective_queue_timeout(self) -> float:
-        """동시 상한 대기 타임아웃(초). 미기재면 `query_timeout`."""
+        """동시 상한 대기 타임아웃(초).
+
+        미기재면 `query_timeout`, 그것이 0 이하(무제한)면 `DEFAULT_QUEUE_TIMEOUT_SECONDS`.
+        """
         if self.queue_timeout_seconds is not None:
             return float(self.queue_timeout_seconds)
+        if self.query_timeout <= 0:
+            return float(DEFAULT_QUEUE_TIMEOUT_SECONDS)
         return float(self.query_timeout)
 
 
@@ -304,6 +360,7 @@ def _load_toml(path: Path) -> AppServerConfig:
         polestar_domain_guard=server_data.get("polestar_domain_guard", True),
         expose_polestar_tools=server_data.get("expose_polestar_tools", True),
         process_api_base_url=server_data.get("process_api_base_url", ""),
+        process_api_base_urls_csv=server_data.get("process_api_base_urls_csv", ""),
         bearer_token=server_data.get("bearer_token", ""),
     )
 
@@ -321,6 +378,11 @@ def _load_toml(path: Path) -> AppServerConfig:
             pool_max_size=src_data.get("pool_max_size", 5),
             max_concurrent_queries=_positive_int_or_none(src_data, "max_concurrent_queries"),
             queue_timeout_seconds=_positive_int_or_none(src_data, "queue_timeout_seconds"),
+            pool_enabled=_bool_key(src_data, "pool_enabled", True),
+            pool_idle_seconds=(
+                _positive_int_or_none(src_data, "pool_idle_seconds")
+                or DB2_DEFAULT_POOL_IDLE_SECONDS
+            ),
         )
         sources.append(src)
 
@@ -365,6 +427,21 @@ def _load_toml(path: Path) -> AppServerConfig:
     return AppServerConfig(
         server=server, sources=sources, prometheus=prometheus, openmetrics=openmetrics
     )
+
+
+def _bool_key(src_data: dict[str, Any], key: str, default: bool) -> bool:
+    """`[[sources]]`의 선택 불리언 키를 읽는다. 미기재 = `default`.
+
+    Raises:
+        ValueError: 불리언이 아닐 때(문자열 "false"가 참으로 읽히는 것을 막는다 —
+            기동 실패로 드러낸다).
+    """
+    value = src_data.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"[[sources]] {src_data.get('name', '')} {key}는 true/false여야 함: {value!r}"
+        )
+    return value
 
 
 def _positive_int_or_none(src_data: dict[str, Any], key: str) -> int | None:
@@ -493,6 +570,7 @@ def _apply_env_overrides(
         "SERVER_TRANSPORT": ("transport", str),
         "SERVER_LOG_LEVEL": ("log_level", str),
         "PROCESS_API_BASE_URL": ("process_api_base_url", str),
+        "PROCESS_API_BASE_URLS_CSV": ("process_api_base_urls_csv", str),
         "MCP_BEARER_TOKEN": ("bearer_token", str),
     }
     for env_key, (attr, cast) in _env_overrides.items():

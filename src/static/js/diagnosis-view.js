@@ -19,9 +19,24 @@
  *   - 중간 결과는 `briefing-view.js` 상세형 렌더를 그대로 쓴다(새 렌더 0). 종결되면 조사를 다시 읽어
  *     상세형 전체 + [조사 대화로 열기] + 기존 [다시 분석](공용 렌더의 analyze 옵션)을 그린다.
  *
+ *   - (plans/198 W0 I-1) 완료 조사 하단 「실제 원인」 1줄 — 쓰기 경로(`saveCauseLabel`)는 app.js가 주입하고,
+ *     `causeLabel` 옵션(기능 조회 값)이 거짓이면 조회하지 않으며, 조회 404·403이면 그리지 않는다
+ *     (`NOISE_INVESTIGATION_LABEL_ENABLED` 기본 off = 종전 화면).
+ *   - (plans/198 W7 I-8) 완료 조사 하단 「비슷한 과거 조사」 최대 3건(날짜 · 결론 · 실제 원인 라벨) —
+ *     app.js의 `similar` 옵션(기능 조회 값)이 참일 때만 조회하고, 조회 404·403이면 그리지 않는다
+ *     (`NOISE_INVESTIGATION_MEMORY_ENABLED` 기본 off = 종전 화면). 결론은 라벨 붙은 조사만(서버 판정).
+ *     두 상자는 응답이 다 온 뒤 「실제 원인」 → 「비슷한 과거 조사」 순으로 붙는다.
+ *   - (plans/199 W1 · D-352) `summaryView` 옵션(기능 조회 값 · 불리언 또는 함수)이 참이면 중간 결과·조사 결과
+ *     머리 아래에 공용 렌더의 「한눈에 보기」 카드가 붙는다(`NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED` 기본 off = 종전 화면).
+ *   - (plans/199 W5a · §3.10 A안 · D-352 ⑥ · G-50 개정) 같은 옵션이 참이면 「조사 흐름」·「실행 기록」 전환 탭 없이
+ *     한 화면 세로 배치다 — 진행 중: 한눈에 보기(진척형) → 조사 흐름(펼침) → [근거 보기] 중간 결과(접힘) →
+ *     실행 기록(접힘) · 종결: 조사 결과 → 조사 흐름(접힘) → 실행 기록(접힘). 실행 기록 머리 한 줄에 건수·0건 사유·
+ *     잘림·보관 표지를 싣고, 펼침은 브라우저 저장소(`dv.expand.log`·`dv.expand.partial`)에 기억한다.
+ *     머리 「조사 이유」 여러 줄은 첫 줄만 보이고 나머지는 접는다. 거짓이면 종전 골격(전환 탭 · dv-grid) 그대로다.
+ *
  * 보안: 화면은 읽기만 한다 — 조사 취소·명령 실행 버튼이 없다(D-003). 한 줄·발췌·AI 메모는 서버
- * 텍스트라 `textContent`로만 넣는다. `innerHTML`은 공용 렌더(`BriefingView.renderBody` — 자체
- * 이스케이프) 출력에만 쓴다.
+ * 텍스트라 `textContent`로만 넣는다. `innerHTML`은 공용 렌더(`BriefingView.renderBody`·`summaryCardHtml` —
+ * 자체 이스케이프) 출력에만 쓴다.
  *
  * 전역은 `window.DiagnosisView` 하나다. 순수 함수(행 변환·병합·watch·연결 문구)와 의존성 주입형
  * 컨트롤러(`create`)를 node로 시험한다(`tests/test_api/test_ui_plan187_w15_diagnosis.py`).
@@ -156,6 +171,18 @@
         // (plans/187 W20 · §5.6.4 · G-50) 「조사 흐름」 — 단계 카드(왜 → 조회 → 결과 → 해석)
         modeFlow: "조사 흐름",
         modeLog: "실행 기록",
+        // (plans/199 W5a · §3.10) 기능 켜짐 — 접힘 섹션 머리 · 실행 기록 건수·0건 사유·표지 · 「조사 이유」 접기
+        evidenceBtn: "근거 보기",
+        logCount: "실행 기록 ({n}건)",
+        logWait: "아직 기록 없음",
+        logOff: "조사 서비스 실행 기록 꺼짐",
+        logWaitLine: "아직 실행 기록이 없습니다.",
+        logOffLine: "조사 서비스의 실행 기록(SRE_ACTIVITY_LOG_ENABLED)이 꺼져 있어 이 조사의 실행 기록이 쌓이지 않습니다.",
+        logMarks: { truncated: "오래된 기록 일부 빠짐", clipped: "300행 넘는 오래된 행 접음", archive: "보관 요약" },
+        secOpened: "▾",
+        secClosed: "▸",
+        whyMore: "외 {n}줄 ▸",
+        whyLess: "외 {n}줄 ▾",
         flowEmpty: "아직 조사 단계가 없습니다. 단계가 시작되면 카드가 쌓입니다.",
         sofarHead: "지금까지",
         sofarChecking: "{title} 확인 중 ⟳",
@@ -184,6 +211,67 @@
         holmesRound: "HolmesGPT {n}회차",
         holmesJudge: "AI 판단 — 검증 전",
         holmesNoQuery: "이 회차에는 조회가 없습니다.",
+        // (plans/196 D6) 섹션 운영자 상세(`reason_detail` — 운영자 뷰에만 온다)는 펼침으로만
+        detailBtn: "ⓘ 상세",
+        // (plans/196 D7) 종결 + 종합 가설 없음 — 왜 판정이 없는지 결정적 집계 1줄
+        sofarGap: "판정 근거 부족 — {parts}",
+        sofarGapMissing: "수집 결손 {n}단계",
+        sofarGapSkipped: "생략 {n}단계",
+        sofarGapEmpty: "0건 {n}단계",
+        // (plans/196 D7) 섹션 축별 상태(`axis_status`)가 있으면 축별로 묶는다 — 축 순서 고정 · 라벨 없는 축은 「기타」
+        sofarGapAxis: "{axis}: {parts}",
+        sofarGapAxisSep: " / ",
+        sofarGapAxes: [["polestar", "폴스타"], ["apm", "제니퍼"], ["itsm", "ITSM"]],
+        sofarGapAxisOther: "기타",
+        // (plans/196 §1.1 ② · §5.5) 폴스타 서버 선택 — 제니퍼 대상을 폴스타 서버에 잇는다(사람이 고를 때만)
+        host: {
+            loading: "폴스타에서 비슷한 서버를 찾는 중…",
+            failed: "서버 후보를 불러오지 못했습니다 — {reason}",
+            intro: "제니퍼 대상 「{hostname}」과 비슷한 폴스타 서버입니다. 맞는 서버를 고르면 폴스타 단계만 다시 조회합니다.",
+            introNoHost: "비슷한 폴스타 서버입니다. 맞는 서버를 고르면 폴스타 단계만 다시 조회합니다.",
+            empty: "비슷한 폴스타 서버를 찾지 못했습니다 — 서버명을 직접 입력하세요.",
+            inputLabel: "폴스타 서버명",
+            unchecked: "확인하지 못한 소스 — {db_id}: {reason}",
+            rerun: "이 서버로 다시 조회",
+            absent: "해당 서버 없음",
+            sending: "보내는 중…",
+            pick: "후보를 하나 고르거나 서버명을 입력하세요.",
+            rerunOk: "다시 조회를 접수했습니다 — 새 조사 탭에서 결과를 봅니다.",
+            absentOk: "폴스타 미등록으로 기록했습니다 — 같은 대상의 다음 조사는 폴스타 단계를 바로 생략합니다.",
+            pending: "관리자 승인 전까지 이 연결은 이번 다시 조회에만 쓰입니다.",
+            sendFailed: "보내지 못했습니다 — {reason}",
+            // 직접 입력(db_id 없이 서버명만) 거부 사유 — 서버 `detail.code`
+            codes: {
+                server_not_found: "폴스타에서 그 서버를 찾지 못했습니다 — 서버명을 확인하세요.",
+                server_ambiguous: "같은 이름의 폴스타 서버가 여러 대라 하나로 정하지 못했습니다 — 전체 이름(FQDN)으로 입력하세요.",
+            },
+            linkedHead: "폴스타 서버 연결",
+            change: "연결 변경",
+        },
+        // (plans/198 W0 I-1) 완료 조사 하단 「실제 원인」 1줄 — 조사 요청자·관리자만(서버가 판정)
+        cause: {
+            head: "실제 원인",
+            hint: "조사 결과가 맞았는지 남기면 조사 정확도 집계에만 쓰입니다 — 판정·가설 순위는 바뀌지 않습니다.",
+            choose: "선택",
+            verdicts: { top1: "1순위 가설 맞음", ranked: "k순위 가설 맞음", not_listed: "목록에 없음", undeterminable: "판단 불가" },
+            rank: "{n}순위",
+            notePlaceholder: "실제 원인(선택)",
+            save: "저장",
+            sending: "저장하는 중…",
+            pick: "실제 원인을 고르세요.",
+            current: "입력됨 — {text}",
+            saved: "저장했습니다 — {text}",
+            failed: "저장하지 못했습니다 — {reason}",
+        },
+        // (plans/198 W7 I-8) 비슷한 과거 조사 — 결론은 실제 원인이 입력된 조사만(서버가 판정)
+        similar: {
+            head: "비슷한 과거 조사",
+            empty: "비슷한 완료 조사가 없습니다.",
+            unconfirmed: "확정 전",
+            conclusion: "결론 {text}",
+            label: "실제 원인 {text}",
+            notice: "실제 원인이 입력된 조사만 결론을 보입니다 — 입력 전 조사는 「확정 전」입니다.",
+        },
         engineGroups: { playbook: "플레이북", holmes: "HolmesGPT" },
         // ⓖ C1~C8 — 해당하는 문구만 카드 ⓘ에 펼친다
         caution: {
@@ -211,6 +299,9 @@
         queued: "대기", collecting: "수집", narrating: "서술", deep_dive: "심층 조사", finalizing: "브리핑 조립",
     };
     var PHASE_UNKNOWN = "진행 중";
+    // (plans/199 W5a · §3.7·§3.10) 접힘 섹션 펼침 기억 — 브라우저 저장소 키(값 "1" = 펼침). 조사 흐름은 상태별
+    // 기본(진행 중 펼침 · 종결 뒤 접힘 — §3.8)이라 기억하지 않고 탭 안에서만 유지한다.
+    var EXPAND_KEYS = { log: "dv.expand.log", partial: "dv.expand.partial" };
 
     function fill(template, values) {
         return String(template).replace(/\{(\w+)\}/g, function (_m, key) {
@@ -341,9 +432,32 @@
         asList(events).forEach(function (e) {
             if (!isObj(e) || !e.purpose) return;
             var plan = (e.kind === "started" && e.engine === "playbook") || e.kind === "deep_start";
-            if (plan) out.push({ seq: Number(e.seq) || 0, text: String(e.label || "") + " — " + String(e.purpose) });
+            if (plan) out.push({ seq: Number(e.seq) || 0, text: whyLabel(e.label) + " — " + String(e.purpose) });
         });
         return out;
+    }
+
+    // (plans/196 D6) 조사 이유 줄 라벨의 원시 키 — 플레이북 id `fallback` · 심층 조사 방식(sre_agent DEEP_PURPOSES 키)
+    var DEEP_MODE_LABELS = { parallel: "병렬", conditional: "조건부" };  // sre_agent DEEP_MODE_LABELS와 같은 말
+    function whyLabel(label) {
+        return String(label || "")
+            .replace(/^플레이북 fallback 선택$/, "플레이북 공통 점검 선택")
+            .replace(/ — (parallel|conditional)$/, function (_m, k) { return " — " + DEEP_MODE_LABELS[k]; });
+    }
+
+    /**
+     * (plans/199 W5a · §3.8) 머리 「조사 이유」 여러 줄(경로 선택 사유 · 플레이북 선택 · 심층 조사 시작)은 첫 줄만
+     * 남기고 나머지를 그 줄의 `more`로 접는다 — 같은 내용(플레이북·대상·증상)이 표현만 달리 되풀이되는 것을 줄인다.
+     * 다른 머리 줄은 그대로 · 순수 함수(줄 객체는 렌더마다 새로 만든다).
+     */
+    function foldWhy(lines) {
+        var first = null;
+        return asList(lines).filter(function (line) {
+            if (line.head !== TEXT.whyHead) return true;
+            if (!first) { first = line; return true; }
+            (first.more = first.more || []).push(line.text);
+            return false;
+        });
     }
 
     /** 스텝 id → 그 스텝의 목적(`step_start` purpose) — 도구 행의 마우스 올림 설명에 쓴다. */
@@ -410,8 +524,16 @@
     }
 
     // (W24) 조사 항목의 단계 상태 — 플레이북 섹션 `status`
-    var STEP_STATUS_LABELS = { ok: "완료", skipped: "생략", missing: "자료 없음", error: "실패",
+    // (plans/196 D6) 화면에 원시 상태값을 찍지 않는다 — 단계 카드·해석 사유도 이 맵을 쓴다
+    var STEP_STATUS_LABELS = { ok: "완료", skipped: "생략", missing: "수집 결손", error: "실패",
         failed: "실패", timeout: "시간 초과", incomplete: "일부만" };
+
+    // 서버 사유 문장 속 「단계 상태 missing」 → 「단계 상태 수집 결손」(구버전 조사 서비스 문구 대비)
+    function statusWords(text) {
+        return String(text || "").replace(/단계 상태 ([a-z_]+)/g, function (all, st) {
+            return STEP_STATUS_LABELS[st] ? "단계 상태 " + STEP_STATUS_LABELS[st] : all;
+        });
+    }
 
     // (W24) 조사 항목 — 종결 브리핑의 단계(없으면 진행 중 부분 브리핑의 끝난 단계 + 진척)
     function stepsLine(view) {
@@ -833,8 +955,11 @@
             var skipped = c.skipped || (sec && sec.status === "skipped");
             var title = (sec && sec.title) || c.title || c.step;
             var m = { step: c.step, no: circled(i + 1), title: title, time: clockOf(c.at), skipped: !!skipped };
+            m.detail = sec && sec.reason_detail ? String(sec.reason_detail) : "";
+            m.axisStatus = axisStatusOf(sec);
             if (skipped) {
                 m.because = c.because || (sec && (sec.because || skipReason(sec.reason))) || "";
+                m.skipRaw = sec && sec.reason ? String(sec.reason) : "";
                 return m;
             }
             var status = c.status || (sec ? String(sec.status || "") : "");
@@ -847,7 +972,7 @@
             m.because = c.because || c.purpose;
             m.queries = c.queries;
             m.finding = c.finding || (sec && sec.finding ? String(sec.finding) : "");
-            m.reason = !m.finding && sec && sec.reason ? String(sec.reason) : "";
+            m.reason = !m.finding && sec && sec.reason ? statusWords(sec.reason) : "";
             m.table = sec && isObj(sec.table) && Array.isArray(sec.table.columns) && asList(sec.table.rows).length
                 ? sec.table : null;
             m.rows = rowCount(m.table, c.queries);
@@ -882,7 +1007,8 @@
                 queries: r.queries,
                 notes: r.note ? [TEXT.caution.c1, TEXT.caution.c2, TEXT.caution.c7, TEXT.caution.holmes] : [] };
         });
-        return { cards: models, holmes: holmes, sofar: sofarLine(models, o.done, top, o.synthesis) };
+        var ai = o.done && !top ? deepSummary(o.deepDive) : "";
+        return { cards: models, holmes: holmes, sofar: sofarLine(models, o.done, top, o.synthesis), sofarAi: ai };
     }
 
     // 건너뜀 섹션 사유 원문 → 카드 문장(조건식·예산 원문은 감춘다)
@@ -915,7 +1041,158 @@
         }).map(function (c) { return corePhrase(c.finding); }).slice(-4);
         var run = cards.filter(function (c) { return c.running; })[0];
         if (run && !done) links.push(fill(TEXT.sofarChecking, { title: run.title }));
-        return links.length ? links.join(" → ") : "";
+        if (links.length) return links.join(" → ");
+        return done ? gapLine(cards) : "";
+    }
+
+    /**
+     * (plans/196 D7) 종결인데 종합 가설도 고리도 없을 때 — 왜 판정이 없는지 단계 집계 1줄(결정적 · LLM 0).
+     * 수집 결손 = 경고 상태(결손·실패·시간 초과) · 생략 = 건너뜀 · 0건 = 성공했지만 결과 행 0. 집계가 없으면 "".
+     */
+    function gapLine(cards) {
+        if (cards.some(function (c) { return c.axisStatus; })) return axisGapLine(cards);
+        var n = { missing: 0, skipped: 0, empty: 0 };
+        cards.forEach(function (c) {
+            if (c.skipped) n.skipped += 1;
+            else if (c.warn) n.missing += 1;
+            else if (!c.running && !c.rows) n.empty += 1;
+        });
+        var parts = gapParts(n);
+        return parts.length ? fill(TEXT.sofarGap, { parts: parts.join(" · ") }) : "";
+    }
+
+    function gapParts(n) {
+        var parts = [];
+        if (n.missing) parts.push(fill(TEXT.sofarGapMissing, { n: n.missing }));
+        if (n.skipped) parts.push(fill(TEXT.sofarGapSkipped, { n: n.skipped }));
+        if (n.empty) parts.push(fill(TEXT.sofarGapEmpty, { n: n.empty }));
+        return parts;
+    }
+
+    /** 섹션 축별 상태(`axis_status` — `{축: 상태}`) → 문자열 값만 남긴 사본. 없거나 비면 null. */
+    function axisStatusOf(sec) {
+        if (!sec || !isObj(sec.axis_status)) return null;
+        var out = {};
+        var any = false;
+        Object.keys(sec.axis_status).forEach(function (k) {
+            var v = sec.axis_status[k];
+            if (typeof v === "string" && v) { out[k] = v; any = true; }
+        });
+        return any ? out : null;
+    }
+
+    /**
+     * (plans/196 D7) 축별 집계 — 카드마다 축 상태로 센다(혼합 단계는 각 축에 1씩). 생략 = skipped ·
+     * 수집 결손 = 경고 상태 · 0건 = 그 외(ok)인데 카드 결과 행 0. 축 상태가 없는 카드는 건너뜀이면
+     * 세지 않고(미연동 등), 결손·0건만 카드 기준으로 「기타」 축에 센다. 축 순서는 `TEXT.sofarGapAxes` 고정, 표에 없는 축 키는 「기타」로 묶는다.
+     */
+    function axisGapLine(cards) {
+        var known = {};
+        TEXT.sofarGapAxes.forEach(function (a) { known[a[0]] = true; });
+        var counts = {};
+        function bump(axis, kind) {
+            var key = known[axis] ? axis : "";
+            counts[key] = counts[key] || { missing: 0, skipped: 0, empty: 0 };
+            counts[key][kind] += 1;
+        }
+        cards.forEach(function (c) {
+            if (c.running) return;
+            if (!c.axisStatus) {
+                if (c.skipped) return;  // 축 없는 건너뜀(미연동 DPM 등)은 판정 근거 부족의 원인이 아니다
+                if (c.warn) bump("", "missing");
+                else if (!c.rows) bump("", "empty");
+                return;
+            }
+            Object.keys(c.axisStatus).sort().forEach(function (axis) {
+                var st = c.axisStatus[axis];
+                if (st === "skipped") bump(axis, "skipped");
+                else if (WARN_STATUS[st]) bump(axis, "missing");
+                else if (!c.skipped && !c.rows) bump(axis, "empty");
+            });
+        });
+        var groups = [];
+        TEXT.sofarGapAxes.concat([["", TEXT.sofarGapAxisOther]]).forEach(function (a) {
+            var parts = counts[a[0]] ? gapParts(counts[a[0]]) : [];
+            if (parts.length) groups.push(fill(TEXT.sofarGapAxis, { axis: a[1], parts: parts.join(" · ") }));
+        });
+        return groups.length ? fill(TEXT.sofarGap, { parts: groups.join(TEXT.sofarGapAxisSep) }) : "";
+    }
+
+    // (plans/196 D7 · Q4) HolmesGPT 결과 요약 한 줄 — 종결(`done`)된 심층 조사만. 화면은 「AI 판단 — 검증 전」 표지와 함께 쓴다(G-48).
+    function deepSummary(dd) {
+        if (!isObj(dd) || dd.status !== "done") return "";
+        function pick(v) {
+            if (v === null || v === undefined) return "";
+            if (typeof v !== "object") return String(v);
+            return String(v.title || v.text || v.summary || v.cause || v.name || "");
+        }
+        var text = pick(dd.cause) || pick(asList(dd.root_cause_hypotheses)[0]) || firstSentence(dd.summary);
+        return firstLine(text, 160);
+    }
+
+    // ── (plans/196 §1.1 ② · §5.2) 폴스타 서버 연결 상태 — 화면이 서버 선택 UI를 어디에 둘지(순수) ──
+    // 서버 사유 문장(§5.2): 대기 = 「폴스타 서버 선택 대기 — …」(구 문구 「폴스타 서버 미확정」 포함) ·
+    // 부정 연결 = 「폴스타 미등록(사용자 확인 · …)」 · 확정 연결 근거(`scope.polestar_basis`) = 「이전 확정 연결 — …」/「사용자 선택으로 연결 — …」
+    // (plans/202 · D-355 ④) 파드 미확정 = 「폴스타 서버 미확정 — K8s 파드(노드 … — 사유)」 — 사람이 서버를 골라도
+    // 다음 재기동에 무효라 선택 UI를 열지 않고 생략 카드 사유만 보인다. 노드 주소 자동 연결 근거 = 「제니퍼 노드 주소 일치 — …」
+    var HOST_WAIT_RE = /폴스타 서버 (선택 대기|미확정)/;
+    var HOST_POD_RE = /K8s 파드/;
+    var HOST_ABSENT_RE = /폴스타 미등록\(사용자 확인/;
+    var HOST_LINKED_RE = /^(이전 확정 연결|사용자 선택으로 연결|제니퍼 노드 주소 일치)/;
+    var HOST_NODE_RE = /^제니퍼 노드 주소 일치/;
+    // (plans/198 W0 I-1) 라벨 한 줄 표기 — `{verdict, rank, note}` → 「2순위 가설 맞음」 등
+    function causeLabelText(label) {
+        if (!isObj(label)) return "";
+        var V = TEXT.cause.verdicts;
+        var text = label.verdict === "ranked" && label.rank
+            ? fill(TEXT.cause.rank, { n: label.rank }) + " 가설 맞음"
+            : (V[label.verdict] || String(label.verdict || ""));
+        return label.note ? text + " · " + String(label.note) : text;
+    }
+
+    // (plans/198 W7 I-8) 비슷한 과거 조사 한 줄 — `{ts, labeled, verdict, rank, conclusion}` →
+    // 「2026-10-20 · 결론 … · 실제 원인 1순위 가설 맞음」 · 라벨 없으면 「날짜 · 확정 전」
+    function similarText(item) {
+        if (!isObj(item)) return "";
+        var T = TEXT.similar;
+        var parts = [];
+        var stamp = fmtStamp(item.ts);
+        if (stamp) parts.push(stamp.slice(0, 10));
+        if (!item.labeled) {
+            parts.push(T.unconfirmed);
+        } else {
+            if (item.conclusion) parts.push(fill(T.conclusion, { text: String(item.conclusion) }));
+            parts.push(fill(T.label, { text: causeLabelText({ verdict: item.verdict, rank: item.rank }) }));
+        }
+        return parts.join(" · ");
+    }
+
+    function hostLinkState(cards, scope) {
+        var list = asList(cards);
+        for (var i = 0; i < list.length; i++) {
+            var c = list[i];
+            if (!c || !c.skipped) continue;
+            var text = String(c.because || "") + " " + String(c.skipRaw || "");
+            if (HOST_POD_RE.test(text)) continue;
+            if (HOST_WAIT_RE.test(text)) return { mode: "wait", step: c.step, basis: "" };
+            if (HOST_ABSENT_RE.test(text)) return { mode: "absent", step: c.step, basis: String(c.because || c.skipRaw || "") };
+        }
+        var basis = isObj(scope) ? String(scope.polestar_basis || "") : "";
+        if (HOST_LINKED_RE.test(basis)) return { mode: "linked", step: "", basis: basis };
+        return null;
+    }
+
+    // (plans/195 W3) 조사 조회 응답 `requery`(서버 플래그가 켜졌을 때만 있는 키) → 단계별 항목. 키가 없으면 null
+    function requeryByStep(view) {
+        var bv = root.BriefingView;
+        var items = bv && bv.requeryItems ? bv.requeryItems(view) : null;
+        if (!items) return null;
+        var by = {};
+        items.forEach(function (it) {
+            var step = String(it.step || "");
+            if (step) (by[step] = by[step] || []).push(it);
+        });
+        return by;
     }
 
     // ─── 컨트롤러 ───────────────────────────────────────────────────────
@@ -928,7 +1205,11 @@
      *   onOpenConversation(id) — 종결 화면 [조사 대화로 열기](기존 조사 대화 진입 함수)
      *   analyzeFor(id, view) — 공용 렌더 analyze 옵션(기존 [다시 분석]) 또는 null
      *   startInvestigation(alarmId) — (W18) 「이벤트 찾아 조사」 접수 → Promise<{ok,status,body}>(없으면 칸 숨김)
-     *   deps: {fetch, EventSource, setTimeout, clearTimeout, now, storage, document} — 시험용 주입
+     *   stagePrompt(investigationId, prompt) — (plans/195 W3) 「질의응답에서 확인」 [조사 대화에서 조회] — 그 조사의 조사 대화를
+     *     열고 입력창에 채운 뒤 확인 바를 띄운다(app.js `stageInvestigationPrompt` · 자동 전송 없음 · 없으면 버튼 숨김)
+     *   busy() — 참이면 [조사 대화에서 조회]를 막는다(답변 중 중복 과금 방지)
+     *   linkHost(investigationId, body) — (plans/196) 폴스타 서버 선택 저장(본체 host-link 접수 — 쓰기 경로는 app.js가 주입) → Promise<{ok,status,body}>(없으면 선택 UI 숨김)
+     *   deps: {fetch, EventSource, setTimeout, clearTimeout, now, storage, document, clipboard} — 시험용 주입
      */
     function create(opts) {
         var deps = opts.deps || {};
@@ -962,9 +1243,33 @@
         var searchOn = false;       // (W18) /active `event_search` — 알람 다시 분석 접수가 켜졌는지
         var serviceLoad = null;     // (plans/194 W5 · U3) /active·summary 최상위 `service_load`(없으면 null)
         var firstLoad = null;
+        var local;                  // (plans/199 W5a) 펼침 기억 저장소 — 기능 켜짐 화면에서 처음 쓸 때 잡는다
 
         function safeSession() {
             try { return root.sessionStorage || null; } catch (_) { return null; }
+        }
+
+        // (plans/199 W5a · §3.7) 펼침 기억 — 읽기·쓰기 모두 실패하면 기본 접힘(사생활 모드·차단 등)
+        function localStore() {
+            if (local === undefined) {
+                try { local = deps.localStorage !== undefined ? deps.localStorage : (root.localStorage || null); }
+                catch (_) { local = null; }
+            }
+            return local;
+        }
+
+        function expandRead(key) {
+            try {
+                var s = localStore();
+                return !!s && s.getItem(key) === "1";
+            } catch (_) { return false; }
+        }
+
+        function expandWrite(key, on) {
+            try {
+                var s = localStore();
+                if (s) s.setItem(key, on ? "1" : "0");
+            } catch (_) { /* 저장 불가 — 이번 화면에서만 유지 */ }
         }
 
         function el(tag, cls, text) {
@@ -1346,6 +1651,8 @@
                 autoScroll: true, expanded: {}, finalPanel: null, dom: null,
                 // (W20) 조사 흐름 — 같은 이벤트를 두 보기로 그린다(연결·커서는 하나)
                 mode: "flow", flow: { events: [], seen: {} }, flowOpen: {},
+                // (plans/199 W5a) 기능 켜짐 화면의 접힘 섹션 펼침(flow·partial·log — 없으면 기본값)
+                secOpen: {},
             };
         }
 
@@ -1418,6 +1725,9 @@
             sofar.appendChild(el("span", "dv-label", TEXT.sofarHead));
             var sofarText = el("span", "dv-sofar-text");
             sofar.appendChild(sofarText);
+            var sofarAi = el("span", "dv-sofar-ai");
+            sofarAi.hidden = true;
+            sofar.appendChild(sofarAi);
             flowBox.appendChild(sofar);
             var flowBody = el("div", "dv-flow-body");
             flowBox.appendChild(flowBody);
@@ -1426,7 +1736,8 @@
             var grid = el("div", "dv-grid");
             var logBox = el("section", "dv-log");
             var logBar = el("div", "dv-log-bar");
-            logBar.appendChild(el("span", "dv-label", TEXT.logHead));
+            var logLabel = el("span", "dv-label", TEXT.logHead);
+            logBar.appendChild(logLabel);
             var filters = el("span", "dv-filters");
             logBar.appendChild(filters);
             var autoLabel = el("label", "dv-check");
@@ -1444,7 +1755,8 @@
             logBox.appendChild(rows);
             grid.appendChild(logBox);
             var partBox = el("section", "dv-partial");
-            partBox.appendChild(el("div", "dv-label", TEXT.partialHead));
+            var partLabel = el("div", "dv-label", TEXT.partialHead);
+            partBox.appendChild(partLabel);
             var partBody = el("div", "dv-partial-body", TEXT.loading);
             partBox.appendChild(partBody);
             grid.appendChild(partBox);
@@ -1467,9 +1779,127 @@
             tab.dom = { wrap: wrap, btn: btn, label: label, state: state, panel: panel, title: title, target: target, meta: meta,
                 warn: warn, filters: filters, logNote: logNote, rows: rows, partBox: partBox, partBody: partBody,
                 finalBox: finalBox, finalBody: finalBody, grid: grid, modeBtns: modeBtns, flowBox: flowBox,
-                sofar: sofar, sofarText: sofarText, flowBody: flowBody };
+                sofar: sofar, sofarText: sofarText, sofarAi: sofarAi, flowBody: flowBody,
+                // (plans/199 W5a) 기능 켜짐 배치용 — 꺼짐이면 붙이지 않는다(종전 골격 그대로)
+                layout: "off", modes: modes, logBox: logBox, logBar: logBar, logLabel: logLabel, partLabel: partLabel,
+                // `bv` — 조사 결과 안 카드와 같은 글자 크기·줄 간격(공용 `.bv` 토큰). 숨김은 `.dv-sum-box[hidden]`이 이긴다
+                sumBox: el("section", "dv-sum-box bv"),
+                secs: {
+                    flow: secNode(tab, "flow", TEXT.modeFlow, flowBox),
+                    partial: secNode(tab, "partial", TEXT.evidenceBtn, partBox),
+                    log: secNode(tab, "log", fill(TEXT.logCount, { n: 0 }), logBox),
+                } };
+            tab.dom.sumBox.hidden = true;
+            tab.dom.secs.partial.info.textContent = TEXT.partialHead;
             setMode(tab, tab.mode);
+            applyLayout(tab);
             renderTabButton(tab);
+        }
+
+        // ── (plans/199 W5a · §3.10 A안) 기능 켜짐 배치 ──
+        // 진행 중: 한눈에 보기(진척형) → 조사 흐름(펼침) → [근거 보기] 중간 결과(접힘) → 실행 기록(접힘)
+        // 종결: 조사 결과 → 조사 흐름(접힘) → 실행 기록(접힘). 꺼짐이면 종전 골격(전환 탭 · dv-grid) 그대로.
+        // 기능 조회가 늦게 와도 맞도록 렌더 때마다 묻고, 배치가 바뀔 때만 노드를 옮긴다(스트림·커서와 무관).
+        // 배치가 바뀌었으면 true.
+        function applyLayout(tab) {
+            var d = tab.dom;
+            if (!d) return false;
+            var key = optOn(opts.summaryView) ? (tab.done ? "done" : "run") : "off";
+            if (d.layout === key) return false;
+            d.layout = key;
+            [d.modes, d.flowBox, d.grid, d.sumBox, d.secs.flow.wrap, d.secs.partial.wrap, d.secs.log.wrap, d.finalBox]
+                .forEach(function (n) { if (n.parentNode) n.parentNode.removeChild(n); });
+            var on = key !== "off";
+            d.logLabel.hidden = on;     // 섹션 머리가 같은 이름을 진다
+            d.partLabel.hidden = on;
+            if (!on) {
+                d.grid.appendChild(d.logBox);
+                d.grid.appendChild(d.partBox);
+                d.logBox.hidden = false;
+                d.logBar.hidden = false;
+                d.rows.hidden = false;
+                d.partBox.hidden = !!tab.finalPanel;
+                [d.modes, d.flowBox, d.grid, d.finalBox].forEach(function (n) { d.panel.appendChild(n); });
+                setMode(tab, tab.mode);
+                return true;
+            }
+            ["flow", "partial", "log"].forEach(function (name) {
+                var s = d.secs[name];
+                s.wrap.appendChild(s.body);
+                paintSec(tab, name);
+            });
+            if (key === "done") { d.sumBox.textContent = ""; d.sumBox.hidden = true; }   // 카드는 조사 결과 안에 1장
+            var order = key === "run"
+                ? [d.sumBox, d.secs.flow.wrap, d.secs.partial.wrap, d.secs.log.wrap, d.finalBox]
+                : [d.finalBox, d.secs.flow.wrap, d.secs.log.wrap];
+            order.forEach(function (n) { d.panel.appendChild(n); });
+            paintLog(tab);
+            return true;
+        }
+
+        // 접힘 섹션 — 머리 한 줄(제목 ▸/▾ 버튼 + 상태 표지) · 본문은 배치 때 옮겨 붙인다
+        function secNode(tab, name, title, body) {
+            var wrap = el("section", "dv-sec dv-sec--" + name);
+            var bar = el("div", "dv-sec-bar");
+            var btn = el("button", "dv-sec-toggle");
+            btn.type = "button";
+            var t = el("span", "dv-sec-title", title);
+            var caret = el("span", "dv-sec-caret");
+            btn.appendChild(t);
+            btn.appendChild(caret);
+            btn.addEventListener("click", function () { toggleSec(tab, name); });
+            var info = el("span", "dv-sec-info");
+            bar.appendChild(btn);
+            bar.appendChild(info);
+            wrap.appendChild(bar);
+            return { wrap: wrap, btn: btn, title: t, caret: caret, info: info, body: body };
+        }
+
+        // 펼침 — 사용자가 고른 값(탭 안) → 없으면 조사 흐름은 진행 중 펼침·종결 뒤 접힘, 나머지는 저장소(첫 1회)
+        function secOpen(tab, name) {
+            var v = tab.secOpen[name];
+            if (v !== undefined) return v;
+            if (name === "flow") return !tab.done;
+            v = expandRead(EXPAND_KEYS[name]);
+            tab.secOpen[name] = v;
+            return v;
+        }
+
+        function paintSec(tab, name) {
+            var s = tab.dom.secs[name];
+            var on = secOpen(tab, name);
+            s.body.hidden = !on;
+            s.caret.textContent = on ? TEXT.secOpened : TEXT.secClosed;
+            s.btn.setAttribute("aria-expanded", on ? "true" : "false");
+        }
+
+        function toggleSec(tab, name) {
+            var on = !secOpen(tab, name);
+            tab.secOpen[name] = on;
+            if (EXPAND_KEYS[name]) expandWrite(EXPAND_KEYS[name], on);
+            paintSec(tab, name);
+            if (name === "log" && on && tab.autoScroll) tab.dom.rows.scrollTop = 0;   // 자동 스크롤은 펼쳤을 때만
+        }
+
+        // 실행 기록 섹션 머리 한 줄(건수 · 0건 사유 · 잘림·보관 표지)과 펼친 본문 안내 —
+        // 0건이면 필터 줄·목록을 숨겨 큰 빈 칸 없이 안내 한 줄만 남긴다.
+        // 「꺼짐」 판정: 허브 `source`가 "none"(조사 서비스 응답에 `activity` 키가 없었다 — 기록 꺼짐·구버전)이고
+        // 갱신 실패가 아닐 때만. 첫 프레임 전("")·"live"·갱신 실패는 「아직 기록 없음」.
+        function paintLog(tab) {
+            var d = tab.dom;
+            var n = tab.log.rows.length;
+            var off = !n && tab.source === "none" && !tab.pollError;
+            var marks = [];
+            var notes = [];
+            if (!n) notes.push(off ? TEXT.logOffLine : TEXT.logWaitLine);
+            if (tab.truncated) { marks.push(TEXT.logMarks.truncated); notes.push(TEXT.truncated); }
+            if (tab.log.clipped) { marks.push(TEXT.logMarks.clipped); notes.push(TEXT.clipped); }
+            if (tab.source === "archive") { marks.push(TEXT.logMarks.archive); notes.push(TEXT.archive); }
+            d.secs.log.title.textContent = fill(TEXT.logCount, { n: n });
+            d.secs.log.info.textContent = (n ? [] : [off ? TEXT.logOff : TEXT.logWait]).concat(marks).join(" · ");
+            d.logNote.textContent = notes.join(" ");
+            d.logBar.hidden = !n;
+            d.rows.hidden = !n;
         }
 
         // ── (W20) 조사 흐름 ──
@@ -1504,9 +1934,10 @@
         function flowSource(tab) {
             var v = tab.view || {};
             var fin = isObj(v.briefing) && isObj(v.briefing.playbook) ? v.briefing.playbook : null;
-            if (tab.done && fin) return { sections: fin.sections, synthesis: fin.synthesis };
+            if (tab.done && fin) return { sections: fin.sections, synthesis: fin.synthesis, scope: fin.scope,
+                deepDive: v.briefing.deep_dive };
             var part = isObj(tab.partial) && isObj(tab.partial.playbook) ? tab.partial.playbook : null;
-            return { sections: part ? part.sections : [], synthesis: null };
+            return { sections: part ? part.sections : [], synthesis: null, scope: null, deepDive: null };
         }
 
         function toggler(tab, key, closedText, openText, target) {
@@ -1524,11 +1955,14 @@
             return btn;
         }
 
+        // (plans/199 W5b) 기능 켜짐이면 열 머리·지표 이름 등을 공용 렌더의 용어 표로(모르는 열·값은 원문 · 꺼짐은 종전 그대로)
         function tableNode(table) {
             var t = el("table", "dv-card-table");
             var cols = table.columns.map(String);
+            var bv = root.BriefingView;
+            var terms = optOn(opts.summaryView) && bv && typeof bv.termColumn === "function" ? bv : null;
             var hr = el("tr");
-            cols.forEach(function (c) { hr.appendChild(el("th", null, c)); });
+            cols.forEach(function (c) { hr.appendChild(el("th", null, terms ? terms.termColumn(c) : c)); });
             var thead = el("thead");
             thead.appendChild(hr);
             t.appendChild(thead);
@@ -1537,9 +1971,9 @@
                 if (isObj(row)) row = cols.map(function (c) { return row[c]; });
                 if (!Array.isArray(row)) return;
                 var tr = el("tr");
-                row.forEach(function (v) {
+                row.forEach(function (v, i) {
                     var text = v === null || v === undefined ? "—" : typeof v === "object" ? JSON.stringify(v) : String(v);
-                    tr.appendChild(el("td", null, text));
+                    tr.appendChild(el("td", null, (terms && terms.termValue(cols[i], v)) || text));
                 });
                 body.appendChild(tr);
             });
@@ -1576,7 +2010,22 @@
             return div;
         }
 
-        function cardNode(tab, m) {
+        // (plans/195 W3 · P1) 「질의응답에서 확인」 — 공용 노드(BriefingView.requeryList). 조회는 app.js가 주입한
+        // 인계(`opts.stagePrompt`)만 부른다(이 화면은 GET만 — 전송·접수 함수는 주입 · D-003). 없으면 복사만 남는다.
+        function requeryNode(tab, items) {
+            var bv = root.BriefingView;
+            if (!bv || !bv.requeryList || !items || !items.length) return null;
+            var box = el("div", "dv-requery");
+            box.appendChild(el("div", "dv-label dv-requery-head", bv.RQ_TEXT.head));
+            box.appendChild(bv.requeryList(doc, items, {
+                stage: opts.stagePrompt ? function (prompt) { opts.stagePrompt(tab.id, prompt); } : null,
+                busy: opts.busy || null,
+                clipboard: deps.clipboard,
+            }));
+            return box;
+        }
+
+        function cardNode(tab, m, host, rq) {
             var li = el("li", "dv-card" + (m.skipped ? " dv-card--skip" : "") + (m.running ? " dv-card--running" : "") +
                 (m.warn ? " dv-card--warn" : ""));
             li.setAttribute("data-step", m.step);
@@ -1587,6 +2036,11 @@
                 head.appendChild(el("span", "dv-card-title", fill(TEXT.skipTitle, { title: m.title }) + " — " +
                     (m.because || TEXT.skipNoReason)));
                 li.appendChild(head);
+                detailNode(tab, m, li);
+                if (host) {
+                    var hn = hostNode(tab, host);
+                    if (hn) li.appendChild(hn);
+                }
                 return li;
             }
             head.appendChild(el("span", "dv-card-title", m.title));
@@ -1624,13 +2078,181 @@
                 } else if (m.opinion.status === "pending") {
                     op.textContent = TEXT.opinionPending;
                 } else {
-                    op.textContent = fill(TEXT.opinionNone, { reason: m.opinion.reason || TEXT.opinionNoneReason });
+                    op.textContent = fill(TEXT.opinionNone, { reason: statusWords(m.opinion.reason) || TEXT.opinionNoneReason });
                 }
                 line(dl, TEXT.cardOpinion, op);
             }
             if (dl.children.length) li.appendChild(dl);
+            // 196 후보 블록(선택 대기 단계 — `host`)이 붙는 카드에는 그리지 않는다
+            var rqBox = host ? null : requeryNode(tab, rq);
+            if (rqBox) li.appendChild(rqBox);
             cautionNode(tab, "note:" + m.step, m.notes, li);
+            detailNode(tab, m, li);
             return li;
+        }
+
+        // (plans/196 D6) 운영자 상세 — 서버가 운영자 뷰에만 싣는 `reason_detail`(필드명·내부 사유)을 펼침으로만
+        function detailNode(tab, m, parent) {
+            if (!m.detail) return;
+            var box = el("div", "dv-detail", m.detail);
+            parent.appendChild(toggler(tab, "detail:" + m.step, TEXT.detailBtn, TEXT.detailBtn, box));
+            parent.appendChild(box);
+        }
+
+        // ── (plans/196 §1.1 ② · §5.5) 폴스타 서버 선택 — 404(기능 꺼짐)면 아무것도 그리지 않는다 ──
+        function hostOf(tab) {
+            if (!tab.host) tab.host = { state: "", body: null, error: "", open: false, pick: -1, input: "", msg: "", warn: false, busy: false, sent: false };
+            return tab.host;
+        }
+
+        function loadHostCandidates(tab) {
+            var h = hostOf(tab);
+            if (h.state === "loading") return;
+            h.state = "loading";
+            getJSON(API + "/" + encodeURIComponent(tab.id) + "/host-candidates").then(function (res) {
+                if (res.status === 404) h.state = "off";
+                else if (!res.ok) { h.state = "error"; h.error = reasonOf(res); }
+                else { h.state = "ok"; h.body = res.body; h.pick = -1; }
+            }, function (err) {
+                h.state = "error";
+                h.error = (err && err.message) || String(err || "");
+            }).then(function () { if (tabs[tab.id]) renderFlow(tab); });
+        }
+
+        function hostNode(tab, host) {
+            var h = hostOf(tab);
+            // 저장 경로(`opts.linkHost`)가 없거나 기능이 꺼졌으면(404) 선택 UI를 그리지 않는다
+            if (h.state === "off" || !opts.linkHost) return null;
+            var T = TEXT.host;
+            var box = el("div", "dv-host");
+            if (host.mode !== "wait") {
+                if (host.mode === "linked") box.appendChild(el("div", "dv-host-basis", T.linkedHead + " — " + host.basis));
+                // (D-355 ④) 노드 주소 자동 연결은 파드 — 서버를 바꿔 저장해도 다음 재기동에 무효라 [연결 변경]을 두지 않는다
+                if (host.mode === "linked" && HOST_NODE_RE.test(host.basis)) return box;
+                if (!h.open) {
+                    var change = el("button", "dv-host-change", T.change);
+                    change.type = "button";
+                    change.addEventListener("click", function () {
+                        h.open = true;
+                        loadHostCandidates(tab);
+                        renderFlow(tab);
+                    });
+                    box.appendChild(change);
+                    return box;
+                }
+            } else if (!h.state) {
+                loadHostCandidates(tab);
+            }
+            if (h.state === "loading" || !h.state) {
+                box.appendChild(el("div", "dv-note", T.loading));
+                return box;
+            }
+            if (h.state === "error") {
+                box.appendChild(el("div", "dv-note dv-note--warn", fill(T.failed, { reason: h.error })));
+                return box;
+            }
+            var b = isObj(h.body) ? h.body : {};
+            var cands = asList(b.candidates).filter(isObj);
+            box.appendChild(el("div", "dv-host-intro", b.hostname ? fill(T.intro, { hostname: b.hostname }) : T.introNoHost));
+            if (cands.length) {
+                var list = el("div", "dv-host-cands");
+                list.setAttribute("role", "radiogroup");
+                cands.forEach(function (c, i) {
+                    var row = el("label", "dv-host-cand");
+                    var radio = el("input", "dv-host-radio");
+                    radio.type = "radio";
+                    radio.name = "dv-host-" + tab.id;
+                    radio.checked = h.pick === i;
+                    radio.disabled = h.busy || h.sent;
+                    radio.addEventListener("change", function () { h.pick = i; });
+                    row.appendChild(radio);
+                    row.appendChild(el("span", "dv-host-grade", c.grade || ""));
+                    row.appendChild(el("span", "dv-host-name", c.server_name || c.hostname || ""));
+                    var meta = [c.hostname && c.hostname !== c.server_name ? c.hostname : "", c.ipaddress, c.db_id]
+                        .filter(Boolean).join(" · ");
+                    if (meta) row.appendChild(el("span", "dv-meta", meta));
+                    var why = asList(c.reasons).map(String).filter(Boolean).join(" · ");
+                    if (why) row.appendChild(el("span", "dv-host-why", why));
+                    list.appendChild(row);
+                });
+                box.appendChild(list);
+            } else {
+                box.appendChild(el("div", "dv-note", T.empty));
+                var field = el("label", "dv-host-field");
+                field.appendChild(el("span", null, T.inputLabel));
+                var input = el("input", "dv-host-input");
+                input.type = "text";
+                input.value = h.input;
+                input.disabled = h.busy || h.sent;
+                input.addEventListener("input", function (e) { h.input = String((e && e.target && e.target.value) || ""); });
+                field.appendChild(input);
+                box.appendChild(field);
+            }
+            asList(b.unchecked).filter(isObj).forEach(function (u) {
+                box.appendChild(el("div", "dv-note dv-note--warn", fill(T.unchecked, { db_id: u.db_id || "-", reason: u.reason || "" })));
+            });
+            var actions = el("div", "dv-host-actions");
+            [["select", T.rerun], ["none", T.absent]].forEach(function (a) {
+                var btn = el("button", "dv-host-" + a[0], a[1]);
+                btn.type = "button";
+                btn.disabled = h.busy || h.sent;
+                btn.addEventListener("click", function () { submitHost(tab, a[0]); });
+                actions.appendChild(btn);
+            });
+            box.appendChild(actions);
+            if (h.msg) box.appendChild(el("div", "dv-note" + (h.warn ? " dv-note--warn" : ""), h.msg));
+            return box;
+        }
+
+        function submitHost(tab, action) {
+            var h = hostOf(tab);
+            if (h.busy || h.sent) return;
+            var T = TEXT.host;
+            var body = { action: action };
+            if (action === "select") {
+                var cands = asList(isObj(h.body) ? h.body.candidates : null).filter(isObj);
+                var c = cands[h.pick];
+                var typed = String(h.input || "").trim();
+                if (c) {
+                    body.db_id = c.db_id;
+                    body.server_name = c.server_name;
+                    body.hostname = c.hostname;
+                } else if (!cands.length && typed) {
+                    body.server_name = typed;
+                } else {
+                    h.msg = T.pick;
+                    h.warn = true;
+                    renderFlow(tab);
+                    return;
+                }
+            }
+            h.busy = true;
+            h.msg = T.sending;
+            h.warn = false;
+            renderFlow(tab);
+            Promise.resolve().then(function () { return opts.linkHost(tab.id, body); }).then(function (res) {
+                res = res || {};
+                res.body = isObj(res.body) ? res.body : {};
+                h.busy = false;
+                if (res.status === 404) { h.state = "off"; return; }
+                if (!res.ok) {
+                    var d = res.body.detail;
+                    var code = isObj(d) ? String(d.code || "") : "";
+                    h.msg = T.codes[code] || fill(T.sendFailed, { reason: reasonOf(res) });
+                    h.warn = true;
+                    return;
+                }
+                h.sent = true;
+                var link = isObj(res.body.link) ? res.body.link : {};
+                if (action === "none") { h.msg = T.absentOk; return; }
+                h.msg = T.rerunOk + (link.state === "pending" ? " " + T.pending : "");
+                var next = res.body.investigation_id ? String(res.body.investigation_id) : "";
+                if (next) open(next);
+            }, function (err) {
+                h.busy = false;
+                h.msg = fill(T.sendFailed, { reason: (err && err.message) || String(err || "") });
+                h.warn = true;
+            }).then(function () { if (tabs[tab.id]) renderFlow(tab); });
         }
 
         function roundNode(tab, r) {
@@ -1661,12 +2283,32 @@
             var src = flowSource(tab);
             var model = flowModel(tab.flow.events, src.sections, {
                 done: tab.done, synthesis: src.synthesis, alarmTime: isObj(tab.alarm) ? tab.alarm.alarm_time : null,
+                deepDive: src.deepDive,
             });
-            tab.dom.sofarText.textContent = model.sofar || TEXT.sofarNone;
+            tab.dom.sofarText.textContent = model.sofar || (model.sofarAi ? "" : TEXT.sofarNone);
+            // (plans/196 D7 · Q4) 플레이북 판정이 없을 때만 HolmesGPT 요약 — 「AI 판단 — 검증 전」 표지(G-48)
+            var ai = tab.dom.sofarAi;
+            ai.textContent = "";
+            ai.hidden = !model.sofarAi;
+            if (model.sofarAi) {
+                ai.appendChild(el("span", "dv-ai-badge", TEXT.holmesJudge));
+                ai.appendChild(el("span", "dv-sofar-ai-text", model.sofarAi));
+            }
+            var host = tab.done ? hostLinkState(model.cards, src.scope) : null;
+            var rq = requeryByStep(tab.view);
             var body = tab.dom.flowBody;
             body.textContent = "";
+            if (host && host.mode === "linked") {
+                var hostBox = hostNode(tab, host);
+                if (hostBox) body.appendChild(hostBox);
+            }
             var groups = [];
-            if (model.cards.length) groups.push(["playbook", model.cards.map(function (m) { return cardNode(tab, m); })]);
+            if (model.cards.length) {
+                groups.push(["playbook", model.cards.map(function (m) {
+                    return cardNode(tab, m, host && host.step && host.step === m.step ? host : null,
+                        rq ? rq[String(m.step)] : null);
+                })]);
+            }
             if (model.holmes.length) groups.push(["holmes", model.holmes.map(function (r) { return roundNode(tab, r); })]);
             groups.forEach(function (g) {
                 // 두 엔진이 함께 돌면 엔진별 줄을 나눈다(parallel)
@@ -1689,6 +2331,8 @@
 
         function renderTabHead(tab) {
             if (!tab.dom) return;
+            // (plans/199 W5a) 기능 조회가 늦게 와도 다음 머리 갱신(5초 틱·탭 선택)에서 배치를 맞춘다
+            if (applyLayout(tab)) renderPartial(tab);
             var v = tab.view || {};
             tab.dom.title.textContent = tabLabel(tab);
             renderTarget(tab);
@@ -1698,13 +2342,17 @@
             var bv = root.BriefingView;
             if (tab.done) parts.push(bv ? bv.statusChip(v.status ? v : { status: tab.status }).text : tab.status);
             else parts.push(statusText({ phase: tab.phase, queue_position: tab.queue, status: tab.status }));
-            var elapsed = liveElapsed(tab.elapsed, tab.elapsedAt);
+            // (plans/196 D5) 종결이면 서버 최종 경과 그대로 — 받은 뒤 흐른 시간을 더하지 않는다(renderTabButton과 대칭)
+            var elapsed = tab.done ? fmtElapsed(tab.elapsed === null ? NaN : tab.elapsed) : liveElapsed(tab.elapsed, tab.elapsedAt);
             if (elapsed) parts.push(elapsed);
             if (!tab.done && !tab.denied) parts.push(connText(conn, now()));
             tab.dom.meta.textContent = parts.filter(Boolean).join(" · ");
             var warn = tab.denied || tab.error || (tab.pollError ? fill(TEXT.pollError, { reason: tab.pollError }) : "");
             tab.dom.warn.textContent = warn;
             tab.dom.warn.hidden = !warn;
+            // (plans/199 W5a) 갱신 실패 표지는 SSE `poll_error`·목록 항목(`summary`·15초 강등 조회의 `/active`)으로도
+            // 바뀐다 — 실행 기록 머리의 「꺼짐」 판정(paintLog)이 머리 갱신마다 따라가게 한다(꺼짐 배치는 종전 그대로)
+            if (tab.dom.layout !== "off") paintLog(tab);
         }
 
         // (plans/187 W17) 어떤 알람·대상을 왜 조사하는지 — 알람 요약 · 채팅 경로 · 플레이북 선택/HolmesGPT 이유
@@ -1716,12 +2364,23 @@
                 lines.push({ head: TEXT.alarmHead, text: TEXT.alarmUnknown });
             }
             tab.why.forEach(function (w) { lines.push({ head: TEXT.whyHead, text: w.text }); });
+            if (tab.dom.layout !== "off") lines = foldWhy(lines);   // (plans/199 W5a · §3.8) 「조사 이유」 1줄
             box.textContent = "";
             lines.forEach(function (line) {
                 box.appendChild(el("dt", null, line.head));
-                box.appendChild(el("dd", null, line.text));
+                var dd = box.appendChild(el("dd", null, line.text));
+                if (line.more) whyMoreNode(tab, dd, line.more);
             });
             box.hidden = !lines.length;
+        }
+
+        // 접힌 「조사 이유」 나머지 줄 — [외 n줄 ▸]로 펼친다(펼침은 탭 안에서 유지)
+        function whyMoreNode(tab, dd, more) {
+            var rest = el("div", "dv-why-more");
+            more.forEach(function (text) { rest.appendChild(el("div", null, text)); });
+            var n = { n: more.length };
+            dd.appendChild(toggler(tab, "why", fill(TEXT.whyMore, n), fill(TEXT.whyLess, n), rest));
+            dd.appendChild(rest);
         }
 
         function renderFilters(tab) {
@@ -1780,6 +2439,7 @@
 
         function renderRows(tab) {
             if (!tab.dom) return;
+            applyLayout(tab);
             var list = tab.dom.rows;
             var keep = list.scrollTop;
             list.textContent = "";
@@ -1788,6 +2448,13 @@
                 return tab.filter[r.engine] !== false;
             });
             shown.forEach(function (r) { list.appendChild(rowNode(tab, r)); });
+            if (tab.dom.layout !== "off") {
+                // (plans/199 W5a) 접혀 있어도 행·건수는 늘 갱신한다 — 자동 스크롤만 펼쳤을 때
+                paintLog(tab);
+                list.scrollTop = tab.autoScroll && secOpen(tab, "log") ? 0 : keep;
+                renderFilters(tab);
+                return;
+            }
             var notes = [];
             if (!tab.log.rows.length) notes.push(TEXT.logEmpty);
             if (tab.truncated) notes.push(TEXT.truncated);
@@ -1800,21 +2467,32 @@
 
         function renderPartial(tab) {
             if (!tab.dom || tab.done) return;
+            applyLayout(tab);
             var bv = root.BriefingView;
             var body = tab.dom.partBody;
+            // (plans/199 W1·W5a) 기능 켜짐이면 진척형 「한눈에 보기」는 맨 위 자기 칸에 1번만 — 중간 결과 칸은 카드 없이 상세형
+            var sum = tab.dom.layout !== "off" ? tab.dom.sumBox : null;
             if (bv && bv.hasPlaybook({ partial_briefing: tab.partial })) {
-                // 공용 상세형 렌더(자체 이스케이프) — 끝난 단계부터 그린다(새 렌더 0)
-                body.innerHTML = bv.renderBody({
+                var partView = {
                     status: tab.status || "running", investigation_id: tab.id,
                     partial_briefing: tab.partial, progress: tab.progress,
-                }, { mode: "detail", runningText: TEXT.partialRunning });
+                };
+                if (sum) {
+                    sum.innerHTML = bv.summaryCardHtml(bv.summaryModel(partView));   // 공용 렌더(자체 이스케이프)
+                    sum.hidden = !sum.innerHTML;
+                }
+                // 공용 상세형 렌더(자체 이스케이프) — 끝난 단계부터 그린다(새 렌더 0)
+                body.innerHTML = bv.renderBody(partView, { mode: "detail", runningText: TEXT.partialRunning });
                 return;
             }
+            if (sum) { sum.textContent = ""; sum.hidden = true; }
             body.textContent = tab.engines.playbook ? TEXT.partialEmpty : fill(TEXT.toolsOnly, { n: tab.log.tools });
         }
 
         function renderFinal(tab, view) {
-            if (!tab.dom || tab.finalPanel) return;
+            if (!tab.dom) return;
+            applyLayout(tab);
+            if (tab.finalPanel) return;
             var bv = root.BriefingView;
             tab.dom.partBox.hidden = true;
             tab.dom.finalBox.hidden = false;
@@ -1825,8 +2503,129 @@
                 render: { mode: "detail" },
                 onOpenConversation: opts.onOpenConversation,
                 analyze: opts.analyzeFor ? opts.analyzeFor(tab.id, view, tab.alarmId) : null,
+                summaryView: opts.summaryView,   // (plans/199 W1) 함수면 렌더 시점에 평가된다
             });
             tab.finalPanel.open();
+            if (view.status === "done") loadFinalExtras(tab);
+        }
+
+        // (plans/198 교정) 옵션 값 — 함수면 호출 시점의 값(app.js가 기능 조회 결과를 늦게 받는다)
+        function optOn(value) {
+            return typeof value === "function" ? !!value() : !!value;
+        }
+
+        // 완료 조사 하단 두 상자 — 응답이 다 온 뒤 「실제 원인」 → 「비슷한 과거 조사」 순으로 붙인다
+        // (응답 도착 순서와 무관하게 순서 고정).
+        function loadFinalExtras(tab) {
+            Promise.all([loadCauseLabel(tab), loadSimilar(tab)]).then(function (renders) {
+                if (!tabs[tab.id] || !tab.dom) return;
+                renders.forEach(function (render) { if (render) render(); });
+            });
+        }
+
+        // ── (plans/198 W7 I-8) 「비슷한 과거 조사」 ──
+        // `similar` 옵션이 켜져 있을 때만 조회한다(app.js는 기능 조회 `investigation_memory_enabled`를
+        // 넘긴다 — 꺼져 있으면 요청 0). 404(기능 꺼짐)·403이면 아무것도 그리지 않는다.
+        // 그리기 함수를 돌려주고 붙이는 순서는 `loadFinalExtras`가 정한다.
+        function loadSimilar(tab) {
+            if (!optOn(opts.similar) || tab.similarLoaded) return null;
+            tab.similarLoaded = true;
+            return getJSON(API + "/" + encodeURIComponent(tab.id) + "/similar").then(function (res) {
+                if (!res.ok) return null;
+                return function () { renderSimilar(tab, res.body); };
+            }, function () { return null; });
+        }
+
+        function renderSimilar(tab, data) {
+            var T = TEXT.similar;
+            var box = el("div", "dv-similar");
+            box.appendChild(el("span", "dv-label", T.head));
+            var items = asList(data.items).filter(isObj);
+            if (!items.length) box.appendChild(el("div", "dv-note", T.empty));
+            var list = el("ul", "dv-similar-list");
+            items.forEach(function (item) {
+                var row = el("li", item.labeled ? "dv-similar-item" : "dv-similar-item dv-similar-open", similarText(item));
+                row.title = String(item.investigation_id || "");
+                list.appendChild(row);
+            });
+            if (items.length) box.appendChild(list);
+            box.appendChild(el("div", "dv-note", T.notice));
+            tab.dom.finalBox.appendChild(box);
+            tab.dom.similar = box;
+        }
+
+        // ── (plans/198 W0 I-1) 「실제 원인」 1줄 ──
+        // 쓰기 경로(`saveCauseLabel`)가 주입되고 `causeLabel` 옵션이 켜져 있을 때만 조회한다(옵션 미지정은
+        // 켜짐 — app.js는 기능 조회 `investigation_label_enabled`를 넘긴다). 404(기능 꺼짐)·403(조회 권한
+        // 없음)·labelable=false(요청자·관리자 아님 또는 완료 아님)면 아무것도 그리지 않는다 — 꺼져 있으면
+        // 화면이 종전과 같다. 그리기 함수를 돌려주고 붙이는 순서는 `loadFinalExtras`가 정한다.
+        function loadCauseLabel(tab) {
+            if (!opts.saveCauseLabel || tab.causeLoaded) return null;
+            if (opts.causeLabel !== undefined && !optOn(opts.causeLabel)) return null;
+            tab.causeLoaded = true;
+            return getJSON(API + "/" + encodeURIComponent(tab.id) + "/cause-label").then(function (res) {
+                if (!res.ok || !res.body.labelable) return null;
+                return function () { renderCauseLabel(tab, res.body); };
+            }, function () { return null; });
+        }
+
+        function renderCauseLabel(tab, data) {
+            var T = TEXT.cause;
+            var ranks = asList(data.hypothesis_ranks).map(Number).filter(function (n) { return n >= 1; });
+            var box = el("div", "dv-cause");
+            box.appendChild(el("span", "dv-label", T.head));
+            var verdict = el("select", "dv-cause-verdict");
+            [["", T.choose]].concat(asList(data.verdicts).filter(function (v) {
+                if (v === "top1") return ranks.indexOf(1) >= 0;
+                if (v === "ranked") return ranks.some(function (n) { return n >= 2; });
+                return !!T.verdicts[v];
+            }).map(function (v) { return [v, T.verdicts[v]]; })).forEach(function (o) {
+                var opt = el("option", null, o[1]);
+                opt.value = o[0];
+                verdict.appendChild(opt);
+            });
+            var rank = el("select", "dv-cause-rank");
+            ranks.filter(function (n) { return n >= 2; }).forEach(function (n) {
+                var opt = el("option", null, fill(T.rank, { n: n }));
+                opt.value = String(n);
+                rank.appendChild(opt);
+            });
+            var note = el("input", "dv-cause-note");
+            note.type = "text";
+            note.placeholder = T.notePlaceholder;
+            // 서버 자유 서술 상한(note_max_chars — 추가 조사 보충 한 줄과 같은 설정값)과 같은 길이 제한
+            var noteMax = Number(data.note_max_chars);
+            if (noteMax >= 1) note.maxLength = noteMax;
+            var save = el("button", "dv-cause-save", T.save);
+            save.type = "button";
+            var msg = el("span", "dv-cause-msg");
+            function sync() {
+                rank.hidden = verdict.value !== "ranked";
+                note.hidden = verdict.value !== "not_listed";
+            }
+            verdict.addEventListener("change", sync);
+            save.addEventListener("click", function () {
+                if (!verdict.value) { msg.textContent = T.pick; return; }
+                var body = { verdict: verdict.value };
+                if (verdict.value === "ranked") body.rank = Number(rank.value);
+                if (verdict.value === "not_listed" && String(note.value || "").trim()) body.note = String(note.value);
+                save.disabled = true;
+                msg.textContent = T.sending;
+                Promise.resolve().then(function () { return opts.saveCauseLabel(tab.id, body); }).then(function (res) {
+                    res = res || {};
+                    res.body = isObj(res.body) ? res.body : {};
+                    msg.textContent = res.ok ? fill(T.saved, { text: causeLabelText(res.body) })
+                        : fill(T.failed, { reason: reasonOf(res) });
+                }, function (err) {
+                    msg.textContent = fill(T.failed, { reason: (err && err.message) || String(err || "") });
+                }).then(function () { save.disabled = false; });
+            });
+            if (isObj(data.label)) msg.textContent = fill(T.current, { text: causeLabelText(data.label) });
+            [verdict, rank, note, save, msg].forEach(function (n) { box.appendChild(n); });
+            box.appendChild(el("div", "dv-note", T.hint));
+            sync();
+            tab.dom.finalBox.appendChild(box);
+            tab.dom.cause = box;
         }
 
         function select(id) {
@@ -2259,12 +3058,18 @@
         eventRow: eventRow,
         mergeEvents: mergeEvents,
         whyLines: whyLines,
+        foldWhy: foldWhy,
         searchQuery: searchQuery,
         stepPurposes: stepPurposes,
         targetLines: targetLines,
         conversationHeadLines: conversationHeadLines,
         flowModel: flowModel,
         opinionOf: opinionOf,
+        hostLinkState: hostLinkState,
+        requeryByStep: requeryByStep,
+        causeLabelText: causeLabelText,
+        similarText: similarText,
+        statusWords: statusWords,
         conflictsWithSynthesis: conflictsWithSynthesis,
         watchParam: watchParam,
         connText: connText,

@@ -16,6 +16,11 @@
   (`S2.pool`·`S2.gc`·`S7.change`). 스텝 ID는 §5.3 스텝 라이브러리 관례(S1 골든 시그널 · S2 런타임·풀
   · S7 변경)를 따른다.
 
+판별 조회(plans/198 I-2 · D-350 ①): 규칙 행의 선택 필드 `discriminators`는 결손 조건마다 그
+조건을 가르는 추가 스텝이다. 1차 평가 뒤 상위 판단 보류 가설(`discriminator_targets`)의 판별
+스텝을 실행기가 1회 돌리고, `reverify_hypotheses`가 그 가설의 조건만 다시 평가한다(규칙만 ·
+LLM 0 · 심층 결과 무관).
+
 대응 순서(`select_actions`)는 플레이북 `response_hints` 키와 런북 `mitigation[].when` 평가로만
 고른다.
 
@@ -24,7 +29,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping, Sequence
+from collections.abc import Collection, Mapping, Sequence
 from dataclasses import dataclass, field, replace
 from typing import Any
 
@@ -45,6 +50,24 @@ TRIAGE_HINT = "triage_first"
 
 
 @dataclass(frozen=True)
+class Discriminator:
+    """판별 스텝 1건(plans/198 I-2) — 결손 조건 하나를 참·거짓으로 가르는 추가 스텝.
+
+    condition: 규칙 `conditions` 원문 하나(그 조건이 결손일 때만 돈다).
+    step:      스텝 ID — 조건 경로의 스텝 ID와 같다(`S2.pool` → `S2` · 보조 사실·판정이 그 ID 아래에
+               실린다). 플레이북에 이미 있는 ID·액션이면 돌지 않는다(재수집은 W22 담당).
+    action:    기존 스텝 라이브러리 액션.
+    args·for_each: 스텝 인자(사건 좌표계 — 실행기의 사건창 그대로).
+    """
+
+    condition: str
+    step: str
+    action: str
+    args: tuple[tuple[str, Any], ...] = ()
+    for_each: str | None = None
+
+
+@dataclass(frozen=True)
 class HypothesisRule:
     """가설 규칙 1행.
 
@@ -53,6 +76,7 @@ class HypothesisRule:
     evidence_steps: 근거 스텝 ID(§5.3 관례 — 실행에 없는 스텝은 호출자가 거른다).
     hints:          대응 제안 키(플레이북 `response_hints`).
     basis:          근거 절.
+    discriminators: 판별 스텝(plans/198 I-2 · 선택 — 비면 판별 조회 없음).
     """
 
     id: str
@@ -62,6 +86,18 @@ class HypothesisRule:
     evidence_steps: tuple[str, ...] = ()
     hints: tuple[str, ...] = ()
     basis: str = ""
+    discriminators: tuple[Discriminator, ...] = ()
+
+
+#: 판별 스텝(plans/198 I-2) — 결손 원인이 「그 스텝이 플레이북에 없음」인 조건만 채운다. 판독
+#: 구조 결손(`db_split` — 게이트웨이가 구조화 필드를 주지 않음)·대상 확정(`scope` — S0는 항상
+#: 첫 단계)·트리거와 같은 스텝의 판독(`service_spread`·`S2.gc`)은 다시 돌려도 같은 결손이라
+#: 두지 않는다. `load_mode`는 유형이 일부러 끈 판독(was.heap `readings: []`)이라 두지 않는다.
+_D_POOL = Discriminator("S2.pool == 'exhausted'", "S2", "apm.runtime_and_pool", for_each="targets")
+_D_DEGRADED = Discriminator(
+    "S1.verdict == 'degraded'", "S1", "apm.golden_signals", for_each="targets"
+)
+_CHANGE_ARGS: tuple[tuple[str, Any], ...] = (("lookback_hours", 24),)
 
 
 #: 가설 규칙표(순서 = 같은 상태 안의 순위). §4.2 마지막 문단 예 2건 · §5.4 예 1건 · §4.1 was.latency
@@ -77,6 +113,7 @@ HYPOTHESIS_RULES: tuple[HypothesisRule, ...] = (
         ("S3", "S2"),
         ("sql_dominant", "connection_acquire"),
         "§5.4 예(S3 SQL 지배 ∧ S2 풀 고갈)",
+        discriminators=(_D_POOL,),  # was.sql 등 S2(풀) 없는 유형 — 풀 사실 결손
     ),
     HypothesisRule(
         "H-POOL-INSTANCE",
@@ -140,6 +177,7 @@ HYPOTHESIS_RULES: tuple[HypothesisRule, ...] = (
         ("S2", "S1"),
         ("gc_dominant",),
         "§4.1 GC 과다 · R-F 누수 의심",
+        discriminators=(_D_DEGRADED,),  # host.memory — S1(골든 시그널) 없음
     ),
     HypothesisRule(
         "H-HEAP-PERIODIC",
@@ -167,6 +205,9 @@ HYPOTHESIS_RULES: tuple[HypothesisRule, ...] = (
         ("S2", "S4", "S6", "S3", "S7"),
         ("recent_change",),
         "R-E 특정 서비스 로직(제니퍼 CPU 사례) · R-H 변경 근접",
+        discriminators=(  # was.active 등 S7(변경 대조) 없는 유형
+            Discriminator("S7.change == 'near'", "S7", "change.recent", _CHANGE_ARGS),
+        ),
     ),
     HypothesisRule(
         "H-CPU-LOGIC",
@@ -176,6 +217,9 @@ HYPOTHESIS_RULES: tuple[HypothesisRule, ...] = (
         ("S2", "S4", "S6", "S3"),
         (),
         "R-E 특정 서비스 로직",
+        discriminators=(
+            Discriminator("S7.change != 'near'", "S7", "change.recent", _CHANGE_ARGS),
+        ),
     ),
     HypothesisRule(
         "H-CPU-LOAD",
@@ -248,6 +292,7 @@ HYPOTHESIS_RULES: tuple[HypothesisRule, ...] = (
         ("S7", "S1"),
         ("recent_change",),
         "§4.1 배포 회귀 · R-H(상관 ≠ 인과)",
+        discriminators=(_D_DEGRADED,),  # was.sql·host.fs·fallback — S1 없음
     ),
 )
 
@@ -328,28 +373,78 @@ def rank_hypotheses(
     for priority, c in enumerate(compiled):
         if c.trigger.evaluate(context) is not Tri.TRUE:
             continue
-        verdicts = [(e.source, e.evaluate(context)) for e in c.conditions]
-        overall = eval_all(c.conditions, context)
-        status = {Tri.TRUE: SUPPORTED, Tri.FALSE: REFUTED}.get(overall, INCONCLUSIVE)
         steps = tuple(s for s in c.rule.evidence_steps if present is None or s in present)
-        found.append(
-            (
-                priority,
-                Hypothesis(
-                    rank=0,
-                    rule_id=c.rule.id,
-                    title=c.rule.title,
-                    status=status,
-                    evidence_steps=steps,
-                    met=tuple(s for s, t in verdicts if t is Tri.TRUE),
-                    unmet=tuple(s for s, t in verdicts if t is Tri.FALSE),
-                    unknown=tuple(s for s, t in verdicts if t is Tri.UNKNOWN),
-                    hints=c.rule.hints,
-                ),
-            )
-        )
+        found.append((priority, _judge(c, context, steps)))
     found.sort(key=lambda ph: (_STATUS_ORDER[ph[1].status], ph[0]))
     return [replace(h, rank=i) for i, (_, h) in enumerate(found, start=1)]
+
+
+def _judge(c: _Compiled, context: Mapping[str, Any], steps: tuple[str, ...]) -> Hypothesis:
+    """판별 조건 3값 평가 → 가설 1건(순위 0 — 호출자가 매긴다)."""
+    verdicts = [(e.source, e.evaluate(context)) for e in c.conditions]
+    overall = eval_all(c.conditions, context)
+    return Hypothesis(
+        rank=0,
+        rule_id=c.rule.id,
+        title=c.rule.title,
+        status={Tri.TRUE: SUPPORTED, Tri.FALSE: REFUTED}.get(overall, INCONCLUSIVE),
+        evidence_steps=steps,
+        met=tuple(s for s, t in verdicts if t is Tri.TRUE),
+        unmet=tuple(s for s, t in verdicts if t is Tri.FALSE),
+        unknown=tuple(s for s, t in verdicts if t is Tri.UNKNOWN),
+        hints=c.rule.hints,
+    )
+
+
+def discriminator_targets(
+    hypotheses: Sequence[Hypothesis],
+    top_n: int,
+    *,
+    rules: Sequence[HypothesisRule] | None = None,
+) -> list[tuple[Hypothesis, tuple[Discriminator, ...]]]:
+    """판별 대상(plans/198 I-2) — 판단 보류 가설 중 순위 상위 `top_n`개와, 각 가설의 결손 조건에
+    걸린 판별 스텝(규칙 행 순서 · 없으면 빈 튜플). 규칙표 밖 가설(고정 가설)은 대상이 아니다."""
+    table = {r.id: r for r in (HYPOTHESIS_RULES if rules is None else rules)}
+    out: list[tuple[Hypothesis, tuple[Discriminator, ...]]] = []
+    for h in hypotheses:
+        if len(out) >= top_n:
+            break
+        rule = table.get(h.rule_id)
+        if h.status != INCONCLUSIVE or rule is None:
+            continue
+        out.append((h, tuple(d for d in rule.discriminators if d.condition in h.unknown)))
+    return out
+
+
+def reverify_hypotheses(
+    hypotheses: Sequence[Hypothesis],
+    context: Mapping[str, Any],
+    rule_ids: Collection[str],
+    *,
+    rules: Sequence[HypothesisRule] | None = None,
+) -> list[Hypothesis]:
+    """판별 조회 뒤 재판정(plans/198 I-2 · 1회) — `rule_ids` 가설의 조건만 `context`로 다시 평가하고
+    순위를 다시 매긴다.
+
+    트리거는 다시 보지 않는다(가설 목록 불변 — 새 가설 0). 나머지 가설의 상태는 1차 평가 그대로다.
+    규칙표 밖 가설(고정 가설)은 맨 앞 순서를 지킨다. `rule_ids`가 비면 입력과 같은 순위다.
+    """
+    compiled = _DEFAULT_COMPILED if rules is None else compile_rules(rules)
+    index = {c.rule.id: (i, c) for i, c in enumerate(compiled)}
+    pinned: list[Hypothesis] = []
+    ranked: list[tuple[int, Hypothesis]] = []
+    for h in hypotheses:
+        hit = index.get(h.rule_id)
+        if hit is None:
+            pinned.append(h)
+            continue
+        priority, c = hit
+        if h.rule_id in rule_ids:
+            h = _judge(c, context, h.evidence_steps)
+        ranked.append((priority, h))
+    ranked.sort(key=lambda ph: (_STATUS_ORDER[ph[1].status], ph[0]))
+    ordered = [*pinned, *(h for _, h in ranked)]
+    return [replace(h, rank=i) for i, h in enumerate(ordered, start=1)]
 
 
 def pin_hypotheses(
@@ -462,6 +557,7 @@ def build_followups(hypotheses: Sequence[Hypothesis], readings: Readings) -> lis
 
 __all__ = [
     "Action",
+    "Discriminator",
     "HYPOTHESIS_RULES",
     "Hypothesis",
     "HypothesisRule",
@@ -472,9 +568,11 @@ __all__ = [
     "TRIAGE_HINT",
     "build_followups",
     "compile_rules",
+    "discriminator_targets",
     "hypothesis_context",
     "is_top_inconclusive",
     "pin_hypotheses",
     "rank_hypotheses",
+    "reverify_hypotheses",
     "select_actions",
 ]

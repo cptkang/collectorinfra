@@ -4,9 +4,13 @@
 돌려준다. 네트워크·프로세스 0, 테스트 간 상태 공유 0(인스턴스마다 독립).
 
 지원 명령
-    ping · get · set(ex, nx) · delete · exists · expire · ttl · hget · hset(key/value · mapping) ·
-    hsetnx · hgetall · hdel · hlen · sadd · smembers · scan_iter(match) · pipeline(execute) ·
-    flushdb · aclose
+    ping · get · set(ex, nx) · incr · delete · exists · expire · ttl · hget ·
+    hset(key/value · mapping) · hsetnx · hincrby · hgetall · hdel · hlen · sadd · smembers ·
+    scan_iter(match) · pipeline(execute · watch/multi 낙관적 트랜잭션) · flushdb · aclose
+
+WATCH는 키 버전으로 흉내 낸다 — 쓰기 명령(만료 포함)마다 그 키의 버전이 오르고, `watch()` 뒤
+`execute()` 시점에 버전이 달라졌으면 `redis.exceptions.WatchError`를 낸다(plans/196). `watch()`
+없이 쓰는 파이프라인은 예전처럼 큐에 모았다가 `execute()`에서 순서대로 실행한다.
 
 사용법 — `RedisSchemaCache`에 붙이기::
 
@@ -35,6 +39,8 @@ import time
 from collections.abc import AsyncIterator
 from typing import Any
 
+from redis.exceptions import WatchError
+
 
 class FakeRedisError(RuntimeError):
     """자료형 불일치(WRONGTYPE) 등 Redis가 오류로 응답할 상황."""
@@ -61,6 +67,7 @@ class FakeAsyncRedis:
     def __init__(self) -> None:
         self._data: dict[str, Any] = {}  # str · dict[str, str](Hash) · set[str](Set)
         self._expire_at: dict[str, float] = {}
+        self._versions: dict[str, int] = {}  # WATCH 판정용 키별 쓰기 버전
         self._clock_offset = 0.0
         self.closed = False
 
@@ -69,11 +76,19 @@ class FakeAsyncRedis:
     def _now(self) -> float:
         return time.monotonic() + self._clock_offset
 
+    def _bump(self, key: str) -> None:
+        self._versions[key] = self._versions.get(key, 0) + 1
+
+    def _version(self, key: str) -> int:
+        self._purge(key)
+        return self._versions.get(key, 0)
+
     def _purge(self, key: str) -> None:
         exp = self._expire_at.get(key)
         if exp is not None and exp <= self._now():
             self._data.pop(key, None)
             self._expire_at.pop(key, None)
+            self._bump(key)
 
     def _get_entry(self, key: str) -> Any:
         self._purge(key)
@@ -125,6 +140,8 @@ class FakeAsyncRedis:
         self.closed = True
 
     async def flushdb(self) -> bool:
+        for key in self._data:
+            self._bump(key)
         self._data.clear()
         self._expire_at.clear()
         return True
@@ -153,11 +170,24 @@ class FakeAsyncRedis:
             return None
         self._data[name] = _to_str(value)
         self._expire_at.pop(name, None)
+        self._bump(name)
         if ex is not None:
             self._expire_at[name] = self._now() + float(ex)
         elif px is not None:
             self._expire_at[name] = self._now() + float(px) / 1000.0
         return True
+
+    async def incr(self, name: str, amount: int = 1) -> int:
+        entry = self._get_entry(name)
+        if entry is not None and not isinstance(entry, str):
+            raise FakeRedisError(_WRONGTYPE)
+        try:
+            value = int(entry or "0") + int(amount)
+        except ValueError as exc:
+            raise FakeRedisError("value is not an integer or out of range") from exc
+        self._data[name] = str(value)
+        self._bump(name)
+        return value
 
     # --- 키 ---
 
@@ -166,6 +196,7 @@ class FakeAsyncRedis:
         for name in names:
             if self._get_entry(name) is not None:
                 count += 1
+                self._bump(name)
             self._data.pop(name, None)
             self._expire_at.pop(name, None)
         return count
@@ -177,6 +208,7 @@ class FakeAsyncRedis:
         if self._get_entry(name) is None:
             return False
         self._expire_at[name] = self._now() + float(time)
+        self._bump(name)
         return True
 
     async def ttl(self, name: str) -> int:
@@ -231,6 +263,7 @@ class FakeAsyncRedis:
             if field not in h:
                 added += 1
             h[field] = _to_str(v)
+        self._bump(name)
         return added
 
     async def hsetnx(self, name: str, key: str, value: Any) -> int:
@@ -240,7 +273,20 @@ class FakeAsyncRedis:
         if field in h:
             return 0
         h[field] = _to_str(value)
+        self._bump(name)
         return 1
+
+    async def hincrby(self, name: str, key: str, amount: int = 1) -> int:
+        h = self._hash(name, create=True)
+        assert h is not None
+        field = _to_str(key)
+        try:
+            value = int(h.get(field, "0")) + int(amount)
+        except ValueError as exc:
+            raise FakeRedisError("hash value is not an integer") from exc
+        h[field] = str(value)
+        self._bump(name)
+        return value
 
     async def hgetall(self, name: str) -> dict[str, str]:
         h = self._hash(name)
@@ -255,6 +301,8 @@ class FakeAsyncRedis:
             if k in h:
                 del h[k]
                 count += 1
+        if count:
+            self._bump(name)
         if not h:
             self._data.pop(name, None)
             self._expire_at.pop(name, None)
@@ -273,6 +321,8 @@ class FakeAsyncRedis:
         assert members is not None
         before = len(members)
         members.update(_to_str(v) for v in values)
+        if len(members) != before:
+            self._bump(name)
         return len(members) - before
 
     async def smembers(self, name: str) -> set[str]:
@@ -281,25 +331,34 @@ class FakeAsyncRedis:
 
     # --- pipeline ---
 
-    def pipeline(self, transaction: bool = True) -> FakePipeline:
+    def pipeline(self, transaction: bool = True, shard_hint: Any = None) -> FakePipeline:
         return FakePipeline(self)
 
 
 class FakePipeline:
-    """명령을 모았다가 `execute()`에서 순서대로 실행한다(redis-py처럼 큐잉 메서드는 self 반환)."""
+    """명령을 모았다가 `execute()`에서 순서대로 실행한다(redis-py처럼 큐잉 메서드는 self 반환).
+
+    `await watch(key…)` 뒤 `multi()` 전까지는 redis-py처럼 즉시 모드다(명령이 바로 실행되고
+    결과를 돌려준다). `execute()` 때 감시 키의 버전이 달라졌으면 큐를 버리고 `WatchError`.
+    """
 
     _QUEUEABLE = frozenset({
-        "get", "set", "delete", "exists", "expire", "ttl",
-        "hget", "hset", "hgetall", "hdel", "hlen",
+        "get", "set", "incr", "delete", "exists", "expire", "ttl",
+        "hget", "hset", "hgetall", "hincrby", "hdel", "hlen",
     })
 
     def __init__(self, redis: FakeAsyncRedis) -> None:
         self._redis = redis
         self._commands: list[tuple[str, tuple, dict]] = []
+        self._watched: dict[str, int] = {}
+        self._watching = False
+        self._explicit = False
 
     def __getattr__(self, name: str) -> Any:
         if name not in self._QUEUEABLE:
             raise AttributeError(name)
+        if self._watching and not self._explicit:
+            return getattr(self._redis, name)  # 즉시 모드 — 코루틴을 돌려준다
 
         def _queue(*args: Any, **kwargs: Any) -> FakePipeline:
             self._commands.append((name, args, kwargs))
@@ -307,9 +366,39 @@ class FakePipeline:
 
         return _queue
 
+    async def watch(self, *names: str) -> bool:
+        if self._explicit:
+            raise FakeRedisError("Cannot issue a WATCH after a MULTI")
+        for name in names:
+            self._watched[name] = self._redis._version(name)
+        self._watching = True
+        return True
+
+    def multi(self) -> None:
+        if self._explicit:
+            raise FakeRedisError("Cannot issue nested calls to MULTI")
+        if self._commands:
+            raise FakeRedisError("Commands without an initial WATCH have already been issued")
+        self._explicit = True
+
+    async def unwatch(self) -> bool:
+        self._watched = {}
+        self._watching = False
+        return True
+
+    async def reset(self) -> None:
+        self._commands = []
+        self._watched = {}
+        self._watching = False
+        self._explicit = False
+
     async def execute(self) -> list[Any]:
+        watched = self._watched
+        commands = self._commands
+        await self.reset()
+        if any(self._redis._version(k) != v for k, v in watched.items()):
+            raise WatchError("Watched variable changed.")
         results = []
-        commands, self._commands = self._commands, []
         for name, args, kwargs in commands:
             results.append(await getattr(self._redis, name)(*args, **kwargs))
         return results
@@ -318,7 +407,7 @@ class FakePipeline:
         return self
 
     async def __aexit__(self, *exc: Any) -> None:
-        self._commands = []
+        await self.reset()
 
 
 def attach_fake_redis(redis_cache: Any, fake: FakeAsyncRedis | None = None) -> FakeAsyncRedis:

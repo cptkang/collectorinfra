@@ -25,6 +25,11 @@ from pydantic import BaseModel, Field
 
 from src.api.admin_audit import log_admin_event as _log_settings_event
 from src.api.dependencies import require_admin_user
+from src.api.duty_area_support import (
+    duty_area_enabled,
+    duty_response_fields,
+    validate_duty_areas,
+)
 from src.api.error_detail import admin_error_detail
 from src.api.settings_catalog import (
     FieldError,
@@ -924,6 +929,8 @@ def _user_audit_fields(user) -> dict[str, Any]:
         "department": user.department,
         "alarm_zones": list(user.alarm_zones) if user.alarm_zones is not None else None,
         "status": user.status.value,
+        # 담당 업무(plans/201 W1) — 바뀐 경우에만 `_changes`에 이전값→새값으로 남는다
+        "duty_areas": list(user.duty_areas) if user.duty_areas is not None else None,
     }
 
 
@@ -970,6 +977,7 @@ async def list_users(
             is_protected=u.is_protected,
             status=u.status.value,
             last_login_at=u.last_login_at.isoformat() if u.last_login_at else None,
+            **duty_response_fields(request, u),
         )
         for u in users
     ]
@@ -1028,6 +1036,10 @@ async def update_user(
     if body.alarm_zones is not None:
         from src.routing.zones import normalize_zones
         user.alarm_zones = normalize_zones(body.alarm_zones)
+    # 담당 업무(plans/201 W1 · D-354) — 권한 아님(보호 계정도 변경 가능).
+    # off면 받아도 무시(현행 동일). 어휘 밖 코드는 422 — 저장 전에 거부한다.
+    if body.duty_areas is not None and duty_area_enabled(request):
+        user.duty_areas = validate_duty_areas(body.duty_areas)
     if body.status is not None:
         new_status = UserStatus(body.status)
         # 관리자를 비활성/잠금으로 바꾸는 것도 접근 회수이므로 동일 가드
@@ -1055,6 +1067,7 @@ async def update_user(
         is_protected=user.is_protected,
         status=user.status.value,
         last_login_at=user.last_login_at.isoformat() if user.last_login_at else None,
+        **duty_response_fields(request, user),
     )
 
 

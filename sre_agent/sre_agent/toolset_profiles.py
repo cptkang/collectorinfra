@@ -9,6 +9,8 @@ allow/deny는 prefix 매칭이므로, 같은 명령의 쓰기 형태가 허용 p
 (예: "ip" 전체 허용 시 "ip link set …"까지 허용됨 → "ip addr show" 등으로 한정).
 """
 
+from collections.abc import Callable, Collection, Iterable
+
 # ══════════════════════════════════════════════════════════════════════
 # 부하 가드 (Plan 78 W2-6·W3-6 · `docs/25_host_investigation_load_guard.md`)
 # ══════════════════════════════════════════════════════════════════════
@@ -239,3 +241,40 @@ def remote_vm_profile() -> dict[str, dict]:
         "prometheus/metrics": {"enabled": False},
         "bash": {"enabled": False},
     }
+
+
+# ══════════════════════════════════════════════════════════════════════
+# 잡 단위 툴셋 좁히기 — 알람 kind별 허용 소스 (plans/198 I-9 · KIND_TOOLSET_NARROWING_ENABLED)
+# ══════════════════════════════════════════════════════════════════════
+#
+# **왜 dict 프로파일(`{"bash": {"enabled": False}}` — D-233)로 하지 않는가**: 조사 에이전트는
+# 잡 사이에 공유되고(`mcp_service._agent_getter`) 프로파일은 생성 시 1회 고정이다. holmes 0.36.0은
+# `mcp_servers`를 toolsets dict에 덮어써(`toolset_manager.py` `self.toolsets.update(mcp_servers)`)
+# MCP 서버를 dict로 끌 수 없고, 폴스타 서버 하나가 `polestar_*`·`prom_*`을 함께 낸다 — 서버 단위로는
+# 프로메테우스만 뺄 수 없다. 그래서 **같은 「끈 것은 LLM에 보이지 않는다」 장치를 도구 이름 단위로**
+# 잡 1회 사본(`diagnosis._with_tool_allowlist`)에 건다. 원본 에이전트·다른 잡은 그대로다.
+
+
+def narrowed_tool_names(
+    tool_names: Iterable[str],
+    allowed_sources: Collection[str],
+    source_of: Callable[[str], str | None],
+) -> frozenset[str]:
+    """허용 소스 밖 관측 도구를 뺀 도구 이름 집합.
+
+    소스를 모르는 도구(`source_of`가 None — 할 일 목록·스킬 문서 등 관측 소스가 아닌 것)는 남긴다 —
+    좁히는 대상은 소스 접두어로 식별되는 관측 도구뿐이다.
+
+    Args:
+        tool_names: 에이전트에 실제 로드된 도구 이름
+        allowed_sources: 이 잡의 허용 소스(예: ``("polestar", "prometheus")``)
+        source_of: 도구 이름 → 소스(접두어 일치 · 없으면 None)
+
+    Returns:
+        이 잡에 남길 도구 이름
+    """
+    allowed = set(allowed_sources)
+    return frozenset(
+        name for name in tool_names
+        if (source := source_of(name)) is None or source in allowed
+    )

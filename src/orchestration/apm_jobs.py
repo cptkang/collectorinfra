@@ -57,7 +57,7 @@ WAIT_MARGIN_SEC = 2.0
 MIN_WAIT_SEC = 1.0
 #: 처리 마감 안에서 작업 상태를 다시 보는 간격(초).
 POLL_INTERVAL_SEC = 1.0
-#: 조기 접수(plans/197 W3 · D-348) — 본체 관측 진행률로 남은 시간을 내기 전 최소 관측 창(초).
+#: 조기 접수(plans/207 W3 · D-358) — 본체 관측 진행률로 남은 시간을 내기 전 최소 관측 창(초).
 EARLY_ACCEPT_MIN_OBSERVE_SEC = 5.0
 #: 게이트웨이 견적 근거(`estimate.basis`) — 실측 호출 소요 반영(남은 시간).
 _BASIS_MEASURED = "measured"
@@ -231,7 +231,7 @@ async def poll_job(
 ) -> dict[str, Any] | None:
     """조회 마감(`until`, monotonic)까지 `apm_job_status`를 다시 본다.
 
-    조기 접수(plans/197 W3 · D-348): 진행 중 상태를 볼 때마다 남은 예상 시간
+    조기 접수(plans/207 W3 · D-358): 진행 중 상태를 볼 때마다 남은 예상 시간
     (`_remaining_estimate`)이 조회 마감까지 남은 시간보다 길면 마감을 기다리지 않고 그 상태 봉투를
     돌려준다 — 호출부는 마감 도달과 같은 접수 답으로 처리한다. 대상 선정용 첫 홉은 마감을 넘기면
     취소하는 규칙이라 `early_accept=False`로 끈다(SPEC §3.8).
