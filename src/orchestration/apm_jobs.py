@@ -57,6 +57,10 @@ WAIT_MARGIN_SEC = 2.0
 MIN_WAIT_SEC = 1.0
 #: 처리 마감 안에서 작업 상태를 다시 보는 간격(초).
 POLL_INTERVAL_SEC = 1.0
+#: 조기 접수(plans/207 W3 · D-358) — 본체 관측 진행률로 남은 시간을 내기 전 최소 관측 창(초).
+EARLY_ACCEPT_MIN_OBSERVE_SEC = 5.0
+#: 게이트웨이 견적 근거(`estimate.basis`) — 실측 호출 소요 반영(남은 시간).
+_BASIS_MEASURED = "measured"
 #: 마감이 묶이지 않은 컨텍스트(CLI 등)의 재확인 예산 — 설정이 없을 때의 처리 상한·서술 예약(초).
 DEFAULT_PROCESSING_SEC = 120.0
 DEFAULT_RESERVE_SEC = 15.0
@@ -188,6 +192,34 @@ def ledger_fields(envelope: Mapping[str, Any]) -> dict[str, Any]:
     return fields
 
 
+def _remaining_estimate(
+    handle: Mapping[str, Any], first: tuple[float, float] | None, now: float,
+) -> float | None:
+    """남은 예상 시간 R(초) — 게이트웨이 `estimate.seconds`와 본체 관측 진행률 중 큰 값.
+
+    게이트웨이 값은 `basis = measured`일 때만 쓴다 — `rate_only`의 seconds는 작업 전체 호출 ÷ 속도
+    (남은 시간이 아니고 호출 지연 미반영)라 곧 끝날 작업까지 조기 접수하게 된다.
+    관측 진행률은 처음 본 (시각, `progress.done`)부터 지금까지의 속도로 남은 호출(total − done)을
+    나눈다 — 관측 창이 `EARLY_ACCEPT_MIN_OBSERVE_SEC` 이상이고 `progress.total`이 있을 때만이고,
+    진행이 없으면(Δdone ≤ 0 — 슬롯 대기 포함) 무한대다. 둘 다 없으면 None(조기 접수하지 않는다).
+    """
+    raw_estimate, raw_progress = handle.get("estimate"), handle.get("progress")
+    estimate = raw_estimate if isinstance(raw_estimate, Mapping) else {}
+    progress = raw_progress if isinstance(raw_progress, Mapping) else {}
+    measured = estimate.get("basis") == _BASIS_MEASURED
+    seconds = _number(estimate.get("seconds"), -1.0) if measured else -1.0
+    candidates = [seconds] if seconds >= 0 else []
+    done = _number(progress.get("done"), -1.0)
+    total = _number(progress.get("total"), -1.0)
+    if first is not None and first[1] >= 0 and done >= 0 and total >= 0:
+        elapsed = now - first[0]
+        if elapsed >= EARLY_ACCEPT_MIN_OBSERVE_SEC:
+            advanced = done - first[1]
+            left = max(0.0, total - done)
+            candidates.append(left / (advanced / elapsed) if advanced > 0 else float("inf"))
+    return max(candidates) if candidates else None
+
+
 async def poll_job(
     session: Any,
     job_id: str,
@@ -195,15 +227,22 @@ async def poll_job(
     *,
     until: float,
     interval: float | None = None,
+    early_accept: bool = True,
 ) -> dict[str, Any] | None:
     """조회 마감(`until`, monotonic)까지 `apm_job_status`를 다시 본다.
 
+    조기 접수(plans/207 W3 · D-358): 진행 중 상태를 볼 때마다 남은 예상 시간
+    (`_remaining_estimate`)이 조회 마감까지 남은 시간보다 길면 마감을 기다리지 않고 그 상태 봉투를
+    돌려준다 — 호출부는 마감 도달과 같은 접수 답으로 처리한다. 대상 선정용 첫 홉은 마감을 넘기면
+    취소하는 규칙이라 `early_accept=False`로 끈다(SPEC §3.8).
+
     Returns:
-        끝난 작업의 상태 봉투 · 게이트웨이 오류 봉투 · 마감까지 진행 중이면 마지막 상태 봉투 ·
-        한 번도 보지 못했으면(마감 지남 · 상태 호출 실패) None.
+        끝난 작업의 상태 봉투 · 게이트웨이 오류 봉투 · 마감까지(조기 접수면 그 시점에) 진행 중이면
+        마지막 상태 봉투 · 한 번도 보지 못했으면(마감 지남 · 상태 호출 실패) None.
     """
     step = POLL_INTERVAL_SEC if interval is None else interval
     last: dict[str, Any] | None = None
+    first: tuple[float, float] | None = None
     while True:
         left = until - time.monotonic()
         if left <= 0:
@@ -225,6 +264,22 @@ async def poll_job(
             return status
         last = status
         if job_state(status) not in LIVE_STATES:
+            return status
+        if not early_accept:
+            continue
+        handle = job_handle(status) or {}
+        raw_progress = handle.get("progress")
+        progress = raw_progress if isinstance(raw_progress, dict) else {}
+        now = time.monotonic()
+        if first is None:
+            first = (now, _number(progress.get("done"), -1.0))
+        remaining_est = _remaining_estimate(handle, first, now)
+        if remaining_est is not None and remaining_est > until - now:
+            logger.info(
+                "APM 작업 조기 접수(job_id=%s): 남은 예상 %.1f초 > 마감까지 %.1f초 · 진행 %s/%s",
+                job_id[:8], remaining_est, until - now, progress.get("done"),
+                progress.get("total"),
+            )
             return status
 
 

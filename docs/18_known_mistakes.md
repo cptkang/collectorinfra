@@ -2405,6 +2405,12 @@
 - **원인**: 「verifier는 제품 코드를 안 고친다」는 것만 보고 회귀를 앞당겼다. 검증 라운드는 교정을 낳을 수 있으므로, 회귀가 재는 대상(작업 트리)이 아직 확정되지 않은 상태였다. 2026-10-30 W4 항목(완료 보고 전 회귀 금지)과 같은 계열이다.
 - **방지책**: 계획 끝 회귀는 **verifier 지적 0(교정 포함 재검증 완료) 뒤에만** 1회 돌린다 — 구현 → 검증 → 교정 → 재검증 → 회귀 순서를 지키고, 검증과 회귀를 병행하지 않는다. 기다리는 동안은 diff 검토·기록 초안처럼 작업 트리를 읽기만 하는 일을 한다.
 
+### 2026-11-02 · (plans/206 · 팀 리드) 계획 끝 `regress.py`가 mcp_server 패키지를 의존성 없는 인터프리터로 돌려 수집 에러 7·건너뜀 404를 [원래 실패]로 귀속하고 종료 코드 0을 냈다
+- **실수**: 계획 끝 회귀 결과(종료 코드 0)만 보면 mcp_server 변경이 패키지 테스트로 검증된 것처럼 보였다. 실제로는 `prometheus_client`·`aiomysql`이 없는 pyenv 3.13.1로 돌아 바뀐 모듈과 직결된 `test_plan163_s1_readonly_hardening.py`·`test_readonly_fixed_sql.py` 등이 수집 단계에서 빠졌고, 기준 SHA에서도 같은 이유로 실패하므로 전부 [원래 실패]로 귀속됐다.
+- **원인**: 이 체크아웃에는 CLAUDE.md가 가정하는 루트 `.venv`가 없다(`../.venv/bin/python` 부재). 도구는 환경 결손을 원래 실패와 구분하지 못한다.
+- **방지책**: 독립 패키지(`mcp_server`·`apm_gateway`)를 바꾼 계획은 회귀 요약의 그 패키지 줄에서 `에러`·`건너뜀` 수를 본다. 수집 에러가 있으면 의존성이 갖춰진 인터프리터로 패키지 테스트를 따로 돌려 보고에 함께 적는다(이번: 형제 체크아웃 venv + `PYTHONPATH=mcp_server` → 1190 passed). 쓴 인터프리터 경로를 보고에 남긴다.
+- **후속(2026-11-02)**: 루트 `.venv`를 만들었다(`python3 -m venv .venv` · `pip install -e ".[dev,document]"` + `aiomysql`·`markdown-it-py`(매뉴얼 빌드) — 둘 다 루트 pyproject에 빠져 있다 · `ibm_db`는 로컬 미설치 유지). 이제 `cd mcp_server && ../.venv/bin/python -m pytest`가 성립한다(1192 passed · 19 skipped · 2 xfailed).
+
 ### 2026-11-02 · (plans/208 W5 · implementer) zsh 글롭 불일치로 `pytest $(ls …)`가 인자 없이 떠 전체 스위트를 `-n 4`로 돌렸다
 - **실수**: 설정 테스트 묶음을 `.venv/bin/python -m pytest $(ls tests/test_api/test_settings*.py tests/test_settings*.py 2>/dev/null) -q -n 4`로 돌렸다. `tests/test_settings*.py`가 없어 zsh가 글롭 불일치로 `ls`를 실패시켰고 명령 대입이 비어, pytest가 인자 없이 저장소 전체를 수집해 `-n 4`로 약 15분 돌았다. 중지(pkill)는 권한 분류기에 막혀 팀 리드도 끝나기를 기다릴 수밖에 없었다(같은 작업 트리에서 다른 검증과 CPU 경합).
 - **원인**: zsh는 일치 없는 글롭을 오류로 처리한다(bash는 글롭 문자열을 그대로 넘긴다). `$(ls …)` 대입이 비면 「인자 없는 pytest = 전체 수집」이 되는데, 출력은 `grep`으로 걸러져 바로 드러나지 않았다.

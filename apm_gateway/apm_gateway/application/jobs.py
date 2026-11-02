@@ -19,6 +19,8 @@ SPEC-apm-question-coverage §3.2~§3.5·§3.7 · D-299 ④).
   있으면 `estimate.seconds = 남은 호출 × max(1/속도, 소스별 소요 이동 평균)`(`basis = measured` ·
   상태 조회마다 다시 계산), 없으면 종전 `api_calls / 속도`(`basis = rate_only` — 호출 지연
   미반영)다(plans/164 W7-B — 순차 호출이라 응답 지연이 속도 간격보다 길면 그쪽이 지배한다).
+  병렬 헬퍼가 동시 폭을 신고한 동안은 호출당 소요를 `min(신고 폭, 소스 동시 상한, 남은 호출)`로
+  나눈다(plans/207 — 신고 없는 직렬 루프는 폭 1 · 실행 전 견적 `estimate_calls`는 직렬 식 그대로).
 - 취소 시 스풀 조각을 지운다(취소한 결과를 전체로 오인하지 않게). 정체 감시 · 재기동 스캔 · 보관
   만료 정리를 한다. 작업 도구는 같은 주체 + 같은 `owner`일 때만 응답한다(아니면 `job_not_found`).
 - 기록에는 인자 원문·토큰·자격증명을 싣지 않는다(대상은 마스킹 요약 · `owner`는 불투명 문자열).
@@ -27,12 +29,13 @@ SPEC-apm-question-coverage §3.2~§3.5·§3.7 · D-299 ④).
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import logging
 import math
 import time
 import uuid
 from collections import deque
-from collections.abc import Awaitable, Callable, Iterable
+from collections.abc import Awaitable, Callable, Iterable, Iterator
 from datetime import datetime
 from typing import Any
 
@@ -236,6 +239,10 @@ class Job(CallScope):
         self.expected_calls = 0
         self.promoted = False
         self.holds_slot = False
+        # 같은 작업의 병렬 호출이 슬롯을 한 번만 받게(plans/207 — 여럿이 받고 하나만 반납하면 누수)
+        self.slot_lock = asyncio.Lock()
+        # 병렬 헬퍼가 신고 중인 동시 폭(겹친 신고는 가장 넓은 폭 · 비면 직렬 = 1)
+        self._parallel_widths: list[int] = []
         self.finalizing = False
         self.cancel_reason: str | None = None
         self.task: asyncio.Task[dict[str, Any]] | None = None
@@ -286,6 +293,20 @@ class Job(CallScope):
     def masked(self, fields: Iterable[str]) -> None:
         self.masked_fields.update(fields)
 
+    @contextlib.contextmanager
+    def parallel(self, width: int) -> Iterator[None]:
+        self._parallel_widths.append(max(1, int(width)))
+        try:
+            yield
+        finally:
+            self._parallel_widths.remove(max(1, int(width)))
+
+    @property
+    def parallel_width(self) -> int:
+        """남은 예상 시간에 쓰는 동시 폭 — 신고 폭(없으면 1)을 소스 동시 상한으로 자른다."""
+        declared = max(self._parallel_widths, default=1)
+        return max(1, min(declared, self._manager.max_in_flight))
+
     @property
     def total_calls(self) -> int:
         return self.api_calls + self.shared_calls
@@ -301,8 +322,9 @@ class Job(CallScope):
         }
 
     def estimate(self) -> dict[str, Any]:
-        """비용 예측 — 실측 소요가 있으면 남은 호출 × 호출당 소요, 없으면 종전 식(`basis`로 구분 ·
-        예상 시간이 없으면 `basis = null`)."""
+        """비용 예측 — 실측 소요가 있으면 남은 호출 × max(속도 간격, 소요 ÷ 동시 폭), 없으면 종전
+        식(`basis`로 구분 · 예상 시간이 없으면 `basis = null`). 동시 폭은 병렬 헬퍼가 신고한 동안만
+        1보다 크다(직렬 루프는 종전 값과 같다)."""
         calls = self.expected_calls or None
         rate = self._manager.rate_per_sec
         measured = [
@@ -311,8 +333,9 @@ class Job(CallScope):
             if s is not None
         ]
         if calls and measured:
-            per_call = max(1.0 / rate if rate > 0 else 0.0, max(measured))
             remaining = max(0, calls - self.api_calls)
+            width = max(1, min(self.parallel_width, remaining))
+            per_call = max(1.0 / rate if rate > 0 else 0.0, max(measured) / width)
             return {
                 "api_calls": calls,
                 "seconds": round(remaining * per_call, 1),
@@ -385,10 +408,13 @@ class JobManager:
         rate_per_sec: float = 0.0,
         clock: Callable[[], float] = time.time,
         on_finish: Callable[[Job], None] | None = None,
+        max_in_flight: int = 1,
     ) -> None:
         self.spool = spool
         self.cfg = cfg
         self.rate_per_sec = float(rate_per_sec)
+        # 예상 시간의 동시 폭 상한(소스 동시 요청 상한 — 비용 예측 속도처럼 보수적인 값)
+        self.max_in_flight = max(1, int(max_in_flight))
         self._envelope = envelope
         self._error_envelope = error_envelope
         self._clock = clock
@@ -409,9 +435,11 @@ class JobManager:
         error_envelope: ErrorEnvelope,
         on_finish: Callable[[Job], None] | None = None,
     ) -> JobManager:
-        """비용 예측 속도 = 설정 소스 중 가장 느린 속도(보수적)."""
+        """비용 예측 속도·동시 폭 상한 = 설정 소스 중 가장 느린 값(보수적)."""
         rates = [s.rate_limit_per_sec for s in cfg.sources if s.rate_limit_per_sec > 0]
         rate = min(rates) if rates else cfg.jennifer.rate_limit_per_sec
+        widths = [s.max_inflight_per_source for s in cfg.sources]
+        width = min(widths) if widths else cfg.jennifer.max_inflight_per_source
         return cls(
             Spool(cfg.jobs.spool_dir),
             cfg.jobs,
@@ -419,6 +447,7 @@ class JobManager:
             error_envelope=error_envelope,
             rate_per_sec=rate,
             on_finish=on_finish,
+            max_in_flight=width,
         )
 
     # ── 실행 ──────────────────────────────────────────────
@@ -608,8 +637,13 @@ class JobManager:
         self._persist(job)
 
     async def wait_slot(self, job: Job) -> None:
-        """어댑터 훅 — 승격 뒤 슬롯이 없으면 다음 API 호출 앞에서 기다린다(queued)."""
-        if job.promoted and not job.holds_slot and job.state in js.LIVE_STATES:
+        """어댑터 훅 — 승격 뒤 슬롯이 없으면 다음 API 호출 앞에서 기다린다(queued). 같은 작업의
+        병렬 호출은 작업 잠금으로 한 번만 받는다(먼저 받은 호출 뒤에는 다시 보고 건너뛴다)."""
+        if not self._needs_slot(job):
+            return
+        async with job.slot_lock:
+            if not self._needs_slot(job):
+                return
             if job.state != js.QUEUED:
                 job.state = js.QUEUED
                 self._persist(job, force=True)
@@ -618,6 +652,10 @@ class JobManager:
             job.state = js.RUNNING
             job.updated_at = self._clock()
             self._persist(job, force=True)
+
+    @staticmethod
+    def _needs_slot(job: Job) -> bool:
+        return job.promoted and not job.holds_slot and job.state in js.LIVE_STATES
 
     def _release(self, job: Job) -> None:
         if job.holds_slot:

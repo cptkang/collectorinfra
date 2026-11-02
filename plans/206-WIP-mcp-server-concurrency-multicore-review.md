@@ -1,10 +1,10 @@
 # 206. MCP 서버(`mcp_server`) 동시성 — 멀티코어 전환 검토 결과 · DB2 연결 풀 · 측정 판정 · 소스별 프로세스 분리
 
 > **작성일**: 2026-11-02 · v3(W1 DB2 연결 풀 기본 on — 사용자 결정) · v2(W1을 확정 Wave로 — 사용자 지시)
-> **상태**: **TODO** — 코드 0건 · W1(DB2 연결 풀 · 기본 on)은 확정 · W2·W3는 W0(폐쇄망 측정) 판정으로 착수 여부를 정한다 · 결정 D-357
-> **계획 시작 SHA**: `16ea44fa`
+> **상태**: **WIP** — W1(DB2 연결 풀 · 기본 on) 구현 완료(2026-11-02 · 커밋 없음) · W0 측정 스크립트 2종 완료 · **잔여**: 폐쇄망 W0 측정(§5)·W1 드라이버 실측(`db2_probe.py` — 배포 전) · W2는 W0 ③ 판정 시 · W3 보류 · 결정 D-357(부기 1)
+> **계획 시작 SHA**: `77bbb4dd`(v1 `16ea44fa` — 2026-11-02 origin/main 병합 뒤 사용자 지시로 재기준 · 두 SHA 사이 `mcp_server/` 차이 0)
 > **관련 결정**: **D-357(이 계획 · W1 기본 on — D-162 예외)** · D-347 ③(소스별 동시 상한 = 풀 크기 · DB2 4 — 유지) · D-356 ④(다중 워커 미채택 — 같은 근거) · D-162(신규 플래그 기본 off) · D-139(패키지 경계 · `mcp_server` 양방향 import 0) · D-181(`mcp<2`) · D-003(읽기 전용) · D-303(회귀)
-> **회귀 대상 파일**: W1 `mcp_server/mcp_server/db.py` · `config.py` · `config_admin_adapter.py` · `mcp_server/config.toml` 주석 / W2 `src/config/`(DBHub 설정) · `src/routing/db_registry.py` · `src/dbhub/client.py` · `sre_agent/sre_agent/settings.py` · `sre_agent/sre_agent/infrastructure/mcp_tool_client.py` · `.env.example`
+> **회귀 대상 파일**: W1 `mcp_server/mcp_server/db.py` · `config.py` · `polestar_exporter.py`(독스트링) · `mcp_server/config.toml` · `mcp_server/.env.example` · `mcp_server/tests/test_plan206_w1_db2_pool.py` · `test_plan206_verify.py` · 매뉴얼 `scripts/manual/content/admin.md` · `scripts/manual/features.yaml` · `src/static/manual/{admin,user}.html` · `help_index.json` / W0 `mcp_server/scripts/bench_cpu.py` · `db2_probe.py` · `mcp_server/tests/test_plan206_w0_scripts.py` / W2 `src/config/`(DBHub 설정) · `src/routing/db_registry.py` · `src/dbhub/client.py` · `sre_agent/sre_agent/settings.py` · `sre_agent/sre_agent/infrastructure/mcp_tool_client.py` · `.env.example`
 
 ---
 
@@ -102,7 +102,7 @@ W0 ③이 포화이고 그 원인이 큰 결과(수천 행 이상) 직렬화로 
 ## 4. 회귀
 
 - 각 Wave: implementer가 자기 테스트(`mcp_server`는 `cd mcp_server && ../.venv/bin/python -m pytest tests/<파일>` · sre_agent는 자체 `.venv`) + `python scripts/regress.py --no-tests --files <바꾼 파일…>`.
-- 계획 끝: team-lead가 `python scripts/regress.py --base 16ea44fa --files <계획이 바꾼 파일…>` + 바꾼 독립 패키지의 패키지 테스트. W2는 `src/config/`를 바꾸므로 `[웨이브 회귀 필요]` 대상이다. 전체 회귀는 사용자 요청 시만.
+- 계획 끝: team-lead가 `python scripts/regress.py --base 77bbb4dd --files <계획이 바꾼 파일…>` + 바꾼 독립 패키지의 패키지 테스트. W2는 `src/config/`를 바꾸므로 `[웨이브 회귀 필요]` 대상이다. 전체 회귀는 사용자 요청 시만.
 
 ## 5. W0 측정표
 
@@ -118,4 +118,13 @@ W0 ③이 포화이고 그 원인이 큰 결과(수천 행 이상) 직렬화로 
 
 ## 8. 결과
 
-(완료 시 기록)
+### 2026-11-02 — W1 · W0 스크립트 (team-lead · 커밋 없음)
+
+- **W1 DB2 연결 풀**(`db.py` `_Db2Pool`): 소스별 `LifoQueue` · 최대 = `effective_max_concurrent()`(DB2 4) · 풀 대기 없음(비면 연결 · 반납 때 가득이면 닫음 — 세마포어 밖 헬스체크 +1 흡수) · 지연 생성 · 꺼낼 때 `active`/유휴 초과 검사 · 실행·`free_stmt` 실패 연결 폐기 · `close_all`(to_thread) · 대여 중 연결은 반납 때 닫힘. `pconnect` 미사용(같은 핸들 공유 위험). off 경로(`pool_enabled = false`)는 기준 SHA와 호출 순서·인자·결과 비트 동일(verifier 일회성 대조).
+- **verifier Minor 교정 4건**: ① 반납 때 유휴 큐 전체 수명 정리(LIFO 밑 연결 무기한 유지 방지) ② 새 연결 autocommit 확인·켜기(API 부재·예외면 경고 후 진행 — `AUTOCOMMIT=0` 환경에서 유휴 연결이 읽기 잠금을 쥐는 것 방지) ③ `readonly=false` DB2 + 풀이면 기동 경고(세션 상태 이월 — `pool_enabled = false` 권장 · 동작 불변) ④ `polestar_exporter.py` 낡은 독스트링.
+- **설정**: `SourceConfig.pool_enabled`(기본 true · D-162 예외 근거 주석) · `pool_idle_seconds`(300) · `_bool_key`(비불리언 ValueError). `config.toml`·`.env.example` 주석.
+- **이탈**: §3 W1의 `config_admin_adapter.py` 등재는 하지 않았다 — 관리 키 표는 env 오버라이드 + 연결 문자열만 다루고 같은 성격의 D-347 소스 키(`max_concurrent_queries`)도 없으며, `config.toml`은 관리 경로에서 읽기 전용(G-3)이다. 되돌리는 비용: 필요해지면 toml 소스 키 표시 체계를 따로 설계해야 한다(이 계획 밖).
+- **W0 스크립트**: `mcp_server/scripts/bench_cpu.py`(§1.2 재현 — 맥북 실측 4.5ms · 44.9ms · 3.3ms · 37.7ms, 계획값과 근사) · `db2_probe.py`(① 스레드 간 순차 사용 + autocommit 현재값 ② `active`·`free_stmt`·`pconnect`·`connect`·`autocommit` 시그니처·상수 ③ `pconnect` 핸들 공유 여부 ④ connect·`active`·실행 비용 — 판정 `(connect − active) / 실행 p50 ≥ 30%`). SQL은 `validate_readonly` 통과분만, 연결 문자열·비밀번호 비출력.
+- **매뉴얼(D-255)**: 관리자 매뉴얼 「조사 시간과 맞물리는 다른 곳의 상한」 표에 `pool_enabled`·`pool_idle_seconds` 행 추가 · `max_concurrent_queries` 문구 갱신 · A-77 anchors · 빌드 · `tests/test_manual` 763 passed.
+- **검증**: 계획 끝 `regress.py --base 77bbb4dd --files <13개>` 종료 코드 0(본체 통과 1,166 · 실패 0 · arch/overfit/config_fallback 통과 · ruff 이번 diff 줄 0 · mypy 대상 없음 · 범위: 모듈 단위 — 전체 미실행). 단 도구의 mcp_server 실행은 pyenv에 `prometheus_client`·`aiomysql`이 없어 수집 에러 7(전부 [원래 실패])·건너뜀 404였으므로, 의존성이 있는 인터프리터로 패키지 전체를 따로 돌렸다 — 교정 뒤 **1190 passed · 19 skipped · 2 xfailed**. 교정 뒤 정적 게이트(`--no-tests` · 15개 파일) 종료 코드 0. verifier Critical·Major 0.
+- **잔여**: ① 폐쇄망에서 `db2_probe.py` 실행 — 특히 ① 스레드 간 순차 사용·`active`/`autocommit` 동작 확인을 **배포 전에**(기본 on이라 배포 즉시 풀 동작 · 이상 시 소스별 `pool_enabled = false`) ② W0 측정(§5) → W2 판정 ③ 첫 배포 때 DB2 측 연결 수(DBA `LIST APPLICATIONS`) 확인 ④ 범위 밖 기존 동작: `query_timeout = 0`·`queue_timeout_seconds` 미기재면 대기 타임아웃 0으로 모든 조회가 `QueryQueueTimeoutError`(기준 SHA 재현 · D-347 영역 — 별도 판단). → **교정 완료(2026-11-02 · D-347 부기)** — `query_timeout ≤ 0`이면 대기 타임아웃 기본 30초.

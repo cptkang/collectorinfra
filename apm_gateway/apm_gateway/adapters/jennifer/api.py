@@ -56,6 +56,10 @@ class JenniferApi:
     def calls_total(self) -> int:
         return self.client.calls_total
 
+    @property
+    def max_in_flight(self) -> int:
+        return self.client.max_in_flight
+
     async def domains(self) -> list[dict[str, Any]]:
         body = await self.client.get_json("/api/domain")
         return [jf.parse_domain(d) for d in jf.result_list(body)]

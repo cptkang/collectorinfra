@@ -25,6 +25,17 @@ holmes는 `tool_calls`가 비면 그 본문을 최종 답으로 받아 조사가
 content를 요약문으로 읽으므로 **변환하지 않는다** — `DefaultLLM.completion`이 tools를 실제로 보내는
 조건(`tools`가 있고 `tool_choice == "auto"`)과 같은 조건일 때만 후처리한다.
 
+**맨 JSON 도구 호출**(폐쇄망 2026-10-30 실측 · D-343 부기 1): content **전체**가 마크업 없는
+JSON 도구 호출(`domain/answer_markup.parse_bare_json_tool_calls` — `{"name","arguments"}` ·
+TodoWrite `todos` 배열)이면 같은 방식으로 `tool_calls` 사본을 만든다. Gemma와 달리 표식이 없어
+오인 여지가 있으므로 두 조건을 더 건다 — ① 이름이 **이번 요청이 실제로 보낸 도구**에 있어야 하고
+② 직전 assistant 턴의 호출과 **똑같으면**(같은 이름·인자 반복 = 진행 없음) 변환하지 않는다
+(루프 방지).
+어느 쪽이든 변환하지 않으면 원본 그대로 → C7(W4)이 미결로 종결한다.
+
+**턴 로그**(도구 호출 점검용): tools를 보낸 호출마다 1줄 — 응답의 도구 호출 경로(`native` 정상
+파싱 · `gemma_markup`·`bare_json` 변환 · `none` 호출 없음 = holmes가 최종 답으로 받음)와 도구 이름.
+
 계층: infrastructure(외부 패키지 어댑터). 상위는 `install_tool_call_markup_guard()`만 부른다.
 """
 
@@ -36,6 +47,7 @@ import logging
 import math
 import re
 import uuid
+from collections.abc import Collection, Sequence
 from typing import Any
 
 from sre_agent.domain.answer_markup import (
@@ -45,6 +57,7 @@ from sre_agent.domain.answer_markup import (
     GEMMA_TOOL_CALL_OPEN,
     has_tool_call_markup,
     markup_log_excerpt,
+    parse_bare_json_tool_calls,
 )
 
 logger = logging.getLogger(__name__)
@@ -203,10 +216,96 @@ def parse_gemma_tool_calls(content: str) -> tuple[list[tuple[str, dict[str, Any]
     return calls, remaining
 
 
-def rewrite_tool_call_markup(response: Any) -> Any:
-    """Gemma 마크업 응답이면 `tool_calls` 사본을, 아니면 **입력 객체 그대로** 돌려준다."""
+def _with_tool_calls(response: Any, calls: list[tuple[str, dict[str, Any]]], remaining: str) -> Any:
+    """`calls`를 OpenAI 형식 tool call로 실은 응답 **사본**(content는 남은 서술 · 없으면 None)."""
+    from litellm.types.utils import ChatCompletionMessageToolCall, Function
+
+    copied = response.model_copy(deep=True)
+    choice = copied.choices[0]
+    choice.message.content = remaining.strip() or None
+    choice.message.tool_calls = [
+        ChatCompletionMessageToolCall(
+            id=f"call_{uuid.uuid4().hex[:24]}",
+            type="function",
+            function=Function(name=name, arguments=json.dumps(args, ensure_ascii=False)),
+        )
+        for name, args in calls
+    ]
+    choice.finish_reason = "tool_calls"
+    return copied
+
+
+def _call_key(name: str, args: object) -> str:
+    return json.dumps([name, args], ensure_ascii=False, sort_keys=True)
+
+
+def _last_assistant_calls(messages: Sequence[Any]) -> set[str]:
+    """직전 assistant 메시지의 tool_calls를 (이름, 인자) 정규화 키 집합으로(없으면 빈 집합)."""
+    for m in reversed(messages):
+        if not isinstance(m, dict) or m.get("role") != "assistant":
+            continue
+        keys: set[str] = set()
+        for tc in m.get("tool_calls") or []:
+            fn = (tc.get("function") if isinstance(tc, dict) else None) or {}
+            raw = fn.get("arguments")
+            try:
+                args = json.loads(raw) if isinstance(raw, str) else raw
+            except ValueError:
+                args = raw
+            keys.add(_call_key(str(fn.get("name")), args))
+        return keys
+    return set()
+
+
+def _rewrite_bare_json(
+    response: Any, content: str, tool_names: Collection[str], messages: Sequence[Any],
+) -> Any:
+    """맨 JSON 도구 호출 content → `tool_calls` 사본.
+
+    조건 불충족이면 입력 그대로(사유는 warning).
+    """
+    calls = parse_bare_json_tool_calls(content)
+    if calls is None:
+        return response
+    names = [name for name, _ in calls]
+    unknown = [n for n in names if n not in tool_names]
+    if unknown:
+        logger.warning(
+            "맨 JSON 도구 호출 미변환 — 이번 요청에 없는 도구 %s(원본 유지 · C7 미결): 원문=%s",
+            unknown, markup_log_excerpt(content))
+        return response
+    if {_call_key(n, a) for n, a in calls} <= _last_assistant_calls(messages):
+        logger.warning(
+            "맨 JSON 도구 호출 미변환 — 직전 턴과 같은 호출 반복"
+            "(도구=%s · 루프 방지 · 원본 유지 · C7 미결)",
+            names)
+        return response
     try:
-        from litellm.types.utils import ChatCompletionMessageToolCall, Function, ModelResponse
+        copied = _with_tool_calls(response, calls, "")
+    except Exception as exc:  # noqa: BLE001 — 부분 변환 금지
+        logger.warning("맨 JSON 도구 호출 변환 실패 — 원본 유지(C7 미결): %s", exc)
+        return response
+    logger.info("맨 JSON 도구 호출 %d건을 tool_calls로 변환(도구=%s) — D-343 부기 1",
+                len(calls), names)
+    return copied
+
+
+def rewrite_tool_call_markup(
+    response: Any,
+    tool_names: Collection[str] = (),
+    messages: Sequence[Any] = (),
+) -> Any:
+    """Gemma 마크업·맨 JSON 도구 호출 응답이면 `tool_calls` 사본을 돌려준다.
+
+    그 밖의 응답은 **입력 객체 그대로** 돌려준다.
+
+    Args:
+        response: holmes `DefaultLLM.completion` 응답
+        tool_names: 이번 요청이 보낸 도구 이름(맨 JSON 변환의 허용 목록 · Gemma 경로는 보지 않는다)
+        messages: 이번 요청의 대화(맨 JSON 변환의 직전 턴 반복 판정용)
+    """
+    try:
+        from litellm.types.utils import ModelResponse
     except Exception:  # noqa: BLE001 — litellm 부재·구조 변경이면 손대지 않는다
         return response
     if not isinstance(response, ModelResponse):  # 스트리밍 래퍼 등 예상 밖 타입
@@ -219,21 +318,10 @@ def rewrite_tool_call_markup(response: Any) -> Any:
     if getattr(message, "tool_calls", None) or not isinstance(content, str):
         return response
     if GEMMA_TOOL_CALL_OPEN not in content:
-        return response
+        return _rewrite_bare_json(response, content, tool_names, messages)
     try:
         calls, remaining = parse_gemma_tool_calls(content)
-        copied = response.model_copy(deep=True)
-        choice = copied.choices[0]
-        choice.message.content = remaining.strip() or None
-        choice.message.tool_calls = [
-            ChatCompletionMessageToolCall(
-                id=f"call_{uuid.uuid4().hex[:24]}",
-                type="function",
-                function=Function(name=name, arguments=json.dumps(args, ensure_ascii=False)),
-            )
-            for name, args in calls
-        ]
-        choice.finish_reason = "tool_calls"
+        copied = _with_tool_calls(response, calls, remaining)
     except Exception as exc:  # noqa: BLE001 — 부분 변환 금지: 원본 그대로 두고 W4 방어에 맡긴다
         logger.warning(
             "도구 호출 마크업 해석 실패 — 원본 응답 유지(W4 방어): %s · 원문=%s",
@@ -262,6 +350,47 @@ def _sends_tools(args: tuple[Any, ...], kwargs: dict[str, Any]) -> bool:
     return bool(tools) and tool_choice == "auto"
 
 
+def _request_tools(
+    args: tuple[Any, ...], kwargs: dict[str, Any],
+) -> tuple[frozenset[str], Sequence[Any]]:
+    """`DefaultLLM.completion(self, messages, tools, …)` 호출의 (도구 이름 집합, 대화)."""
+    tools = kwargs["tools"] if "tools" in kwargs else (args[1] if len(args) > 1 else None)
+    messages = kwargs["messages"] if "messages" in kwargs else (args[0] if args else None)
+    names = frozenset(
+        str(fn["name"]) for t in tools or []
+        if isinstance(t, dict) and isinstance(fn := t.get("function"), dict) and fn.get("name"))
+    return names, messages if isinstance(messages, list) else []
+
+
+def _tool_call_names(response: Any) -> list[str]:
+    try:
+        calls = response.choices[0].message.tool_calls or []
+    except (AttributeError, IndexError, TypeError):
+        return []
+    return [str(getattr(getattr(tc, "function", None), "name", "")) for tc in calls]
+
+
+def _log_turn(original: Any, final: Any) -> None:
+    """tools를 보낸 LLM 턴 1건의 도구 호출 경로를 1줄로 남긴다(도구 호출 점검용)."""
+    names = _tool_call_names(final)
+    if final is not original:
+        content = getattr(original.choices[0].message, "content", "") or ""
+        path = "gemma_markup" if GEMMA_TOOL_CALL_OPEN in content else "bare_json"
+    elif names:
+        path = "native"
+    else:
+        try:
+            content = original.choices[0].message.content or ""
+        except (AttributeError, IndexError, TypeError):
+            content = ""
+        logger.info(
+            "조사 LLM 턴: 도구 호출 0건 경로=none — holmes가 최종 답으로 받음"
+            "(본문 %d자 · 도구 호출 형식 섞임=%s)",
+            len(content), has_tool_call_markup(content))
+        return
+    logger.info("조사 LLM 턴: 도구 호출 %d건 경로=%s 도구=%s", len(names), path, names)
+
+
 def install_tool_call_markup_guard() -> bool:
     """holmes LLM 경계(`DefaultLLM.completion`)에 응답 후처리를 설치한다.
 
@@ -287,9 +416,16 @@ def install_tool_call_markup_guard() -> bool:
         response = original(self, *args, **kwargs)
         if not _sends_tools(args, kwargs):
             return response  # 압축·요약 호출 — content가 곧 결과물이라 손대지 않는다
-        return rewrite_tool_call_markup(response)
+        tool_names, messages = _request_tools(args, kwargs)
+        final = rewrite_tool_call_markup(response, tool_names, messages)
+        try:
+            _log_turn(response, final)
+        except Exception:  # noqa: BLE001 — 로그 실패가 조사를 깨지 않게
+            logger.debug("조사 LLM 턴 로그 실패(무시)", exc_info=True)
+        return final
 
     setattr(guarded, _GUARD_FLAG, True)
     DefaultLLM.completion = guarded  # type: ignore[method-assign]
-    logger.info("도구 호출 마크업 가드 설치 완료 — Gemma 표기 → tool_calls (plans/188 C8)")
+    logger.info("도구 호출 마크업 가드 설치 완료 — Gemma 표기·맨 JSON → tool_calls "
+                "(plans/188 C8 · D-343 부기 1)")
     return True

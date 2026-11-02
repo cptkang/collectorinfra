@@ -1,7 +1,8 @@
 """DB 연결 관리 모듈.
 
-PostgreSQL(asyncpg 풀) · DB2(ibm_db, asyncio.to_thread 래핑) · MariaDB(aiomysql 풀)를
-통합 관리한다.
+PostgreSQL(asyncpg 풀) · DB2(ibm_db 연결 풀 `_Db2Pool`, asyncio.to_thread 래핑) ·
+MariaDB(aiomysql 풀)를 통합 관리한다. DB2 풀은 소스 `pool_enabled=false`면 끄고 종전 요청별
+연결로 돈다(plans/206 W1 · D-357).
 
 읽기 전용(D-003 · plans/163 S1): readonly 소스는 모든 실행이 `DBPoolManager.execute`의
 `validate_readonly`를 거치고(완전 중재 — 도구·스키마 헬퍼·exporter·헬스체크 공통), 연결은 세션
@@ -17,6 +18,8 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import logging
+import queue
+import threading
 import time
 from collections.abc import AsyncIterator
 from datetime import date, datetime
@@ -50,7 +53,8 @@ def _queue_timeout_message(src: SourceConfig) -> str:
 class DBPoolManager:
     """데이터소스별 DB 연결 관리.
 
-    PostgreSQL은 asyncpg 풀, DB2는 ibm_db 요청별 연결, MariaDB는 aiomysql 풀을 사용한다.
+    PostgreSQL은 asyncpg 풀, DB2는 ibm_db 연결 풀(`_Db2Pool` · `pool_enabled=false`면 요청별
+    연결), MariaDB는 aiomysql 풀을 사용한다.
     """
 
     def __init__(self, sources: list[SourceConfig]) -> None:
@@ -59,6 +63,7 @@ class DBPoolManager:
         }
         self._pg_pools: dict[str, Any] = {}  # asyncpg.Pool
         self._db2_configs: dict[str, SourceConfig] = {}
+        self._db2_pools: dict[str, _Db2Pool] = {}  # pool_enabled 소스만 — 없으면 요청별 연결
         self._mariadb_pools: dict[str, Any] = {}  # aiomysql.Pool
         # 소스별 동시 실행 상한(D-347). D-162(무기한 대기 허용) 예외 — 조사 1건이 폴스타 MCP를
         # 최대 16건 동시 호출하고 조사 수만큼 곱해져, 상한·타임아웃 없이는 프로세스 안 대기열이
@@ -101,7 +106,27 @@ class DBPoolManager:
                 # 세션 읽기 전용 미적용 — ibm_db가 루트 venv에 없어 연결 속성을 실측하지 못했다
                 # (plans/163 W0). DB2 쓰기 차단은 실행 지점 검사와 접속 계정 권한에 의존한다.
                 self._db2_configs[name] = src
-                logger.info("DB2 소스 등록: %s (요청별 연결)", name)
+                if src.pool_enabled:
+                    # 지연 생성 — 여기서는 연결하지 않는다(DB2가 내려가 있어도 기동은 그대로).
+                    pool = _Db2Pool(
+                        name, src.connection, src.effective_max_concurrent(),
+                        src.pool_idle_seconds,
+                    )
+                    self._db2_pools[name] = pool
+                    logger.info(
+                        "DB2 소스 등록: %s (연결 풀 최대 %d · 유휴 %ds · 지연 생성)",
+                        name, src.effective_max_concurrent(), src.pool_idle_seconds,
+                    )
+                    if not src.readonly:
+                        # 검사를 건너뛰는 소스라 SET CURRENT SCHEMA·임시 테이블 등 세션 상태가
+                        # 다음 요청으로 이월된다. 동작은 바꾸지 않고 알리기만 한다.
+                        logger.warning(
+                            "DB2 소스 %s: readonly=false 소스는 세션 상태가 요청 간 이월된다 "
+                            "— pool_enabled=false 권장",
+                            name,
+                        )
+                else:
+                    logger.info("DB2 소스 등록: %s (요청별 연결 · pool_enabled=false)", name)
             elif src.type == "mariadb":
                 try:
                     import aiomysql
@@ -244,8 +269,14 @@ class DBPoolManager:
             await pool.release(conn)
 
     async def _execute_db2(self, source_name: str, sql: str) -> list[dict[str, Any]]:
-        """DB2 쿼리를 실행한다 (ibm_db를 asyncio.to_thread로 래핑)."""
+        """DB2 쿼리를 실행한다 (ibm_db를 asyncio.to_thread로 래핑).
+
+        풀이 있으면 풀 연결로, 없으면(`pool_enabled=false`) 요청별 연결로 실행한다.
+        """
         src = self._db2_configs[source_name]
+        pool = self._db2_pools.get(source_name)
+        if pool is not None:
+            return await asyncio.to_thread(pool.execute, sql, src.query_timeout)
         return await asyncio.to_thread(
             self._execute_db2_sync, src.connection, sql, src.query_timeout
         )
@@ -270,7 +301,7 @@ class DBPoolManager:
     def _execute_db2_sync(
         conn_str: str, sql: str, query_timeout: int = 0
     ) -> list[dict[str, Any]]:
-        """DB2 동기 쿼리를 실행한다.
+        """DB2 동기 쿼리를 요청별 연결로 실행한다(`pool_enabled=false` 경로 — 연결 1·닫기 1).
 
         `query_timeout`(초)이 양수면 statement 옵션 `SQL_ATTR_QUERY_TIMEOUT`으로 건다(D-347).
         """
@@ -278,19 +309,8 @@ class DBPoolManager:
 
         conn = ibm_db.connect(conn_str, "", "")
         try:
-            options = _db2_statement_options(ibm_db, query_timeout)
-            if options:
-                stmt = ibm_db.exec_immediate(conn, sql, options)
-            else:
-                stmt = ibm_db.exec_immediate(conn, sql)
-            rows: list[dict[str, Any]] = []
-            row = ibm_db.fetch_assoc(stmt)
-            while row:
-                # DB2는 컬럼명을 대문자로 반환하므로 소문자로 정규화
-                normalized = {k.lower(): v for k, v in row.items()}
-                rows.append(_normalize_row(normalized))
-                row = ibm_db.fetch_assoc(stmt)
-            return rows
+            stmt = _db2_exec_immediate(ibm_db, conn, sql, query_timeout)
+            return _db2_fetch_rows(ibm_db, stmt)
         finally:
             ibm_db.close(conn)
 
@@ -340,9 +360,10 @@ class DBPoolManager:
             return False
 
     async def close_all(self) -> None:
-        """모든 PostgreSQL·MariaDB 풀을 종료한다.
+        """모든 PostgreSQL·DB2·MariaDB 풀을 종료한다.
 
-        DB2는 요청별 연결이므로 별도 종료가 불필요하다.
+        DB2 풀은 유휴 연결을 모두 닫는다(동기 close가 루프를 막지 않게 `asyncio.to_thread`).
+        대여 중인 DB2 연결은 반납 때 닫힌다. 요청별 연결 소스는 닫을 것이 없다.
         """
         for name, pool in self._pg_pools.items():
             try:
@@ -359,6 +380,193 @@ class DBPoolManager:
             except Exception as e:
                 logger.warning("MariaDB 풀 종료 실패 (%s): %s", name, e)
         self._mariadb_pools.clear()
+        for name, db2_pool in self._db2_pools.items():
+            try:
+                closed = await asyncio.to_thread(db2_pool.close)
+                logger.info("DB2 풀 종료: %s (유휴 연결 %d개 닫음)", name, closed)
+            except Exception as e:
+                logger.warning("DB2 풀 종료 실패 (%s): %s", name, e)
+        self._db2_pools.clear()
+
+
+class _Db2Pool:
+    """DB2 소스 하나의 연결 풀(plans/206 W1 · D-357).
+
+    동기 `queue.LifoQueue`에 유휴 연결과 마지막 사용 시각을 담고 `asyncio.to_thread` 안에서만
+    꺼내 쓴다. 꺼낸 스레드만 그 연결을 쓰고 돌려놓으므로 연결 하나를 두 스레드가 동시에 쓰지 않는다.
+
+    - 크기 = 소스 동시 상한(`effective_max_concurrent`). 소스 세마포어가 먼저 걸리므로 풀 대기는
+      두지 않는다 — 비면 새로 연결하고, 반납 때 가득 차 있으면 닫는다(세마포어 밖 헬스체크의
+      일시 +1 흡수).
+    - 지연 생성 — 첫 요청에서 연결한다. 꺼낼 때 `active` 거짓이거나 유휴 시간을 넘긴 연결은
+      닫고 새로 맺는다.
+    - 반납 때 유휴 큐를 훑어 수명이 지난 연결을 닫는다 — LIFO라 밑에 깔린 연결은 꺼낼 때 검사에
+      닿지 않기 때문이다.
+    - 새 연결은 autocommit을 켜 둔다(`_ensure_autocommit`) — 유휴 연결에 트랜잭션이 남지 않게.
+    - 실행 중 예외가 난 연결은 돌려놓지 않고 닫는다.
+    - `pconnect`(드라이버 영속 연결)는 쓰지 않는다 — 같은 연결 문자열이면 같은 핸들을 돌려줘 동시
+      요청이 한 핸들을 공유할 위험이 있다.
+    - 스레드 간 순차 사용·`active`/`free_stmt` 시그니처는 폐쇄망 실측 전이다(plans/206 W1 ·
+      `mcp_server/scripts/db2_probe.py`).
+    """
+
+    def __init__(
+        self, name: str, conn_str: str, max_size: int, idle_seconds: int
+    ) -> None:
+        self._name = name
+        self._conn_str = conn_str
+        self._idle_seconds = idle_seconds
+        self._idle: queue.LifoQueue[tuple[Any, float]] = queue.LifoQueue(maxsize=max_size)
+        self._lock = threading.Lock()  # 닫힘 표시와 반납·비우기를 한 덩어리로 묶는다
+        self._closed = False
+        self._clock = time.monotonic
+
+    def execute(self, sql: str, query_timeout: int) -> list[dict[str, Any]]:
+        """풀 연결로 DB2 쿼리를 실행한다(동기 — `asyncio.to_thread` 안에서 부른다).
+
+        행 결과·statement 옵션은 요청별 연결 경로와 같다. 정상 실행 뒤 문장 핸들을 풀고 반납한다.
+        """
+        import ibm_db
+
+        conn = self._checkout(ibm_db)
+        try:
+            stmt = _db2_exec_immediate(ibm_db, conn, sql, query_timeout)
+            rows = _db2_fetch_rows(ibm_db, stmt)
+        except BaseException:
+            self._close_quietly(ibm_db, conn, "실행 예외")
+            raise
+        try:
+            ibm_db.free_stmt(stmt)
+        except Exception as e:
+            # 행은 이미 다 읽었다 — 결과는 돌려주되 상태를 모르는 연결은 재사용하지 않는다.
+            logger.warning("DB2 문장 핸들 해제 실패 (%s) — 연결을 닫는다: %s", self._name, e)
+            self._close_quietly(ibm_db, conn, "문장 핸들 해제 실패")
+            return rows
+        self._checkin(ibm_db, conn)
+        return rows
+
+    def close(self) -> int:
+        """닫힘 표시를 하고 유휴 연결을 모두 닫는다. 닫은 수를 돌려준다."""
+        with self._lock:
+            self._closed = True
+            idle: list[Any] = []
+            while True:
+                try:
+                    idle.append(self._idle.get_nowait()[0])
+                except queue.Empty:
+                    break
+        if idle:
+            import ibm_db
+
+            for conn in idle:
+                self._close_quietly(ibm_db, conn, "풀 종료")
+        return len(idle)
+
+    def _checkout(self, ibm_db: Any) -> Any:
+        """유휴 연결을 꺼낸다. 없거나 쓸 수 없으면 새로 연결한다."""
+        try:
+            with self._lock:  # 반납 때의 수명 정리와 겹치지 않게
+                conn, last_used = self._idle.get_nowait()
+        except queue.Empty:
+            pass
+        else:
+            if self._clock() - last_used > self._idle_seconds:
+                self._close_quietly(ibm_db, conn, "유휴 시간 초과")
+            elif not self._is_active(ibm_db, conn):
+                self._close_quietly(ibm_db, conn, "비활성 연결")
+            else:
+                return conn
+        conn = ibm_db.connect(self._conn_str, "", "")
+        logger.debug("DB2 풀 새 연결 (%s)", self._name)
+        self._ensure_autocommit(ibm_db, conn)
+        return conn
+
+    def _ensure_autocommit(self, ibm_db: Any, conn: Any) -> None:
+        """새 연결의 autocommit을 확인하고 꺼져 있으면 켠다(연결당 1회).
+
+        `db2cli.ini`·연결 문자열이 `AUTOCOMMIT=0`이면 요청별 연결은 close가 트랜잭션을 끝냈지만,
+        풀에서는 읽기 잠금이 유휴 동안 남아 수집기 쓰기를 막을 수 있다. API가 없거나 호출이 실패하면
+        경고만 남기고 그 연결을 그대로 쓴다(기동·조회 불변). 드라이버 API는 폐쇄망 실측 전이다
+        (plans/206 W1 · `mcp_server/scripts/db2_probe.py`).
+        """
+        autocommit = getattr(ibm_db, "autocommit", None)
+        on = getattr(ibm_db, "SQL_AUTOCOMMIT_ON", None)
+        try:
+            if autocommit is None or on is None:
+                raise AttributeError("ibm_db.autocommit 또는 SQL_AUTOCOMMIT_ON 없음")
+            if autocommit(conn) != on:
+                autocommit(conn, on)
+        except Exception as e:
+            logger.warning(
+                "DB2 풀 (%s): autocommit 확인 불가 — 반납 연결에 트랜잭션이 남을 수 있음: %s",
+                self._name, e,
+            )
+
+    def _checkin(self, ibm_db: Any, conn: Any) -> None:
+        """연결을 돌려놓는다. 풀이 닫혔거나 가득 차 있으면 닫는다.
+
+        반납 때 유휴 큐를 비워 수명이 지난 연결을 골라 내고, 남은 것은 원래 순서(LIFO)로 되돌린다.
+        큐 크기가 동시 상한 이하라 비용은 작다. 닫기는 락 밖에서 한다.
+        """
+        to_close: list[tuple[Any, str]] = []
+        with self._lock:
+            if self._closed:
+                to_close.append((conn, "풀 종료 뒤 반납"))
+            else:
+                now = self._clock()
+                drained: list[tuple[Any, float]] = []  # 위(최근)부터 꺼낸 순서
+                while True:
+                    try:
+                        drained.append(self._idle.get_nowait())
+                    except queue.Empty:
+                        break
+                for idle_conn, last_used in reversed(drained):  # 밑부터 되돌려 순서 유지
+                    if now - last_used > self._idle_seconds:
+                        to_close.append((idle_conn, "유휴 시간 초과"))
+                    else:
+                        self._idle.put_nowait((idle_conn, last_used))
+                try:
+                    self._idle.put_nowait((conn, now))
+                except queue.Full:
+                    to_close.append((conn, "풀 가득 참"))
+        for target, reason in to_close:
+            self._close_quietly(ibm_db, target, reason)
+
+    def _is_active(self, ibm_db: Any, conn: Any) -> bool:
+        """`ibm_db.active` — 검사 자체가 실패하면 쓸 수 없는 연결로 본다."""
+        try:
+            return bool(ibm_db.active(conn))
+        except Exception as e:
+            logger.debug("DB2 연결 상태 검사 실패 (%s): %s", self._name, e)
+            return False
+
+    def _close_quietly(self, ibm_db: Any, conn: Any, reason: str) -> None:
+        """연결을 닫는다 — 닫기 예외는 삼키고 debug 로그만 남긴다."""
+        logger.debug("DB2 풀 연결 닫기 (%s): %s", self._name, reason)
+        try:
+            ibm_db.close(conn)
+        except Exception as e:
+            logger.debug("DB2 연결 닫기 실패 (%s · %s): %s", self._name, reason, e)
+
+
+def _db2_exec_immediate(ibm_db: Any, conn: Any, sql: str, query_timeout: int) -> Any:
+    """`_db2_statement_options`를 실어 `exec_immediate`를 부른다(옵션이 없으면 생략)."""
+    options = _db2_statement_options(ibm_db, query_timeout)
+    if options:
+        return ibm_db.exec_immediate(conn, sql, options)
+    return ibm_db.exec_immediate(conn, sql)
+
+
+def _db2_fetch_rows(ibm_db: Any, stmt: Any) -> list[dict[str, Any]]:
+    """`fetch_assoc`로 전 행을 읽는다 — 키는 소문자로, 값은 `_normalize_row`로 정규화한다."""
+    rows: list[dict[str, Any]] = []
+    row = ibm_db.fetch_assoc(stmt)
+    while row:
+        # DB2는 컬럼명을 대문자로 반환하므로 소문자로 정규화
+        normalized = {k.lower(): v for k, v in row.items()}
+        rows.append(_normalize_row(normalized))
+        row = ibm_db.fetch_assoc(stmt)
+    return rows
 
 
 def _db2_statement_options(ibm_db: Any, query_timeout: int) -> dict[int, int]:

@@ -769,6 +769,7 @@ cd sre_agent && RUN_E2E=1 LLM_GEMINI_API_KEY= GEMINI_API_KEY= .venv/bin/python -
 | `status="done"` + 브리핑 6요소 + **도구 인용** | ✅ 합격 |
 | `incomplete=True` 반복 | 모델이 ReAct를 못 끌고 감 → **모델 상향**(9B→상위), `MAX_STEPS` 확인 |
 | 도구 호출 0회인데 답변만 장문 | 도구를 안 쓰고 지어냄 → 파서 재확인(§5.6.3). **인용 없으면 불합격** |
+| 답이 JSON뿐(할 일 목록 `[{"id","content","status"}…]` · `{"name","arguments"}`) | 도구 호출이 `tool_calls`가 아니라 본문으로 나옴(파서 불일치) → `[미결] 조사 실패` 종결. sre_agent 로그 `조사 LLM 턴: … 경로=`(`native` 외 `bare_json`·`gemma_markup`·`none`)와 `조사 도구 호출 요약:`으로 턴별 확인 → 파서 재확인(§5.6.3 · D-343 부기 1) |
 | 컨텍스트 초과 오류 | `--max-model-len` 상향 |
 | 수백 초 소요 | 통보가 그만큼 지연된다 → 본체에서 `NOISE_INVESTIGATION_FOLLOWUP_ENABLED=true`(§5.5) |
 

@@ -39,7 +39,12 @@ from apm_gateway.application.masking import mask_text
 from apm_gateway.application.period_stats import period_stats
 from apm_gateway.application.resolver import Inventory
 from apm_gateway.application.scope_tools import ScopeTools, ServiceScope
-from apm_gateway.application.sources import STATUS_NO_MATCH, STATUS_OK, JenniferSource
+from apm_gateway.application.sources import (
+    STATUS_NO_MATCH,
+    STATUS_OK,
+    JenniferSource,
+    gather_per_source,
+)
 from apm_gateway.application.tool_common import (
     ABSOLUTE_MAX_MS,
     EVENTS_DEFAULT_MINUTES,
@@ -316,19 +321,21 @@ class FleetTools:
     async def _realtime_records(
         self, groups: list[Group]
     ) -> tuple[list[tuple[Group, dict[str, Any]]], list[tuple[str, ApmError]]]:
-        """(소스, 도메인)마다 실시간 인스턴스 1호출(묶음 순서대로) → (받은 인스턴스, 실패
-        도메인)."""
+        """(소스, 도메인)마다 실시간 인스턴스 1호출 → (받은 인스턴스, 실패 도메인). 호출은 소스
+        동시 요청 상한 폭으로 겹치고 결과는 묶음 순서대로 처리한다(plans/207 W2 — 계약 위반은
+        순서상 첫 위반에서 올린다 · 그 뒤 묶음의 호출은 이미 나갔을 수 있다)."""
         failures: list[tuple[str, ApmError]] = []
         records: list[tuple[Group, dict[str, Any]]] = []
-        for group in groups:
+        results = await gather_per_source(
+            groups, lambda g: g[0], lambda g: g[0].api.realtime(g[2]["domain_id"])
+        )
+        for group, found in zip(groups, results, strict=True):
             src, _inv, d = group
             sid, did = src.source_id, d["domain_id"]
-            try:
-                found = await src.api.realtime(did)
-            except ApmError as e:
-                if e.code == CONTRACT_VIOLATION:
-                    raise
-                failures.append((self.core.sources.where(sid, did), e))
+            if isinstance(found, ApmError):
+                if found.code == CONTRACT_VIOLATION:
+                    raise found
+                failures.append((self.core.sources.where(sid, did), found))
                 continue
             for rec in found:
                 if rec.get("domain_id") is None:

@@ -16,18 +16,21 @@ D-287 ①②⑦ · SPEC-apm-gateway §2.1·§3).
 - 일부 소스·도메인을 쓸 수 없으면 봉투 `partial: true`의 근거가 된다(`partial_of` · plans/134 W0-B).
 - 소스 클라이언트는 메모리 임계를 넘는 응답을 스풀 `tmp/`에 받고, 호출 대기열을 우선순위·에이징으로
   판다(plans/134 W0-B N-14·N-18).
+- (소스, 도메인)마다 1호출하는 가벼운 루프는 `gather_per_source`로 겹쳐 부른다 — 소스마다 그
+  소스의 동시 요청 상한 폭, 소스끼리도 겹친다(plans/207 W2). 상한이 모두 1이면 종전 직렬이다.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
-from typing import Any
+from typing import Any, TypeVar
 
 from apm_gateway.adapters.jennifer.api import JenniferApi
 from apm_gateway.adapters.jennifer.client import JenniferClient
+from apm_gateway.application.parallel import gather_bounded
 from apm_gateway.application.resolver import (
     BY_INSTANCE_NAME,
     HIGH,
@@ -46,6 +49,9 @@ from apm_gateway.domain.errors import (
     ApmError,
 )
 
+T = TypeVar("T")
+R = TypeVar("R")
+
 # 봉투 `sources[].status` 어휘(SPEC-apm-gateway §3.1).
 STATUS_OK = "ok"
 STATUS_NO_MATCH = "no_match"
@@ -58,6 +64,37 @@ class JenniferSource:
     source_id: str
     api: JenniferApi
     resolver: InstanceResolver
+
+
+async def gather_per_source(
+    items: list[T],
+    source_of: Callable[[T], JenniferSource],
+    fn: Callable[[T], Awaitable[R]],
+) -> list[R | ApmError]:
+    """`fn(item)`을 소스마다 그 소스 동시 요청 상한 폭으로 겹쳐 부르고(소스끼리도 겹친다) 입력
+    순서대로 결과(또는 `ApmError`)를 돌려준다(plans/207 W2). 소스를 나눠 묶는 것은 한 소스의
+    항목이 헬퍼 폭을 다 차지해 다른 소스가 그 뒤로 밀리지 않게 하려는 것이다. 소스가 하나이거나
+    상한이 모두 1이면 묶지 않는다 — 상한 1은 종전 직렬과 호출 순서까지 같다."""
+    seq = list(items)
+    buckets: dict[str, tuple[JenniferSource, list[int]]] = {}
+    for i, item in enumerate(seq):
+        src = source_of(item)
+        buckets.setdefault(src.source_id, (src, []))[1].append(i)
+    caps = [src.api.max_in_flight for src, _ in buckets.values()]
+    if len(buckets) <= 1 or max(caps) <= 1:
+        return await gather_bounded(seq, fn, max(caps, default=1))
+
+    async def one_source(bucket: tuple[JenniferSource, list[int]]) -> list[R | ApmError]:
+        src, idx = bucket
+        return await gather_bounded([seq[i] for i in idx], fn, src.api.max_in_flight)
+
+    per_source = await gather_bounded(list(buckets.values()), one_source, len(buckets))
+    by_index: dict[int, R | ApmError] = {}
+    for (_, idx), got in zip(buckets.values(), per_source, strict=True):
+        if isinstance(got, ApmError):  # `one_source`는 ApmError를 값으로 돌려준다 — 오지 않는다
+            raise got
+        by_index.update(zip(idx, got, strict=True))
+    return [by_index[i] for i in range(len(seq))]
 
 
 def _status(inv: Inventory) -> str:
@@ -317,6 +354,7 @@ def build_source_set(
             domain_filter=api_cfg.domain_ids,
             cache_seconds=cfg.runtime.instance_cache_seconds,
             clock=clock,
+            max_in_flight=client.max_in_flight,
         )
         sources.append(JenniferSource(api_cfg.source_id, api, resolver))
     return SourceSet(sources)

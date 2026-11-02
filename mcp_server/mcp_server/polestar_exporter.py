@@ -16,8 +16,10 @@ gauge·종료 배선은 벤더 중립 ``om_exposition``이 맡는다(plans/87 J7
 착수 조건 5건(§4.5 [v3]) 반영:
     1. DB 접근 — ``custom_route`` 핸들러는 세션 lifespan의 풀에 닿지 않는다(P-5). 브리지 **전용 지연
        풀**을 첫 스크레이프 때 만든다: ``bridge_sources`` 중 활성 소스만, 소스당
-       ``pool_min_size=1``·``pool_max_size=1``(``DBPoolManager`` 재사용 — DB2는 풀 없이 요청별
-       동기 연결을 스레드에서 연다). 앱 종료 시 ``close_all``. 기존 도구 lifespan은 건드리지 않는다.
+       ``pool_min_size=1``·``pool_max_size=1``(``DBPoolManager`` 재사용 — DB2는 연결 풀이며 최대 =
+       소스 동시 상한이고 ``pool_max_size``와 무관하다(plans/206 W1). 브리지 쿼리는 순차라 실제로는
+       소스당 연결 1개를 유휴 수명 동안 쥔다). 앱 종료 시 ``close_all``. 기존 도구 lifespan은
+       건드리지 않는다.
     2. 단위 — ``polestar_metric_utilization_percent``의 kind는 cpu·memory·filesystem 3종뿐이다.
        ``disk_io``(``MaxIORate``)는 퍼센트가 아니고 단위 미실측이라 1차에서 제외한다.
     3. 신선도 — 샘플에 명시 타임스탬프를 달지 않는다. 대신 ``…_stat_timestamp_seconds``로 그 값이
