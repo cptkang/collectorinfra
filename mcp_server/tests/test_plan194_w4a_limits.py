@@ -62,6 +62,22 @@ def test_defaults_follow_pool_size_and_query_timeout() -> None:
     assert explicit.effective_queue_timeout() == 2.0
 
 
+def test_zero_query_timeout_falls_back_to_default_queue_timeout() -> None:
+    """query_timeout 0(무제한)이면 대기 타임아웃은 0이 아니라 기본값 — 즉시 대기 초과 방지."""
+    from mcp_server.config import DEFAULT_QUEUE_TIMEOUT_SECONDS
+
+    zero = SourceConfig(name="z", type="db2", query_timeout=0)
+    assert zero.effective_queue_timeout() == float(DEFAULT_QUEUE_TIMEOUT_SECONDS) > 0
+    explicit = SourceConfig(name="z2", query_timeout=0, queue_timeout_seconds=5)
+    assert explicit.effective_queue_timeout() == 5.0
+
+
+async def test_zero_query_timeout_does_not_reject_free_slot() -> None:
+    """query_timeout 0 소스도 빈 슬롯이면 대기 초과 없이 실행된다."""
+    pm, _ = _manager(_src("z", query_timeout=0))
+    assert await pm.execute("z", _SQL) == [{"ok": 1}]
+
+
 def test_toml_parses_new_keys(tmp_path: Path) -> None:
     """`[[sources]]`의 두 키를 읽고, 미기재는 None(자동)으로 둔다."""
     path = tmp_path / "c.toml"

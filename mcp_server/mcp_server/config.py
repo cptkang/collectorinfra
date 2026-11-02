@@ -189,8 +189,16 @@ class OpenMetricsConfig:
     bridge_sources: list[OpenMetricsBridgeSource] = field(default_factory=list)
 
 
-#: 풀 없는 DB2(요청별 연결)의 동시 실행 상한 기본값(plans/194 W4a · D-347).
+#: DB2 동시 실행 상한 기본값(plans/194 W4a · D-347). DB2 연결 풀 최대 크기도 이 상한을 따른다
+#: (plans/206 W1 · D-357).
 DB2_DEFAULT_MAX_CONCURRENT = 4
+
+#: DB2 연결 풀 유휴 연결 수명 기본값(초 · plans/206 W1 · D-357).
+DB2_DEFAULT_POOL_IDLE_SECONDS = 300
+
+#: `query_timeout`이 0 이하(무제한)일 때 쓰는 대기 타임아웃(초 · D-347 부기). 대기는 무기한으로
+#: 두지 않는다 — 0을 그대로 넘기면 모든 조회가 즉시 대기 초과로 끝났다.
+DEFAULT_QUEUE_TIMEOUT_SECONDS = 30
 
 
 @dataclass
@@ -208,9 +216,16 @@ class SourceConfig:
     # 동시 실행 상한·대기 타임아웃(plans/194 W4a · D-347). None = 자동 — 아래 effective_* 참조.
     max_concurrent_queries: int | None = None
     queue_timeout_seconds: int | None = None
+    # DB2 연결 풀(plans/206 W1 · D-357) — DB2 소스에만 의미가 있다
+    # (PostgreSQL·MariaDB는 드라이버 풀).
+    # 기본 on은 D-162(신규 플래그 기본 off) 예외다 — 사용자 결정 2026-11-02 「기본값을 처음부터
+    # 켜라」 · D-357 ②. 되돌리기: `pool_enabled = false` = 종전 요청별 연결(호출 순서 비트 동일).
+    pool_enabled: bool = True
+    # 이 시간(초) 넘게 쉰 유휴 연결은 꺼낼 때 닫고 새로 맺는다.
+    pool_idle_seconds: int = DB2_DEFAULT_POOL_IDLE_SECONDS
 
     def effective_max_concurrent(self) -> int:
-        """소스 동시 실행 상한. 미기재면 풀 크기(풀 없는 DB2는 `DB2_DEFAULT_MAX_CONCURRENT`).
+        """소스 동시 실행 상한. 미기재면 풀 크기(DB2는 `DB2_DEFAULT_MAX_CONCURRENT`).
 
         풀 크기와 같게 두면 풀 크기 이하 동시 요청은 대기 없이 그대로 실행된다(현행과 같음).
         """
@@ -221,9 +236,14 @@ class SourceConfig:
         return self.pool_max_size
 
     def effective_queue_timeout(self) -> float:
-        """동시 상한 대기 타임아웃(초). 미기재면 `query_timeout`."""
+        """동시 상한 대기 타임아웃(초).
+
+        미기재면 `query_timeout`, 그것이 0 이하(무제한)면 `DEFAULT_QUEUE_TIMEOUT_SECONDS`.
+        """
         if self.queue_timeout_seconds is not None:
             return float(self.queue_timeout_seconds)
+        if self.query_timeout <= 0:
+            return float(DEFAULT_QUEUE_TIMEOUT_SECONDS)
         return float(self.query_timeout)
 
 
@@ -358,6 +378,11 @@ def _load_toml(path: Path) -> AppServerConfig:
             pool_max_size=src_data.get("pool_max_size", 5),
             max_concurrent_queries=_positive_int_or_none(src_data, "max_concurrent_queries"),
             queue_timeout_seconds=_positive_int_or_none(src_data, "queue_timeout_seconds"),
+            pool_enabled=_bool_key(src_data, "pool_enabled", True),
+            pool_idle_seconds=(
+                _positive_int_or_none(src_data, "pool_idle_seconds")
+                or DB2_DEFAULT_POOL_IDLE_SECONDS
+            ),
         )
         sources.append(src)
 
@@ -402,6 +427,21 @@ def _load_toml(path: Path) -> AppServerConfig:
     return AppServerConfig(
         server=server, sources=sources, prometheus=prometheus, openmetrics=openmetrics
     )
+
+
+def _bool_key(src_data: dict[str, Any], key: str, default: bool) -> bool:
+    """`[[sources]]`의 선택 불리언 키를 읽는다. 미기재 = `default`.
+
+    Raises:
+        ValueError: 불리언이 아닐 때(문자열 "false"가 참으로 읽히는 것을 막는다 —
+            기동 실패로 드러낸다).
+    """
+    value = src_data.get(key, default)
+    if not isinstance(value, bool):
+        raise ValueError(
+            f"[[sources]] {src_data.get('name', '')} {key}는 true/false여야 함: {value!r}"
+        )
+    return value
 
 
 def _positive_int_or_none(src_data: dict[str, Any], key: str) -> int | None:
