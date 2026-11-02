@@ -329,7 +329,7 @@ async def test_search_promoted_to_a_job_is_awaited_or_fails_closed(gateway, monk
 
     monkeypatch.setattr(aq.jobs, "poll_job", poll_job)
     res = await _run(["apm.app_health"], [{"text": "abc", "kind": "instance"}])
-    assert early == [False], "대상 해석 작업은 조기 접수하지 않는다(plans/197 W3)"
+    assert early == [False], "대상 해석 작업은 조기 접수하지 않는다(plans/207 W3)"
     calls = gw.named("apm_app_health")
     if poll == "raises":
         assert calls == [], "작업 핸들뿐인 검색을 0건으로 읽어 다른 대상을 부르지 않는다"

@@ -322,7 +322,7 @@ class FleetTools:
         self, groups: list[Group]
     ) -> tuple[list[tuple[Group, dict[str, Any]]], list[tuple[str, ApmError]]]:
         """(소스, 도메인)마다 실시간 인스턴스 1호출 → (받은 인스턴스, 실패 도메인). 호출은 소스
-        동시 요청 상한 폭으로 겹치고 결과는 묶음 순서대로 처리한다(plans/197 W2 — 계약 위반은
+        동시 요청 상한 폭으로 겹치고 결과는 묶음 순서대로 처리한다(plans/207 W2 — 계약 위반은
         순서상 첫 위반에서 올린다 · 그 뒤 묶음의 호출은 이미 나갔을 수 있다)."""
         failures: list[tuple[str, ApmError]] = []
         records: list[tuple[Group, dict[str, Any]]] = []
