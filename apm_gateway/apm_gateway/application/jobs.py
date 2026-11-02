@@ -12,6 +12,11 @@ SPEC-apm-question-coverage §3.2~§3.5·§3.7 · D-299 ④).
   queued|running → interrupted(재기동·종료) · running → failed(정체 `stalled`). 기록은 원자적 쓰기.
 - 승격된 작업은 동시 실행 슬롯(`APM_JOB_MAX_CONCURRENT` · FIFO)을 **다음 API 호출 앞에서** 기다린다
   (그동안 `queued`). 슬롯 수는 메모리·공정성 수단이고 총 조회량을 자르지 않는다.
+  호출자(주체·owner)별 공정 분배(plans/205 W3b · D-356 ⑤ · `APM_JOB_MAX_CONCURRENT_PER_OWNER`):
+  대기 작업은 실행 중 작업이 가장 적은 호출자부터(동률 FIFO) · 상한에 닿은 호출자는 다른 호출자가
+  기다리는 동안 건너뛴다(모두 상한이면 그대로 — 일 보존) · 0 = 끔(종전 FIFO).
+- 혼잡 가시화(W3b ④): 호출마다 소스 자리 대기·속도 제어 대기(ms)의 합계·최대를 작업 기록
+  (`slot_wait_ms`·`throttle_wait_ms`)과 감사에 싣는다.
 - 호출 맥락(`domain.call_context`): 작업이 맥락이다 — 어댑터가 호출마다 `before_call`로 슬롯 대기 ·
   `api_calls`·`updated_at`(임대)을 올리고, 승격되면 이후 호출 우선순위가 `background`가 된다.
 - 비용 예측: 도구가 신고한 호출 계획(`expect_calls`)으로 `progress.total`·`estimate.api_calls`를
@@ -165,41 +170,68 @@ def _epoch(value: Any) -> float | None:
 
 
 class _Slots:
-    """승격된 작업의 동시 실행 슬롯 — 먼저 기다린 작업이 먼저 받는다(FIFO)."""
+    """승격된 작업의 동시 실행 슬롯 — 먼저 기다린 작업이 먼저 받는다(FIFO).
 
-    def __init__(self, size: int) -> None:
+    `per_owner` > 0이면 호출자 공정 분배(plans/205 W3b · D-356 ⑤): 대기 작업은 슬롯을 가장 적게
+    쥔 호출자부터(동률 FIFO), 쥔 슬롯이 `per_owner` 이상인 호출자는 상한 아래 호출자가 기다리는 동안
+    건너뛴다(모두 상한이면 그대로 — 일 보존). 0이면 종전 FIFO와 같다."""
+
+    def __init__(self, size: int, per_owner: int = 0) -> None:
         self.size = max(1, int(size))
+        self.per_owner = max(0, int(per_owner))
         self._free = self.size
-        self._waiters: deque[asyncio.Future[None]] = deque()
+        self._held_by: dict[str, int] = {}
+        self._waiters: deque[tuple[str, asyncio.Future[None]]] = deque()
 
     @property
     def in_use(self) -> int:
         return self.size - self._free
 
-    def try_acquire(self) -> bool:
+    def _take(self, key: str) -> None:
+        self._held_by[key] = self._held_by.get(key, 0) + 1
+
+    def try_acquire(self, key: str = "") -> bool:
         if self._free > 0:
             self._free -= 1
+            self._take(key)
             return True
         return False
 
-    async def acquire(self) -> None:
-        if self.try_acquire():
+    async def acquire(self, key: str = "") -> None:
+        if self.try_acquire(key):
             return
         future: asyncio.Future[None] = asyncio.get_running_loop().create_future()
-        self._waiters.append(future)
+        entry = (key, future)
+        self._waiters.append(entry)
         try:
             await future
         except asyncio.CancelledError:
             if future.done() and not future.cancelled():
-                self.release()  # 넘겨받은 슬롯을 돌려준다
-            elif future in self._waiters:
-                self._waiters.remove(future)
+                self.release(key)  # 넘겨받은 슬롯을 돌려준다
+            elif entry in self._waiters:
+                self._waiters.remove(entry)
             raise
 
-    def release(self) -> None:
+    def _pop(self) -> tuple[str, asyncio.Future[None]]:
+        if not self.per_owner:  # 끔 — 종전 FIFO
+            return self._waiters.popleft()
+        held = self._held_by
+        open_ = [w for w in self._waiters if held.get(w[0], 0) < self.per_owner]
+        # min은 동률이면 앞의 것(FIFO)
+        best = min(open_ or self._waiters, key=lambda w: held.get(w[0], 0))
+        self._waiters.remove(best)
+        return best
+
+    def release(self, key: str = "") -> None:
+        left = self._held_by.get(key, 0) - 1
+        if left > 0:
+            self._held_by[key] = left
+        else:
+            self._held_by.pop(key, None)
         while self._waiters:
-            future = self._waiters.popleft()
+            owner, future = self._pop()
             if not future.done():
+                self._take(owner)
                 future.set_result(None)
                 return
         self._free = min(self.size, self._free + 1)
@@ -226,6 +258,8 @@ class Job(CallScope):
         self.tool = tool
         self.principal = principal
         self.owner = owner
+        # 공정 분배의 호출자 키 = (주체, owner) — owner가 없으면 주체 단위 1개(plans/205 W3b)
+        self.caller = f"{principal}\x00{owner or ''}"
         self.target = target
         self.investigation_id = investigation_id
         self.thread_id = thread_id
@@ -255,6 +289,9 @@ class Job(CallScope):
         self.persisted_at = 0.0
         # 이 작업이 직접 부른 호출에서 소요를 잰 (소스, 경로 군) — 공유 적재(인스턴스 명단)는 뺀다
         self.timed_sources: set[tuple[str, str]] = set()
+        # 소스 자리 대기 · 속도 제어 대기(ms) — 합계·최대(plans/205 W3b ④ 혼잡 가시화)
+        self.slot_wait_ms = [0.0, 0.0]
+        self.throttle_wait_ms = [0.0, 0.0]
 
     # ── 호출 맥락 훅(어댑터가 부른다) ─────────────────────
     async def before_call(self, source_id: str = "") -> None:
@@ -282,6 +319,21 @@ class Job(CallScope):
         if not shared:
             self.timed_sources.add((source_id, group))
         self._manager.observe_call(source_id, seconds, group=group)
+
+    def waited(self, source_id: str, slot_ms: float, throttle_ms: float) -> None:
+        for acc, ms in ((self.slot_wait_ms, slot_ms), (self.throttle_wait_ms, throttle_ms)):
+            acc[0] += ms
+            acc[1] = max(acc[1], ms)
+
+    def waits(self) -> dict[str, dict[str, float]]:
+        """대기 합계·최대(ms · 소수 1자리) — 작업 기록·감사."""
+        return {
+            name: {"total": round(acc[0], 1), "max": round(acc[1], 1)}
+            for name, acc in (
+                ("slot_wait_ms", self.slot_wait_ms),
+                ("throttle_wait_ms", self.throttle_wait_ms),
+            )
+        }
 
     def expect_calls(self, count: int) -> None:
         self.expected_calls += int(count)
@@ -365,6 +417,7 @@ class Job(CallScope):
             "progress": self.progress(),
             "estimate": self.estimate(),
             "api_calls": self.total_calls,
+            **self.waits(),
             "result_meta": self.result_meta,
             "artifact": self.artifact,
             "limits": self.limits,
@@ -419,7 +472,7 @@ class JobManager:
         self._error_envelope = error_envelope
         self._clock = clock
         self.on_finish = on_finish
-        self._slots = _Slots(cfg.max_concurrent)
+        self._slots = _Slots(cfg.max_concurrent, cfg.max_concurrent_per_owner)
         # (소스, 경로 군)별 실 호출 소요 이동 평균(초 · 프로세스 수명)
         self._call_seconds: dict[tuple[str, str], float] = {}
         self._live: dict[str, Job] = {}
@@ -440,6 +493,7 @@ class JobManager:
         rate = min(rates) if rates else cfg.jennifer.rate_limit_per_sec
         widths = [s.max_inflight_per_source for s in cfg.sources]
         width = min(widths) if widths else cfg.jennifer.max_inflight_per_source
+        width = min(width, cfg.perf.fanout_concurrency)  # 도구 안 폭 상한(plans/205 · D-356 ①)
         return cls(
             Spool(cfg.jobs.spool_dir),
             cfg.jobs,
@@ -570,7 +624,7 @@ class JobManager:
         job.promoted = True
         job.priority = PRIORITY_BACKGROUND  # 이후 호출부터 background
         if job.state in js.LIVE_STATES:
-            if self._slots.try_acquire():
+            if self._slots.try_acquire(job.caller):
                 job.holds_slot = True
                 job.state = js.RUNNING
             else:
@@ -647,7 +701,7 @@ class JobManager:
             if job.state != js.QUEUED:
                 job.state = js.QUEUED
                 self._persist(job, force=True)
-            await self._slots.acquire()
+            await self._slots.acquire(job.caller)
             job.holds_slot = True
             job.state = js.RUNNING
             job.updated_at = self._clock()
@@ -660,7 +714,7 @@ class JobManager:
     def _release(self, job: Job) -> None:
         if job.holds_slot:
             job.holds_slot = False
-            self._slots.release()
+            self._slots.release(job.caller)
 
     def _finish(self, job: Job, state: str) -> None:
         now = self._clock()

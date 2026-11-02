@@ -27,6 +27,7 @@ from apm_gateway.application.name_search import (
     search_query,
 )
 from apm_gateway.application.node_address import NodeAddressService
+from apm_gateway.application.parallel import contract_violation
 from apm_gateway.application.resolver import Resolution
 from apm_gateway.application.sources import (
     JenniferSource,
@@ -239,6 +240,7 @@ class ApmCore:
             items,
             lambda it: self.sources.get(it[0][0]),
             lambda it: self.api(it[0][0]).realtime(it[0][1], it[1]),
+            stop=contract_violation,
         )
         for ((sid, domain_id), _ids), got in zip(items, results, strict=True):
             if isinstance(got, ApmError):
@@ -319,6 +321,7 @@ class ApmCore:
             items,
             lambda it: self.sources.get(it[0][0]),
             lambda it: self.api(it[0][0]).application_status(it[0][1], it[1], start, end),
+            stop=contract_violation,
         )
         for ((sid, domain_id), _ids), got in zip(items, results, strict=True):
             if isinstance(got, ApmError):

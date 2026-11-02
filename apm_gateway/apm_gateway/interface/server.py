@@ -316,6 +316,7 @@ async def run_tool(
         principal=principal,
         job_id=_job_id_of(result),
         search=_search_text(result),
+        waits=_waits_text(owned[0]) if owned else None,
     )
     return json.dumps(result, ensure_ascii=False, default=str)
 
@@ -344,6 +345,15 @@ async def run_job_tool(
     return json.dumps(result, ensure_ascii=False, default=str)
 
 
+def _waits_text(job: Job) -> str:
+    """감사 `waits` 칸 — 소스 자리·속도 제어 대기 합계/최대(ms · 정수 · plans/205 W3b ④)."""
+    w = job.waits()
+    return ",".join(
+        f"{name}:{w[key]['total']:.0f}/{w[key]['max']:.0f}"
+        for name, key in (("slot_ms", "slot_wait_ms"), ("throttle_ms", "throttle_wait_ms"))
+    )
+
+
 def audit_job_finished(job: Job) -> None:
     """백그라운드(승격된) 작업이 끝났을 때의 감사 1줄 — 작업 수명 전체의 호출 수·소스별 분해."""
     finished = job.finished_at if job.finished_at is not None else job.updated_at
@@ -361,6 +371,7 @@ def audit_job_finished(job: Job) -> None:
         principal=job.principal,
         job_id=job.job_id,
         search=_search_text(job.result_meta),
+        waits=_waits_text(job),
     )
 
 

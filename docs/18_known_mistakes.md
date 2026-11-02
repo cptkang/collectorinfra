@@ -2411,6 +2411,16 @@
 - **방지책**: 독립 패키지(`mcp_server`·`apm_gateway`)를 바꾼 계획은 회귀 요약의 그 패키지 줄에서 `에러`·`건너뜀` 수를 본다. 수집 에러가 있으면 의존성이 갖춰진 인터프리터로 패키지 테스트를 따로 돌려 보고에 함께 적는다(이번: 형제 체크아웃 venv + `PYTHONPATH=mcp_server` → 1190 passed). 쓴 인터프리터 경로를 보고에 남긴다.
 - **후속(2026-11-02)**: 루트 `.venv`를 만들었다(`python3 -m venv .venv` · `pip install -e ".[dev,document]"` + `aiomysql`·`markdown-it-py`(매뉴얼 빌드) — 둘 다 루트 pyproject에 빠져 있다 · `ibm_db`는 로컬 미설치 유지). 이제 `cd mcp_server && ../.venv/bin/python -m pytest`가 성립한다(1192 passed · 19 skipped · 2 xfailed).
 
+### 2026-11-02 · 기준선 mypy 대조에 `git stash`를 씀
+- **실수**: 바꾼 파일의 mypy 오류 수를 기준선과 비교하려고 `git stash` → mypy → `git stash pop`을 돌렸다. 같은 작업 트리에서 백그라운드 team-lead(`plans/205`)가 파일을 고치는 중이었다.
+- **원인**: 「기준선 대조는 `git worktree`」 규칙을 짧은 확인이라 생략했다. stash는 다른 에이전트의 미커밋 변경까지 잠시 걷어 내고, 그 사이 쓰기가 있으면 pop이 충돌한다(이번에는 복원 확인).
+- **방지책**: 짧은 확인이라도 `git worktree add --detach <dir> <SHA>`에서 잰다. 병행 에이전트가 있으면 작업 트리 전체를 건드리는 명령(stash·checkout·reset)은 쓰지 않는다.
+
+### 2026-11-02 · (plans/205) 계획서가 작성 시점 이후 병합된 같은 기능(D-358 `gather_bounded`)을 모른 채 새 헬퍼·폭 설정을 설계했다
+- **실수**: plans/205는 `16ea44fa`에서 작성돼 새 `fanout.py gather_ordered` + `APM_FANOUT_CONCURRENCY`와 X-View 바깥 루프 병렬(#3·#32)을 계획했다. 그런데 같은 날 병합된 plans/207(D-358 ②)이 같은 헬퍼(`application/parallel.py`)를 이미 만들어 4곳에 적용했고, 「X-View 루프 직렬 유지」까지 결정해 두었다. 착수 단계에서야 발견해 사용자 결정(헬퍼 재사용 · X-View 직렬)을 받았다.
+- **원인**: 계획 작성과 착수 사이에 병합이 끼었고, 착수 시 「계획 대상 파일의 최근 커밋·같은 영역 결정」을 대조하지 않으면 중복 설계를 그대로 위임할 뻔했다.
+- **방지책**: 계획 시작 SHA를 갱신할 때 `git log --oneline <작성 SHA>..HEAD -- <회귀 대상 파일>`과 색인 grep(영역 키워드)으로 사이에 들어온 결정·코드를 먼저 확인한다. 겹치면 위임 전에 충돌로 올린다.
+
 ### 2026-11-02 · (plans/208 W5 · implementer) zsh 글롭 불일치로 `pytest $(ls …)`가 인자 없이 떠 전체 스위트를 `-n 4`로 돌렸다
 - **실수**: 설정 테스트 묶음을 `.venv/bin/python -m pytest $(ls tests/test_api/test_settings*.py tests/test_settings*.py 2>/dev/null) -q -n 4`로 돌렸다. `tests/test_settings*.py`가 없어 zsh가 글롭 불일치로 `ls`를 실패시켰고 명령 대입이 비어, pytest가 인자 없이 저장소 전체를 수집해 `-n 4`로 약 15분 돌았다. 중지(pkill)는 권한 분류기에 막혀 팀 리드도 끝나기를 기다릴 수밖에 없었다(같은 작업 트리에서 다른 검증과 CPU 경합).
 - **원인**: zsh는 일치 없는 글롭을 오류로 처리한다(bash는 글롭 문자열을 그대로 넘긴다). `$(ls …)` 대입이 비면 「인자 없는 pytest = 전체 수집」이 되는데, 출력은 `grep`으로 걸러져 바로 드러나지 않았다.

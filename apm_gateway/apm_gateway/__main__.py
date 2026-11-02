@@ -81,6 +81,7 @@ async def _serve() -> list[int]:
 
     from apm_gateway.adapters.jennifer.allowlist import ALLOWED
     from apm_gateway.adapters.log_masking import install_log_record_factory
+    from apm_gateway.adapters.parse_pool import build_parse_pool
     from apm_gateway.application.event_buffer import EventBuffer
     from apm_gateway.application.jobs import JobManager
     from apm_gateway.application.node_address import build_node_address
@@ -105,7 +106,9 @@ async def _serve() -> list[int]:
     quiet_http_loggers()
     logger = logging.getLogger("apm_gateway")
 
-    sources = build_source_set(cfg)
+    # 큰 응답 파싱 프로세스 풀(plans/205 W1 · D-356) — 프로세스당 1개를 소스 클라이언트가 공유
+    parse_pool = build_parse_pool(cfg.perf.parse_workers, cfg.perf.parse_process_min_bytes)
+    sources = build_source_set(cfg, parse_pool=parse_pool)
     node_address = build_node_address(cfg)  # 플래그 off면 None(현행 동일)
     poller: EventPoller | None = None
     event_buffer: EventBuffer | None = None
@@ -180,6 +183,8 @@ async def _serve() -> list[int]:
         await jobs.aclose()  # 진행 중 백그라운드 작업 → interrupted(종료 감사 1줄씩)
         for src in sources:
             await src.api.client.aclose()
+        if parse_pool is not None:
+            parse_pool.shutdown()
         if node_address is not None:
             await node_address.aclose()
         if redis_client is not None:

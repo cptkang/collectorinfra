@@ -125,7 +125,7 @@ def _settings(**kw):
 def test_callers_pass_concurrency_setting(monkeypatch, factory, kw, expect):
     captured = {}
 
-    def fake_run(url, headers, calls, *, timeout_seconds, concurrency):
+    def fake_run(url, headers, calls, *, timeout_seconds, concurrency, **_kw):
         captured.update(url=url, timeout=timeout_seconds, concurrency=concurrency)
         return []
 

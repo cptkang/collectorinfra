@@ -1,10 +1,10 @@
 # 205. APM 게이트웨이 조회 가속 — 도구 안 독립 호출 동시 실행 · 큰 응답 파싱·자격증명 검사 멀티코어
 
 > **작성일**: 2026-11-02 · v1
-> **상태**: **TODO** — 코드 0건
-> **계획 시작 SHA**: `16ea44fa`
+> **상태**: **WIP** — W1·W2·W3·W3b·W4 구현(2026-11-02 · 커밋 없음) · 잔여: 폐쇄망 측정(§6) · 도구 행 조립의 루프 점유(§7) · `apm_change_impact` 보류(§7)
+> **계획 시작 SHA**: `08a900f3`(2026-11-02 착수 시 갱신 — 작성 당시 `16ea44fa` 이후 plans/207 병합)
 > **관련 결정**: D-356(이 계획 · 기본 on — D-162 예외) · D-347 ③(소스별 in-flight 상한 8 — 유지) · D-296 ④(메모리 임계·스풀 — 유지) · D-344 · D-274 ③(양방향 import 0) · D-303(회귀)
-> **회귀 대상 파일**: W1 `apm_gateway/apm_gateway/adapters/parse_pool.py`(신규) · `adapters/jennifer/client.py` · `config.py` · `interface/config_admin_adapter.py` · 조립부(`__main__.py`·`interface/server.py` 중 클라이언트 생성·종료 지점) · `apm_gateway/.env.example` / W2 `application/fanout.py`(신규) · `application/resolver.py` · `apm_core.py` · `manage_tools.py` · `stats_tools.py` · `scope_tools.py` · `transaction_tools.py` · `compare_tools.py` · `health_tools.py` · `fleet_tools.py` · `instance_tools.py`(W0 분류 결과로 확정) / W3 `application/batch.py`
+> **회귀 대상 파일**: `apm_gateway/` 36개 — `.env.example` · `apm_gateway/{__main__.py,config.py}` · `adapters/{parse_pool.py(신규),throttle.py,jennifer/api.py,jennifer/client.py}` · `application/{apm_core.py,batch.py,compare_tools.py,fleet_tools.py,health_tools.py,instance_tools.py,jobs.py,manage_tools.py,parallel.py,scope_tools.py,sources.py,stats_tools.py,transaction_tools.py}` · `domain/call_context.py` · `interface/{audit.py,config_admin_adapter.py,server.py}` · `scripts/bench_parallel.py`(신규) · 테스트 `test_plan205_{w1_parse_pool,w2a_fanout,w2b_fanout,w3_batch,w3b_fairness,verify}.py`(신규) · `test_jobs.py` · `test_plan134_w5_trace.py` · `test_plan134_w7_allowlist.py` · `test_plan207_w1_parallel.py` · `test_plan207_w2_parallel_loops.py`
 
 ---
 
@@ -49,6 +49,8 @@
 - **테스트**: ① 풀 경로와 인라인 경로의 결과 동일(cleaned·notes·masked — 자격증명 포함 표본 · 스풀 파일 표본) ② 임계 미만은 풀 미사용 ③ 파싱 오류 → 기존과 같은 `ApmError(API_ERROR)` 문구 ④ 깨진 풀(워커 강제 종료) → WARNING + 결과 정상 ⑤ `APM_PARSE_WORKERS=0` → 풀 미생성 ⑥ 이벤트 루프 지연: 6MiB 응답 4건 처리 동안 10ms 틱 코루틴의 최대 지연이 풀 경로에서 유의하게 작다(느슨한 단언 · `serial` 마커 검토).
 
 ### W2 — 도구 안 독립 호출 동시 실행 (A)
+
+> **착수 시 사용자 결정(2026-11-02 · D-356 부기 1)** — 이 계획 작성 뒤 병합된 D-358(plans/207)이 같은 헬퍼를 이미 만들어 아래 본문을 이렇게 읽는다: ① 새 `fanout.py`/`gather_ordered`는 만들지 않고 `application/parallel.py` `gather_bounded`·`sources.gather_per_source`를 재사용한다. 폭 = `JenniferSource.width` = min(`APM_FANOUT_CONCURRENCY`, 소스 자리 수) — D-358 기존 4곳(#1·#2·#4·#26)도 이 폭(D-358 부기). ② X-View 루프(#3 바깥·#32)는 직렬 유지(D-358 ② · D-344). ③ R-1 실측으로 기본값은 **2**다(§7).
 
 - **W0(착수 전 분류)**: §1의 루프 전수(`grep` — `for` 본문 안의 `await …api…`/`resolver.inventory()`)를 ① 독립(병렬 대상) ② 종속(앞 결과로 다음 호출 결정 — `apm_core.fetch_errors` 표기 후보 순차 · 페이지 넘김) ③ 캐시 1회성(`fleet_tools.py:206` 소스별 캐시 명단 — 효과 미미)으로 나눠 표로 남긴다(이 계획서 §5). ②·③은 바꾸지 않는다. 폴러(`poller.py:119`)는 이미 `gather`.
 - 신규 `application/fanout.py`: `async def gather_ordered(items, call, *, limit) -> list[tuple[item, result | ApmError]]` — `asyncio.Semaphore(limit)`로 묶고 **입력 순서**로 돌려준다. `ApmError`만 결과로 잡고, 그 밖 예외는 나머지를 취소한 뒤 다시 올린다. `limit == 1`이면 태스크 없이 차례로 await(현행과 같은 호출 순서 — 녹화 응답 순서에 기대는 테스트 보호). 호출 맥락(ContextVar `current_scope`)은 태스크에 복사되어 같은 맥락 객체를 공유함을 테스트로 고정한다.
@@ -96,7 +98,7 @@
 |---|---|---|---|---|---|
 | 1 | resolver.py:253 `_load` | 도메인 · `instances` | ① | `inv.instances.extend` 순서 = 명단 순서 · `unavailable` | a |
 | 2 | apm_core.py:235 `realtime` | (소스,도메인) · `realtime` | ① | `out[key]` · `limits.fail` | a |
-| 3 | apm_core.py:258 `xview` 바깥 / 260 청크 while | (소스,도메인) / 1분 청크 · `transactions` | 바깥 ① / 청크 ② | `seen`(키에 `len(txs)` — 먼저 온 쪽 우선) · 청크 실패 `break` | a(바깥만) |
+| 3 | apm_core.py:258 `xview` 바깥 / 260 청크 while | (소스,도메인) / 1분 청크 · `transactions` | 바깥 ① / 청크 ② | `seen`(키에 `len(txs)` — 먼저 온 쪽 우선) · 청크 실패 `break` | —(X-View 직렬 유지 · 사용자 결정) |
 | 4 | apm_core.py:306 `hourly` | (소스,도메인) · `application_status` | ① | `rows.extend` · `limits.fail` | a |
 | 5 | apm_core.py:437 `metric_plan` | 소스 · `catalog`(TTL) | ③ | — | — |
 | 6 | apm_core.py:609 `fetch_errors` | 표기 후보(≤3) · `errors` | ② | 처음 비지 않은 결과에서 return | — |
@@ -116,7 +118,7 @@
 | 20 | transaction_tools.py:271 `apm_events` | (소스,도메인)×{events, errors} | ① (안쪽 #6은 ②) | `events/errors`·`limits.fail` | a |
 | 21 | compare_tools.py:121 `_change_rows` 바깥 / 124 조각 while | (소스,도메인) / 25시간 조각 · `source_changes` | 바깥 ① / 조각 ② | `seen`(먼저 온 쪽 우선) · 조각 실패 `break` | b(바깥만) |
 | 22 | compare_tools.py:264 `apm_transaction_trace` | (소스,도메인) · `transactions_by_guid` | ① | `hits`·`unique`(먼저 온 쪽 우선) | b |
-| 23 | compare_tools.py:461 `apm_change_impact` | 변경 건×(전·후) · `_impact_side` | ① | 루프 안 `expect_calls(1)` · `limits.extend(sub)` | b(봉투 동일 못 맞추면 보류·근거) |
+| 23 | compare_tools.py:461 `apm_change_impact` | 변경 건×(전·후) · `_impact_side` | ① | 루프 안 `expect_calls(1)` · `limits.extend(sub)` | —(보류 — `_impact_side`가 X-View를 부른다 · X-View 직렬 결정과 같은 근거) |
 | 24 | compare_tools.py:626 `apm_period_compare` | 인스턴스×구간 · `application_status` | ① | `failed[period]` 순서가 `[한계]` 문구 | b |
 | 25 | fleet_tools.py:203 `_groups` | 소스 · `inventory`(캐시) | ③ | — | — |
 | 26 | fleet_tools.py:323 `_realtime_records` | (소스,도메인) · `realtime` | ① | `records` 순서(순위 동점) · `CONTRACT_VIOLATION` 즉시 raise | b |
@@ -125,7 +127,7 @@
 | 29 | instance_tools.py:85 `_fill_host_address` | 웹 세션(소스 lock 직렬) | 범위 밖 | — | — |
 | 30 | instance_tools.py:106 `_domain_descriptions` | 소스 · `inventory` | ③ | — | — |
 | 31 | instance_tools.py:497 `_business_trace` 1단 | 도메인 · `business_defs_of` | ① | `matched` | b |
-| 32 | instance_tools.py:517 `_business_trace` 2단 | 매칭 도메인 · `_business_seen_of` | ① (안쪽 #33 ②) | `out` | b |
+| 32 | instance_tools.py:517 `_business_trace` 2단 | 매칭 도메인 · `_business_seen_of` | ① (안쪽 #33 ②) | `out` | —(X-View 직렬 유지 · 사용자 결정) |
 | 33 | instance_tools.py:557 `_business_seen_of` 청크 while | 1분 청크 · `transactions` | ② | `break` · 완전할 때만 캐시 | — |
 | 34 | manage_tools.py:314 `_run`(공용) | 호출부 단위 — 7곳 · apm_config 7종·apm_environment·apm_users | ① | `done/failed` 순서(`_source_statuses` 첫 오류) · `absent.append`(apm_users) | a |
 | 35 | manage_tools.py:670 `_process_instance` 결과 | 소스 · `inventory` | ③ | — | — |
@@ -142,4 +144,27 @@
 
 ## 7. 결과
 
-(완료 시 기록)
+2026-11-02 · 커밋 없음 · 계획 시작 SHA `08a900f3`.
+
+| Wave | 결과 |
+|---|---|
+| W1 | `adapters/parse_pool.py` — spawn 프로세스 풀이 파싱+`scrub_detail`을 함께 하고 가린 결과만 돌려준다(예외도 원문 없이) · `APM_PARSE_WORKERS`(기본 `min(4, CPU-1)` · 0 = 끔) · `APM_PARSE_PROCESS_MIN_BYTES`(262144) · 풀 장애 = WARNING + 재생성 + 그 호출만 스레드 · `__mp_main__` 재import에서 서버 미기동 실측 |
+| W2 | §5 표 a·b 적용(#7·#8·#10~#14·#16·#17~#22·#24·#27·#28·#31·#34 — 각 `gather_per_source`) · #3·#23·#32 직렬/보류 · 자격증명 메모를 항목별로 모아 입력 순서로 재신고(`parallel._OrderedNotes`) · 계약 위반 뒤 미시작 호출 미전송(`gather_bounded(stop=)` — verifier Major 교정) |
+| W3 | `batch.py` 항목을 `gather_bounded`로(폭 = `APM_FANOUT_CONCURRENCY`) · `_Plan` 항목별 카운터(최종 예상 호출 수 = 순차) |
+| W3b | `PrioritySlots` 호출자 공정 분배(순위 → 같은 순위 안 상한 미도달 → 적게 쥔 호출자 → seq · `JENNIFER_MAX_INFLIGHT_PER_CALLER` 자동 4) · `_Slots` owner 공정(`APM_JOB_MAX_CONCURRENT_PER_OWNER` 2) · 대기 ms 작업 기록·감사 `waits=` · `gateway_health.congestion` |
+| W4 | `apm_gateway/scripts/bench_parallel.py` · D-356 부기 1 · D-358 부기 |
+
+**R-1(자리 대기 초과) 실측** — 가짜 전송 실 축척(지연 3s·5s · 자리 8 · 초당 5 · timeout 30s):
+
+| 시나리오 | 폭 4 | 폭 2 |
+|---|---|---|
+| 도구 단독 · 작업 4 × 독립 12 | 초과 0 · 최대 대기 9.4s · 27.6s | 초과 0 · 0.2ms · 27.8s |
+| 배치 조합 · 작업 4 × 항목 6 × 도구 안 | **초과 6** · 최대 30.0s · 48.3s | 초과 0 · 9.4s · 52.3s |
+
+→ 계획 R-1 규칙대로 기본 `APM_FANOUT_CONCURRENCY = 2`(= 자리 8 // 작업 4). 속도 상한(초당 5)이 지배하는 조건이라 폭 2와 4의 소요 차이는 작다.
+
+**측정(bench · 맥북 · 가짜 전송)**: 지연 1.0s · 독립 12 · 초당 5 — 순차 14.5s → 동시(2) 7.6s. 응답 20,000건(5.4MiB) × 8 · 지연 0.3s · 속도 무제한 — 동시+풀 끔 6.9s → 동시+풀 켬 5.0s. 클라이언트 단위 루프 최대 지연(6MiB × 4) 인라인 207ms → 풀 22ms. 단 도구 전체 경로에서는 파싱 뒤 행 조립이 루프를 잡아 풀 켬·끔 모두 최대 지연 0.65~0.8s다.
+
+**검증**(교정 뒤 최종 1회): `regress.py --base 08a900f3 --files <36개>` — apm_gateway 패키지 통과 1,966 · 실패 0 · 에러 0 · 건너뜀 15 · repo_guard 180 통과 · arch/overfit/config_fallback 통과 · ruff 이번 diff 위반 0(E501 2건 교정 뒤 `--no-tests` 재확인) · `범위: 모듈 단위 — 전체 미실행` · [전체 회귀 권고] 없음. verifier(29 통과 + 재현 xfail 2): Critical 0 · Major 1(계약 위반 뒤 남은 호출 전송 — 폭 1도 종전과 다름) · Minor 2(소스 혼합 입력의 메모 순서 · D-356 부기 부재) → 모두 교정.
+
+**잔여**: ① 폐쇄망 측정(§6 — 폭·풀 on/off 대 감사 `elapsed_ms`·`waits=`·RSS). ② 큰 응답의 **도구 행 조립**이 이벤트 루프를 잡는다(20,000건 0.65~0.8s) — 파싱 풀 밖 · 후속 후보. ③ `apm_change_impact`(#23)·루프 아닌 순차 호출(§5 끝)은 X-View 포함이라 보류. ④ 되돌리기 `APM_FANOUT_CONCURRENCY=1`은 D-358 4곳까지 직렬로 만든다(종전 폭 8 재현은 `=8`).
