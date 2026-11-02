@@ -37,6 +37,7 @@ from apm_gateway.adapters.jennifer.fields import METRIC_FIELDS, REALTIME_EXTRA_F
 from apm_gateway.application.event_buffer import EventBuffer, buffer_row, merge_key
 from apm_gateway.application.masking import mask_text
 from apm_gateway.application.period_stats import period_stats
+from apm_gateway.application.parallel import contract_violation
 from apm_gateway.application.resolver import Inventory
 from apm_gateway.application.scope_tools import ScopeTools, ServiceScope
 from apm_gateway.application.sources import (
@@ -327,7 +328,10 @@ class FleetTools:
         failures: list[tuple[str, ApmError]] = []
         records: list[tuple[Group, dict[str, Any]]] = []
         results = await gather_per_source(
-            groups, lambda g: g[0], lambda g: g[0].api.realtime(g[2]["domain_id"])
+            groups,
+            lambda g: g[0],
+            lambda g: g[0].api.realtime(g[2]["domain_id"]),
+            stop=contract_violation,
         )
         for group, found in zip(groups, results, strict=True):
             src, _inv, d = group
@@ -526,7 +530,9 @@ class FleetTools:
         """인스턴스마다 시 단위 통계 1호출(명단 순서대로) → (지표 값, 실패 인스턴스, 통계 행 없음,
         가중 평균 불가, 인스턴스 id 없음). 인스턴스 오류는 `failures`에, 전부 실패한 도메인은
         `domains_failed`에 덧붙인다. 인스턴스 id가 없는 인스턴스는 호출하지 않는다(실패가 아니라
-        순위 밖 — 호출자가 `[한계]`로 알린다)."""
+        순위 밖 — 호출자가 `[한계]`로 알린다). 호출은 소스 폭으로 겹치고 결과는 명단 순서대로
+        처리한다(plans/205 W2 #27 — 계약 위반은 순서상 첫 위반에서 올린다 · 그 뒤 호출은 이미
+        나갔을 수 있다)."""
         core = self.core
         records: list[tuple[Group, dict[str, Any], dict[str, Any]]] = []
         seen: set[tuple[str, Any, Any]] = set()
@@ -534,12 +540,13 @@ class FleetTools:
         no_rows: list[str] = []
         unweighted: list[str] = []
         no_id: list[str] = []
+        # 1차 — 물을 인스턴스를 명단 순서대로 고른다(호출 결과와 무관한 거르기)
+        asks: list[list[tuple[dict[str, Any], int, str]]] = []
         for group, insts in plans:
             src, _inv, d = group
             sid, did = src.source_id, d["domain_id"]
             where = core.sources.where(sid, did)
-            answered = 0
-            errors: list[tuple[str, ApmError]] = []
+            mine: list[tuple[dict[str, Any], int, str]] = []
             for inst in insts:
                 iid = inst.get("instance_id")
                 if iid is None:  # id 없이는 인스턴스 1개로 좁혀 물을 수 없다 — 묻지 않는다
@@ -552,12 +559,33 @@ class FleetTools:
                     continue
                 seen.add(ident)
                 label = f"{where} 인스턴스 {inst.get('instance_name') or iid}".strip()
-                try:
-                    app_rows = await src.api.application_status(did, [iid], lo, hi)
-                except ApmError as e:
-                    if e.code == CONTRACT_VIOLATION:
-                        raise
-                    errors.append((label, e))
+                mine.append((inst, iid, label))
+            asks.append(mine)
+        calls = [
+            (group, iid)
+            for (group, _insts), mine in zip(plans, asks, strict=True)
+            for _inst, iid, _label in mine
+        ]
+        results = iter(
+            await gather_per_source(
+                calls,
+                lambda c: c[0][0],
+                lambda c: c[0][0].api.application_status(c[0][2]["domain_id"], [c[1]], lo, hi),
+                stop=contract_violation,
+            )
+        )
+        # 2차 — 결과를 명단 순서대로 처리한다
+        for (group, _insts), mine in zip(plans, asks, strict=True):
+            src, _inv, d = group
+            where = core.sources.where(src.source_id, d["domain_id"])
+            answered = 0
+            errors: list[tuple[str, ApmError]] = []
+            for inst, _iid, label in mine:
+                app_rows = next(results)
+                if isinstance(app_rows, ApmError):
+                    if app_rows.code == CONTRACT_VIOLATION:
+                        raise app_rows
+                    errors.append((label, app_rows))
                     continue
                 answered += 1
                 if not app_rows:
@@ -715,22 +743,35 @@ class FleetTools:
                     "failed": 0}
         failures: list[tuple[str, ApmError]] = []
         rows: list[dict[str, Any]] = []
+
+        async def fetch(plan: tuple[Group, list[tuple[int, int]]]) -> list[dict[str, Any]]:
+            (src, _inv, d), gaps = plan
+            fetched, known = await src.api.events_checked(
+                d["domain_id"], None, gaps[0][0], gaps[-1][1]
+            )
+            if not known:  # 모르는 모양을 「확인한 0건」으로 세지 않는다(R34-3)
+                raise ApmError(
+                    API_ERROR,
+                    "이벤트 응답 모양이 예상과 다르다({result: [...]} 봉투가 아님)",
+                )
+            return fetched
+
+        # 버퍼 틈이 있는 도메인만 부른다 — 소스 폭으로 겹치고 결과는 범위 순서대로 처리한다
+        # (plans/205 W2 #28 — 계약 위반은 순서상 첫 위반에서 올린다)
+        asked = [p for p in plans if p[1]]
+        results = iter(
+            await gather_per_source(asked, lambda p: p[0][0], fetch, stop=contract_violation)
+        )
         for (src, inv, d), gaps in plans:
             sid, did = src.source_id, d["domain_id"]
             got: list[dict[str, Any]] = []
             if gaps:
                 lo, hi = gaps[0][0], gaps[-1][1]
-                try:
-                    fetched, known = await src.api.events_checked(did, None, lo, hi)
-                    if not known:  # 모르는 모양을 「확인한 0건」으로 세지 않는다(R34-3)
-                        raise ApmError(
-                            API_ERROR,
-                            "이벤트 응답 모양이 예상과 다르다({result: [...]} 봉투가 아님)",
-                        )
-                except ApmError as e:
-                    if e.code == CONTRACT_VIOLATION:
-                        raise
-                    failures.append((core.sources.where(sid, did), e))
+                fetched = next(results)
+                if isinstance(fetched, ApmError):
+                    if fetched.code == CONTRACT_VIOLATION:
+                        raise fetched
+                    failures.append((core.sources.where(sid, did), fetched))
                     coverage["failed"] += 1
                     continue
                 got = [buffer_row(sid, did, ev) for ev in fetched]

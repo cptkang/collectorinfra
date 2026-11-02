@@ -8,6 +8,8 @@ M-9). `principal`은 전송 토큰으로 정한 호출 주체 이름(토큰 값 
 `search`는 인스턴스 이름 검색의 채택 단계·단계별 후보 수다(그 호출에만 · 검색어는 대상 칸에
 마스킹본 — plans/130 N-6). 업무명 해석이면 `business(근거:수,…)`다(대상 칸은 `business:<마스킹본>`
 — N-2).
+`waits`는 작업으로 돈 호출의 소스 자리 대기·속도 제어 대기 합계/최대(ms — `slot_ms:합/최대,
+throttle_ms:합/최대` · plans/205 W3b 혼잡 가시화)다(작업이 없으면 칸 없음).
 모든 칸의 제어·서식 문자는 이스케이프한다(`\n` → `\\n` — 대상·조사 ID 값으로 감사 줄을 위조하지
 못하게).
 """
@@ -43,9 +45,11 @@ def audit(
     principal: str = "-",
     job_id: str | None = None,
     search: str | None = None,
+    waits: str | None = None,
 ) -> None:
     tool, target, sources = _safe(tool), _safe(target), _safe(sources)
-    tail = f" search={_safe(search)}" if search else ""
+    waited = f" waits={_safe(waits)}" if waits else ""
+    tail = waited + (f" search={_safe(search)}" if search else "")
     investigation_id = _safe(investigation_id) if investigation_id else None
     thread_id = _safe(thread_id) if thread_id else None
     principal, job_id = _safe(principal), _safe(job_id) if job_id else None
@@ -53,7 +57,7 @@ def audit(
         error = _safe(error)
         logger.warning(
             "apm audit: tool=%s target=%s elapsed_ms=%.1f api_calls=%d sources=%s error=%s "
-            "investigation_id=%s thread_id=%s principal=%s job_id=%s",
+            "investigation_id=%s thread_id=%s principal=%s job_id=%s%s",
             tool,
             target,
             elapsed_ms,
@@ -64,6 +68,7 @@ def audit(
             thread_id or "-",
             principal or "-",
             job_id or "-",
+            waited,
         )
     else:
         logger.info(

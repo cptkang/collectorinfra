@@ -15,6 +15,13 @@
   게이트웨이 루트 = 자체 cwd 기준) · 인라인·청크 행 수 · 보관 · 동시 실행 · 정체 · 우선순위 에이징.
   `JENNIFER_MAX_RESPONSE_BYTES`는 **메모리 임계**다 — 넘는 응답은 스풀 임시 파일로 받는다(오류로
   끊지 않는다 · D-296 ④).
+- 큰 응답 파싱 프로세스 풀(plans/205 W1 · D-356 — 기본 on): `APM_PARSE_WORKERS`(기본
+  `min(4, CPU-1)` · 0 = 끔 = 종전 스레드 경로) · `APM_PARSE_PROCESS_MIN_BYTES`(기본 262144).
+- 도구 안 독립 호출 동시 폭(plans/205 W2 · D-356 ① — 기본 on): `APM_FANOUT_CONCURRENCY`
+  (기본 2 — R-1 검증 · 실효 폭 = min(이 값, 소스 자리 수) · 1 = 종전 순차).
+- 다중 사용자 공정 동시성(plans/205 W3b · D-356 ⑤ — 기본 on): `JENNIFER_MAX_INFLIGHT_PER_CALLER`
+  (소스별 승계 · 비우면 `max(1, 자리 // 2)` · 0 = 끔) · `APM_JOB_MAX_CONCURRENT_PER_OWNER`(기본 2 ·
+  0 = 끔). 끄면 종전 순서와 비트 동일.
 - 호출 주체(§3.6): `APM_GATEWAY_BEARER_TOKENS`(JSON 객체 `{주체: 토큰}`) + 종전 단일
   `APM_GATEWAY_BEARER_TOKEN`(주체 `default`). 같은 토큰을 두 주체에 주면 기동 실패다(메시지에 토큰
   값 없음).
@@ -62,6 +69,7 @@ SOURCE_KEY_SUFFIXES = (
     "RATE_LIMIT_PER_SEC",
     "MAX_RESPONSE_BYTES",
     "MAX_INFLIGHT_PER_SOURCE",
+    "MAX_INFLIGHT_PER_CALLER",
     "WEB_USER",
     "WEB_PASSWORD",
     "WEB_URL",
@@ -86,6 +94,9 @@ class JenniferApiConfig:
     # 무제한이라 응답이 느려지면 `rate × 지연`만큼 제니퍼에 요청이 쌓였다(제니퍼 부하). 응답이
     # 1.6s(= 8 / 5회/s) 안이면 이 상한에 닿지 않아 정상 부하 동작은 같다.
     max_inflight_per_source: int = 8
+    # 호출자(주체·owner)별 동시 호출 상한(plans/205 W3b · D-356 ⑤ — 기본 on) — None = 자동
+    # `max(1, 자리 // 2)` · 0 = 끔(공정 분배 없이 종전 순서와 비트 동일)
+    max_inflight_per_caller: int | None = None
     source_id: str = DEFAULT_SOURCE_ID
     # 웹 세션 노드 주소 조회(plans/202 · D-355) — 소스별 전용 조회 권한 계정. 비면 `disabled`.
     web_url: str = ""
@@ -136,8 +147,27 @@ class JobConfig:
     chunk_rows: int = 2000
     retention_seconds: int = 86400
     max_concurrent: int = 4
+    # 같은 호출자(주체·owner)의 실행 중 작업 공정 상한(plans/205 W3b · D-356 ⑤ — 0 = 끔 = 종전 FIFO)
+    max_concurrent_per_owner: int = 2
     stall_seconds: int = 300
     priority_aging_seconds: float = 10.0
+
+
+def default_parse_workers() -> int:
+    """파싱 프로세스 풀 워커 수 기본값 — 코어 하나는 이벤트 루프에 남긴다(최대 4)."""
+    return min(4, max(1, (os.cpu_count() or 2) - 1))
+
+
+@dataclass
+class PerfConfig:
+    """큰 응답 파싱·자격증명 검사 프로세스 풀(plans/205 W1 · D-356 — 기본 on · 워커 0 = 끔)."""
+
+    parse_workers: int = field(default_factory=default_parse_workers)
+    parse_process_min_bytes: int = 256 * 1024
+    # 도구 호출 1건 안에서 한 소스로 겹쳐 부르는 폭 상한(plans/205 W2 · D-356 ① — 실효 폭 =
+    # min(이 값, 소스 자리 수) · 1 = 종전 순차와 호출 순서까지 동일). 기본 2 = 자리 8 // 작업 4 —
+    # 4는 배치 조합(작업 4 × 항목 4 × 도구 4)에서 자리 대기 초과가 나 낮췄다(R-1 · D-356 부기)
+    fanout_concurrency: int = 2
 
 
 @dataclass
@@ -177,6 +207,7 @@ class GatewayConfig:
     server: ServerConfig = field(default_factory=ServerConfig)
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     jobs: JobConfig = field(default_factory=JobConfig)
+    perf: PerfConfig = field(default_factory=PerfConfig)
     poller: PollerConfig = field(default_factory=PollerConfig)
     redis: RedisConfig = field(default_factory=RedisConfig)
     policies: Policies = field(default_factory=Policies)
@@ -274,6 +305,11 @@ def _load_sources(
                     base.max_inflight_per_source,
                     prefix + "MAX_INFLIGHT_PER_SOURCE",
                 ),
+                max_inflight_per_caller=_non_negative_int(
+                    pick("MAX_INFLIGHT_PER_CALLER"), 0, prefix + "MAX_INFLIGHT_PER_CALLER"
+                )
+                if pick("MAX_INFLIGHT_PER_CALLER")
+                else base.max_inflight_per_caller,
                 source_id=sid,
                 web_url=pick("WEB_URL") or pick("API_URL"),
                 web_user=pick("WEB_USER"),
@@ -352,6 +388,19 @@ def _positive_int(value: str | None, default: int, key: str) -> int:
             raise ValueError(f"{key}는 정수여야 한다: {value!r}") from None
     if number < 1:
         raise ValueError(f"{key}는 1 이상이어야 한다")
+    return number
+
+
+def _non_negative_int(value: str | None, default: int, key: str) -> int:
+    """0 이상 정수 키를 읽는다(0 = 끔) — 음수·소수·문자는 키 이름을 담아 거부한다."""
+    if value is None or not value.strip():
+        return default
+    try:
+        number = int(value.strip())
+    except ValueError:
+        raise ValueError(f"{key}는 정수여야 한다: {value!r}") from None
+    if number < 0:
+        raise ValueError(f"{key}는 0 이상이어야 한다")
     return number
 
 
@@ -446,6 +495,11 @@ def load_config(
         max_inflight_per_source=_positive_int(
             get("JENNIFER_MAX_INFLIGHT_PER_SOURCE"), 8, "JENNIFER_MAX_INFLIGHT_PER_SOURCE"
         ),
+        max_inflight_per_caller=_non_negative_int(
+            get("JENNIFER_MAX_INFLIGHT_PER_CALLER"), 0, "JENNIFER_MAX_INFLIGHT_PER_CALLER"
+        )
+        if (get("JENNIFER_MAX_INFLIGHT_PER_CALLER") or "").strip()
+        else None,
     )
     sources = _load_sources(get("JENNIFER_SOURCES"), jennifer, env)
     bearer_token = (get("APM_GATEWAY_BEARER_TOKEN") or "").strip()
@@ -459,6 +513,9 @@ def load_config(
             )
         ),
         max_concurrent=int(_positive(get("APM_JOB_MAX_CONCURRENT"), 4, "APM_JOB_MAX_CONCURRENT")),
+        max_concurrent_per_owner=_non_negative_int(
+            get("APM_JOB_MAX_CONCURRENT_PER_OWNER"), 2, "APM_JOB_MAX_CONCURRENT_PER_OWNER"
+        ),
         stall_seconds=int(_positive(get("APM_JOB_STALL_SECONDS"), 300, "APM_JOB_STALL_SECONDS")),
         priority_aging_seconds=_positive(
             get("APM_PRIORITY_AGING_SECONDS"), 10.0, "APM_PRIORITY_AGING_SECONDS"
@@ -488,6 +545,17 @@ def load_config(
             ),
         ),
         jobs=jobs,
+        perf=PerfConfig(
+            parse_workers=_non_negative_int(
+                get("APM_PARSE_WORKERS"), default_parse_workers(), "APM_PARSE_WORKERS"
+            ),
+            parse_process_min_bytes=_positive_int(
+                get("APM_PARSE_PROCESS_MIN_BYTES"), 256 * 1024, "APM_PARSE_PROCESS_MIN_BYTES"
+            ),
+            fanout_concurrency=_positive_int(
+                get("APM_FANOUT_CONCURRENCY"), 2, "APM_FANOUT_CONCURRENCY"
+            ),
+        ),
         poller=PollerConfig(
             enabled=_bool(get("APM_EVENT_POLLER_ENABLED"), False),
             interval_seconds=interval,
@@ -545,6 +613,11 @@ def describe(cfg: GatewayConfig) -> dict[str, Any]:
             "max_concurrent": cfg.jobs.max_concurrent,
             "retention_seconds": cfg.jobs.retention_seconds,
         },
+        "parse_pool": {
+            "workers": cfg.perf.parse_workers,
+            "min_bytes": cfg.perf.parse_process_min_bytes,
+        },
+        "fanout_concurrency": cfg.perf.fanout_concurrency,
         "poller": cfg.poller.enabled,
         "poll_interval": cfg.poller.interval_seconds,
         "node_address": cfg.node_address.enabled,

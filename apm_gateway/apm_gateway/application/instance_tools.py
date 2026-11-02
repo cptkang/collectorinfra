@@ -39,6 +39,7 @@ from apm_gateway.application.sources import (
     STATUS_NO_MATCH,
     STATUS_OK,
     JenniferSource,
+    gather_per_source,
     name_key,
     partial_of,
 )
@@ -494,9 +495,24 @@ class InstanceTools:
             )
         )
         matched: list[tuple[int, JenniferSource, Inventory, int, dict[str, str]]] = []
-        for rank, src, inv, did in targets:
+
+        async def defs_of(
+            target: tuple[int, JenniferSource, Inventory, int],
+        ) -> tuple[list[dict[str, Any]] | None, Limits]:
+            sub = Limits()
+            return await self.core.business_defs_of(target[1], target[3], now, sub), sub
+
+        # 1단 업무 정의만 소스 폭으로 겹치고 단위별 `[한계]`는 도메인 순서대로 옮긴다(plans/205
+        # W2 #31 — 계약 위반은 순서상 첫 위반에서 올린다). 2단 역추적(X-View 조각)은 직렬이다(D-344)
+        results = await gather_per_source(targets, lambda t: t[1], defs_of)
+        for (rank, src, inv, did), got in zip(targets, results, strict=True):
+            if isinstance(got, ApmError):  # 계약 위반만 올라온다(그 밖 실패는 `[한계]`)
+                raise got
+            defs, sub = got
+            limits.extend(sub)
+            limits.partial = limits.partial or sub.partial
             names: dict[str, str] = {}
-            for b in await self.core.business_defs_of(src, did, now, limits) or []:
+            for b in defs or []:
                 if b["business_id"] is not None and (
                     q in b["business_name"].casefold()
                     or q in mask_text(b["business_description"], limit=None).casefold()

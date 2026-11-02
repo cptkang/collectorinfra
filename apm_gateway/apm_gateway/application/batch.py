@@ -3,8 +3,15 @@ D-296 ④ · D-299 ②④ · G-13).
 
 `hostname`을 받는 데이터 도구는 `targets`를 받는다. 항목마다 그 도구 코어를 그 항목의 대상 인자로
 1회 부르고(하위 봉투 = 단건 호출과 같은 의미·같은 칸 — 집계·판정은 대상별 그대로), 행에
-`target_index`를 달아 합친다. 하위 호출은 차례로 돈다 — 작업 하나가 전 대상을 덮으므로 예상·진행·
-부분 실패가 작업 기록으로 나간다. 개수 상한은 없다.
+`target_index`를 달아 합친다. 작업 하나가 전 대상을 덮으므로 예상·진행·부분 실패가 작업 기록으로
+나간다. 개수 상한은 없다.
+
+- **동시 실행**(plans/205 W3 · D-356 ①): 항목은 `gather_bounded`로 `APM_FANOUT_CONCURRENCY`개까지
+  겹쳐 돈다(1 = 종전처럼 입력 순서대로 하나씩 — 호출 순서까지 같다). 하위 도구도 자기 안에서 같은
+  폭으로 겹쳐 부르므로 실효 동시 = 항목 폭 × 도구 폭이고, 둘 다 소스 자리·속도 제어 아래다. 결과
+  조립(행·`target_index`·실패 고지·하위 봉투 고지·최상위 `limits`)은 다 받은 뒤 **입력 순서로** 한다
+  — 응답 도착 순서와 무관하게 순차와 같은 봉투다. 메모·가린 칸은 항목마다 자기 맥락(`_ItemScope`)에
+  모인다.
 
 - **형식**(HTTP 0회): 항목은 객체이고 키는 `hostname`·`instance_name`·`source_id`(+ 그 도구가
   받으면 `instance_id`)뿐이다. 항목마다 `hostname` 또는 `instance_name` 하나 이상(둘 다 = AND).
@@ -12,8 +19,10 @@ D-296 ④ · D-299 ②④ · G-13).
   `invalid_argument`.
   전송 계층은 모르는 최상위 인자를 버리지만 중첩 객체 키는 그대로 넘기므로 여기서 본다. 최상위
   `source_ids`는 `source_id` 없는 항목에 쓴다.
-- **예상·진행**: 첫 하위 호출이 신고한 호출 계획 × 항목 수로 시작하고, 항목이 돌며 그 항목의 실제
-  신고로 바꾼다(바깥 작업에는 추정치의 차이만 더한다 — 이중 계산 없음). 단위는 종전 「API 호출」.
+- **예상·진행**: 처음 호출 계획을 신고한 항목의 계획 × 항목 수로 시작하고, 항목이 돌며 그 항목의
+  실제 신고로 바꾼다(바깥 작업에는 추정치의 차이만 더한다 — 이중 계산 없음). 단위는 종전 「API
+  호출」. 동시에 도는 항목들의 신고는 항목별 카운터로 합친다 — **최종값**(= 항목 신고 합계)은
+  순차와 같고, 도는 중의 중간값은 항목이 시작·신고하는 순서에 따라 순차와 다를 수 있다.
 - **하위 봉투**: 호출 맥락 메모(`[한계]`)·가린 칸·미해결 조건은 작업 마감과 같은 규칙
   (`settle_notices`)으로 그 하위 봉투에 싣는다. 배치 봉투의 고지는 그 합집합이다.
 - 일부 항목 실패 = `partial` + `[한계] 대상 k/N 조회 실패: …` · 전부 실패 = 오류 봉투(코드가 모두
@@ -39,6 +48,7 @@ from apm_gateway.application.jobs import (
     settle_notices,
 )
 from apm_gateway.application.name_search import QUERY_MAX, search_query
+from apm_gateway.application.parallel import gather_bounded
 from apm_gateway.application.tool_common import is_given
 from apm_gateway.application.tools import ApmTools
 from apm_gateway.domain.call_context import CallScope, current_scope, use_scope
@@ -84,53 +94,70 @@ class Target:
 
 
 class _Plan:
-    """배치 전체의 호출 계획 — 바깥 맥락(작업)에는 추정치의 차이만 신고한다."""
+    """배치 전체의 호출 계획 — 바깥 맥락(작업)에는 추정치의 차이만 신고한다.
+
+    항목마다 카운터를 둔다(시작 순 번호 · 동시에 여러 항목이 돌 수 있다 — plans/205 W3). 추정
+    총계 = 끝난 항목 신고 합 + 도는 항목마다 max(신고, 단위) + 아직 시작하지 않은 항목 × 단위. 모두
+    끝나면 신고 합계다(시작·종료 순서와 무관 — 최종값이 순차와 같다). 한 번에 하나만 돌면 종전
+    「도는 항목 1개」 계산과 같은 값이 같은 순서로 나간다."""
 
     def __init__(self, outer: CallScope, size: int) -> None:
         self.outer = outer
         self.size = size
-        self.done: list[int] = []  # 끝난 항목이 신고한 호출 수
-        self.current = 0  # 도는 항목이 지금까지 신고한 호출 수
-        self.running = False
+        self.counts: list[int] = []  # 시작한 항목마다 지금까지 신고한 호출 수(시작 순)
+        self.running: set[int] = set()  # 도는 항목 번호
         self.posted = 0
 
     def _unit(self) -> int:
-        """항목 1개 추정치 = 처음으로 호출 계획을 신고한 하위 호출의 계획."""
-        for count in self.done:
+        """항목 1개 추정치 = 끝난 항목 중 처음으로 호출 계획을 신고한 항목의 계획(없으면 도는
+        항목 중 처음 신고한 항목의 지금까지 계획)."""
+        done = [c for i, c in enumerate(self.counts) if i not in self.running]
+        running = [c for i, c in enumerate(self.counts) if i in self.running]
+        for count in (*done, *running):
             if count:
                 return count
-        return self.current if self.running else 0
+        return 0
 
     def _sync(self) -> None:
         unit = self._unit()
-        started = len(self.done) + (1 if self.running else 0)
-        total = sum(self.done) + unit * (self.size - started)
-        if self.running:
-            total += max(self.current, unit)
+        total = unit * (self.size - len(self.counts))
+        for i, count in enumerate(self.counts):
+            total += max(count, unit) if i in self.running else count
         if total != self.posted:
             self.outer.expect_calls(total - self.posted)
             self.posted = total
 
-    def begin(self) -> None:
-        self.current, self.running = 0, True
+    def _slot(self, slot: int | None) -> int:
+        # 생략 = 마지막으로 시작한 항목(한 번에 하나씩 도는 순차 사용)
+        return len(self.counts) - 1 if slot is None else slot
+
+    def begin(self) -> int:
+        """항목 1개 시작 → 그 항목 번호(`report`·`end`에 넘긴다)."""
+        self.counts.append(0)
+        slot = len(self.counts) - 1
+        self.running.add(slot)
+        self._sync()
+        return slot
+
+    def report(self, count: int, slot: int | None = None) -> None:
+        self.counts[self._slot(slot)] += int(count)
         self._sync()
 
-    def report(self, count: int) -> None:
-        self.current += int(count)
-        self._sync()
-
-    def end(self) -> None:
-        self.done.append(self.current)
-        self.current, self.running = 0, False
+    def end(self, slot: int | None = None) -> None:
+        self.running.discard(self._slot(slot))
         self._sync()
 
 
 class _ItemScope(CallScope):
     """하위 호출 1회의 맥락 — 호출 훅(슬롯 대기·호출 수·우선순위)은 바깥 작업 그대로, 호출 계획은
-    배치 계획으로, 메모·가린 칸은 그 하위 봉투 몫으로 모은다."""
+    배치 계획의 그 항목 카운터(`slot` · 생략 = 마지막으로 시작한 항목)로, 메모·가린 칸은 그 하위
+    봉투 몫으로 모은다. 항목 태스크 안에서 세우므로 동시에 도는 항목끼리 메모가 섞이지 않는다."""
 
-    def __init__(self, plan: _Plan) -> None:  # 우선순위는 바깥 맥락 것을 읽는다(속성 대신)
+    def __init__(
+        self, plan: _Plan, slot: int | None = None
+    ) -> None:  # 우선순위는 바깥 맥락 것을 읽는다(속성 대신)
         self._plan = plan
+        self._slot = slot
         self._outer = plan.outer
         self.notes: list[str] = []
         self.masked_fields: set[str] = set()
@@ -143,6 +170,10 @@ class _ItemScope(CallScope):
     def priority(self, value: str) -> None:
         self._outer.priority = value
 
+    @property  # type: ignore[override]
+    def caller(self) -> str:  # 소스 자리 공정 분배의 호출자 키 — 바깥 작업 것(plans/205 W3b)
+        return self._outer.caller
+
     async def before_call(self, source_id: str = "") -> None:
         await self._outer.before_call(source_id)
 
@@ -154,8 +185,11 @@ class _ItemScope(CallScope):
     ) -> None:
         self._outer.after_call(source_id, seconds, group=group, shared=shared)
 
+    def waited(self, source_id: str, slot_ms: float, throttle_ms: float) -> None:
+        self._outer.waited(source_id, slot_ms, throttle_ms)
+
     def expect_calls(self, count: int) -> None:
-        self._plan.report(count)
+        self._plan.report(count, self._slot)
 
     def note(self, text: str) -> None:
         if text not in self.notes:
@@ -249,7 +283,8 @@ async def run_batch(
     instance_id: int | None = None,
     source_ids: list[str] | None = None,
 ) -> dict[str, Any]:
-    """`targets` 배치 1회 — 형식 검사 → 항목마다 하위 호출(차례로) → 배치 봉투."""
+    """`targets` 배치 1회 — 형식 검사 → 항목마다 하위 호출(`APM_FANOUT_CONCURRENCY`개까지 겹쳐 ·
+    1 = 차례로) → 배치 봉투(입력 순서로 조립)."""
     items = parse_targets(
         core,
         targets,
@@ -260,13 +295,25 @@ async def run_batch(
         source_ids=source_ids,
     )
     plan = _Plan(current_scope(), len(items))
-    outcomes: list[tuple[dict[str, Any], Target, dict[str, Any], _ItemScope]] = []
-    for raw, target in items:
-        scope = _ItemScope(plan)
-        plan.begin()
-        with use_scope(scope):  # 하위 호출이 이 자리에서 바로 돈다(늦은 바인딩 없음)
+
+    async def one(target: Target) -> tuple[dict[str, Any], _ItemScope]:
+        slot = plan.begin()
+        scope = _ItemScope(plan, slot)
+        # 항목 태스크 맥락 안에서 세운다 — 하위 호출이 이 자리에서 바로 돈다(늦은 바인딩 없음).
+        # 메모·가린 칸은 이 맥락에 모이므로 바깥 병렬 헬퍼의 메모 래퍼에는 가지 않는다(중복 없음)
+        with use_scope(scope):
             sub = await _guarded(core, tool, lambda: call(target))
-        plan.end()
+        plan.end(slot)
+        return sub, scope
+
+    got = await gather_bounded(
+        [target for _, target in items], one, core.cfg.perf.fanout_concurrency
+    )
+    outcomes: list[tuple[dict[str, Any], Target, dict[str, Any], _ItemScope]] = []
+    for (raw, target), result in zip(items, got, strict=True):
+        if isinstance(result, ApmError):  # `_guarded`가 봉투로 바꾸므로 오지 않는다
+            raise result
+        sub, scope = result
         outcomes.append((raw, target, sub, scope))
     return _combine(core, tool, outcomes)
 

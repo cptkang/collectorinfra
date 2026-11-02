@@ -17,6 +17,9 @@ SPEC-apm-question-coverage §3.4).
   고지 `disclosures`(`apm_masked_fields`)에 쓰인다.
 - **동시 폭**: 병렬 헬퍼(`application/parallel.py`)가 겹쳐 부르는 동안 `parallel(폭)` 블록을 연다 —
   작업은 남은 예상 시간을 그 폭으로 나눠 잡는다(plans/207 · 직렬 루프는 신고하지 않아 폭 1).
+- **호출자 · 대기**(plans/205 W3b · D-356 ⑤): `caller`는 소스 자리를 공정하게 나누는 호출자 키
+  (주체 · owner — 작업이 채운다 · 기본 `""` = 키 없음 → 종전 순서). 어댑터는 호출마다 자리 대기·
+  속도 제어 대기(ms)를 `waited`로 넘긴다 — 작업이 합계·최대를 모아 작업 기록·감사에 싣는다.
 
 맥락이 없으면(작업 밖 호출) 기본 맥락(`interactive` · 훅 없음 · 메모는 경고 로그)을 쓴다. 표준
 라이브러리만 쓰는 순수 모듈이라 어댑터·애플리케이션 양쪽이 import한다.
@@ -45,6 +48,9 @@ PRIORITY_RANK: dict[str, int] = {
 class CallScope:
     """작업 밖 기본 맥락. 작업(`application/jobs.py`)이 이 클래스를 넓혀 훅을 채운다."""
 
+    # 소스 자리 공정 분배의 호출자 키(작업이 채운다 · "" = 키 없음 — 종전 순서)
+    caller: str = ""
+
     def __init__(self, priority: str = PRIORITY_INTERACTIVE) -> None:
         if priority not in PRIORITY_RANK:
             raise ValueError(f"미지 우선순위: {priority}")
@@ -63,6 +69,10 @@ class CallScope:
     ) -> None:
         """HTTP 1회 응답 수신 뒤 — 실 호출 소요(초 · 속도 제어 대기 제외) · 경로 군(`group`) ·
         공유 적재 여부(`shared`). 작업만 기록한다."""
+        return None
+
+    def waited(self, source_id: str, slot_ms: float, throttle_ms: float) -> None:
+        """호출 1회의 소스 자리 대기 · 속도 제어 대기(ms). 작업만 기록한다."""
         return None
 
     def expect_calls(self, count: int) -> None:
@@ -91,6 +101,10 @@ class SharedLoadScope(CallScope):
         super().__init__(PRIORITY_INTERACTIVE)
         self._origin = origin
 
+    @property  # type: ignore[override]
+    def caller(self) -> str:
+        return self._origin.caller
+
     async def before_call(self, source_id: str = "") -> None:
         self._origin.count_call(source_id, shared=True)
 
@@ -98,6 +112,9 @@ class SharedLoadScope(CallScope):
         self, source_id: str, seconds: float, *, group: str = "", shared: bool = False
     ) -> None:
         self._origin.after_call(source_id, seconds, group=group, shared=True)
+
+    def waited(self, source_id: str, slot_ms: float, throttle_ms: float) -> None:
+        self._origin.waited(source_id, slot_ms, throttle_ms)
 
     def note(self, text: str) -> None:
         self._origin.note(text)

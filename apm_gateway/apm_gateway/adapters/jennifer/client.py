@@ -16,7 +16,8 @@
 - **자격증명 제거**(N-17 · D-296 ③): JSON·텍스트를 파싱한 **직후** 이 클래스의 두 출구
   (`get_json`·`get_text`)와 오류 사유에서 `domain.credentials`를 지난다 — 위 계층은 가린 값만 본다.
   오류 사유는 **가린 뒤 자른다**(자른 뒤 가리면 `@`가 잘려 나간 비밀번호 앞부분이 남는다). 큰 본문의
-  자격증명 검사는 스레드에서 돌려 이벤트 루프를 오래 막지 않는다. JSON 오류 본문에
+  자격증명 검사는 스레드에서 돌려 이벤트 루프를 오래 막지 않는다(프로세스 풀을 받으면 임계 이상
+  본문은 워커 프로세스가 파싱·검사를 함께 한다 — plans/205 W1 · D-356). JSON 오류 본문에
   `exception.message`가 없으면 구조 규칙(`scrub_detail`)을 지난 직렬화본을 사유로 쓴다
   (이름/값 묶음 · `[이름, 값]` 배열 — plans/134 W7 AUDIT-6).
 - 계정 ID가 경로에 들어가는 템플릿(`account` 형식)은 로그·오류 사유에 원 경로 대신 템플릿을 쓰고,
@@ -44,6 +45,7 @@ from apm_gateway.adapters.jennifer.allowlist import (
     check_request,
 )
 from apm_gateway.adapters.json_stream import load_json_file
+from apm_gateway.adapters.parse_pool import ParsePool
 from apm_gateway.adapters.throttle import PrioritySlots, PriorityThrottle
 from apm_gateway.config import JenniferApiConfig
 from apm_gateway.domain.call_context import current_scope
@@ -104,15 +106,24 @@ class JenniferClient:
         transport: httpx.AsyncBaseTransport | None = None,
         spool_dir: Path | None = None,
         aging_seconds: float = 10.0,
+        parse_pool: ParsePool | None = None,
     ) -> None:
         self._cfg = cfg
         self._transport = transport
         self._client: httpx.AsyncClient | None = None
         self._throttle = PriorityThrottle(float(cfg.rate_limit_per_sec), aging_seconds)
         # 동시 호출 자리(D-347) — 속도 제어는 시작 간격만 지켜 응답이 느리면 떠 있는 요청이 쌓인다
-        self._slots = PrioritySlots(int(cfg.max_inflight_per_source), aging_seconds)
+        # 호출자 공정 분배(plans/205 W3b · D-356 ⑤ — None = 자동 `max(1, 자리 // 2)` · 0 = 끔)
+        self._slots = PrioritySlots(
+            int(cfg.max_inflight_per_source),
+            aging_seconds,
+            per_caller=cfg.max_inflight_per_caller,
+        )
         # 메모리 임계를 넘는 응답 본문의 임시 파일 위치(없으면 시스템 임시 디렉터리)
         self._spool_dir = spool_dir
+        # 큰 본문의 파싱·자격증명 검사 프로세스 풀(plans/205 W1 · D-356 — 프로세스당 1개 공유 ·
+        # None = 스레드 경로)
+        self._parse_pool = parse_pool
         self.calls_total = 0
 
     @property
@@ -123,6 +134,10 @@ class JenniferClient:
     def max_in_flight(self) -> int:
         """동시 호출 자리 수 — 병렬 루프의 폭(plans/207 · D-347 상한 재사용)."""
         return self._slots.limit
+
+    def congestion(self) -> dict[str, int]:
+        """자리 혼잡 현황(plans/205 W3b ④) — 자리 수·호출자 상한·떠 있는 수·대기 수·호출자 수."""
+        return self._slots.snapshot()
 
     def _http(self) -> httpx.AsyncClient:
         if self._client is None:
@@ -174,15 +189,21 @@ class JenniferClient:
     ) -> Any:
         """허용 경로를 GET 해 JSON을 돌려준다(자격증명 제거본). 실패는 `ApmError`."""
         body = await self._get(template, params, path_vars)
+        pool = self._parse_pool
         try:
-            if body.path is not None:
-                parsed = await asyncio.to_thread(load_json_file, body.path, body.encoding)
+            if pool is not None and body.size >= pool.min_bytes:  # 임시 파일 본문 포함
+                cleaned, notes, masked = await pool.json(
+                    None if body.path is not None else body.text, body.path, body.encoding
+                )
             else:
-                parsed = json.loads(body.text) if body.text else None
-            if body.size > _THREAD_SCRUB_BYTES:
-                cleaned, notes, masked = await asyncio.to_thread(scrub_detail, parsed)
-            else:
-                cleaned, notes, masked = scrub_detail(parsed)
+                if body.path is not None:
+                    parsed = await asyncio.to_thread(load_json_file, body.path, body.encoding)
+                else:
+                    parsed = json.loads(body.text) if body.text else None
+                if body.size > _THREAD_SCRUB_BYTES:
+                    cleaned, notes, masked = await asyncio.to_thread(scrub_detail, parsed)
+                else:
+                    cleaned, notes, masked = scrub_detail(parsed)
         except RecursionError as e:  # 지나치게 깊은 중첩 — 내부 오류가 아니라 응답 오류
             raise ApmError(API_ERROR, f"JSON 파싱 실패(중첩 과다): {template}") from e
         except ValueError as e:
@@ -207,7 +228,10 @@ class JenniferClient:
                 text = await asyncio.to_thread(body.read_text)
         finally:
             body.discard()
-        if len(text) > _THREAD_SCRUB_BYTES:
+        pool = self._parse_pool
+        if pool is not None and body.size >= pool.min_bytes:
+            cleaned = await pool.text(text)
+        elif len(text) > _THREAD_SCRUB_BYTES:
             cleaned = await asyncio.to_thread(scrub_text, text)
         else:
             cleaned = scrub_text(text)
@@ -242,16 +266,30 @@ class JenniferClient:
         await scope.before_call(self._cfg.source_id)
         # 자리 → 속도 제어 순서(D-347): 속도 제어를 HTTP 바로 앞에 두어 시작 간격을 그대로 지키고,
         # 자리 대기도 우선순위로 판다(먼저 들어간 background가 poller·interactive를 막지 않게)
+        # 호출자 공정 분배(plans/205 W3b) — 자리는 받은 호출자 키로 돌려준다 · 대기(ms)는 맥락에
+        # 신고한다(이벤트 루프 시계 — 호출 소요 측정과 따로 잰다)
         timeout = float(self._cfg.timeout_seconds)
+        caller = scope.caller
+        loop_time = asyncio.get_running_loop().time
+        slot_from = loop_time()
         try:
-            await asyncio.wait_for(self._slots.acquire(scope.priority), timeout)
+            await asyncio.wait_for(self._slots.acquire(scope.priority, caller), timeout)
         except TimeoutError as e:
+            scope.waited(self._cfg.source_id, (loop_time() - slot_from) * 1000, 0.0)
+            # 혼잡 숫자로 제니퍼 장애(느린 응답이 자리를 쥠)와 동시 사용 혼잡을 구분한다
             raise ApmError(
                 SOURCE_UNAVAILABLE,
-                f"제니퍼 동시 호출 상한 대기 초과({self._slots.limit}건 · {timeout:g}s): {shown}",
+                f"제니퍼 동시 호출 상한 대기 초과({self._slots.limit}건 · {timeout:g}s · 동시 사용"
+                f" 혼잡(대기 {self._slots.waiting}건 · 호출자 {self._slots.callers})): {shown}",
             ) from e
+        throttle_from = loop_time()
         try:
             await self._throttle.acquire(scope.priority)
+            scope.waited(
+                self._cfg.source_id,
+                (throttle_from - slot_from) * 1000,
+                (loop_time() - throttle_from) * 1000,
+            )
             self.calls_total += 1
             started = time.monotonic()
             async with self._http().stream("GET", path, params=query, headers=headers) as resp:
@@ -265,7 +303,7 @@ class JenniferClient:
                 SOURCE_UNAVAILABLE, self.redact(f"APM API 연결 실패: {shown} ({type(e).__name__})")
             ) from e
         finally:
-            self._slots.release()
+            self._slots.release(caller)
         elapsed_ms = (time.monotonic() - started) * 1000
         # 실 호출 소요(속도 제어 대기 뒤 ~ 본문 수신 끝 · 응답을 받은 호출만) — 남은 예상 시간 ·
         # 경로 군은 경로 템플릿(계정 ID 원값 없음)

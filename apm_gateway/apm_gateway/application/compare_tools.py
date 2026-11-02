@@ -20,7 +20,8 @@ from apm_gateway.application.period_stats import (
     sum_stats,
 )
 from apm_gateway.application.resolver import Resolution
-from apm_gateway.application.sources import STATUS_OK
+from apm_gateway.application.parallel import contract_violation
+from apm_gateway.application.sources import STATUS_OK, gather_per_source
 from apm_gateway.application.tool_common import (
     ABSOLUTE_MAX_MS,
     FILE_ONLY_COLUMNS,
@@ -118,28 +119,40 @@ class CompareTools:
         chunks = max(1, math.ceil(span / CHANGES_WINDOW_MS))
         expect_calls(chunks * len(groups))
         zone = ZoneInfo(self.core.tz)
-        for sid, domain_id in groups:
+
+        async def fetch(
+            group: tuple[str, int],
+        ) -> tuple[list[list[dict[str, Any]]], ApmError | None]:
+            """묶음 1개의 조각을 차례로 받는다 — (받은 조각들, 멈춘 조각의 오류)."""
+            sid, domain_id = group
+            batches: list[list[dict[str, Any]]] = []
             t = window.start_ms
-            done = 0  # 이 묶음에서 받은 조각 수
             while True:
                 chunk_end = min(t + CHANGES_WINDOW_MS, window.end_ms)
                 try:
-                    batch = await self.core.api(sid).source_changes(domain_id, t, chunk_end)
-                except ApmError as e:
-                    where = self.core.sources.where(sid, domain_id)
-                    notice = limit_notice(
-                        e,
-                        "변경 이력",
-                        f"({where} · 조각 {done + 1}/{chunks}부터 — 남은 조각 생략)",
-                        self.core.reason_tail(e),
+                    batches.append(
+                        await self.core.api(sid).source_changes(domain_id, t, chunk_end)
                     )
-                    if not done:  # 받은 조각이 없으면 묶음 실패(전부 실패면 오류)
-                        failures.append((where, e))
-                    limits.fail(notice)
-                    # 받은 조각의 행은 남긴다(partial · W2V-G1). 남은 조각은 같은 원인으로
-                    # 실패할 가능성이 커 부르지 않는다(X-View 조각과 같은 처리).
-                    break
-                done += 1
+                except ApmError as e:
+                    # 남은 조각은 같은 원인으로 실패할 가능성이 커 부르지 않는다(X-View 조각과
+                    # 같은 처리)
+                    return batches, e
+                if chunk_end >= window.end_ms:
+                    return batches, None
+                t = chunk_end
+
+        # 바깥 (소스, 도메인) 묶음만 소스 폭으로 겹친다 — 안쪽 조각은 직렬(앞 조각 실패에서
+        # 멈춘다) · 결과는 묶음 순서대로 처리한다(plans/205 W2 #21)
+        keys = list(groups)
+        results = await gather_per_source(
+            keys, lambda g: self.core.sources.get(g[0]), fetch, stop=contract_violation
+        )
+        for (sid, domain_id), got in zip(keys, results, strict=True):
+            if isinstance(got, ApmError):  # `fetch`는 ApmError를 값으로 돌려준다 — 오지 않는다
+                raise got
+            batches, error = got
+            done = len(batches)  # 이 묶음에서 받은 조각 수
+            for batch in batches:
                 for change in batch:
                     key = (sid, domain_id, change["instance_id"], change["change_detected_ms"])
                     if (sid, change["instance_id"]) not in names or key in seen:
@@ -160,9 +173,18 @@ class CompareTools:
                             else None,
                         }
                     )
-                if chunk_end >= window.end_ms:
-                    break
-                t = chunk_end
+            if error is not None:
+                where = self.core.sources.where(sid, domain_id)
+                notice = limit_notice(
+                    error,
+                    "변경 이력",
+                    f"({where} · 조각 {done + 1}/{chunks}부터 — 남은 조각 생략)",
+                    self.core.reason_tail(error),
+                )
+                if not done:  # 받은 조각이 없으면 묶음 실패(전부 실패면 오류)
+                    failures.append((where, error))
+                # 받은 조각의 행은 남긴다(partial · W2V-G1)
+                limits.fail(notice)
         if failures and len(failures) == len(groups):
             raise self.core.all_failed(failures)
         rows.sort(key=lambda r: r["change_detected_ms"] or 0, reverse=True)
@@ -261,13 +283,19 @@ class CompareTools:
         hits: list[dict[str, Any]] = []
         failures: list[tuple[str, ApmError]] = []
         foreign = 0
-        for sid, domain_id in groups:
+        # 도메인 호출은 소스 폭으로 겹치고 결과는 묶음 순서대로 처리한다(plans/205 W2 #22)
+        results = await gather_per_source(
+            groups,
+            lambda g: self.core.sources.get(g[0]),
+            lambda g: self.core.api(g[0]).transactions_by_guid(
+                g[1], gid, window.start_ms, window.end_ms
+            ),
+            stop=contract_violation,
+        )
+        for (sid, domain_id), batch in zip(groups, results, strict=True):
             where = self.core.sources.where(sid, domain_id)
-            try:
-                batch = await self.core.api(sid).transactions_by_guid(
-                    domain_id, gid, window.start_ms, window.end_ms
-                )
-            except ApmError as e:
+            if isinstance(batch, ApmError):
+                e = batch
                 notice = limit_notice(e, "GUID 거래", f"({where})", self.core.reason_tail(e))
                 failures.append((where, e))
                 limits.fail(notice)
@@ -623,37 +651,48 @@ class CompareTools:
         failures: list[tuple[str, ApmError]] = []
         unweighted: list[str] = []
         expect_calls(len(res.instances) * len(hours))
-        for inst in res.instances:
+        # (인스턴스, 구간)마다 1호출 — 소스 폭으로 겹치고 결과는 입력 순서대로(plans/205 W2 #24 ·
+        # `failed[period]` 순서가 `[한계]` 문구다)
+        calls = [
+            (inst, period, start, end)
+            for inst in res.instances
+            for period, (start, end) in hours.items()
+        ]
+        results = await gather_per_source(
+            calls,
+            lambda c: self.core.sources.get(c[0]["source_id"]),
+            lambda c: self.core.api(c[0]["source_id"]).application_status(
+                c[0]["domain_id"], [c[0]["instance_id"]], c[2], c[3]
+            ),
+            stop=contract_violation,
+        )
+        for (inst, period, _start, _end), app_rows in zip(calls, results, strict=True):
             label = self.core.inst_label(inst_key(inst))
-            for period, (start, end) in hours.items():
-                try:
-                    app_rows = await self.core.api(inst["source_id"]).application_status(
-                        inst["domain_id"], [inst["instance_id"]], start, end
-                    )
-                except ApmError as e:
-                    notice = limit_notice(
-                        e,
-                        f"{_PERIOD_LABELS[period]} 구간 통계",
-                        f"(인스턴스 {label})",
-                        self.core.reason_tail(e),
-                    )
-                    failures.append((f"인스턴스 {label} {_PERIOD_LABELS[period]} 구간", e))
-                    failed[period].append(label)
-                    limits.fail(notice)
-                    stats[(inst_key(inst), period)] = None
-                    continue
-                if not app_rows:
-                    stats[(inst_key(inst), period)] = None
-                    limits.append(
-                        f"[한계] 인스턴스 {inst['instance_name'] or label}은"
-                        f" {_PERIOD_LABELS[period]} 구간 통계 행이 없다 — 증감 N/A(0으로 채우지"
-                        " 않았다)"
-                    )
-                    continue
-                stat, missing = period_stats(app_rows)
-                stats[(inst_key(inst), period)] = stat
-                if missing:
-                    unweighted.append(f"{label} {_PERIOD_LABELS[period]}")
+            if isinstance(app_rows, ApmError):
+                e = app_rows
+                notice = limit_notice(
+                    e,
+                    f"{_PERIOD_LABELS[period]} 구간 통계",
+                    f"(인스턴스 {label})",
+                    self.core.reason_tail(e),
+                )
+                failures.append((f"인스턴스 {label} {_PERIOD_LABELS[period]} 구간", e))
+                failed[period].append(label)
+                limits.fail(notice)
+                stats[(inst_key(inst), period)] = None
+                continue
+            if not app_rows:
+                stats[(inst_key(inst), period)] = None
+                limits.append(
+                    f"[한계] 인스턴스 {inst['instance_name'] or label}은"
+                    f" {_PERIOD_LABELS[period]} 구간 통계 행이 없다 — 증감 N/A(0으로 채우지"
+                    " 않았다)"
+                )
+                continue
+            stat, missing = period_stats(app_rows)
+            stats[(inst_key(inst), period)] = stat
+            if missing:
+                unweighted.append(f"{label} {_PERIOD_LABELS[period]}")
         if failures and len(failures) == len(res.instances) * len(hours):
             raise self.core.all_failed(failures)
         if unweighted:

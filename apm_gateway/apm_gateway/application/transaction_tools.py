@@ -8,6 +8,8 @@ from typing import Any
 
 from apm_gateway.application.apm_core import ApmCore
 from apm_gateway.application.masking import mask_identifier, mask_ip, mask_sql, mask_text, mask_url
+from apm_gateway.application.parallel import contract_violation
+from apm_gateway.application.sources import gather_per_source
 from apm_gateway.application.tool_common import (
     EVENTS_DEFAULT_MINUTES,
     FILE_ONLY_COLUMNS,
@@ -144,19 +146,20 @@ class TransactionTools:
         ok = False
         groups = group_by_domain(res)
         expect_calls(len(groups))
-        for (sid, domain_id), ids in groups.items():
-            try:
-                services += [
-                    s
-                    for s in tag_records(
-                        await self.core.api(sid).active_services(domain_id, ids), sid, domain_id
-                    )
-                    if inst_key(s) in wanted
-                ]
-                ok = True
-            except ApmError as e:
+        items = list(groups.items())  # 호출은 소스 폭으로 겹치고 결과는 묶음 순서대로(plans/205 W2)
+        results = await gather_per_source(
+            items,
+            lambda it: self.core.sources.get(it[0][0]),
+            lambda it: self.core.api(it[0][0]).active_services(it[0][1], it[1]),
+            stop=contract_violation,
+        )
+        for ((sid, domain_id), _ids), got in zip(items, results, strict=True):
+            if isinstance(got, ApmError):
                 where = self.core.sources.where(sid, domain_id)
-                limits.fail(limit_notice(e, "액티브 서비스", f"({where})"))
+                limits.fail(limit_notice(got, "액티브 서비스", f"({where})"))
+                continue
+            services += [s for s in tag_records(got, sid, domain_id) if inst_key(s) in wanted]
+            ok = True
         if not ok:
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
         ranked = sorted(services, key=lambda s: s.get("elapsed_ms") or 0, reverse=True)
@@ -268,29 +271,51 @@ class TransactionTools:
         events_ok = errors_ok = False
         groups = group_by_domain(res)
         expect_calls(len(groups) * 2)
-        for (sid, domain_id), ids in groups.items():
+        # (소스, 도메인)마다 이벤트·오류 기록 2호출 — 호출은 소스 폭으로 겹치고 결과·`[한계]`는
+        # 종전 순서(묶음마다 이벤트 → 오류 기록)대로 처리한다(plans/205 W2). 오류 기록의 표기
+        # 후보 순차 조회(#6)는 그 안에서 그대로 차례로 돈다 — 그 `[한계]`는 단위별로 받아 제자리에
+        # 잇는다.
+        units = [(key, ids, kind) for key, ids in groups.items() for kind in ("event", "error")]
+        sub_limits = [Limits() for _ in units]
+
+        async def fetch(i: int) -> list[dict[str, Any]]:
+            (sid, domain_id), ids, kind = units[i]
             api = self.core.api(sid)
-            where = self.core.sources.where(sid, domain_id)
-            try:
-                batch = await api.events(
+            if kind == "event":
+                return await api.events(
                     domain_id,
                     ids,
                     window.start_ms,
                     window.end_ms,
                     level=lvl if mode == "exact" else None,
                 )
-                events += [e for e in tag_records(batch, sid, domain_id) if inst_key(e) in wanted]
+            where = self.core.sources.where(sid, domain_id)
+            return await self.core.fetch_errors(
+                api, domain_id, ids, window, etype, where, sub_limits[i]
+            )
+
+        results = await gather_per_source(
+            list(range(len(units))),
+            lambda i: self.core.sources.get(units[i][0][0]),
+            fetch,
+            stop=contract_violation,
+        )
+        for ((sid, domain_id), _ids, kind), sub, got in zip(
+            units, sub_limits, results, strict=True
+        ):
+            limits.extend(sub)
+            where = self.core.sources.where(sid, domain_id)
+            if isinstance(got, ApmError):
+                subject = "이벤트" if kind == "event" else "오류 기록"
+                limits.fail(limit_notice(got, subject, f"({where})"))
+                continue
+            found = [e for e in tag_records(got, sid, domain_id) if inst_key(e) in wanted]
+            if kind == "event":
+                events += found
                 events_ok = True
-            except ApmError as e:
-                limits.fail(limit_notice(e, "이벤트", f"({where})"))
-            try:
-                batch = await self.core.fetch_errors(
-                    api, domain_id, ids, window, etype, where, limits
-                )
-                errors += [e for e in tag_records(batch, sid, domain_id) if inst_key(e) in wanted]
+            else:
+                errors += found
                 errors_ok = True
-            except ApmError as e:
-                limits.fail(limit_notice(e, "오류 기록", f"({where})"))
         if (rec == "event" and not events_ok) or (rec == "error" and not errors_ok):
             raise ApmError(SOURCE_UNAVAILABLE, "; ".join(limits))
         events = self.core.filter_events(events, lvl, mode, etype)
