@@ -60,7 +60,8 @@ _TIER_KEYS: tuple[str, ...] = (TIER_PAGE, TIER_TICKET, TIER_DASHBOARD, TIER_SUPP
 _CONDITION_LOG_MAX = 200
 
 # 운영자 경로에서만 응답에 싣는 키(G-2 (c)) — 사용자 경로는 전 존 집계라 실측값까지 열지 않는다.
-_OPERATOR_ONLY_KEYS: tuple[str, ...] = ("condition_log",)
+# (plans/210 §3.8) `apm_ref`는 수동 재분석 재료(인스턴스·노드 IP)라 사용자 화면에 내보내지 않는다.
+_OPERATOR_ONLY_KEYS: tuple[str, ...] = ("condition_log", "apm_ref")
 # 운영자 경로에서만 싣는 `stage_evidence` 안의 키 — 침묵 규칙을 만든 운영자 계정. 침묵 관리
 # (`/silences`)가 운영자 전용인 것(D-245)과 같은 이유로 사용자 경로에는 내보내지 않는다(D-247).
 _OPERATOR_ONLY_EVIDENCE_KEYS: tuple[str, ...] = ("created_by",)
@@ -419,6 +420,7 @@ class DecisionStore:
         hostname: str = "",
         resource_type: str = "",
         timing: dict[str, float] | None = None,
+        apm_ref: dict[str, Any] | None = None,
     ) -> None:
         """결정을 JSONL 한 줄로 append 한다.
 
@@ -474,6 +476,11 @@ class DecisionStore:
         시점까지의 구간 소요(ms) `{p1_ms, p2_ms, p3_ms, p4_until_audit_ms}`를 최상위 필드로
         싣는다. 측정 전용이며 판정과 무관하다. 호출부는 계측 on일 때만 넘긴다 — None이면 키를 넣지
         않아 비트 동일하다.
+
+        apm_ref(plans/210 §3.8): 제니퍼 알람의 `{source_id, domain_id, domain_name, instance_name,
+        ip, host_address, host_address_status}`(값이 있는 칸만)다 — 수동 재분석이 원문 `apm` 블록을
+        되살려 연계 매핑 고속 경로를 타게 하는 재료다. 호출부는 `apm_host_map_enabled`일 때만
+        넘긴다 — 빈 dict·None이면 키를 넣지 않아 비트 동일하다.
         """
         if not self.enabled:
             return
@@ -521,6 +528,8 @@ class DecisionStore:
             record["resource_type"] = resource_type
         if timing is not None:
             record["timing"] = timing
+        if apm_ref:
+            record["apm_ref"] = apm_ref
         # (plans/92 O4) Prometheus 증가 카운터 — 파일 퍼널과 병존한다(값이 다르면 파일 퍼널이 정본).
         record_decision(stage=stage, reason=str(decision.reason or ""), tier=str(decision.tier))
         try:

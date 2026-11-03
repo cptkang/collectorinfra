@@ -647,6 +647,18 @@ class NoiseGateConfig(BaseSettings):
     # 가린 사용자 뷰 플레이북에서 결정적 템플릿으로 만든다(LLM 0 · 운영자도 같은 가린 산출). 범위 밖
     # 질의는 `disabled_reason`. 기본 off = 조사 응답 비트 동일(D-162). 기동 시 1회 해석.
     investigation_requery_enabled: bool = False
+    # ── plans/210 · D-362: APM·SMS 연계 매핑(진단 고속 경로) ──
+    # 매핑(PG 정본 `apm_host_map` + Redis 읽기 사본 `apmhostmap:*`)이 있으면 실시간 조회 없이 폴스타
+    # 대상을 정하고, 없을 때만 직접 조회한 뒤 결과를 매핑으로 되적재한다. 사본·색인의 기록자는 API
+    # 프로세스뿐이다(D-049 — 워커는 Redis Stream `apmhostmap:req`로 넘긴다). 전부 기본 off = 기동
+    # 경로·페이로드 비트 동일(DDL·태스크 0). 기동 시 1회 해석.
+    apm_host_map_enabled: bool = False             # 매핑 조회·관리 탭·Redis 사본(auth 풀 필요)
+    apm_host_map_auto_enabled: bool = False        # 되적재·ITAM 생성 요청·스캔·일괄 생성 — off면 수동 매핑만
+    apm_host_map_max_targets: int = 10             # 한 매핑·한 조사의 대상 상한
+    apm_host_map_live_budget_seconds: float = 5    # miss 시 직접 조회 예산(초)
+    apm_host_map_retry_hours: int = 24             # failed·ambiguous 재시도 간격(시)
+    # 스캔 키셋 페이지 행 수 — MCP 서버 max_rows(10000) 미만이어야 한 페이지가 잘리지 않는다
+    apm_host_map_scan_page_rows: int = Field(default=1000, ge=1, lt=10000)
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
 

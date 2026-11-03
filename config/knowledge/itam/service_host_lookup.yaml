@@ -1,0 +1,78 @@
+# 추정 — W0-4 확정 대기 (plans/210 §3.4 itam · §3.5 ITAM 스캐너 · §7 W0-4·5 · D-362)
+#
+# APM 도메인 → ITAM 업무 → ITAM 서버 사슬이 읽는 ITAM 표·칼럼·일반어. 사전 스캔의 ITAM 스캐너가 이
+# 칼럼만 고정 SELECT로 읽어 스냅샷에 담고, 사슬은 그 스냅샷을 메모리에서 대조한다(도메인명·설명은 SQL에
+# 들어가지 않는다). 값은 폐쇄망 카탈로그(testdata/itam_bench/closed/itam_schema.json)와
+# config/db_profiles/itam.yaml 서비스 연결 규칙 기준이며 폐쇄망 실측(W0-4)으로 갱신한다.
+#
+# - 식별자는 ^[0-9A-Za-z_가-힣]+$ 검증 뒤 백틱으로 감싼다(MariaDB). 규칙 밖이면 스캐너가 실패로 기록한다.
+# - PII 칼럼(담당자 직원번호·성명 등)은 여기 두지 않는다 — 읽지도 적재하지도 않는다(§5).
+# - 업무 표와 서버 원장 사이에 업무 코드 키가 없다 — 서버의 업무는 자유 기재 칸에 업무명이 들어 있는지로
+#   추정한다(itam.yaml 「서비스 이름으로 서버를 찾을 때」).
+version: 1
+
+# 업무(어플리케이션) 표 — 전체를 코드 키셋 페이지로 읽는다.
+app_table:
+  table: tcdmsgt82
+  code_column: 어플리케이션코드
+  name_column: 어플리케이션명
+
+# 서버 원장 — 활성 행을 호스트명 키셋 페이지로 읽는다.
+server_table:
+  table: tcdmsif72
+  hostname_column: 서버호스트명
+  # 다중값일 수 있다 — 스캐너가 쉼표·세미콜론·공백·/·| 로 쪼개 IPv4만 남긴다.
+  ip_column: IP주소내용
+  # 업무 단서 자유 기재 칸(1순위 두 칸 · 용도내용은 서비스 단서로 쓰지 않는다).
+  clue_columns:
+    - 그룹경로내용
+    - 구성항목설명내용
+  # 활성 판정 — 코드값 뜻이 확인되지 않았다(「### 코드값」 블록 없음 — 값을 지어내지 않는다).
+  # active_values가 비면 활성 조건 없이 전 행을 읽고 활성 「미상」으로 둔다(사슬은 미상을 제외하지 않는다).
+  # W0-4에서 활성 코드값을 확인하면 예: active_values: ["Y"] 로 채운다.
+  active_column: 활성화여부
+  active_values: []
+
+# 도메인명·설명 토큰에서 뺄 일반어(대소문자 무시). 업무명 포함 대조가 넓어지는 낱말들이다.
+generic_terms:
+  - prod
+  - prd
+  - dev
+  - stg
+  - test
+  - qa
+  - dr
+  - was
+  - web
+  - app
+  - api
+  - svc
+  - service
+  - server
+  - system
+  - domain
+  - jennifer
+  - k8s
+  - pod
+  - 운영
+  - 개발
+  - 검증
+  - 테스트
+  - 스테이징
+  - 서비스
+  - 시스템
+  - 서버
+  - 업무
+  - 도메인
+  - 은행
+  - 공통
+  - 관리
+  - 내부
+  - 외부
+  - 대외
+  - 대내
+  - 온라인
+  - 배치
+
+# 한 업무(또는 단서 직접 대조)로 고른 ITAM 서버 상한 — 넘으면 너무 넓은 추정(ambiguous).
+max_servers: 50

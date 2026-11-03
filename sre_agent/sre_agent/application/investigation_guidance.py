@@ -161,9 +161,36 @@ def correlation_note(correlation: dict | None) -> str | None:
     for t in (correlation.get("timeline") or [])[:12]:
         if isinstance(t, dict):
             lines.append(f"  {_fmt_offset(t.get('t_offset_min'))} {t.get('kind')} {t.get('detail')}")
+    lines.extend(_target_lines(correlation.get("targets")))
     for n in correlation.get("notes") or []:
         lines.append(f"- 한계: {n}")
     return "\n".join(lines)
+
+
+#: 연계 대상 여럿(plans/210 §3.7) 머리 — 위 수치는 첫 대상(대표) 것이다.
+TARGETS_NOTE_HEADER = (
+    "- 연계 대상 {n}대(코드가 대상마다 같은 수집을 함 · 위 수치는 첫 대상 기준) — "
+    "결론에 이상이 있는 대상 서버를 이름으로 짚을 것:"
+)
+
+
+def _target_lines(targets: object) -> list[str]:
+    """상관 결과의 `targets`(plans/210 §3.7)를 대상별 한 줄로. 없거나 1대 이하면 빈 목록."""
+    rows = [t for t in targets if isinstance(t, dict)] if isinstance(targets, list) else []
+    if len(rows) < 2:
+        return []
+    lines = [TARGETS_NOTE_HEADER.format(n=len(rows))]
+    for t in rows:
+        anomalies = t.get("anomalies") or []
+        state = f"이상 지표 {'·'.join(anomalies)}" if anomalies else "이상 지표 없음"
+        lead = t.get("leading_signal")
+        parts = [state, f"선행 신호 {lead}" if lead else None,
+                 f"구간 알람 {t.get('alarm_count', 0)}건",
+                 *(str(n) for n in t.get("notes") or [])]
+        lines.append(
+            f"  · {t.get('server_name')}({t.get('db_id')}): {' · '.join(p for p in parts if p)}"
+        )
+    return lines
 
 
 #: 토폴로지 1홉 이웃 블록(plans/198 I-7) — 이웃 밖 호스트 탐색 금지 문장(PRAXIS식 탐색 경계).

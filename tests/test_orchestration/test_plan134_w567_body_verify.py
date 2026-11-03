@@ -593,7 +593,9 @@ def test_first_twelve_views_are_unchanged_from_baseline() -> None:
                                           # plans/134 W6 A-1 — 두 기간 비교(뒤에 덧붙임)
                                           "apm.period_compare",
                                           # plans/164 W7-A — 인스턴스 추세(뒤에 덧붙임)
-                                          "apm.instance_trend"]
+                                          "apm.instance_trend",
+                                          # plans/210 W2 — 노드 주소(뒤에 덧붙임)
+                                          "apm.node_address"]
     for spec in aq.apm_views()[:12]:
         assert spec.target == "" and spec.reference == ""
 

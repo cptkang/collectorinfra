@@ -287,9 +287,22 @@ def _record_decision(
                 else {}
             ),
             **({"timing": timing_view()} if timing_view is not None else {}),
+            # (plans/210 §3.8) 수동 재분석용 제니퍼 `apm` 블록 요지 — 연계 매핑 플래그 on이고 APM
+            # 블록이 있을 때만 키(off면 인자 자체를 넘기지 않는다 — 레코드 비트 동일).
+            **_apm_ref_kwargs(gate_cfg, event),
         )
     except Exception:  # noqa: BLE001 — 기록 실패가 발송을 막지 않는다
         logger.warning("발송 판단 감사 기록 실패(무시): alarm_id=%s", event.alarm_id)
+
+
+def _apm_ref_kwargs(gate_cfg: Any, event: Any) -> dict[str, Any]:
+    """연계 매핑 플래그가 정확히 True이고 APM 블록이 있으면 `{"apm_ref": …}`, 아니면 빈 dict."""
+    if getattr(gate_cfg, "apm_host_map_enabled", False) is not True:
+        return {}
+    from noise_gate.application.apm_host_map_lookup import apm_ref_fields
+
+    ref = apm_ref_fields(event)
+    return {"apm_ref": ref} if ref else {}
 
 
 def _manual_source_fields(event: Any) -> dict[str, str]:

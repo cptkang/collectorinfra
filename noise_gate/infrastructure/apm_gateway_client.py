@@ -24,6 +24,8 @@ from urllib.parse import urlsplit
 logger = logging.getLogger(__name__)
 
 APM_EVENTS_TOOL = "apm_events"
+#: (plans/210 §3.8) 수동 재분석 옛 기록 역조회.
+APM_INSTANCE_MAP_TOOL = "apm_instance_map"
 
 
 class ApmGatewayClientError(RuntimeError):
@@ -136,6 +138,41 @@ class ApmGatewayClient:
                 f"게이트웨이 호출 실패({APM_EVENTS_TOOL}): {_failure_detail(e)}"
             ) from e
 
+    async def apm_instance_map(
+        self, *, query: str, source_ids: list[str] | None = None
+    ) -> dict[str, Any]:
+        """게이트웨이 `apm_instance_map(query=…)` — 인스턴스 이름 검색(plans/210 §3.8 옛 기록).
+
+        `apm_events`와 같은 시간 초과·오류 규약이다(반환 dict는 가공 없이 돌려준다).
+
+        Raises:
+            ApmGatewayClientError: 연결·호출 타임아웃·도구 오류(isError)·파싱 실패.
+        """
+        arguments: dict[str, Any] = {"query": query}
+        if source_ids:
+            arguments["source_ids"] = list(source_ids)
+        try:
+            return await asyncio.wait_for(
+                self._call(APM_INSTANCE_MAP_TOOL, arguments), timeout=self._call_timeout
+            )
+        except ApmGatewayClientError:
+            raise
+        except TimeoutError as e:
+            raise ApmGatewayClientError(
+                f"게이트웨이 호출 타임아웃({APM_INSTANCE_MAP_TOOL}, {self._call_timeout:g}초 초과)"
+            ) from e
+        except asyncio.CancelledError as e:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
+            raise ApmGatewayClientError(f"게이트웨이 세션 중단({APM_INSTANCE_MAP_TOOL})") from e
+        except ImportError as e:
+            raise ApmGatewayClientError(f"MCP SDK 미설치로 게이트웨이 호출 불가: {e}") from e
+        except Exception as e:  # noqa: BLE001 — 통신 실패를 명확히 노출(침묵 금지)
+            raise ApmGatewayClientError(
+                f"게이트웨이 호출 실패({APM_INSTANCE_MAP_TOOL}): {_failure_detail(e)}"
+            ) from e
+
     def _auth_headers(self) -> dict[str, str] | None:
         if not self._bearer_token:
             return None
@@ -221,6 +258,7 @@ def build_apm_gateway_client(gate_cfg) -> ApmGatewayClient | None:  # noqa: ANN0
 
 __all__ = [
     "APM_EVENTS_TOOL",
+    "APM_INSTANCE_MAP_TOOL",
     "ApmGatewayClient",
     "ApmGatewayClientError",
     "build_apm_gateway_client",

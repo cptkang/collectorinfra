@@ -2645,6 +2645,8 @@ async def _manual_event(
     hostname은 판정 기록의 원 알람 값(plans/187 W11)을 쓰고, 없으면(구 기록) 폴스타 등록 정보로
     해소하며(D-046 `lookup_host`), 그것도 못 하면 서버명을 그대로 쓴다(D-046 원시 값 폴백).
     `resource_type`도 기록에 있으면 싣는다(APM 알람 `meta.hints` 판정).
+    (plans/210 §3.8) 연계 매핑 플래그 on이면 기록의 `apm_ref`(옛 기록은 게이트웨이 역조회)로
+    `raw_payload["apm"]`를 되살린다 — 자동 경로와 같은 조회 순서를 타게 한다. off면 종전과 같다.
     """
     from noise_gate.infrastructure.polestar_hostname_resolver import lookup_host
 
@@ -2658,6 +2660,13 @@ async def _manual_event(
     raw_signals = decision.get("signals")
     signals: dict[str, Any] = raw_signals if isinstance(raw_signals, dict) else {}
     severity = signals.get("severity")
+    extra: dict[str, Any] = {}
+    from noise_gate.application.apm_host_map_lookup import map_enabled, restore_apm_block
+
+    if map_enabled(config):
+        apm = await restore_apm_block(config, decision)
+        if apm:
+            extra["raw_payload"] = {"apm": apm}
     return AlarmEvent(
         db_id=db_id,
         server_name=server_name,
@@ -2673,6 +2682,7 @@ async def _manual_event(
         alarm_time=alarm_time,
         conditions="",
         condition_log=str(decision.get("condition_log") or ""),
+        **extra,
     )
 
 
@@ -2898,6 +2908,8 @@ async def request_manual_investigation(
             ),
             fingerprint=f"{_MANUAL_FINGERPRINT_PREFIX}{alarm_id}:{uuid.uuid4().hex[:12]}",
             investigation_kind=KIND_MANUAL,
+            # (plans/210) 연계 매핑 사본 — 플래그 off면 기동이 대입하지 않아 None(비트 동일)
+            map_cache=getattr(request.app.state, "apm_host_map_cache", None),
         )
         timeout = float(getattr(ng, "investigation_mcp_call_timeout_seconds", 10.0))
 

@@ -347,6 +347,14 @@ _TABLE: tuple[tuple[str, str, str, Any, _Getter, str], ...] = (
         lambda c: c.node_address.min_refetch_seconds,
         "같은 도메인 재조회 최소 간격(초 · 알람 경로 캐시 신선도 상한)",
     ),
+    (
+        "JENNIFER_NODE_ADDRESS_CALL_BUDGET_SECONDS",
+        "node_address",
+        "float",
+        "5",
+        lambda c: c.node_address.call_budget_seconds,
+        "대상 지정 MCP 호출의 노드 주소 조회 시간 예산(초 · 넘으면 budget_exceeded)",
+    ),
 )
 # 소스별 접두 키 접미 → (type, 기동 값 읽기, 설명) — `config.SOURCE_KEY_SUFFIXES`와 같은 집합
 _SOURCE_SUFFIX_META: dict[str, tuple[str, Callable[[Any], Any], str]] = {

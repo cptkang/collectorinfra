@@ -2,9 +2,13 @@
 N-1·N-2 · plans/178 W2에서 `tools.py`의 `ApmTools`에서 옮김).
 
 노드 주소 조회기(plans/202 · D-355)가 있으면 결과 행마다 `host_address`(웹 세션 노드 주소 — 알람
-경로와 같은 캐시 · TTL 안 값 · 모르면 빈 값) 칸을 가산한다. 캐시 밖 도메인은 결과가
-`MCP_FETCH_DOMAIN_LIMIT`개 도메인 이하일 때만 새로 조회한다(목록 전체 호출이 전 도메인 조회가 되지
-않게). 조회기가 없으면(플래그 off) 칸이 없다(현행 동일)."""
+경로와 같은 캐시 · TTL 안 값 · 모르면 빈 값) 칸을 가산한다. 캐시 밖 도메인을 새로 조회하는 것은
+**대상 지정 호출**(hostname·domain_id·query·business 중 하나라도 줌)뿐이다 — 결과 행의 (소스,
+도메인) 앞에서부터 `MAX_DOMAINS_PER_CALL`개까지 웹 조회하고, 넘는 도메인은 캐시만 읽고 `[한계]`
+1줄 + `partial`(plans/210 W8 B). 웹 조회는 호출 시간 예산(`call_budget_seconds`) 안에서 소스 간
+병렬(소스 안 직렬)이고, 예산 안에 못 본 도메인은 캐시 값(없으면 빈 값) + `[한계]` 1줄 + `partial`
+(plans/210 W9 A). 무인자 전체 목록 호출(source_ids만)은 캐시 전용이다(목록 전체
+호출이 전 도메인 조회가 되지 않게). 조회기가 없으면(플래그 off) 칸이 없다(현행 동일)."""
 
 from __future__ import annotations
 
@@ -29,11 +33,8 @@ from apm_gateway.application.name_search import (
     search_instances,
     search_query,
 )
-from apm_gateway.application.node_address import (
-    LOOKUP_TIMEOUT_SECONDS,
-    MCP_FETCH_DOMAIN_LIMIT,
-    instance_key,
-)
+from apm_gateway.application.node_address import LOOKUP_TIMEOUT_SECONDS, instance_key
+from apm_gateway.application.node_address_tools import MAX_DOMAINS_PER_CALL
 from apm_gateway.application.resolver import Inventory
 from apm_gateway.application.sources import (
     STATUS_NO_MATCH,
@@ -75,18 +76,50 @@ class InstanceTools:
         # 업무명 해석(plans/130 N-2) — (소스, 도메인) → (읽은 시각, 최근 처리 업무 id → 인스턴스 id)
         self._business_seen: dict[tuple[str, int], tuple[float, dict[str, set[int]]]] = {}
 
-    async def _fill_host_address(self, rows: list[dict[str, Any]]) -> None:
-        """노드 주소 칸 가산(조회기가 있을 때만). 조회 실패·상한 초과는 빈 값이다."""
+    async def _fill_host_address(
+        self, rows: list[dict[str, Any]], limits: list[str], *, targeted: bool
+    ) -> bool:
+        """노드 주소 칸 가산(조회기가 있을 때만). 조회 실패·캐시 밖은 빈 값이다.
+
+        `targeted`(대상 지정 호출)면 (소스, 도메인) 앞에서부터 `MAX_DOMAINS_PER_CALL`개를 호출 시간
+        예산 안에서 웹 조회하고(`domain_snapshots` — 소스 간 병렬), 넘는 도메인과 예산 안에 못 본
+        도메인은 잠금 없이 캐시만 읽고 `limits`에 `[한계]`를 1줄씩 더한다 — 그때 True(봉투
+        `partial`). 아니면(무인자 목록) 캐시 전용이고 False다(소스 잠금 아래 읽기 — 종전 그대로)."""
         service = self.core.node_address
         if service is None:
-            return
+            return False
         pairs = list(dict.fromkeys((row["source_id"], row["domain_id"]) for row in rows))
-        fetch = len(pairs) <= MCP_FETCH_DOMAIN_LIMIT
+        cap = MAX_DOMAINS_PER_CALL if targeted else 0
+        over = targeted and len(pairs) > cap
+        if over:
+            limits.append(
+                f"[한계] 노드 주소: 도메인 {len(pairs)}개 중 {cap}개만 새로 조회했다"
+                " — 나머지 도메인은 캐시 값만(없으면 빈 값) · domain_id로 좁혀 다시 호출하라"
+            )
         found: dict[tuple[str, Any], dict[str, str]] = {}
-        for source_id, domain_id in pairs:
+        fetched = pairs[:cap]
+        if fetched:
+            budget = service.call_budget_seconds
+            snapshots, missed = await service.domain_snapshots(fetched, budget_seconds=budget)
+            for pair, snapshot in snapshots.items():
+                found[pair] = {inst: row["host_address"] for inst, row in snapshot.rows.items()}
+            if missed and budget is not None:
+                over = True
+                limits.append(
+                    f"[한계] 노드 주소: 호출 시간 예산 {budget:g}초 안에 도메인"
+                    f" {len(missed)}/{len(fetched)}개를 새로 조회하지 못했다 — 캐시 값만(없으면"
+                    " 빈 값) · domain_id로 좁혀 다시 호출하라"
+                )
+        for source_id, domain_id in pairs[cap:]:
+            if targeted:  # 상한 밖 — 잠금 없이 캐시만(소스 잠금을 기다려 예산을 넘기지 않는다)
+                cached = service.cached_snapshot(source_id, domain_id)
+                found[(source_id, domain_id)] = {
+                    inst: row["host_address"] for inst, row in cached.rows.items()
+                }
+                continue
             try:
                 found[(source_id, domain_id)] = await asyncio.wait_for(
-                    service.domain_addresses(source_id, domain_id, fetch=fetch),
+                    service.domain_addresses(source_id, domain_id, fetch=False),
                     LOOKUP_TIMEOUT_SECONDS,
                 )
             except Exception as e:  # 부가 칸 — 실패가 목록 응답을 막지 않는다(빈 값)
@@ -100,6 +133,7 @@ class InstanceTools:
         for row in rows:
             addresses = found.get((row["source_id"], row["domain_id"]), {})
             row["host_address"] = addresses.get(instance_key(row["instance_id"]) or "", "")
+        return over
 
     async def _domain_descriptions(self, source_ids: set[str]) -> dict[tuple[str, int], str]:
         """도메인 설명(사용자 입력 자유 텍스트 — 마스킹본) — 캐시된 인벤토리에서 읽는다."""
@@ -175,8 +209,16 @@ class InstanceTools:
                         match_reason=reason,
                     )
                 )
-            await self._fill_host_address(rows)
-            return self.core.ok(tool, rows, resolution=res, file_only=FILE_ONLY_COLUMNS)
+            host_limits: list[str] = []
+            over = await self._fill_host_address(rows, host_limits, targeted=True)
+            return self.core.ok(
+                tool,
+                rows,
+                resolution=res,
+                limits=host_limits,
+                partial=over,
+                file_only=FILE_ONLY_COLUMNS,
+            )
         usable, statuses, found = await self.core.sources.available(
             self.core.sources.select(source_ids)
         )
@@ -218,7 +260,8 @@ class InstanceTools:
                         match_reason=reason,
                     )
                 )
-        await self._fill_host_address(rows)
+        if await self._fill_host_address(rows, limits, targeted=domain is not None):
+            partial = True
         return self.core.ok(
             tool,
             rows,
@@ -271,7 +314,8 @@ class InstanceTools:
         for row in statuses:
             if row["status"] == STATUS_OK and row["source_id"] not in hit_sources:
                 row["status"] = STATUS_NO_MATCH
-        await self._fill_host_address(rows)
+        if await self._fill_host_address(rows, limits, targeted=True):
+            partial = True
         extra: dict[str, Any] = {"search": {"tier": found.tier, "counts": found.counts}}
         if not rows:
             extra["suggestions"] = found.suggestions
@@ -322,7 +366,8 @@ class InstanceTools:
             key=lambda h: (h.rank, domain_order(h.inst["domain_id"]), h.inst["instance_name"]),
         )
         rows = self._business_rows(ordered)
-        await self._fill_host_address(rows)
+        if await self._fill_host_address(rows, limits, targeted=True):
+            partial = True
         hit_sources = {h.src.source_id for h in ordered}
         for row in statuses:
             if row["status"] == STATUS_OK and row["source_id"] not in hit_sources:
