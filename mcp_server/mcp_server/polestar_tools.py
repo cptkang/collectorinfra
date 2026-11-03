@@ -31,7 +31,7 @@ from __future__ import annotations
 import json
 import logging
 import time
-from collections.abc import Iterable
+from collections.abc import Awaitable, Callable, Iterable
 from dataclasses import dataclass, field
 from typing import Any, Optional
 from urllib.parse import quote
@@ -702,6 +702,92 @@ async def resolve_process_hostname(
 
 
 # =====================================================================
+# 0건 식별자 재해소 (plans/209 W1 · D-360 ①②)
+# =====================================================================
+
+#: 재해소 대상 식별자 종류 — 등록명 전용 도구는 ``name``, OS 구성 도구는 ``hostname``.
+IDENT_REGISTERED_NAME = "name"
+IDENT_OS_HOSTNAME = "hostname"
+
+#: 0건 응답에 다는 안내(도구 설명과 같은 어휘).
+ZERO_ROW_HINTS: dict[str, str] = {
+    IDENT_REGISTERED_NAME: (
+        "server_name은 폴스타 등록명(서버 이름)이다 — OS 호스트명을 넣었다면 등록명으로 다시 "
+        "조회하라(polestar_process_snapshot 응답의 server_name 참고)"
+    ),
+    IDENT_OS_HOSTNAME: (
+        "hostname은 OS 호스트명이다 — 폴스타 등록명(서버 이름)을 넣었다면 OS 호스트명으로 다시 "
+        "조회하라(polestar_process_snapshot 응답의 hostname 참고)"
+    ),
+}
+
+_IDENT_LABELS = {IDENT_REGISTERED_NAME: "폴스타 등록명", IDENT_OS_HOSTNAME: "OS 호스트명"}
+_IDENT_OTHER = {IDENT_REGISTERED_NAME: "OS 호스트명", IDENT_OS_HOSTNAME: "폴스타 등록명"}
+_NOTE_KEYS = {IDENT_REGISTERED_NAME: "server_name_note", IDENT_OS_HOSTNAME: "hostname_note"}
+
+
+async def requery_with_resolved_identifier(
+    pool: Any,
+    source: Optional[str],
+    value: str,
+    rows: list[dict[str, Any]],
+    run: Callable[[str], Awaitable[list[dict[str, Any]]]],
+    *,
+    target: str = IDENT_REGISTERED_NAME,
+    tool: str = "",
+) -> tuple[list[dict[str, Any]], dict[str, Any]]:
+    """0건이면 식별자를 폴스타 앵커로 재해소해 1회 재조회한다 — ``(행, 응답에 덧붙일 키)``.
+
+    7개 폴스타 DB 도구가 공유하는 단일 경로다(plans/209 W1 · D-360).
+
+    - 행이 있으면 그대로(추가 조회 0 · 덧붙일 키 없음 — 현행과 비트 동일).
+    - 0행이고 ``source``가 있으면 ``resolve_polestar_anchor``를 1회 부른다. 정확히 1건으로
+      해소되고 ``target`` 식별자(등록명·호스트명)가 받은 값과 다르면 그 값으로 ``run``을 1회 다시
+      부르고 노트(``server_name_note``/``hostname_note``)에 변환을 적는다.
+    - 모호·없음·조회 오류·``source`` 없음·재조회 실패 → 재조회하지 않고(D-188 · D-348 —
+      유사·다중 후보 자동 사용 금지) 노트에 사유, ``hint``에 식별자 안내를 단다(침묵 폴백 금지).
+    - 받은 값이 이미 ``target`` 식별자와 같으면(서버는 있고 조건에 맞는 행만 없음) 노트만 단다.
+    """
+    if rows:
+        return rows, {}
+    note_key = _NOTE_KEYS[target]
+    label, other = _IDENT_LABELS[target], _IDENT_OTHER[target]
+    hint = ZERO_ROW_HINTS[target]
+    if not source:
+        return rows, {note_key: "source 없음 — 식별자 재해소 생략", "hint": hint}
+    try:
+        res = await resolve_polestar_anchor(pool, value, source=source)
+    except ValueError as e:
+        return rows, {note_key: f"식별자 재해소 생략({e})", "hint": hint}
+    if res.status == ANCHOR_AMBIGUOUS:
+        return rows, {
+            note_key: (f"'{value}'에 맞는 서버 {len(res.candidates)}건 — 모호해 재조회하지 않음"),
+            "hint": hint,
+        }
+    if res.status == ANCHOR_LOOKUP_ERROR:
+        return rows, {note_key: f"식별자 재해소 실패({res.warning or '조회 오류'})", "hint": hint}
+    if res.status != ANCHOR_RESOLVED or not res.anchor:
+        return rows, {
+            note_key: f"폴스타 {source}에 '{value}'와 같은 등록명·호스트명 없음",
+            "hint": hint,
+        }
+    resolved = res.anchor.get(target) or ""
+    if not resolved:
+        return rows, {note_key: f"'{value}' 서버의 {label}이 비어 있어 재조회하지 않음", "hint": hint}
+    if resolved == value:
+        return rows, {note_key: f"'{value}'는 {label}이 맞음 — 조건에 맞는 행 없음"}
+    note = f"{other} '{value}' → {label} '{resolved}'로 조회"
+    logger.info("%s 식별자 재해소 (%s): %s", tool or "polestar", source, log_safe(note, 300))
+    try:
+        new_rows = await run(resolved)
+    except Exception as e:
+        logger.warning("%s 재조회 실패 (%s, %s): %s", tool or "polestar", source,
+                       log_safe(resolved), e)
+        return rows, {note_key: f"{note} — 재조회 실패({e})", "hint": hint}
+    return new_rows, {note_key: note}
+
+
+# =====================================================================
 # 도구 등록
 # =====================================================================
 
@@ -724,7 +810,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
 
         Args:
             source: 데이터소스(db_id).
-            server_name: 폴스타 등록 서버명(cmm_resource.name).
+            server_name: 폴스타 등록명(서버 이름 · OS 호스트명 아님 · 0건이면 서버가 호스트명으로
+                한 번 더 찾는다).
             alarm_name: 알람 정의명(cmm_alarm_def.name).
             hours: 조회 창(시간). 기본 168(7일).
             exclude_alarm_id: 제외할 알람 ID(현재 이벤트 자기 제외용).
@@ -754,9 +841,17 @@ def register_polestar_tools(mcp: FastMCP) -> None:
             minutes = int(hours) * 60 if lookback_minutes is None else lookback_minutes
             extra["window"] = incident_window(reference_time, minutes, "h", None)
             extra["window"].pop("baseline_from", None)
+        def run(name: str) -> Awaitable[list[dict[str, Any]]]:
+            return pool.execute(source, build_alarm_history_sql(
+                is_db2, name, alarm_name, hours, exclude_alarm_id, limit,
+                reference_time=reference_time, lookback_minutes=lookback_minutes,
+            ))
+
         try:
             rows = await pool.execute(source, sql)
-            return _ok(rows, source, engine, **extra)
+            rows, resolved = await requery_with_resolved_identifier(
+                pool, source, server_name, rows, run, tool="polestar_alarm_history")
+            return _ok(rows, source, engine, **extra, **resolved)
         except Exception as e:
             logger.warning("polestar_alarm_history 실패 (%s): %s", source, e)
             return _err(str(e))
@@ -777,7 +872,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
 
         Args:
             source: 데이터소스(db_id).
-            server_name: 폴스타 등록 서버명.
+            server_name: 폴스타 등록명(서버 이름 · OS 호스트명 아님 · 0건이면 서버가 호스트명으로
+                한 번 더 찾는다).
             reference_time: 사건 기준시각(ISO 8601, DB 벽시계). 필수.
             lookback_minutes: 기준시각 이전 조회 폭(분). 기본 60.
             alarm_name: 지정하면 그 알람명만.
@@ -800,9 +896,16 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         except ValueError as e:
             return _err(str(e))
         window.pop("baseline_from", None)
+
+        def run(name: str) -> Awaitable[list[dict[str, Any]]]:
+            return pool.execute(source, build_incident_alarms_sql(
+                is_db2, name, reference_time, lookback_minutes, alarm_name, limit))
+
         try:
             rows = await pool.execute(source, sql)
-            return _ok(rows, source, engine, window=window)
+            rows, resolved = await requery_with_resolved_identifier(
+                pool, source, server_name, rows, run, tool="polestar_incident_alarms")
+            return _ok(rows, source, engine, window=window, **resolved)
         except Exception as e:
             logger.warning("polestar_incident_alarms 실패 (%s): %s", source, e)
             return _err(str(e))
@@ -823,7 +926,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
 
         Args:
             source: 데이터소스(db_id).
-            server_name: 폴스타 등록 서버명.
+            server_name: 폴스타 등록명(서버 이름 · OS 호스트명 아님 · 0건이면 서버가 호스트명으로
+                한 번 더 찾는다).
             kind: cpu | memory | filesystem | disk_io.
             granularity: h(시간) | d(일) | m(월). 기본 h.
             periods: 반환 기간 수(최신 우선). 기본 24.
@@ -858,9 +962,19 @@ def register_polestar_tools(mcp: FastMCP) -> None:
                 )
         except ValueError as e:
             return _err(str(e))
+
+        def run(name: str) -> Awaitable[list[dict[str, Any]]]:
+            return pool.execute(source, build_metric_trend_sql(
+                is_db2, name, kind, granularity, capped,
+                reference_time=reference_time, lookback_minutes=lookback_minutes,
+                baseline_periods=baseline_periods,
+            ))
+
         try:
             rows = await pool.execute(source, sql)
-            return _ok(rows, source, engine, **extra)
+            rows, resolved = await requery_with_resolved_identifier(
+                pool, source, server_name, rows, run, tool="polestar_metric_trend")
+            return _ok(rows, source, engine, **extra, **resolved)
         except Exception as e:
             logger.warning("polestar_metric_trend 실패 (%s): %s", source, e)
             return _err(str(e))
@@ -875,7 +989,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
 
         Args:
             source: 데이터소스(db_id).
-            server_name: 폴스타 등록 서버명.
+            server_name: 폴스타 등록명(서버 이름 · OS 호스트명 아님 · 0건이면 서버가 호스트명으로
+                한 번 더 찾는다).
             ctx: MCP 컨텍스트.
 
         Returns:
@@ -887,10 +1002,16 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         except ValueError as e:
             return _err(str(e))
         limit = pool.get_source_config(source).max_rows
+
+        def run(name: str) -> Awaitable[list[dict[str, Any]]]:
+            return pool.execute(source, build_resource_status_sql(is_db2, name, limit))
+
         try:
             sql = build_resource_status_sql(is_db2, server_name, limit)
             rows = await pool.execute(source, sql)
-            return _ok(rows, source, engine)
+            rows, resolved = await requery_with_resolved_identifier(
+                pool, source, server_name, rows, run, tool="polestar_resource_status")
+            return _ok(rows, source, engine, **resolved)
         except Exception as e:
             logger.warning("polestar_resource_status 실패 (%s): %s", source, e)
             return _err(str(e))
@@ -906,7 +1027,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
 
         Args:
             source: 데이터소스(db_id).
-            server_name: 폴스타 등록 서버명.
+            server_name: 폴스타 등록명(서버 이름 · OS 호스트명 아님 · 0건이면 서버가 호스트명으로
+                한 번 더 찾는다).
             max_hops: 조상/자손 탐색 최대 홉(PostgreSQL). 기본 3.
             ctx: MCP 컨텍스트.
 
@@ -924,10 +1046,16 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         extra: dict[str, Any] = {}
         if is_db2:
             extra["note"] = "DB2(b0)는 1홉 폴백 — 다홉 토폴로지는 PostgreSQL만 지원"
+
+        def run(name: str) -> Awaitable[list[dict[str, Any]]]:
+            return pool.execute(source, build_topology_sql(is_db2, name, hops, limit))
+
         try:
             sql = build_topology_sql(is_db2, server_name, hops, limit)
             rows = await pool.execute(source, sql)
-            return _ok(rows, source, engine, **extra)
+            rows, resolved = await requery_with_resolved_identifier(
+                pool, source, server_name, rows, run, tool="polestar_topology")
+            return _ok(rows, source, engine, **extra, **resolved)
         except Exception as e:
             logger.warning("polestar_topology 실패 (%s): %s", source, e)
             return _err(str(e))
@@ -946,8 +1074,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         프로세스 API는 폴스타(소스)마다 따로다 — 그 서버가 등록된 소스를 `source`로 넘긴다.
 
         Args:
-            hostname: OS 호스트명(cmm_resource.hostname). `source`가 있으면 폴스타 등록명도
-                받는다 — 그 폴스타에서 OS 호스트명으로 바꿔 조회한다.
+            hostname: OS 호스트명(cmm_resource.hostname · 폴스타 등록명 아님). `source`가 있으면
+                폴스타 등록명도 받는다 — 그 폴스타에서 OS 호스트명으로 바꿔 조회한다.
             top_n: 상위 프로세스 수. 기본 10.
             sort: cpu(p100cpu→pcpu) | mem(pmem). 기본 cpu.
             source: 데이터소스(db_id). 소스별 프로세스 API가 설정돼 있으면 그 주소로 조회한다.
@@ -1016,7 +1144,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
 
         Args:
             source: 데이터소스(db_id).
-            hostname: OS 호스트명(core_config_prop의 Hostname 속성값).
+            hostname: OS 호스트명(core_config_prop의 Hostname 속성값 · 폴스타 등록명 아님 ·
+                0건이면 서버가 등록명으로 한 번 더 찾는다).
             ctx: MCP 컨텍스트.
 
         Returns:
@@ -1029,10 +1158,17 @@ def register_polestar_tools(mcp: FastMCP) -> None:
         except ValueError as e:
             return _err(str(e))
         limit = pool.get_source_config(source).max_rows
+
+        def run(host: str) -> Awaitable[list[dict[str, Any]]]:
+            return pool.execute(source, build_os_config_sql(is_db2, host, limit))
+
         try:
             sql = build_os_config_sql(is_db2, hostname, limit)
             rows = await pool.execute(source, sql)
-            return _ok(rows, source, engine)
+            rows, resolved = await requery_with_resolved_identifier(
+                pool, source, hostname, rows, run, target=IDENT_OS_HOSTNAME,
+                tool="polestar_os_config")
+            return _ok(rows, source, engine, **resolved)
         except Exception as e:
             logger.warning("polestar_os_config 실패 (%s): %s", source, e)
             return _err(str(e))
@@ -1050,7 +1186,8 @@ def register_polestar_tools(mcp: FastMCP) -> None:
 
         Args:
             source: 데이터소스(db_id).
-            server_name: 폴스타 등록 서버명.
+            server_name: 폴스타 등록명(서버 이름 · OS 호스트명 아님 · 0건이면 서버가 호스트명으로
+                한 번 더 찾는다).
             hours: 조회 창(시간). 기본 24. `reference_time` 미지정 시 now 앵커(종전 SQL 동일).
             reference_time: 사건 기준시각(ISO 8601 · plans/91 1-2). 지정 시 창은
                 `[reference_time − (lookback_minutes or hours·60), reference_time]`(epoch 정수).
@@ -1074,6 +1211,7 @@ def register_polestar_tools(mcp: FastMCP) -> None:
             )
         limit = pool.get_source_config(source).max_rows
         window: dict[str, Any] | None = None
+        until_epoch: int | None = None
         if reference_time is not None:
             try:
                 cutoff_epoch, until_epoch = change_history_window_epochs(reference_time, lookback_minutes, hours=hours)
@@ -1090,9 +1228,18 @@ def register_polestar_tools(mcp: FastMCP) -> None:
                 sql = build_change_history_sql(server_name, cutoff_epoch, limit)
             except ValueError as e:
                 return _err(str(e))
+
+        def run(name: str) -> Awaitable[list[dict[str, Any]]]:
+            return pool.execute(source, build_change_history_sql(
+                name, cutoff_epoch, limit, until_epoch=until_epoch))
+
         try:
             rows = await pool.execute(source, sql)
-            return _ok(rows, source, engine, window=window) if window else _ok(rows, source, engine)
+            rows, resolved = await requery_with_resolved_identifier(
+                pool, source, server_name, rows, run, tool="polestar_change_history")
+            if window:
+                return _ok(rows, source, engine, window=window, **resolved)
+            return _ok(rows, source, engine, **resolved)
         except Exception as e:
             logger.warning("polestar_change_history 실패 (%s): %s", source, e)
             return _err(str(e))

@@ -4019,6 +4019,7 @@ select.bv-input { width: auto; padding-right: 22px; background-position: right 6
 .alarm-past-time, .alarm-past-stage { color: var(--text-muted); font-family: var(--font-mono); font-size: 0.7rem; }
 .alarm-past-server, .alarm-past-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .alarm-past-card { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 4px 12px; padding: 6px 8px; border-left: 2px solid var(--accent-dim); }
+.alarm-past-card[hidden] { display: none; }
 .alarm-past-summary { font-size: 0.74rem; color: var(--text-secondary); }
 .alarm-past-open {
     align-self: flex-start; font-size: 0.72rem; padding: 3px 10px; border-radius: var(--radius-sm); cursor: pointer;
@@ -4077,6 +4078,50 @@ select.bv-input { width: auto; padding-right: 22px; background-position: right 6
     font-size: 0.72rem;
     color: var(--error);
 }
+
+/* ─── plans/201 W5: 인계 요약 복사 — 확인(ack)·피드백 버튼과 같은 모양 ─── */
+.alarm-handoff-section {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.btn-alarm-handoff {
+    font-size: 0.75rem;
+    font-weight: 600;
+    padding: 5px 14px;
+    color: var(--accent);
+    background: var(--accent-glow);
+    border: 1px solid var(--accent-dim);
+    border-radius: var(--radius-sm);
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.btn-alarm-handoff:hover {
+    background: var(--accent);
+    color: var(--bg);
+}
+
+.alarm-handoff-msg {
+    font-size: 0.72rem;
+    color: var(--text-muted);
+}
+
+.alarm-handoff-text {
+    flex: 1 1 100%;
+    width: 100%;
+    font-size: 0.75rem;
+    font-family: var(--font-mono);
+    padding: 6px 8px;
+    color: var(--text);
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+}
+
+.alarm-handoff-text[hidden] { display: none; }
 
 /* ─── Plan 52 E4: 운영자 피드백(유효/노이즈) 버튼 ─── */
 .alarm-feedback-section {

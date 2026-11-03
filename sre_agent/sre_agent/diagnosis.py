@@ -647,6 +647,22 @@ def _with_load_guard_note(additions: str | None) -> str:
     return f"{additions}\n\n{LOAD_GUARD_NOTE}" if additions else LOAD_GUARD_NOTE
 
 
+#: 응답 언어 지침(D-361) — holmes 기본 시스템 프롬프트가 영어라, 도구 출력(영문 로그·메트릭)이
+#: 길게 쌓이면 결론을 영어로 쓰는 일이 있다. 지침 **맨 끝**에 두어 마지막 지시로 읽히게 한다.
+ANSWER_LANGUAGE_NOTE: str = (
+    "응답 언어(필수): 최종 답변(결론·원인 가설·근거·권고·추가 확인 항목)은 **반드시 한국어**로 쓴다. "
+    "도구 출력이 영어여도 마찬가지다. 도구 이름·명령·메트릭 이름·호스트명 같은 식별자와 "
+    "로그·오류 원문 인용은 번역하지 말고 원문 그대로 둔다."
+)
+
+
+def _with_answer_language_note(additions: str) -> str:
+    """조사 지침 끝에 응답 언어 지침을 **항상** 붙인다(이미 있으면 그대로 · D-361)."""
+    if ANSWER_LANGUAGE_NOTE in additions:
+        return additions
+    return f"{additions}\n\n{ANSWER_LANGUAGE_NOTE}"
+
+
 class DiagnosisAgent:
     """HolmesGPT ToolCallingLLM을 감싼 장애 진단 에이전트.
 
@@ -766,7 +782,8 @@ class DiagnosisAgent:
             initial_user_prompt=question,
             file_paths=None,
             tool_executor=base.tool_executor,
-            system_prompt_additions=_with_load_guard_note(system_prompt_additions),
+            system_prompt_additions=_with_answer_language_note(
+                _with_load_guard_note(system_prompt_additions)),
         )
         # 협조적 중단 신호가 없으면 인자를 넘기지 않는다(종전 호출 그대로).
         drain_kw: dict[str, Any] = (

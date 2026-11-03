@@ -267,8 +267,15 @@ def _usage_trend(section: Mapping[str, Any], readings: Mapping[str, Any]) -> str
     if not isinstance(findings, Mapping) or not findings:
         return None
     parts: list[tuple[int, str]] = []
+    unjudged: list[str] = []  # 본문에 「판정 불가」로 쓴 kind — 끝 결손 목록에서 뺀다
     for kind, f in findings.items():
         if not isinstance(f, Mapping):
+            continue
+        name = KIND_LABELS.get(str(kind), str(kind))
+        if f.get("is_anomalous", False) is None:
+            # 판정 불가(plans/209 W3) — 「평소 범위」로 쓰지 않는다
+            parts.append((2, f"{name} 판정 불가"))
+            unjudged.append(str(kind))
             continue
         anomalous = bool(f.get("is_anomalous"))
         unit = str(f.get("unit") or KIND_UNITS.get(str(kind), ""))
@@ -279,15 +286,21 @@ def _usage_trend(section: Mapping[str, Any], readings: Mapping[str, Any]) -> str
         detail = [f"최대 {peak}"] if peak else []
         if base:
             detail.append(f"평소 평균 {base}")
-        name = KIND_LABELS.get(str(kind), str(kind))
         text = f"{name} {'이상' if anomalous else '평소 범위'}"
         if detail:
             text += f"({' · '.join(detail)})"
         parts.append((0 if anomalous else 1, text))
     parts.sort(key=lambda x: x[0])
-    head = "이상 지표 있음" if section.get("verdict") == "degraded" else "모든 지표 평소 범위"
-    out = f"{head} — " + " · ".join(t for _, t in parts[:4])
-    missing = [KIND_LABELS.get(str(k), str(k)) for k in section.get("missing") or []]
+    if section.get("verdict") == "degraded":
+        head = "이상 지표 있음"
+    elif any(p == 2 for p, _ in parts):
+        head = "판단 보류"  # 판정 불가 지표가 섞이면 「모든 지표 평소 범위」라 쓰지 않는다
+    else:
+        head = "모든 지표 평소 범위"
+    shown = parts[:4]
+    out = f"{head} — " + " · ".join(t for _, t in shown)
+    said = {k for k in unjudged if (2, f"{KIND_LABELS.get(k, k)} 판정 불가") in shown}
+    missing = [KIND_LABELS.get(str(k), str(k)) for k in section.get("missing") or [] if str(k) not in said]
     if missing:
         out += f" · 결손 {', '.join(missing)}"
     return out
@@ -494,6 +507,10 @@ def _with_axes(section: Mapping[str, Any], readings: Mapping[str, Any]) -> str |
     return text
 
 
+#: 정교 문형이 결손 kind를 직접 적는 액션(「판정 불가」·「결손 …」) — 공통 꼬리 「 · 일부 결손」을
+#: 다시 붙이지 않는다(plans/209 W3 · 결손 중복 표기 방지). 정교 문형이 None이면 꼬리를 붙인다.
+MISSING_SELF_REPORTED: frozenset[str] = frozenset({"host.usage_trend"})
+
 #: 액션 → 정교 문형(그 밖은 일반 문형).
 PRECISE_ACTIONS: dict[str, Callable[[Mapping[str, Any], Mapping[str, Any]], str | None]] = {
     "host.usage_trend": _usage_trend,
@@ -541,9 +558,10 @@ def summarize(
         text = fn(section, readings or {})
     except Exception:  # noqa: BLE001 — 문형 실패는 일반 문형으로(사실 문장은 빈칸 0)
         text = None
+    self_reported = text is not None and action in MISSING_SELF_REPORTED
     if text is None:
         text = _generic(section, readings or {}) or _verdict(section)
-    if section.get("missing"):
+    if section.get("missing") and not self_reported:
         text += " · 일부 결손"
     tail = _realtime_tail(section)
     if tail and REALTIME_MARK in text:

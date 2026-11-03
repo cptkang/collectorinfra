@@ -52,6 +52,7 @@ from sre_agent.application.playbook_schedule import reading_refs as _reading_ref
 from sre_agent.application.playbook_steps import (
     ACTION_TITLES,
     POLESTAR_AXIS_ACTIONS,
+    POLESTAR_JENNIFER_HOST_BASIS,
     POLESTAR_UNRESOLVED,
     SCOPE_ACTIONS,
     STEP_LIBRARY,
@@ -1070,6 +1071,7 @@ _POLESTAR_REASON_MARKS: tuple[str, ...] = (
     *(t.split("{")[0] for t in POLESTAR_LINK_BASIS.values()),
     POLESTAR_LINK_BASIS_OTHER.split("{")[0],
     POLESTAR_MAPPED_BASIS.split("{")[0],
+    POLESTAR_JENNIFER_HOST_BASIS.split("{")[0],  # S0 제니퍼 호스트명 조회 근거(plans/209 W2)
 )
 
 

@@ -64,7 +64,12 @@ def test_baseline_insufficient_is_noted_but_abs_threshold_still_applies():
 def test_zero_variance_baseline_noted():
     s = _series("cpu", [("2026-09-01T13:30:00", 12.0)], baseline=(10.0, 10.0, 10.0))
     f, notes = metric_finding(s, REF)
-    assert f["is_anomalous"] is False and any("분산 0" in n for n in notes)
+    assert any("분산 0" in n for n in notes)
+    # plans/209 W3(D-360 ⑤): 분산 0 기준선(평균 10)을 넘었는데(12) 절대 임계가 없으면 판정 불가
+    assert f["is_anomalous"] is None and f["judgeable"] is False and "판정 불가" in f["reason"]
+    # 기준선 평균 이하면 판정 가능·이상 없음 — 종전 키 그대로(유휴 서버 「판단 보류」 남발 방지)
+    flat, _ = metric_finding(_series("cpu", [("2026-09-01T13:30:00", 10.0)], baseline=(10.0, 10.0, 10.0)), REF)
+    assert flat["is_anomalous"] is False and "judgeable" not in flat
 
 
 def test_missing_series_and_no_alarms_noted():

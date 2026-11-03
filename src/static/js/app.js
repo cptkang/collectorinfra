@@ -6909,7 +6909,6 @@
         fallback.readOnly = true;
         fallback.rows = 6;
         fallback.hidden = true;
-        fallback.style.cssText = "display:block;width:100%;margin-top:4px;font-size:0.75rem";
         box.appendChild(btn);
         box.appendChild(msg);
         box.appendChild(fallback);

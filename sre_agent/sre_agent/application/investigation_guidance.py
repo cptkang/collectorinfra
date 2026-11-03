@@ -402,6 +402,32 @@ PROMETHEUS_ANCHOR_NOTE_TEMPLATE: str = (
     "source를 지정했다면 빼고 한 번 다시 부른다."
 )
 
+#: 폴스타 식별자 지침(plans/209 W2 · D-360 ③) — 질문의 「대상 서버」 라벨과 도구 인자를 잇는다.
+#: prom_* 인자는 위 앵커 노트가 따로 다룬다(문구 중복 금지).
+POLESTAR_IDENTIFIER_NOTE: str = (
+    "폴스타 식별자 지침(질문의 「대상 서버」 라벨대로 구분해 넘긴다):\n"
+    "- polestar_* 도구의 server_name 인자 = 폴스타 등록명 · "
+    "source 인자 = 폴스타 dbId(제니퍼 소스 id가 아니다).\n"
+    # 도구별 줄 — 도구 이름 필터(`filter_tool_mentions`)가 없는 도구의 줄만 통째로 지우게 한다
+    "- polestar_os_config의 hostname 인자 = OS 호스트명(등록명 아님).\n"
+    "- polestar_process_snapshot의 hostname 인자 = OS 호스트명(등록명 아님).\n"
+    "- 0건이면 도구가 호스트명↔등록명을 1회 다시 찾아 server_name_note·hint를 단다 — "
+    "그 변환을 인용하고, 그래도 0건이면 「데이터 없음」으로 적되 「정상」으로 서술하지 않는다."
+)
+
+
+def has_server_identifier(job) -> bool:  # noqa: ANN001 — JobLike(덕 타이핑)
+    """트리거 이벤트가 서버 식별자(`serverName`·`hostname`)를 가졌는가 — 식별자 지침 부착 조건.
+
+    pull 질문(이벤트 없음)은 라벨이 없어 지침을 붙이지 않는다(조립 문자열 종전과 동일).
+    """
+    payload = getattr(job, "payload", None)
+    event = payload.get("event") if isinstance(payload, dict) else None
+    if not isinstance(event, dict):
+        return False
+    return bool(str(event.get("serverName") or "").strip() or str(event.get("hostname") or "").strip())
+
+
 #: 알람 dbId를 알 때 — 값을 그대로 보여 준다.
 _PROM_SOURCE_LINE_KNOWN = (
     'source 인자에는 알람의 dbId를 그대로 넘긴다(이 사건: source="{db_id}"). '
@@ -1054,6 +1080,8 @@ def build_guidance(  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
     [③‴ 토폴로지 1홉 이웃 — `evidence_topology_neighbors_enabled`일 때만 · plans/198 I-7]
     [③″ 이미 수집된 판정 — 진단 잡 `prior_findings`]
     ④ **kind별 플레이북**(plans/91 1-5)
+    ④′ **폴스타 식별자 지침**(이벤트에 서버 식별자가 있고 툴셋 범위에 polestar가 있을 때 ·
+    plans/209 W2)
     ⑤ **OpenMetrics 서술 노트**(`openmetrics_guidance_enabled`일 때만 · plans/92 O3)
     ⑤′ **Prometheus 호스트 앵커 노트**(`prometheus_anchor_guidance_enabled`일 때만 · plans/189 W5)
     ⑥ **APM 노트**(`apm_guidance_enabled`일 때만 · plans/87 J3)
@@ -1135,6 +1163,8 @@ def build_guidance(  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
             playbook = playbook_note(alarm_kind_from_job(job), parallel_tools=par)
         if playbook:
             parts.append(playbook)
+    if (scoped is None or "polestar" in scoped) and has_server_identifier(job):
+        parts.append(POLESTAR_IDENTIFIER_NOTE)
     if getattr(settings, "openmetrics_guidance_enabled", False):
         parts.append(OPENMETRICS_NOTE)
     if getattr(settings, "prometheus_anchor_guidance_enabled", False) and (
@@ -1155,7 +1185,8 @@ def build_guidance(  # noqa: ANN001 — AgentSettings · JobLike(덕 타이핑)
 __all__ = ["ANCHORED_TOOLS", "APM_ANCHORED_TOOLS", "INCIDENT_SCOPE_NOTE_TEMPLATE", "PLAYBOOK_NOTES",
            "INCIDENT_SCOPE_NOTE_TEMPLATE_PARALLEL", "PLAYBOOK_NOTES_PARALLEL",
            "APM_FOCUS_NOTE_TEMPLATE_PARALLEL", "SOP_ANCHOR_HEADER_PARALLEL",
-           "OPENMETRICS_NOTE", "PROM_ANCHOR_REASONS", "PROMETHEUS_ANCHOR_NOTE_TEMPLATE",
+           "OPENMETRICS_NOTE", "POLESTAR_IDENTIFIER_NOTE", "has_server_identifier",
+           "PROM_ANCHOR_REASONS", "PROMETHEUS_ANCHOR_NOTE_TEMPLATE",
            "prometheus_anchor_note", "APM_UNAVAILABLE_CODES", "APM_FOCUS_NOTE_TEMPLATE", "APM_REALTIME_NOTE",
            "APM_FALLBACK_NOTE", "APM_NOT_CONFIGURED_NOTE", "APM_TOOLS_UNLOADED_NOTE",
            "APM_PLAYBOOK_NOTE",

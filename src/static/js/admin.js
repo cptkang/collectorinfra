@@ -1778,30 +1778,39 @@
     var refreshUsersBtn = document.getElementById("refreshUsersBtn");
 
     if (refreshUsersBtn) {
-        refreshUsersBtn.addEventListener("click", loadUsers);
+        // 「새로고침」은 매핑 점검(결정 기록 전량 스캔)도 다시 돌린다 — 탭 클릭은 직전 점검 결과를 쓴다
+        refreshUsersBtn.addEventListener("click", function () { loadUsers(true); });
     }
 
     // 사용자 관리 탭 클릭 시 로드
     document.querySelectorAll('.tab[data-tab="users"]').forEach(function(tab) {
-        tab.addEventListener("click", loadUsers);
+        tab.addEventListener("click", function () { loadUsers(false); });
     });
 
-    async function loadUsers() {
+    async function loadUsers(remap) {
         if (!usersBody) return;
         if (usersLoading) usersLoading.classList.add("active");
         if (usersTable) usersTable.style.display = "none";
 
         try {
-            var response = await apiRequest("GET", "/api/v1/admin/users");
+            // 목록·소스 후보·담당 지정률은 서로 독립이라 함께 묻는다. 담당은 지정률만(`mapping=false`) —
+            // 매핑 점검은 결정 기록 7일치를 전량 스캔해 수 초 걸리므로 표를 기다리게 하지 않는다(아래 뒤 갱신).
+            // (plans/201 W1) off(404)면 dutyState=null이라 아래 담당 열·카드를 그리지 않는다
+            var fetched = await Promise.all([
+                apiRequest("GET", "/api/v1/admin/users"),
+                loadSourceCandidates(),
+                loadDutyStatus(true),
+            ]);
+            var response = fetched[0];
             if (!response.ok) {
                 showError("사용자 목록을 불러오지 못했습니다.");
                 return;
             }
             var users = await response.json();
-            await loadSourceCandidates();
-            // (plans/201 W1) 담당 업무 현황 — off(404)면 dutyState=null이라 아래 담당 열·카드를 그리지 않는다
-            await loadDutyStatus();
             renderDutyCard();
+            if (dutyState && (remap === true || dutyState.sections == null)) {
+                loadDutyMapping().then(function () { if (dutyState) renderDutyCard(); });
+            }
             if (dutyState) ensureDutyHeader();
             usersBody.innerHTML = "";
 
@@ -1989,6 +1998,19 @@
         }
         renderDutyBadge();
         return dutyState;
+    }
+
+    // 매핑 점검(전량 스캔) 단일 비행 — 진입 시 1회와 탭 표시가 겹쳐도 서버 스캔은 하나만 돈다
+    var dutyMappingPromise = null;
+
+    function loadDutyMapping() {
+        if (!dutyMappingPromise) {
+            dutyMappingPromise = loadDutyStatus().then(function (state) {
+                dutyMappingPromise = null;
+                return state;
+            });
+        }
+        return dutyMappingPromise;
     }
 
     function dutyOptions() {
@@ -2246,7 +2268,7 @@
     }
 
     // 대시보드 진입 시 1회 — 미매핑이 있으면 「사용자 관리」 탭 이름 옆에 배지가 바로 보인다
-    loadDutyStatus();
+    loadDutyMapping();
 
     // --- 사용자 DB 접근 권한 (plans/104 C-4) ---
     //

@@ -614,7 +614,7 @@ def read_cpu_owner(
 
     호스트 CPU 이상 아님 → none. 이상이고 (호스트 − WAS) ≥ 기준 %p → other_process.
     WAS ≥ 기준 % → TPS가 늘었으면 was_load, 아니면 was_logic. 그 밖 → none.
-    호스트 CPU 결손 · WAS 프로세스 CPU 조회 실패 → None(판단 보류). S6 상위 프로세스는 대조 근거로
+    호스트 CPU 결손(판정 불가 포함) · WAS 프로세스 CPU 조회 실패 → None(판단 보류). S6 상위 프로세스는 대조 근거로
     싣는다. 알람 인스턴스가 없으면(호스트 알람) S2 프로세스 CPU 최대 인스턴스를 본다(W20b).
     """
     instance = _alarm_instance(steps)
@@ -626,7 +626,8 @@ def read_cpu_owner(
     sid6, s6 = _find(steps, "host.process_top")
     st = tuple(s for s in (sid4, sid2, sid6) if s)
     cpu = findings.get("cpu") if isinstance(findings.get("cpu"), Mapping) else None
-    if cpu is None:
+    # 판정 불가(`is_anomalous` None — 조회 성공 0행 등 · plans/209 W3)도 결손이다 — 「이상 없음」 아님
+    if cpu is None or cpu.get("is_anomalous", False) is None:
         return None, ReadingEvidence("R-E", st, reason="호스트 CPU 추이 결손")
     host_peak = _num(cpu.get("peak_value"))
     anomalous = bool(cpu.get("is_anomalous"))

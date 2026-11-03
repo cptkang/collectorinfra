@@ -1144,6 +1144,46 @@ def _instance_rows(resp: ToolResponse) -> list[dict[str, Any]]:
     ]
 
 
+#: S0이 폴스타 조회 서버를 제니퍼 호스트명으로 정했을 때의 근거 문장(plans/209 W2 · D-360 ④).
+POLESTAR_JENNIFER_HOST_BASIS = "제니퍼 호스트명으로 조회({host})"
+
+
+def _event_names(ctx: StepContext) -> tuple[str, str]:
+    """이벤트의 (`serverName`, `hostname`) — 앞뒤 공백 제거 · 없으면 빈 문자열."""
+    event = ctx.payload.get("event") if isinstance(ctx.payload, Mapping) else None
+    event = event if isinstance(event, Mapping) else {}
+    return str(event.get("serverName") or "").strip(), str(event.get("hostname") or "").strip()
+
+
+def _rescoped_polestar_server(ctx: StepContext, host: str | None) -> tuple[str | None, str | None]:
+    """S0 뒤 폴스타 조회 서버와 근거 문장(plans/209 W2 · D-360 ④).
+
+    확정 연결(`linked` — plans/196 §5.2)과 등록명(이벤트 `serverName` ≠ `hostname`, 또는 범위 값이
+    이벤트 호스트명과 다름)은 제니퍼 호스트명으로 덮지 않는다. 덮는 경우(원래 값이 비었거나 호스트명과
+    같을 때)에만 `host`를 쓰고 근거에 「제니퍼 호스트명으로 조회」를 남긴다.
+    """
+    current = ctx.scope.polestar_server
+    basis = ctx.scope.polestar_basis
+    if ctx.scope.polestar_link == "linked":
+        return current, basis
+    event_server, event_host = _event_names(ctx)
+    if event_server and event_host and event_server != event_host:
+        # 이벤트가 호스트명과 구별되는 등록명을 줬다(역조회로 승격된 값). D-348 소스 순위가 정한
+        # 범위 값이 호스트명이 아니면 그대로 두고, 비었거나 호스트명일 때만 등록명으로 바꾼다
+        if current and current != event_host:
+            return current, basis
+        return event_server, basis
+    if current and current != (event_host or ctx.scope.host):
+        return current, basis
+    if not host:
+        return current, basis
+    if not ctx.scope.polestar_source:
+        # 폴스타 소스가 없는 런(조회 생략)은 「조회」 근거를 남기지 않는다
+        return host, basis
+    note = POLESTAR_JENNIFER_HOST_BASIS.format(host=host)
+    return host, f"{basis} · {note}" if basis else note
+
+
 def resolve_was_targets(ctx: StepContext) -> StepResult:
     """S0 — 알람 인스턴스 → 호스트 → 그 호스트 인스턴스 + 같은 업무 인스턴스 → 판정 → 대상 선별.
 
@@ -1285,18 +1325,16 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
         }
         for i in chosen
     ]
+    polestar_server, polestar_basis = _rescoped_polestar_server(ctx, host)
     scope = RunScope(
         alarm_instance=alarm_instance,
         host=host,
         polestar_source=ctx.scope.polestar_source,
-        # 확정 연결(plans/196 §5.2)의 폴스타 등록명은 제니퍼 hostname으로 덮지 않는다
-        polestar_server=ctx.scope.polestar_server
-        if ctx.scope.polestar_link == "linked"
-        else host or ctx.scope.polestar_server,
+        polestar_server=polestar_server,
         polestar_reason=ctx.scope.polestar_reason,
         alarm_name=ctx.scope.alarm_name,
         targets=targets,
-        polestar_basis=ctx.scope.polestar_basis,
+        polestar_basis=polestar_basis,
         polestar_reason_detail=ctx.scope.polestar_reason_detail,
         polestar_link=ctx.scope.polestar_link,
     )
@@ -1854,7 +1892,19 @@ def usage_trend(ctx: StepContext) -> StepResult:
         return StepResult(status="missing", missing=missing, reason=" · ".join(notes + basis))
     result = correlate(ctx.windows.alarm_time, [], series, notes, alarm_axis=False)
     findings = result.metric_findings
+    # 판정 불가(조회 성공 0행 등 — `is_anomalous` None · plans/209 W3 · D-360 ⑤)는 「정상」이 아니다
+    unjudged = [s.name for s in series if findings[s.name].get("is_anomalous") is None]
+    if len(unjudged) == len(series):
+        return StepResult(
+            status="missing", missing=missing + unjudged, reason=" · ".join(list(result.notes) + basis)
+        )
     anomalous = [k for k, f in findings.items() if f.get("is_anomalous")]
+    if anomalous:
+        verdict: str | None = "degraded"
+    else:
+        verdict = None if unjudged else "normal"  # 일부만 판정 불가 · 나머지 이상 없음 = 판단 보류
+    missing = missing + unjudged
+    unjudged_notes = [str(findings[k].get("reason")) for k in unjudged if findings[k].get("reason")]
     rows = [
         [
             s.name,
@@ -1868,7 +1918,7 @@ def usage_trend(ctx: StepContext) -> StepResult:
     ]
     return StepResult(
         status="ok",
-        verdict="degraded" if anomalous else "normal",
+        verdict=verdict,
         verdict_source=VERDICT_SOURCE_RULE,
         table={
             "columns": ["kind", "peak", "baseline_mean", "z_score", "is_anomalous", "anomaly_kind"],
@@ -1890,7 +1940,7 @@ def usage_trend(ctx: StepContext) -> StepResult:
             "server_name": scope.server_name,
         },
         missing=missing,
-        reason=" · ".join([n for n in notes if "결손" in n] + basis) or None,
+        reason=" · ".join([n for n in notes if "결손" in n] + unjudged_notes + basis) or None,
         artifacts={"series": series},
     )
 
