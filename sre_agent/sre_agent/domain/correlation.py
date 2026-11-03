@@ -86,6 +86,9 @@ class CorrelationResult:
     change_finding: dict | None = None   # plans/91 1-2 — 변경 오버레이 off/미수집이면 None(키 자체를 내지 않는다)
     # plans/198 I-7 — 토폴로지 1홉 이웃. off면 None(키 자체를 내지 않는다)
     neighbors: dict | None = None
+    # plans/210 §3.7 — 연계 대상 여럿의 대상별 판정(첫 행 = 대표). 단일 대상이면 None(키 자체를
+    # 내지 않는다)
+    targets: list | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -102,6 +105,8 @@ class CorrelationResult:
             out["change_finding"] = self.change_finding
         if self.neighbors is not None:
             out["neighbors"] = self.neighbors
+        if self.targets is not None:
+            out["targets"] = self.targets
         return out
 
 

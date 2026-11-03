@@ -46,6 +46,7 @@ from apm_gateway.application.batch import (
 from apm_gateway.application.event_buffer import EventBuffer
 from apm_gateway.application.jobs import Job, JobManager
 from apm_gateway.application.masking import mask_text
+from apm_gateway.application.node_address_tools import NodeAddressTools, shown_ids
 from apm_gateway.application.scope_tools import ScopeTools, scope_target
 from apm_gateway.application.tools import ApmTools
 from apm_gateway.config import GatewayConfig
@@ -1255,6 +1256,56 @@ def _register_delegated_tools(
     return [*manage_names, *scope_names, *fleet_names]
 
 
+def _register_node_address_tool(mcp: FastMCP, tools: ApmTools, run_data: RunData) -> list[str]:
+    """`apm_node_addresses`(plans/210 W2 §3.6) — 노드 주소 조회기가 있을 때만(=
+    `JENNIFER_NODE_ADDRESS_ENABLED=true` · `build_node_address`) 등록한다. 플래그 off면 등록 0 —
+    도구 목록(조사 도구 집합 포함)이 종전과 바이트 같다."""
+    if tools.node_address is None:
+        return []
+    node = NodeAddressTools(tools)
+
+    @mcp.tool()
+    async def apm_node_addresses(
+        source_ids: list[str] | None = None,
+        domain_ids: Annotated[
+            list[int] | None,
+            Field(description="이 APM 도메인 ID들만(비우면 전 도메인 — 도메인마다 웹 조회 1회)"),
+        ] = None,
+        instance_ids: Annotated[
+            list[int] | None,
+            Field(
+                description="이 APM 인스턴스 ID들만(그 인스턴스가 있는 도메인만 조회 ·"
+                " domain_ids와 AND · 목록에 없는 ID는 [한계])"
+            ),
+        ] = None,
+        investigation_id: str | None = None,
+        thread_id: str | None = None,
+        owner: OwnerArg = None,
+        wait_seconds: WaitArg = None,
+    ) -> str:
+        """WAS 인스턴스가 도는 노드(호스트) 주소 — K8s 파드면 파드가 올라간 노드 IP(제니퍼 웹 세션
+        조회). APM 소스 간 병렬 · 소스 안 순차로 조회한다(호출당 50개까지 · 큰 결과는 결과 파일).
+        domain_ids·instance_ids를 준 호출은 시간 예산 안에서만 조회한다. 전 도메인 조회는 사전
+        스캔용 — 조사 중에는 domain_ids나 instance_ids를 지정한다. 행 status: ok ·
+        not_found(웹 목록에 없음) · disabled(웹 계정 미설정) · login_failed · login_blocked ·
+        error · budget_exceeded(시간 예산 안에 조회하지 못함). 소스별 상태·사유는
+        node_address_sources."""
+        label = "*" if not domain_ids else "domains:" + ",".join(map(str, domain_ids))
+        if instance_ids is not None:
+            label += " instances:" + shown_ids(instance_ids).replace(", ", ",")
+        return await run_data(
+            "apm_node_addresses",
+            label,
+            lambda: node.apm_node_addresses(source_ids, domain_ids, instance_ids),
+            owner=owner,
+            wait_seconds=wait_seconds,
+            investigation_id=investigation_id,
+            thread_id=thread_id,
+        )
+
+    return ["apm_node_addresses"]
+
+
 def _register_job_tools(mcp: FastMCP, tools: ApmTools, manager: JobManager) -> list[str]:
     """작업 도구 3종(`JOB_TOOLS`) — 외부 API를 부르지 않는다."""
 
@@ -1333,7 +1384,8 @@ def register_tools(
     `apm_fleet`은 `register_fleet_tools` — `event_buffer`는 폴러의 조회용 이벤트 버퍼 · 서비스·업무
     2종은 `register_scope_tools`) + 작업 도구
     3종 + `gateway_health`를 등록하고 이름 목록을 돌려준다. `hostname`을 받는 데이터 도구는
-    `targets`(다건 대상 — 작업 1개)도 받는다(`application.batch`)."""
+    `targets`(다건 대상 — 작업 1개)도 받는다(`application.batch`). 노드 주소 조회기가 있으면
+    `apm_node_addresses`를 작업 도구 앞에 더한다(plans/210 W2 — 플래그 off면 없음)."""
     if jobs is None:
         jobs = JobManager.from_config(
             tools.cfg, envelope=tools.ok, error_envelope=tools.err, on_finish=audit_job_finished
@@ -1371,6 +1423,7 @@ def register_tools(
         *_register_stats_tools(mcp, tools, dispatch),
         *_register_compare_tools(mcp, tools, dispatch),
         *_register_delegated_tools(mcp, tools, run_data, event_buffer),
+        *_register_node_address_tool(mcp, tools, run_data),
         *_register_job_tools(mcp, tools, manager),
         *_register_health_tool(mcp, tools, manager),
     ]

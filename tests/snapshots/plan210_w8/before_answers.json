@@ -1,0 +1,263 @@
+{
+ "a_host": {
+  "answer": {
+   "degraded_reason": "apm_calls_failed",
+   "error": "제니퍼(APM · WAS 모니터링) 조회가 모두 실패했습니다 — node_address_disabled: 게이트웨이 노드 주소 조회 비활성(JENNIFER_NODE_ADDRESS_ENABLED) (요청 - · 상세 사유는 서버 로그)",
+   "final_response": "제니퍼(APM · WAS 모니터링) 조회가 모두 실패했습니다 — node_address_disabled: 게이트웨이 노드 주소 조회 비활성(JENNIFER_NODE_ADDRESS_ENABLED) (요청 - · 상세 사유는 서버 로그)",
+   "source_status": [
+    {
+     "label": "제니퍼(APM · WAS 모니터링)",
+     "reason": "node_address_disabled: 게이트웨이 노드 주소 조회 비활성(JENNIFER_NODE_ADDRESS_ENABLED)",
+     "rows": 0,
+     "status": "unavailable",
+     "system": "apm"
+    }
+   ]
+  },
+  "calls": [
+   "apm_node_addresses"
+  ]
+ },
+ "a_text": {
+  "answer": {
+   "degraded_reason": "apm_calls_failed",
+   "error": "제니퍼(APM · WAS 모니터링) 조회가 모두 실패했습니다 — node_address_disabled: 게이트웨이 노드 주소 조회 비활성(JENNIFER_NODE_ADDRESS_ENABLED) (요청 - · 상세 사유는 서버 로그)",
+   "final_response": "제니퍼(APM · WAS 모니터링) 조회가 모두 실패했습니다 — node_address_disabled: 게이트웨이 노드 주소 조회 비활성(JENNIFER_NODE_ADDRESS_ENABLED) (요청 - · 상세 사유는 서버 로그)",
+   "source_status": [
+    {
+     "label": "제니퍼(APM · WAS 모니터링)",
+     "reason": "node_address_disabled: 게이트웨이 노드 주소 조회 비활성(JENNIFER_NODE_ADDRESS_ENABLED)",
+     "rows": 0,
+     "status": "unavailable",
+     "system": "apm"
+    }
+   ]
+  },
+  "calls": [
+   "apm_node_addresses"
+  ]
+ },
+ "a_text_domain": {
+  "answer": {
+   "degraded_reason": "apm_calls_failed",
+   "error": "제니퍼(APM · WAS 모니터링) 조회가 모두 실패했습니다 — node_address_disabled: 게이트웨이 노드 주소 조회 비활성(JENNIFER_NODE_ADDRESS_ENABLED) (요청 - · 상세 사유는 서버 로그)",
+   "final_response": "제니퍼(APM · WAS 모니터링) 조회가 모두 실패했습니다 — node_address_disabled: 게이트웨이 노드 주소 조회 비활성(JENNIFER_NODE_ADDRESS_ENABLED) (요청 - · 상세 사유는 서버 로그)",
+   "source_status": [
+    {
+     "label": "제니퍼(APM · WAS 모니터링)",
+     "reason": "node_address_disabled: 게이트웨이 노드 주소 조회 비활성(JENNIFER_NODE_ADDRESS_ENABLED)",
+     "rows": 0,
+     "status": "unavailable",
+     "system": "apm"
+    }
+   ]
+  },
+  "calls": [
+   "apm_node_addresses"
+  ]
+ },
+ "c_health": {
+  "answer": {
+   "disclosures": [
+    {
+     "kind": "bridge",
+     "source": "task:t1",
+     "text": "'order-api' → 제니퍼 인스턴스 2개(근거: 제니퍼 인스턴스 이름 2)"
+    }
+   ],
+   "organized_data": {
+    "column_mapping": null,
+    "is_sufficient": true,
+    "resolved_mapping": null,
+    "rows": [
+     {
+      "hostname": null,
+      "instance_id": 1,
+      "instance_name": "order-api-1",
+      "source_id": "b0",
+      "tps": 1.0
+     },
+     {
+      "hostname": null,
+      "instance_id": 2,
+      "instance_name": "order-api-2",
+      "source_id": "b0",
+      "tps": 1.0
+     }
+    ],
+    "sheet_mappings": null,
+    "summary": "제니퍼(APM · WAS 모니터링) 조회 — WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절 — 현재·구간 합계(apm.app_health): 대상 0대 · 해석 인스턴스 2개 · 2행(기준 시각 2026-11-03T10:00:00+09:00)."
+   },
+   "query_results": [
+    {
+     "hostname": null,
+     "instance_id": 1,
+     "instance_name": "order-api-1",
+     "source_id": "b0",
+     "tps": 1.0
+    },
+    {
+     "hostname": null,
+     "instance_id": 2,
+     "instance_name": "order-api-2",
+     "source_id": "b0",
+     "tps": 1.0
+    }
+   ],
+   "source_status": [
+    {
+     "label": "제니퍼(APM · WAS 모니터링)",
+     "reason": "",
+     "rows": 2,
+     "status": "ok",
+     "system": "apm"
+    }
+   ]
+  },
+  "calls": [
+   "apm_instance_map",
+   "apm_app_health"
+  ]
+ },
+ "c_two": {
+  "answer": {
+   "disclosures": [
+    {
+     "kind": "bridge",
+     "source": "task:t1",
+     "text": "'order-api' → 제니퍼 인스턴스 2개(근거: 제니퍼 인스턴스 이름 2)"
+    }
+   ],
+   "organized_data": {
+    "column_mapping": null,
+    "is_sufficient": true,
+    "resolved_mapping": null,
+    "rows": [
+     {
+      "hostname": null,
+      "instance_id": 1,
+      "instance_name": "order-api-1",
+      "source_id": "b0",
+      "tps": 1.0
+     },
+     {
+      "hostname": null,
+      "instance_id": 2,
+      "instance_name": "order-api-2",
+      "source_id": "b0",
+      "tps": 1.0
+     },
+     {
+      "hostname": null,
+      "instance_id": 1,
+      "instance_name": "order-api-1",
+      "source_id": "b0",
+      "tps": 1.0
+     },
+     {
+      "hostname": null,
+      "instance_id": 2,
+      "instance_name": "order-api-2",
+      "source_id": "b0",
+      "tps": 1.0
+     }
+    ],
+    "sheet_mappings": null,
+    "summary": "제니퍼(APM · WAS 모니터링) 조회 — WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절 — 현재·구간 합계(apm.app_health), JVM 힙·GC 비중·프로세스 CPU·스레드 추세(apm.runtime): 대상 0대 · 해석 인스턴스 2개 · 4행(기준 시각 2026-11-03T10:00:00+09:00)."
+   },
+   "query_results": [
+    {
+     "hostname": null,
+     "instance_id": 1,
+     "instance_name": "order-api-1",
+     "source_id": "b0",
+     "tps": 1.0
+    },
+    {
+     "hostname": null,
+     "instance_id": 2,
+     "instance_name": "order-api-2",
+     "source_id": "b0",
+     "tps": 1.0
+    },
+    {
+     "hostname": null,
+     "instance_id": 1,
+     "instance_name": "order-api-1",
+     "source_id": "b0",
+     "tps": 1.0
+    },
+    {
+     "hostname": null,
+     "instance_id": 2,
+     "instance_name": "order-api-2",
+     "source_id": "b0",
+     "tps": 1.0
+    }
+   ],
+   "source_status": [
+    {
+     "label": "제니퍼(APM · WAS 모니터링)",
+     "reason": "",
+     "rows": 4,
+     "status": "ok",
+     "system": "apm"
+    }
+   ]
+  },
+  "calls": [
+   "apm_instance_map",
+   "apm_app_health",
+   "apm_runtime_health"
+  ]
+ },
+ "c_vm": {
+  "answer": {
+   "disclosures": [
+    {
+     "kind": "bridge",
+     "source": "task:t1",
+     "text": "'vm-was' → 제니퍼 인스턴스 1개(근거: 제니퍼 인스턴스 이름 1)"
+    }
+   ],
+   "organized_data": {
+    "column_mapping": null,
+    "is_sufficient": true,
+    "resolved_mapping": null,
+    "rows": [
+     {
+      "hostname": null,
+      "instance_id": 7,
+      "instance_name": "vm-was01",
+      "source_id": "b0",
+      "tps": 1.0
+     }
+    ],
+    "sheet_mappings": null,
+    "summary": "제니퍼(APM · WAS 모니터링) 조회 — WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절 — 현재·구간 합계(apm.app_health): 대상 0대 · 해석 인스턴스 1개 · 1행(기준 시각 2026-11-03T10:00:00+09:00)."
+   },
+   "query_results": [
+    {
+     "hostname": null,
+     "instance_id": 7,
+     "instance_name": "vm-was01",
+     "source_id": "b0",
+     "tps": 1.0
+    }
+   ],
+   "source_status": [
+    {
+     "label": "제니퍼(APM · WAS 모니터링)",
+     "reason": "",
+     "rows": 1,
+     "status": "ok",
+     "system": "apm"
+    }
+   ]
+  },
+  "calls": [
+   "apm_instance_map",
+   "apm_app_health"
+  ]
+ }
+}

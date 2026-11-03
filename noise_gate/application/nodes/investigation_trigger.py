@@ -639,6 +639,7 @@ async def build_manual_payload(
     host_link_store: Any = None,  # HostLinkStore | None (plans/196)
     polestar_link: dict[str, Any] | None = None,
     rerun: dict[str, Any] | None = None,
+    map_cache: Any = None,  # ApmHostMapCache | None (plans/210 — API 프로세스 사본)
 ) -> dict[str, Any]:
     """사용자 요청 알람 분석 페이로드(plans/187 W11 · G-28) — 자동 트리거와 같은 조립 함수.
 
@@ -655,6 +656,7 @@ async def build_manual_payload(
     연결(자동 경로와 같은 규칙). `rerun`(「이 서버로 다시 조회」)은 같은 조건에서
     `meta.hints.rerun`.
     플래그 off면 두 키 모두 없다(비트 동일).
+    (plans/210) `map_cache`는 연계 매핑 고속 경로의 사본이다(`apm_host_map_enabled`일 때만 쓴다).
     """
     target_resolution = resolve_targets(
         alarm_payload={
@@ -675,7 +677,8 @@ async def build_manual_payload(
     )
     payload["decision"]["fingerprint"] = fingerprint
     await _attach_polestar_link(
-        cfg, event, payload, store=host_link_store, link=polestar_link, rerun=rerun
+        cfg, event, payload, store=host_link_store, link=polestar_link, rerun=rerun,
+        map_cache=map_cache,
     )
     return payload
 
@@ -689,6 +692,7 @@ async def _attach_polestar_link(
     redis: Any = None,  # redis.asyncio 클라이언트 | None — store가 없을 때만 쓴다
     link: dict[str, Any] | None = None,
     rerun: dict[str, Any] | None = None,
+    map_cache: Any = None,  # ApmHostMapCache | None (plans/210) — 없으면 redis로 만든다
 ) -> None:
     """APM 알람 페이로드에 `meta.hints.polestar_link`(+`rerun`)를 단다 (plans/196 §5.2 · plans/202).
 
@@ -701,6 +705,11 @@ async def _attach_polestar_link(
         ③ 파드 미확정 사유(`unresolved` + `reason` · `pod: true`)
         ④ 파드 아님 — 종전(플래그 off면 키 없음 · 비트 동일)
     사용자가 고른 연결(`link` · 「이 서버로 다시 조회」)은 그 재조회 요청이라 그대로 쓴다.
+
+    (plans/210 §3.1 · D-362) `apm_host_map_enabled`면 위 ①~④ 대신 연계 매핑 고속 경로
+    (`apm_host_map_lookup.resolve_map_link` — 매핑 hit면 실시간 조회 0회)로 정한다. 사본은
+    `map_cache`(API 프로세스)를 쓰고, 없으면 `redis`로 읽기 사본을 만든다(워커 — PG 연결 없음 ·
+    D-049). 플래그 off면 이 분기가 없어 종전과 비트 동일하다.
     """
     hints = (payload.get("meta") or {}).get("hints")
     if not isinstance(hints, dict) or hints.get("solution") != KIND_APM:
@@ -710,6 +719,39 @@ async def _attach_polestar_link(
     if host_link_on and link is not None:
         _set_polestar_link(event, hints, link, rerun)
         return
+    from noise_gate.application.apm_host_map_lookup import map_enabled, resolve_map_link
+    from noise_gate.domain.host_link import BASIS_NODE_ADDRESS
+
+    if map_enabled(cfg):
+        if map_cache is None and redis is not None:
+            from noise_gate.infrastructure.apm_host_map_cache import RedisApmHostMapCache
+
+            map_cache = RedisApmHostMapCache(redis)
+        publish_redis = redis if redis is not None else getattr(map_cache, "redis", None)
+        stored_memo: list[dict[str, Any]] = []
+
+        async def _stored() -> dict[str, Any]:
+            if not stored_memo:
+                stored_memo.append(
+                    await _stored_polestar_link(event, hints, store=store, redis=redis)
+                )
+            return stored_memo[0]
+
+        chosen = await resolve_map_link(
+            cfg, event, hints, cache=map_cache, redis=publish_redis,
+            stored_link=_stored if host_link_on else None,
+        )
+        if (
+            host_link_on
+            and chosen.get("status") == "linked"
+            and chosen.get("basis") == BASIS_NODE_ADDRESS
+        ):
+            # 종전 경로와 같게 — 노드 주소 직접 조회(3′)가 저장된 확정 연결(D-348)과 다른 서버면
+            # `previous_link`를 남긴다. 매핑 hit(basis apm_map)는 관리자·자동 매핑이 정본이고
+            # 조사 문장(「… 과 다름 — 노드 주소 우선」)이 맞지 않아 붙이지 않는다.
+            _mark_previous_link(chosen, await _stored())
+        _set_polestar_link(event, hints, chosen, rerun)
+        return
     node = await _node_address_hint(cfg, event)
     if node is None and not host_link_on:
         return
@@ -718,19 +760,25 @@ async def _attach_polestar_link(
         return
     stored = await _stored_polestar_link(event, hints, store=store, redis=redis)
     if node is not None and node.get("status") == "linked":
-        if stored.get("status") == "linked" and (
-            str(stored.get("db_id") or ""), str(stored.get("server_name") or "")
-        ) != (str(node.get("db_id") or ""), str(node.get("server_name") or "")):
-            node["previous_link"] = {
-                "db_id": str(stored.get("db_id") or ""),
-                "server_name": str(stored.get("server_name") or ""),
-            }
+        _mark_previous_link(node, stored)
         chosen = node
     elif node is not None and stored.get("status") != "linked":
         chosen = node
     else:
         chosen = stored
     _set_polestar_link(event, hints, chosen, rerun)
+
+
+def _mark_previous_link(link: dict[str, Any], stored: dict[str, Any]) -> None:
+    """저장된 확정 연결(D-348)이 linked이고 `link`와 서버가 다르면 `link["previous_link"]`를 단다
+    (D-355 ③ — 둘 다 적는다)."""
+    if stored.get("status") == "linked" and (
+        str(stored.get("db_id") or ""), str(stored.get("server_name") or "")
+    ) != (str(link.get("db_id") or ""), str(link.get("server_name") or "")):
+        link["previous_link"] = {
+            "db_id": str(stored.get("db_id") or ""),
+            "server_name": str(stored.get("server_name") or ""),
+        }
 
 
 def _set_polestar_link(

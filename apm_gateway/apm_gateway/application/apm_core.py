@@ -123,6 +123,9 @@ class ApmCore:
         }
         if resolution is not None:
             payload["instance_resolution"] = resolution.as_dict()
+            # 노드 주소 조회 가능 표지(plans/210 W9 B) — 조회기 없음(플래그 off)이면 키 없음
+            if self.node_address is not None:
+                payload["instance_resolution"]["node_address"] = True
         if window is not None:
             payload["window"] = window.as_dict()
         if was_signals is not None:

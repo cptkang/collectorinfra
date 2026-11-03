@@ -78,3 +78,9 @@ class _RunCtx:
     missing_named: list[_Call] = field(default_factory=list)
     disclosures: list[disc.Disclosure] = field(default_factory=list)
     accepted: list[_Call] = field(default_factory=list)
+    #: 직전 대상 승계 고지의 `notices` 위치(plans/210 W8 A — 노드 주소 보기만의 승계를 되돌릴 때)
+    inherited_at: int | None = None
+    #: 노드 주소 보기의 대상 인스턴스 — None = 대상 없음(W2 현행 1회) · [] = 대상은 있으나 0건
+    node_targets: list[dict[str, Any]] | None = None
+    #: 다른 보기에 붙이는 파드 노드 주소 답 줄(plans/210 W8 C)
+    node_lines: list[str] = field(default_factory=list)

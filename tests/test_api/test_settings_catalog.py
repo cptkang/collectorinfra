@@ -237,7 +237,7 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/208 트랙 C M-3 NOISE_DECISION_STORE_{RECENT_SCAN_ENABLED,ROTATE_MAX_BYTES,
     # ROTATE_DAILY} +3 (noise_gate 기존 그룹)
     # plans/208 트랙 B W5 ALARM_WORKER_{IN_PROCESS,SINGLETON_GUARD} +2 (alarm 기존 그룹)
-    assert len(items) == 478  # plans/198 W0 +1 · W8 +1 · W7 +2 · plans/199 W1 +1 · plans/195 W2 +1
+    assert len(items) == 484  # plans/195 W2까지 478 · plans/210 W1 +6(NOISE_APM_HOST_MAP_*)
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -430,7 +430,7 @@ def test_t2_group_and_field_counts():
     # plans/208 트랙 C M-3 NOISE_DECISION_STORE_{RECENT_SCAN_ENABLED,ROTATE_MAX_BYTES,
     # ROTATE_DAILY} +3 (noise_gate 기존 그룹)
     # plans/208 트랙 B W5 ALARM_WORKER_{IN_PROCESS,SINGLETON_GUARD} +2 (alarm 기존 그룹)
-    assert len(index) == 478  # plans/198 W0 +1 · W8 +1 · W7 +2 · plans/199 W1 +1 · plans/195 W2 +1
+    assert len(index) == 484  # plans/195 W2까지 478 · plans/210 W1 +6(NOISE_APM_HOST_MAP_*)
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 21
 

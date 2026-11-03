@@ -1,0 +1,371 @@
+{
+ "host_batch": {
+  "answer": {
+   "organized_data": {
+    "column_mapping": null,
+    "is_sufficient": true,
+    "resolved_mapping": null,
+    "rows": [
+     {
+      "domain_id": 1000,
+      "hostname": "app01",
+      "instance_id": 1,
+      "instance_name": "order-api-1",
+      "source_id": "b0",
+      "tps": 1.0
+     },
+     {
+      "domain_id": 1000,
+      "hostname": "app02",
+      "instance_id": 2,
+      "instance_name": "order-api-2",
+      "source_id": "b0",
+      "tps": 1.0
+     }
+    ],
+    "sheet_mappings": null,
+    "summary": "제니퍼(APM · WAS 모니터링) 조회 — WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절 — 현재·구간 합계(apm.app_health): 대상 2대 · 2행(기준 시각 2026-11-03T10:00:00+09:00). WAS 연결 2/2(high 2)"
+   },
+   "query_results": [
+    {
+     "domain_id": 1000,
+     "hostname": "app01",
+     "instance_id": 1,
+     "instance_name": "order-api-1",
+     "source_id": "b0",
+     "tps": 1.0
+    },
+    {
+     "domain_id": 1000,
+     "hostname": "app02",
+     "instance_id": 2,
+     "instance_name": "order-api-2",
+     "source_id": "b0",
+     "tps": 1.0
+    }
+   ],
+   "source_status": [
+    {
+     "label": "제니퍼(APM · WAS 모니터링)",
+     "reason": "",
+     "rows": 2,
+     "status": "ok",
+     "system": "apm"
+    }
+   ]
+  },
+  "calls": [
+   [
+    "apm_app_health",
+    {
+     "owner": "user:alice",
+     "targets": [
+      {
+       "hostname": "app01"
+      },
+      {
+       "hostname": "app02"
+      }
+     ],
+     "thread_id": "th-1",
+     "wait_seconds": 8.0
+    }
+   ]
+  ]
+ },
+ "host_mixed": {
+  "answer": {
+   "disclosures": [
+    {
+     "kind": "bridge",
+     "source": "task:t1",
+     "text": "'pay-api' → 제니퍼 인스턴스 1개(근거: 제니퍼 인스턴스 이름 1)"
+    }
+   ],
+   "organized_data": {
+    "column_mapping": null,
+    "is_sufficient": true,
+    "resolved_mapping": null,
+    "rows": [
+     {
+      "domain_id": 1000,
+      "hostname": "app01",
+      "instance_id": 1,
+      "instance_name": "order-api-1",
+      "source_id": "b0",
+      "tps": 1.0
+     },
+     {
+      "domain_id": 1000,
+      "hostname": "",
+      "instance_id": 3,
+      "instance_name": "pay-api-1",
+      "source_id": "b0",
+      "tps": 1.0
+     },
+     {
+      "domain_id": 1000,
+      "hostname": "app01",
+      "instance_id": 1,
+      "instance_name": "order-api-1",
+      "source_id": "b0",
+      "tps": 1.0
+     },
+     {
+      "domain_id": 1000,
+      "hostname": "",
+      "instance_id": 3,
+      "instance_name": "pay-api-1",
+      "source_id": "b0",
+      "tps": 1.0
+     }
+    ],
+    "sheet_mappings": null,
+    "summary": "제니퍼(APM · WAS 모니터링) 조회 — WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절 — 현재·구간 합계(apm.app_health), JVM 힙·GC 비중·프로세스 CPU·스레드 추세(apm.runtime): 대상 1대 · 해석 인스턴스 1개 · 4행(기준 시각 2026-11-03T10:00:00+09:00). WAS 연결 1/1(high 1)"
+   },
+   "query_results": [
+    {
+     "domain_id": 1000,
+     "hostname": "app01",
+     "instance_id": 1,
+     "instance_name": "order-api-1",
+     "source_id": "b0",
+     "tps": 1.0
+    },
+    {
+     "domain_id": 1000,
+     "hostname": "",
+     "instance_id": 3,
+     "instance_name": "pay-api-1",
+     "source_id": "b0",
+     "tps": 1.0
+    },
+    {
+     "domain_id": 1000,
+     "hostname": "app01",
+     "instance_id": 1,
+     "instance_name": "order-api-1",
+     "source_id": "b0",
+     "tps": 1.0
+    },
+    {
+     "domain_id": 1000,
+     "hostname": "",
+     "instance_id": 3,
+     "instance_name": "pay-api-1",
+     "source_id": "b0",
+     "tps": 1.0
+    }
+   ],
+   "source_status": [
+    {
+     "label": "제니퍼(APM · WAS 모니터링)",
+     "reason": "",
+     "rows": 4,
+     "status": "ok",
+     "system": "apm"
+    }
+   ]
+  },
+  "calls": [
+   [
+    "apm_instance_map",
+    {
+     "owner": "user:alice",
+     "query": "pay-api",
+     "thread_id": "th-1",
+     "wait_seconds": 8.0
+    }
+   ],
+   [
+    "apm_app_health",
+    {
+     "owner": "user:alice",
+     "targets": [
+      {
+       "hostname": "app01"
+      },
+      {
+       "instance_id": 3,
+       "instance_name": "pay-api-1",
+       "source_id": "b0"
+      }
+     ],
+     "thread_id": "th-1",
+     "wait_seconds": 8.0
+    }
+   ],
+   [
+    "apm_runtime_health",
+    {
+     "owner": "user:alice",
+     "targets": [
+      {
+       "hostname": "app01"
+      },
+      {
+       "instance_id": 3,
+       "instance_name": "pay-api-1",
+       "source_id": "b0"
+      }
+     ],
+     "thread_id": "th-1",
+     "wait_seconds": 8.0
+    }
+   ]
+  ]
+ },
+ "host_pod": {
+  "answer": {
+   "organized_data": {
+    "column_mapping": null,
+    "is_sufficient": true,
+    "resolved_mapping": null,
+    "rows": [
+     {
+      "domain_id": 1000,
+      "hostname": "app01",
+      "instance_id": 1,
+      "instance_name": "order-api-1",
+      "source_id": "b0",
+      "tps": 1.0
+     }
+    ],
+    "sheet_mappings": null,
+    "summary": "제니퍼(APM · WAS 모니터링) 조회 — WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절 — 현재·구간 합계(apm.app_health): 대상 1대 · 1행(기준 시각 2026-11-03T10:00:00+09:00). WAS 연결 1/1(high 1)"
+   },
+   "query_results": [
+    {
+     "domain_id": 1000,
+     "hostname": "app01",
+     "instance_id": 1,
+     "instance_name": "order-api-1",
+     "source_id": "b0",
+     "tps": 1.0
+    }
+   ],
+   "source_status": [
+    {
+     "label": "제니퍼(APM · WAS 모니터링)",
+     "reason": "",
+     "rows": 1,
+     "status": "ok",
+     "system": "apm"
+    }
+   ]
+  },
+  "calls": [
+   [
+    "apm_app_health",
+    {
+     "hostname": "app01",
+     "owner": "user:alice",
+     "thread_id": "th-1",
+     "wait_seconds": 8.0
+    }
+   ]
+  ]
+ },
+ "host_vm": {
+  "answer": {
+   "organized_data": {
+    "column_mapping": null,
+    "is_sufficient": true,
+    "resolved_mapping": null,
+    "rows": [
+     {
+      "domain_id": 2000,
+      "hostname": "web01",
+      "instance_id": 7,
+      "instance_name": "vm-was01",
+      "source_id": "b0",
+      "tps": 1.0
+     }
+    ],
+    "sheet_mappings": null,
+    "summary": "제니퍼(APM · WAS 모니터링) 조회 — WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절 — 현재·구간 합계(apm.app_health): 대상 1대 · 1행(기준 시각 2026-11-03T10:00:00+09:00). WAS 연결 1/1(high 1)"
+   },
+   "query_results": [
+    {
+     "domain_id": 2000,
+     "hostname": "web01",
+     "instance_id": 7,
+     "instance_name": "vm-was01",
+     "source_id": "b0",
+     "tps": 1.0
+    }
+   ],
+   "source_status": [
+    {
+     "label": "제니퍼(APM · WAS 모니터링)",
+     "reason": "",
+     "rows": 1,
+     "status": "ok",
+     "system": "apm"
+    }
+   ]
+  },
+  "calls": [
+   [
+    "apm_app_health",
+    {
+     "hostname": "web01",
+     "owner": "user:alice",
+     "thread_id": "th-1",
+     "wait_seconds": 8.0
+    }
+   ]
+  ]
+ },
+ "host_words": {
+  "answer": {
+   "organized_data": {
+    "column_mapping": null,
+    "is_sufficient": true,
+    "resolved_mapping": null,
+    "rows": [
+     {
+      "domain_id": 1000,
+      "hostname": "app01",
+      "instance_id": 1,
+      "instance_name": "order-api-1",
+      "source_id": "b0",
+      "tps": 1.0
+     }
+    ],
+    "sheet_mappings": null,
+    "summary": "제니퍼(APM · WAS 모니터링) 조회 — WAS 응답시간(평균·p95)·TPS·에러율·PLC 거절 — 현재·구간 합계(apm.app_health): 대상 1대 · 1행(기준 시각 2026-11-03T10:00:00+09:00). WAS 연결 1/1(high 1)"
+   },
+   "query_results": [
+    {
+     "domain_id": 1000,
+     "hostname": "app01",
+     "instance_id": 1,
+     "instance_name": "order-api-1",
+     "source_id": "b0",
+     "tps": 1.0
+    }
+   ],
+   "source_status": [
+    {
+     "label": "제니퍼(APM · WAS 모니터링)",
+     "reason": "",
+     "rows": 1,
+     "status": "ok",
+     "system": "apm"
+    }
+   ]
+  },
+  "calls": [
+   [
+    "apm_app_health",
+    {
+     "hostname": "app01",
+     "owner": "user:alice",
+     "thread_id": "th-1",
+     "wait_seconds": 8.0
+    }
+   ]
+  ]
+ }
+}

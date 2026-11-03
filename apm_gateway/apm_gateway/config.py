@@ -29,6 +29,8 @@
   웹 계정 `JENNIFER_<ID>_WEB_USER`·`_WEB_PASSWORD`(비면 그 소스는 `disabled`) · `_WEB_URL`(비면
   `_API_URL`) · `_WEB_TLS_VERIFY`(기본 true). 웹 키는 전역 값을 승계하지 않는다 — 소스마다 전용
   계정이다(사람 계정·소스 간 공유 금지). 단일 설정(소스 `default`)은 웹 키가 없어 `disabled`다.
+  `JENNIFER_NODE_ADDRESS_CALL_BUDGET_SECONDS`(기본 5초 · plans/210 W9)는 대상 지정 MCP 호출의 전체
+  웹 조회 예산이다(넘으면 `budget_exceeded`).
 - 설정 관리 API(plans/191 · D-345): `APM_GATEWAY_ADMIN_TOKEN`이 있을 때만 `/admin/config`를 연다.
   `load_dotenv`가 `os.environ`에 넣은 키는 `DOTENV_INJECTED_KEYS`에 기록한다 — 거기 없는데
   `os.environ`에 있는 키는 프로세스 환경 원천(파일을 고쳐도 반영되지 않음)으로 판정한다.
@@ -38,6 +40,7 @@ from __future__ import annotations
 
 import json
 import logging
+import math
 import os
 import re
 from collections.abc import Mapping
@@ -115,6 +118,8 @@ class NodeAddressConfig:
     ttl_seconds: int = 900
     # 같은 도메인 재조회 최소 간격 = 알람 경로의 캐시 신선도 상한(검토 C)
     min_refetch_seconds: int = 60
+    # 대상 지정 MCP 호출의 전체 웹 조회 예산(초 · plans/210 W9 A) — 소스 간 병렬 · 소스 안 직렬
+    call_budget_seconds: float = 5.0
 
 
 @dataclass
@@ -371,7 +376,16 @@ def _spool_dir(value: str | None) -> Path:
 
 
 def _positive(value: str | None, default: float, key: str) -> float:
-    number = float(value) if value is not None and value.strip() else default
+    """0보다 큰 유한 수 키를 읽는다 — 비숫자는 키 이름을 담아 거부하고 `nan`·`inf`도 거부한다."""
+    if value is None or not value.strip():
+        number = default
+    else:
+        try:
+            number = float(value.strip())
+        except ValueError:
+            raise ValueError(f"{key}는 숫자여야 한다: {value!r}") from None
+    if not math.isfinite(number):
+        raise ValueError(f"{key}는 유한한 수여야 한다: {value!r}")
     if number <= 0:
         raise ValueError(f"{key}는 0보다 커야 한다")
     return number
@@ -586,6 +600,11 @@ def load_config(
                 get("JENNIFER_NODE_ADDRESS_MIN_REFETCH_SECONDS"),
                 60,
                 "JENNIFER_NODE_ADDRESS_MIN_REFETCH_SECONDS",
+            ),
+            call_budget_seconds=_positive(
+                get("JENNIFER_NODE_ADDRESS_CALL_BUDGET_SECONDS"),
+                5.0,
+                "JENNIFER_NODE_ADDRESS_CALL_BUDGET_SECONDS",
             ),
         ),
     )

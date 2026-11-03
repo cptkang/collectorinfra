@@ -20,6 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from noise_gate.application.nodes.investigation_trigger import _attach_polestar_link
+from noise_gate.domain.apm_host_map import HINT_BASIS as APM_MAP_BASIS
 from noise_gate.domain.host_link import (
     BASIS_NODE_ADDRESS,
     apm_source_id,
@@ -164,7 +165,8 @@ def test_polestar_link_basis_values_match_sre_agent_templates() -> None:
                                "server_name": "s", "by": "b", "at": "t"}, now)
     user = user_selected_hint(db_id="d", server_name="s", polestar_hostname="h", by="b", at="t")
     # plans/202 · D-355 ② — 노드 주소 자동 연결 근거도 같은 키 집합이다
-    assert {prev["basis"], user["basis"], BASIS_NODE_ADDRESS} == sre_keys
+    # plans/210 §3.7 · D-362 — APM↔SMS 연계 매핑 근거(`apm_map`)가 같은 키 집합에 더해졌다
+    assert {prev["basis"], user["basis"], BASIS_NODE_ADDRESS, APM_MAP_BASIS} == sre_keys
     # sre_agent `polestar_link()`이 linked로 받는 필수 키(db_id·server_name)와 상태 어휘
     statuses = re.search(r"_LINK_STATUSES = frozenset\(\{(.*?)\}\)", src, re.S)
     assert statuses is not None

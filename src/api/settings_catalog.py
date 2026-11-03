@@ -288,6 +288,13 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY": "PAGE 재판정",
     # (plans/162 W5 · D-336) 제니퍼 심각도3 유형 정책 — 정의 순서상 수집 실패 범위 직후(구획 연속)
     "NOISE_APM_SEV3_POLICY_ENABLED": "PAGE 재판정",
+    # (plans/210 · D-362) APM·SMS 연계 정보 DB — 진단 고속 경로·사전 스캔 · 정의 순서상 끝
+    "NOISE_APM_HOST_MAP_ENABLED": "APM·SMS 연계",
+    "NOISE_APM_HOST_MAP_AUTO_ENABLED": "APM·SMS 연계",
+    "NOISE_APM_HOST_MAP_MAX_TARGETS": "APM·SMS 연계",
+    "NOISE_APM_HOST_MAP_LIVE_BUDGET_SECONDS": "APM·SMS 연계",
+    "NOISE_APM_HOST_MAP_RETRY_HOURS": "APM·SMS 연계",
+    "NOISE_APM_HOST_MAP_SCAN_PAGE_ROWS": "APM·SMS 연계",
 }
 
 #: `.encenv.example` 파싱 외에 수동으로 시크릿 취급하는 키.

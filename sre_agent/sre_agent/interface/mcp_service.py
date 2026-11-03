@@ -419,10 +419,11 @@ def _default_prefetch_fn(settings: AgentSettings):
                                    if settings.evidence_topology_neighbors_enabled else 0))
         if scope is None:
             return None
-        if scope.neighbors_max <= 0:
+        if scope.neighbors_max <= 0 and not scope.extra_targets:
             return prefetch_and_correlate(scope, call_batch).to_dict()
-        # plans/198 재검토 Major1 — 이웃 배치는 dispatcher 사전수집 타임박스(같은 계산식) 안에서만
-        # 기다린다. 여유분을 남겨 바깥 타임박스가 먼저 끊어 대표 상관까지 잃지 않게 한다.
+        # plans/198 재검토 Major1 — 이웃 배치(·plans/210 연계 추가 대상 배치)는 dispatcher 사전수집
+        # 타임박스(같은 계산식) 안에서만 기다린다. 여유분을 남겨 바깥 타임박스가 먼저 끊어 대표
+        # 상관까지 잃지 않게 한다.
         timebox = max(PREFETCH_TIMEBOX_FLOOR_SECONDS, settings.investigation_timeout_seconds / 2)
         return prefetch_and_correlate(
             scope, call_batch, neighbor_budget_s=timebox * NEIGHBOR_BUDGET_SHARE
