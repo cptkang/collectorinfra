@@ -412,15 +412,18 @@ def _run_mapped(alarm: dict) -> Any:
 def test_mapping_used_only_without_payload_source_and_basis_is_visible() -> None:
     run = _run_mapped(_apm_alarm())
     assert run.scope["polestar_source"] == "polestar_cm_gp"
-    assert run.scope["polestar_basis"] == BASIS
+    # plans/209 W2(D-360 ④): S0이 폴스타 서버를 제니퍼 호스트명으로 정하면 그 사실을 근거 끝에 남긴다
+    host_basis = f"{BASIS} · 제니퍼 호스트명으로 조회(wasdemo01)"
+    assert run.scope["polestar_basis"] == host_basis
     assert BASIS in run.notes
     assert BASIS in (run.section("S0").reason or "")
     assert BASIS in (run.section("S4").reason or "")
-    assert run.to_briefing_dict()["scope"]["polestar_basis"] == BASIS
+    assert run.to_briefing_dict()["scope"]["polestar_basis"] == host_basis
 
     payload_first = _run_mapped(_apm_alarm(infra=["polestar"]))
     assert payload_first.scope["polestar_source"] == "polestar"
-    assert "polestar_basis" not in payload_first.scope  # 키 자체 없음(종전 모양)
+    # 설정 매핑 근거는 없다 — 남는 근거는 S0의 제니퍼 호스트명 조회 사실뿐(plans/209 W2)
+    assert payload_first.scope["polestar_basis"] == "제니퍼 호스트명으로 조회(wasdemo01)"
     assert BASIS not in payload_first.notes
     assert BASIS not in (payload_first.section("S4").reason or "")
 

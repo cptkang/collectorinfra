@@ -352,7 +352,9 @@ def test_unresolved_with_configured_source_is_current_behavior() -> None:
         calls.append(caller.calls)
     hinted, plain = runs
     assert hinted.scope == plain.scope and "polestar_link" not in hinted.scope
-    assert hinted.scope["polestar_basis"] == basis and basis in hinted.notes
+    # plans/209 W2(D-360 ④): S0이 폴스타 서버를 제니퍼 호스트명으로 정하면 근거 끝에 그 사실을 남긴다
+    assert hinted.scope["polestar_basis"] == f"{basis} · 제니퍼 호스트명으로 조회(wasdemo01)"
+    assert basis in hinted.notes
     assert hinted.notes == plain.notes and calls[0] == calls[1]
     def _shape(run: Any) -> list[dict]:  # 소요 시간(elapsed_ms)은 실행마다 다르다
         return [{k: v for k, v in s.to_dict().items() if k != "elapsed_ms"} for s in run.sections]

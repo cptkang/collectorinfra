@@ -1,7 +1,10 @@
 # plans/209 — 폴스타 서버 식별자 해소(등록명↔호스트명) · S4 지표 0건 결손 판정
 
-**상태**: WIP — 계획 등재(2026-11-03) · W1~W3 구현 대기 · 결정 D-360
+**상태**: 구현 완료(2026-11-03) · 폐쇄망 검증 대기 · 결정 D-360(부기 1) — W1 mcp_server `requery_with_resolved_identifier`(7도구 공유) · W2 질문 식별자 라벨·조사 지침 블록·S0 스코프 `_rescoped_polestar_server` · W3 `metric_finding` 3상태·S4 결손/판단 보류·하류 R-E·step_findings · 화면 JS 무변경(칩 매핑 기존 그대로 · 매뉴얼 대상 아님)
 **브랜치**: `improvement` (기준 `f0d1d9c4`)
+**계획 시작 SHA**: `f0d1d9c4`
+**회귀 대상 파일**: `mcp_server/mcp_server/polestar_tools.py` · `sre_agent/sre_agent/interface/mcp_service.py` · `sre_agent/sre_agent/application/investigation_guidance.py` · `sre_agent/sre_agent/application/playbook_steps.py` · `sre_agent/sre_agent/application/playbook_runner.py` · `sre_agent/sre_agent/domain/correlation.py` · `sre_agent/sre_agent/domain/playbook_readings.py` · `sre_agent/sre_agent/domain/step_findings.py` (+ 테스트)
+**이탈**: 판정 불가 범위를 계획 문구(기준선 부족·분산 0 전부)보다 좁힘 — 절대 임계가 있으면 현행 판정, 분산 0+최대≤평균은 이상 없음(D-360 부기 1).
 **관련 결정**: D-360(본 계획) · D-046(프로세스 조회 서버명→호스트명 해소) · D-061(등록명·호스트명·IP 구분) · D-188(역조회 보수 원칙 — 모호하면 승격 안 함) · D-348(APM→폴스타 확정 연결만 자동 사용) · D-341 부기 21(S0r·S6 「없음」과 「조회 실패」 분리)
 
 ## 1. 배경 — 폐쇄망 보고(2026-11-03)
