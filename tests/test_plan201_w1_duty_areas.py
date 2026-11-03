@@ -595,13 +595,13 @@ def test_status_scan_runs_in_thread(tmp_path, vocab) -> None:
 
     with patch.object(duty_routes.asyncio, "to_thread", _spy):
         TestClient(_status_app(tmp_path, users=[])).get("/api/v1/admin/duty-areas/status")
-    assert calls == ["count_recent_values"]
+    assert calls == ["count_recent_values_many"]
 
 
 def test_status_mapping_false_skips_scan(tmp_path, vocab) -> None:
     app = _status_app(tmp_path, users=[_user(duty_areas=["alpha"])])
     with patch(
-        "noise_gate.infrastructure.decision_store.DecisionStore.count_recent_values",
+        "noise_gate.infrastructure.decision_store.DecisionStore.count_recent_values_many",
         side_effect=AssertionError("매핑 점검을 다시 계산하면 안 된다"),
     ):
         body = TestClient(app).get("/api/v1/admin/duty-areas/status?mapping=false").json()
@@ -712,9 +712,9 @@ def test_flag_default_off_and_declared() -> None:
 
 
 def test_static_cache_versions_bumped() -> None:
-    assert 'src="/static/js/app.js?v=52"' in (_STATIC / "index.html").read_text(encoding="utf-8")
+    assert 'src="/static/js/app.js?v=53"' in (_STATIC / "index.html").read_text(encoding="utf-8")
     dashboard = (_STATIC / "admin" / "dashboard.html").read_text(encoding="utf-8")
-    assert 'src="/static/js/admin.js?v=16"' in dashboard
+    assert 'src="/static/js/admin.js?v=17"' in dashboard
 
 
 def test_app_js_notice_is_gated_on_server_key() -> None:

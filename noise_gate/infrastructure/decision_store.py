@@ -1362,12 +1362,24 @@ class DecisionStore:
         (plans/201 W3) `field`에 점(`.`)이 있으면 중첩 경로다(예 `stage_evidence.apm_policy.event_type_norm`)
         — 중간이 dict가 아니거나 키가 없으면 빈 값으로 센다. 점 없는 이름은 종전과 같다(최상위 필드).
         """
-        if not self.enabled or not self._exists():
-            return {}, 0
-        path = field.split(".") if "." in field else None
+        return self.count_recent_values_many(window_seconds, (field,))[field]
+
+    def count_recent_values_many(
+        self, window_seconds: int, fields: Iterable[str]
+    ) -> dict[str, tuple[dict[str, int], int]]:
+        """`count_recent_values`를 여러 필드에 대해 **파일 1회 순회**로 센다(필드별 `(counts, empty)`).
+
+        매핑 점검 항목마다 7일치 전량 스캔을 반복하지 않게 한다 — 규칙은 `count_recent_values`와
+        같고, 파일 부재·비활성·읽기 실패는 모든 필드가 `({}, 0)`이다.
+        """
+        names = list(dict.fromkeys(fields))
+        blank: dict[str, tuple[dict[str, int], int]] = {f: ({}, 0) for f in names}
+        if not names or not self.enabled or not self._exists():
+            return blank
+        paths = {f: (f.split(".") if "." in f else None) for f in names}
         cutoff_ts = datetime.now(UTC).timestamp() - window_seconds
-        counts: dict[str, int] = {}
-        empty = 0
+        counts: dict[str, dict[str, int]] = {f: {} for f in names}
+        empty: dict[str, int] = dict.fromkeys(names, 0)
         try:
             for line in self._iter_lines():
                 line = line.strip()
@@ -1381,16 +1393,19 @@ class DecisionStore:
                     continue
                 if not self._within_window(rec, cutoff_ts):
                     continue
-                raw = rec.get(field) if path is None else self._nested_value(rec, path)
-                value = str(raw or "").strip()
-                if value:
-                    counts[value] = counts.get(value, 0) + 1
-                else:
-                    empty += 1
+                for field in names:
+                    path = paths[field]
+                    raw = rec.get(field) if path is None else self._nested_value(rec, path)
+                    value = str(raw or "").strip()
+                    if value:
+                        bucket = counts[field]
+                        bucket[value] = bucket.get(value, 0) + 1
+                    else:
+                        empty[field] += 1
         except OSError as exc:
             logger.warning("결정 기록 값 집계 읽기 실패(무시): %s", exc)
-            return {}, 0
-        return counts, empty
+            return blank
+        return {f: (counts[f], empty[f]) for f in names}
 
     def iter_recent_decisions(
         self, window_seconds: int, *, should_stop: Callable[[], bool] | None = None
