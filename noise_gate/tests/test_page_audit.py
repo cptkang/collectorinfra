@@ -449,7 +449,7 @@ def test_app_impact_preserves_page(tmp_path: Path) -> None:
 # ── 6 정책 스냅샷 ─────────────────────────────────────────────────────────────
 def test_policy_snapshot_allowlist() -> None:
     ng = NoiseGateConfig(
-        apm_mcp_url="http://apm.example.test/mcp",
+        investigation_service_url="http://apm.example.test/mcp",
         investigation_service_token="tok-secret-123",
         l3_ssh_user="fakeuser",
         decision_store_path="/fake/audit/path.jsonl",
@@ -465,7 +465,7 @@ def test_policy_snapshot_allowlist() -> None:
     dumped = json.dumps(snap, ensure_ascii=False)
     for value in ("apm.example.test", "tok-secret-123", "fakeuser", "/fake/audit", "hook.example"):
         assert value not in dumped
-    for name in ("noise_gate.apm_mcp_url", "noise_gate.investigation_service_token",
+    for name in ("noise_gate.investigation_service_url", "noise_gate.investigation_service_token",
                  "noise_gate.l3_ssh_user", "noise_gate.decision_store_path",
                  "alarm.webhook_url", "alarm.redis_stream_key"):
         assert name in snap["excluded"]

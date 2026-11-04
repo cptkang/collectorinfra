@@ -526,6 +526,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         incident_sub_task,
         incident_sub_stop,
     ) = await _start_incident_tracking(app, config)
+    _warn_retired_apm_url(config)
     apm_host_map_task, apm_host_map_redis = await _start_apm_host_map(app, config)
     loop_lag_task = _start_loop_lag_monitor(config)
 
@@ -911,6 +912,27 @@ def _start_sse_bridge(app: FastAPI, config: AppConfig) -> tuple[Any, Any, Any]:
         except Exception as e:
             logger.warning("알람 SSE 브리지 구독 시작 실패 (실시간 SSE 비활성): %s", e)
     return sse_bridge_task, sse_bridge_redis, sse_bridge_stop
+
+
+def _warn_retired_apm_url(config: AppConfig) -> None:
+    """폐지 키 `NOISE_APM_MCP_URL`이 남아 있으면 경고한다(D-364 — 값은 더 이상 읽지 않는다).
+
+    노이즈 게이트의 게이트웨이 주소는 채팅과 같은 `MCP_SOURCE_ENDPOINTS["apm"]`이다. 옛 키만 둔
+    환경이 조용히 꺼지지 않도록 기동 로그에 옮길 곳을 남긴다(침묵 강등 금지).
+    """
+    from dotenv import dotenv_values
+
+    if "NOISE_APM_MCP_URL" not in os.environ and "NOISE_APM_MCP_URL" not in dotenv_values(".env"):
+        return
+    target = (
+        "설정됨" if config.dbhub.source_endpoints.get("apm")
+        else "비어 있음 — 노이즈 게이트 APM 조회 꺼짐"
+    )
+    logger.warning(
+        "NOISE_APM_MCP_URL은 폐지됐다(D-364) — 값을 읽지 않는다. 게이트웨이 주소는 "
+        "MCP_SOURCE_ENDPOINTS의 apm을 쓴다(현재 %s). .env에서 NOISE_APM_MCP_URL을 지워라",
+        target,
+    )
 
 
 async def _start_apm_host_map(app: FastAPI, config: AppConfig) -> tuple[Any, Any]:

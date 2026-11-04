@@ -1010,6 +1010,10 @@ class TestE7AllFlagsOffBitIdentical:
 # P. plans/87 J4 — app_impact 승격 off(기본)면 게이트 판정·노드 반환·그래프·트리거 페이로드 비트동일
 #    (spec/SPEC-apm-noise-gate.md §4 「플래그 off 비트 동일」)
 # ─────────────────────────────────────────────────────────────
+# 게이트웨이 주소는 채팅과 같은 MCP_SOURCE_ENDPOINTS["apm"](D-364) — 주소가 있어도 off면 호출 0
+_APM_DBHUB = SimpleNamespace(source_endpoints={"apm": "http://127.0.0.1:9096/sse"})
+
+
 class _NeverCalledApmClient:
     """off면 게이트 노드가 절대 만지면 안 되는 대역 — 호출되면 즉시 실패한다."""
 
@@ -1045,12 +1049,12 @@ class TestPlan87AppImpactOffBitIdentical:
             # 미설정(=off)
             SimpleNamespace(enable_noise_gate=True, importance_value_map={"2": "보통"}),
             SimpleNamespace(enable_noise_gate=True, importance_value_map={"2": "보통"},
-                            app_impact_enabled=False, apm_mcp_url="http://127.0.0.1:9096/sse"),
+                            app_impact_enabled=False),
         ):
             state = {"alarm_event": _j4_event(1), "analysis_result": _j4_analysis(),
                      "history_stats": None, "noise_context": dict(ctx)}
             out = await notification_gate_node(state, {"configurable": {
-                "app_config": SimpleNamespace(noise_gate=gate),
+                "app_config": SimpleNamespace(noise_gate=gate, dbhub=_APM_DBHUB),
                 "apm_client": _NeverCalledApmClient(), "decision_store": None,
             }})
             direct = decide_notification(_j4_event(1), None, _j4_analysis(), dict(ctx), gate)
@@ -1069,17 +1073,16 @@ class TestPlan87AppImpactOffBitIdentical:
 
     def test_worker_builds_no_client_when_off(self):
         for ng in (SimpleNamespace(enable_noise_gate=True),
-                   SimpleNamespace(enable_noise_gate=True, app_impact_enabled=False,
-                                   apm_mcp_url="http://127.0.0.1:9096/sse"),
-                   SimpleNamespace(enable_noise_gate=False, app_impact_enabled=True,
-                                   apm_mcp_url="http://127.0.0.1:9096/sse")):
-            w = AlarmWorker(SimpleNamespace(noise_gate=ng, alarm=SimpleNamespace()))
+                   SimpleNamespace(enable_noise_gate=True, app_impact_enabled=False),
+                   SimpleNamespace(enable_noise_gate=False, app_impact_enabled=True)):
+            w = AlarmWorker(SimpleNamespace(noise_gate=ng, alarm=SimpleNamespace(),
+                                            dbhub=_APM_DBHUB))
             assert w._build_apm_gateway_client() is None
 
     def test_graph_node_set_unchanged_by_app_impact_flag(self):
         nodes_off = set(build_alarm_graph(_gcfg()).get_graph().nodes.keys())
         nodes_on = set(build_alarm_graph(_gcfg(
-            app_impact_enabled=True, apm_mcp_url="http://127.0.0.1:9096/sse",
+            app_impact_enabled=True,
         )).get_graph().nodes.keys())
         assert nodes_off == nodes_on
 
@@ -1087,7 +1090,8 @@ class TestPlan87AppImpactOffBitIdentical:
         from src.config import NoiseGateConfig
 
         cfg = NoiseGateConfig(_env_file=None)
-        assert cfg.app_impact_enabled is False and cfg.apm_mcp_url == ""
+        assert cfg.app_impact_enabled is False
+        assert "apm_mcp_url" not in NoiseGateConfig.model_fields  # D-364 폐지
         assert cfg.apm_mcp_token.get_secret_value() == "" and cfg.app_impact_window_minutes == 10
 
     def test_polestar_trigger_payload_meta_unchanged(self):

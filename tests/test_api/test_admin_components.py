@@ -150,7 +150,7 @@ def _app(fake: _FakeComponents, *, endpoints: dict[str, str] | None = None,
         auth=SimpleNamespace(enabled=auth, jwt_secret=USER_SECRET),
         admin=SimpleNamespace(jwt_secret=ADMIN_SECRET),
         component_admin=_component_config(endpoints),
-        noise_gate=SimpleNamespace(investigation_service_url="", apm_mcp_url=""),
+        noise_gate=SimpleNamespace(investigation_service_url=""),
         dbhub=SimpleNamespace(server_url="", source_endpoints={}),
     )
     app.state.user_repo = _UserRepo()
@@ -398,7 +398,7 @@ def test_put_generates_request_id_without_middleware(audits):  # noqa: ANN001
     app.include_router(routes.router, prefix="/api/v1")
     app.state.config = SimpleNamespace(
         auth=SimpleNamespace(enabled=False), component_admin=_component_config(),
-        noise_gate=SimpleNamespace(investigation_service_url="", apm_mcp_url=""),
+        noise_gate=SimpleNamespace(investigation_service_url=""),
         dbhub=SimpleNamespace(server_url="", source_endpoints={}),
     )
     app.state.component_admin_transport = httpx.MockTransport(fake.handler)
@@ -618,7 +618,6 @@ def _service_config(**noise: str) -> SimpleNamespace:
     return SimpleNamespace(
         noise_gate=SimpleNamespace(
             investigation_service_url=noise.get("sre", "http://sre.test:9098/sse"),
-            apm_mcp_url=noise.get("apm", ""),
         ),
         dbhub=SimpleNamespace(
             server_url="http://mcp.test:9099/sse",
@@ -637,13 +636,14 @@ def test_derive_endpoints_uses_existing_service_urls_origin():
     }
 
 
-def test_derive_apm_falls_back_to_noise_apm_url_and_skips_non_http():
+def test_derive_apm_only_from_source_endpoints_and_skips_non_http():
     from src.infrastructure.component_admin_client import derive_endpoints
 
-    cfg = _service_config(sre="file:///etc/passwd", apm="https://apm2.test/sse")
+    # D-364: 옛 NOISE_APM_MCP_URL 폴백은 폐지 — 주소는 MCP_SOURCE_ENDPOINTS["apm"] 하나
+    cfg = _service_config(sre="file:///etc/passwd")
     cfg.dbhub.source_endpoints = {}
     derived = derive_endpoints(cfg)
-    assert derived["apm_gateway"] == "https://apm2.test"
+    assert "apm_gateway" not in derived
     assert "sre_agent" not in derived
 
 

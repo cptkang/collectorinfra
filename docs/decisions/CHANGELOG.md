@@ -8,6 +8,7 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-11-04 | D-364 | 신규 — 노이즈 게이트 APM 게이트웨이 주소를 채팅의 `MCP_SOURCE_ENDPOINTS["apm"]`로 통합 · `NOISE_APM_MCP_URL` 폐지(기동 경고) · 토큰은 분리 유지 · D-287 ①·D-345 부기 개정 |
 | 2026-11-04 | D-363 | 부기 4 ⑥ — W6·W7 구현(`63cb9960`·`0b50de4a`): 이름 후보는 `active` 행을 건너뜀 · 파드 제외 · 힌트 사유 `apm_map_name_candidate` 가산 · 잔여(Redis 색인·ITAM 요청 처리기 현행 키) |
 | 2026-11-04 | D-363 | 부기 4 — 사전 스캔(D-362)에 적용: 인벤토리 APM 행 연계 표시·「수정」 분기(W6) · `HOST_CANONICAL_MATCH_ENABLED` on이면 스캔·다시 찾기 SMS hostname 색인 L0 정규형(1대 `active`)(W7) · 이름 후보는 `ambiguous`·basis `name_candidate`만 · Redis 색인 현행 · auto off 스캔(G3) 제외(D-362 ⑪ 유지) · `plans/211` §9 |
 | 2026-11-04 | D-362 | 부기 4 — 관리자 「확인 취소」 `POST /{id}/unverify`(확인한 자동 행만 · `verified = FALSE`만 · 대상·상태·evidence 유지 · 감사·사본 갱신 · 취소 뒤 자동 갱신·정리 대상 복귀) · `plans/210` §6.4 |

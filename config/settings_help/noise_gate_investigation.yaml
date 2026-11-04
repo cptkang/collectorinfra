@@ -646,8 +646,8 @@ settings:
         effect: 게이트웨이를 부르지 않는다. 판정이 지금과 같다.
       - value: "true"
         effect: >-
-          WAS 장애와 겹친 저우선 알람이 즉시 통보된다. 게이트웨이 주소(NOISE_APM_MCP_URL)도
-          있어야 동작한다.
+          WAS 장애와 겹친 저우선 알람이 즉시 통보된다. 게이트웨이 주소(MCP_SOURCE_ENDPOINTS의
+          apm — 채팅과 같은 주소)도 있어야 동작한다.
     example: >-
       DB 서버 디스크 경고(심각도1·중요도 보통 → DASHBOARD)가 뜬 같은 시각에 그 서버의 WAS에서
       OUTOFMEMORY가 났다면 사용자 영향이 있는 사건이다 — 켜 두면 이 경고가 PAGE로 올라온다.
@@ -656,34 +656,19 @@ settings:
       부르지 않는다. 게이트웨이가 없으면 30초 동안 호출을 건너뛴다.
     stability: 게이트웨이 장애·타임아웃·오류 응답은 판정을 바꾸지 않는다(사유는 로그와 결정 감사).
     recommendation: 제니퍼와 APM 게이트웨이가 배포된 환경에서만 켠다.
-    related: [NOISE_APM_MCP_URL, NOISE_APM_MCP_TOKEN, NOISE_APP_IMPACT_WINDOW_MINUTES]
-
-  NOISE_APM_MCP_URL:
-    example: >-
-      게이트웨이 기본 바인드는 127.0.0.1:9096이다 — 다른 장비에 있으면 그 장비 주소로 바꾸고
-      게이트웨이 쪽 바인드도 열어야 한다. 비워 두면 스위치를 켜도 승격하지 않는다(기동 로그에 경고).
-    summary: APM 게이트웨이의 MCP 주소.
-    behavior: >-
-      별도 프로세스로 도는 APM 게이트웨이(apm_gateway)의 SSE 엔드포인트다. 제니퍼 자체 주소가
-      아니다 — 제니퍼 접속 정보는 게이트웨이 설정에만 있다.
-    options:
-      - value: ""
-        label: 기본
-        effect: 비어 있으면 app_impact 승격을 하지 않는다.
-      - value: "http://127.0.0.1:9096/sse"
-        effect: 같은 장비의 게이트웨이에 붙는다.
-    stability: 주소가 틀려도 알람 처리는 정상이다 — 승격만 빠지고 사유가 결정 감사에 남는다.
-    related: [NOISE_APP_IMPACT_ENABLED, NOISE_APM_MCP_TOKEN]
+    related: [MCP_SOURCE_ENDPOINTS, NOISE_APM_MCP_TOKEN, NOISE_APP_IMPACT_WINDOW_MINUTES]
 
   NOISE_APM_MCP_TOKEN:
     example: >-
       게이트웨이가 인증을 요구하는데 값이 비면 호출이 거부된다. 알람 판정에는 영향이 없어 '승격만 안 된다'로 나타난다.
     summary: APM 게이트웨이 인증 토큰 — 시크릿이라 이 화면에서 편집할 수 없다.
     behavior: >-
-      게이트웨이의 APM_GATEWAY_BEARER_TOKEN과 같은 값을 둔다. 제니퍼 API 토큰이 아니다.
-      값이 없으면 인증 헤더 없이 호출한다.
+      게이트웨이의 APM_GATEWAY_BEARER_TOKEN(또는 APM_GATEWAY_BEARER_TOKENS의 한 값)과 같은 값을 둔다.
+      제니퍼 API 토큰이 아니다. 값이 없으면 인증 헤더 없이 호출한다. 주소는 채팅과 같은
+      MCP_SOURCE_ENDPOINTS의 apm을 쓰지만, 토큰은 노이즈 게이트 호출 주체를 채팅과 가르려고 따로 둔다.
+      app_impact 승격과 APM·SMS 연계 스캔이 이 토큰을 쓴다.
     stability: 토큰이 틀리면 게이트웨이 호출이 실패한다 — 판정은 그대로다.
-    related: [NOISE_APM_MCP_URL]
+    related: [MCP_SOURCE_ENDPOINTS, NOISE_APP_IMPACT_ENABLED]
 
   NOISE_APP_IMPACT_WINDOW_MINUTES:
     example: >-

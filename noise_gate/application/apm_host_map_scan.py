@@ -602,7 +602,7 @@ def build_scan_service(
     )
 
     ng = _scan_settings(app_config)
-    client = build_apm_gateway_client(ng)
+    client = build_apm_gateway_client(app_config)
     caller = GatewayToolCaller(client) if client is not None else None
     execute = registry_executor(app_config)
     page_rows = int(getattr(ng, "apm_host_map_scan_page_rows", 1000))
@@ -639,7 +639,7 @@ def build_itam_request_handler(
     from noise_gate.infrastructure.apm_host_map_sql_scanners import ScanSqlError, load_itam_lookup
 
     ng = _scan_settings(app_config)
-    client = build_apm_gateway_client(ng)
+    client = build_apm_gateway_client(app_config)
     try:
         itam_cfg: Any = load_itam_lookup()
     except ScanSqlError:

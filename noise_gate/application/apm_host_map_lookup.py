@@ -413,10 +413,10 @@ async def restore_apm_block(
     if client is None:
         from noise_gate.infrastructure.apm_gateway_client import build_apm_gateway_client
 
-        client = build_apm_gateway_client(getattr(cfg, "noise_gate", None))
+        client = build_apm_gateway_client(cfg)
     if client is None:
         logger.warning(
-            "apm_ref 역조회 생략 — 게이트웨이 URL 미설정(NOISE_APM_MCP_URL): instance=%s",
+            "apm_ref 역조회 생략 — 게이트웨이 URL 미설정(MCP_SOURCE_ENDPOINTS의 apm): instance=%s",
             instance_name,
         )
         return None

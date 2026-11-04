@@ -949,17 +949,14 @@ class TestGateNodeAppImpact:
 
 
 class TestWorkerBuildsApmClient:
-    def _worker(self, **ng) -> AlarmWorker:
-        base = dict(
-            enable_noise_gate=True,
-            app_impact_enabled=True,
-            apm_mcp_url="http://127.0.0.1:9096/sse",
-            apm_mcp_token=SecretStr("t0k"),
-        )
+    def _worker(self, url: str = "http://127.0.0.1:9096/sse", **ng) -> AlarmWorker:
+        base = dict(enable_noise_gate=True, app_impact_enabled=True, apm_mcp_token=SecretStr("t0k"))
         base.update(ng)
-        return AlarmWorker(
-            SimpleNamespace(noise_gate=SimpleNamespace(**base), alarm=SimpleNamespace())
-        )
+        # 주소는 채팅과 같은 MCP_SOURCE_ENDPOINTS["apm"] · 토큰은 NOISE_APM_MCP_TOKEN (D-364)
+        return AlarmWorker(SimpleNamespace(
+            noise_gate=SimpleNamespace(**base), alarm=SimpleNamespace(),
+            dbhub=SimpleNamespace(source_endpoints={"apm": url} if url else {}),
+        ))
 
     def test_builds_client_when_enabled_with_url(self):
         client = self._worker()._build_apm_gateway_client()
@@ -972,7 +969,7 @@ class TestWorkerBuildsApmClient:
 
     def test_enabled_without_url_warns_and_returns_none(self, caplog):
         with caplog.at_level(logging.WARNING):
-            assert self._worker(apm_mcp_url="")._build_apm_gateway_client() is None
+            assert self._worker(url="")._build_apm_gateway_client() is None
         assert any("NOISE_APP_IMPACT_ENABLED" in r.getMessage() for r in caplog.records)
 
     async def test_worker_injects_client_into_graph_config(self):
@@ -1013,11 +1010,20 @@ class TestWorkerBuildsApmClient:
 
 class TestApmGatewayClient:
     def test_build_requires_url_and_reads_secret(self):
-        assert build_apm_gateway_client(SimpleNamespace(apm_mcp_url="")) is None
-        c = build_apm_gateway_client(
-            SimpleNamespace(apm_mcp_url="http://127.0.0.1:9096/sse", apm_mcp_token=SecretStr(""))
-        )
+        def cfg(endpoints, token=""):
+            return SimpleNamespace(
+                dbhub=SimpleNamespace(source_endpoints=endpoints),
+                noise_gate=SimpleNamespace(apm_mcp_token=SecretStr(token)),
+            )
+
+        assert build_apm_gateway_client(cfg({})) is None
+        assert build_apm_gateway_client(cfg({"apm": "  "})) is None
+        assert build_apm_gateway_client(SimpleNamespace(noise_gate=None)) is None
+        c = build_apm_gateway_client(cfg({"apm": "http://127.0.0.1:9096/sse"}))
         assert c is not None and c._auth_headers() is None
+        # D-364: 토큰은 채팅 토큰(MCP_SOURCE_TOKENS)이 아니라 NOISE_APM_MCP_TOKEN
+        c = build_apm_gateway_client(cfg({"apm": "http://127.0.0.1:9096/sse"}, "n0ise"))
+        assert c._auth_headers() == {"Authorization": "Bearer n0ise"}
 
     async def test_call_timeout_becomes_client_error(self, monkeypatch):
         client = ApmGatewayClient("http://127.0.0.1:9096/sse", call_timeout=0.05)

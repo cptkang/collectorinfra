@@ -68,7 +68,7 @@
 | 제니퍼 연동 코드 | **J1~J4 구현(v4 · 2026-09-29)** — 게이트웨이 `apm_gateway/apm_gateway/`(허용목록·클라이언트·정합·`apm_*` 8종·WAS 판정·폴러·MCP 서버) · `sre_agent` 소비측(두 번째 MCP 서버·APM 지침·판정 승격·WAS 권고) · `noise_gate` 소비측(`apm` kind 선판정·배지·트리거 힌트·`app_impact` 승격). `mcp_server`·`src`(질의 경로)에는 제니퍼 코드 0건 |
 | 제니퍼 소스 | **여러 개(v5 · J8 · D-287)** — 게이트웨이 1개가 뷰 서버 N개(운영 `b0`·`cm_prd`·`cm_stg` — D-329)를 묶는다. 소스 ↔ 존 정본은 루트 레지스트리 `solutions[apm].sources[]`(레거시 제니퍼는 `b0`에 병합 · 은행존). 단일 설정은 소스 `default`(존 없음 · v4와 같음) — §4.2·§4.4 |
 | 연동 구조(확정) | **독립 최상위 패키지 `apm_gateway/`** — 자체 MCP 서버 · 독립 프로세스. 제니퍼 Open API(REST · Bearer 토큰)를 게이트웨이가 직접 호출한다(G-1 · G-8 · D-274) |
-| 제니퍼 설정 키 | 제니퍼 URL·토큰은 **`apm_gateway/.env`에만**(예시 `apm_gateway/.env.example` · §4.2). 소비자는 게이트웨이 MCP 주소·Bearer만 갖는다(`sre_agent/.env` `APM_MCP_*` · 루트 `.env` `NOISE_APM_MCP_*` — §4.6·§4.7). 전부 기본 off·빈 값 = 현행과 비트 동일 |
+| 제니퍼 설정 키 | 제니퍼 URL·토큰은 **`apm_gateway/.env`에만**(예시 `apm_gateway/.env.example` · §4.2). 소비자는 게이트웨이 MCP 주소·Bearer만 갖는다(`sre_agent/.env` `APM_MCP_*` · 루트 `.env` `MCP_SOURCE_ENDPOINTS`의 `apm`(채팅·노이즈 게이트 공용 · D-364)·`NOISE_APM_MCP_TOKEN` — §4.6·§4.7). 전부 기본 off·빈 값 = 현행과 비트 동일 |
 | 재사용할 기존 기계 | **전례로 있다** — `mcp_server`의 HTTP 도구·반환 계약·Bearer 미들웨어(게이트웨이가 **복제**), `sre_agent`의 MCP 서버 등록, `noise_gate`의 `alarm:raw` 형식·MCP 클라이언트, OpenMetrics 노출 기계(`om_exposition.py` — 복제 또는 추출은 G-12) |
 | 지금 WAS를 볼 수 있는 길 | 게이트웨이를 띄우면 `apm_*` 데이터 도구 21종(허용목록 41템플릿)으로 앱 계층(골든 시그널·힙/GC·풀·느린 트랜잭션·액티브 서비스·이벤트·프로파일 · 서비스·업무 · 전 인스턴스 순위 · 여러 대상 한 번에)을 본다(§6 · §6.5). 게이트웨이가 없으면 종전대로 호스트(OS) 관점뿐 |
 | 운영 조사(원격) 셸 | **없다**(D-233 — 2026-09-21부터 bash off). 조사 LLM이 대상 호스트를 보는 길은 MCP 도구뿐이다 |
@@ -553,7 +553,7 @@ Redis(`redis/docker-compose.yml` — 호스트 6380)의 `alarm:raw`로 두지 �
 | `apm_gateway/config/instance_map.yaml` · `event_levels.yaml` · `was_signatures.yaml` | `apm_gateway` | 【현재 가능】 게이트웨이 소유 정책(정합 규칙·수동 매핑 · 이벤트 레벨 → severity · WAS 잠정 임계). 루트 `config/`가 아니다(자체 cwd) |
 | `config/db_registry.yaml` | 본체 | 【현재 가능】 `solutions[apm]` 등재(`plans/125` A-1 — 보기 표 `views` · 엔드포인트가 있어야 활성) + **`sources[]`**(v5 · J8 — 제니퍼 소스 ↔ 존 정본) — §4.4 |
 | `sre_agent/.env` | `sre_agent` | 【현재 가능】 `APM_MCP_URL`·`APM_MCP_TOKEN` · `APM_GUIDANCE_ENABLED` · `APM_SIGNATURES_ENABLED` — §4.6 |
-| 루트 `.env` | 본체(게이트 포함) | 【현재 가능】 `NOISE_APP_IMPACT_ENABLED` · `NOISE_APM_MCP_URL`·토큰 · 사건창 — §4.7 · (J5) 두 번째 MCP 엔드포인트는 보류 |
+| 루트 `.env` | 본체(게이트 포함) | 【현재 가능】 `NOISE_APP_IMPACT_ENABLED` · 주소 `MCP_SOURCE_ENDPOINTS`의 `apm`(D-364)·토큰 `NOISE_APM_MCP_TOKEN` · 사건창 — §4.7 · (J5) 두 번째 MCP 엔드포인트는 보류 |
 | `mcp_server/config.toml`·`mcp_server/.env` | `mcp_server` | **제니퍼 키를 넣지 않는다.** v4는 `mcp_server`를 바꾸지 않았다(정합용 폴스타 도구 미추가 — §4.5) |
 | `noise_gate/alarm_server/alarm_server.env` | `alarm_server` | **변경 없음** — 제니퍼 폴러는 게이트웨이에 있다 |
 
@@ -814,7 +814,7 @@ overrides: []
   | 키 | 기본 | 뜻 |
   |---|---|---|
   | `NOISE_APP_IMPACT_ENABLED` | false | `app_impact` 승격(§8.4 ①) — `NOISE_ENABLE_NOISE_GATE`가 켜져 있어야 한다 |
-  | `NOISE_APM_MCP_URL` · `NOISE_APM_MCP_TOKEN` | 빈 값 | 게이트웨이 SSE 주소 · 게이트웨이 Bearer(제니퍼 토큰이 아니다) |
+  | `MCP_SOURCE_ENDPOINTS`의 `apm` · `NOISE_APM_MCP_TOKEN` | 빈 값 | 게이트웨이 SSE 주소(채팅과 공용 — 옛 `NOISE_APM_MCP_URL` 폐지 · D-364) · 게이트웨이 Bearer(제니퍼 토큰이 아니다) |
   | `NOISE_APP_IMPACT_WINDOW_MINUTES` | 10 | 사건창(분) — `apm_events`의 `lookback_minutes` |
 
 - 게이트웨이 클라이언트는 `noise_gate/infrastructure/apm_gateway_client.py`다(`sre_agent_client.py` 전례 — SSE · Bearer · 호출 타임아웃 5초 · TCP 사전 도달성 확인 · 미가용이면 30초 동안 재시도 안 함).
@@ -853,7 +853,7 @@ overrides: []
 | `REDIS_HOST` · `REDIS_PORT` · `REDIS_DB` · `REDIS_PASSWORD` | `apm_gateway/.env` | localhost · 6379 · 0 · 빈 값 | 폴러 XADD·커서·멱등 키 |
 | `APM_MCP_URL` · `APM_MCP_TOKEN` | `sre_agent/.env` | 빈 값 | 조사의 두 번째 MCP 서버 |
 | `APM_GUIDANCE_ENABLED` · `APM_SIGNATURES_ENABLED` | `sre_agent/.env` | false | 조사 지침 · 판정 결과 승격 |
-| `NOISE_APP_IMPACT_ENABLED` · `NOISE_APM_MCP_URL` · `NOISE_APM_MCP_TOKEN` · `NOISE_APP_IMPACT_WINDOW_MINUTES` | 루트 `.env` | false · 빈 값 · 빈 값 · 10 | 게이트 → 게이트웨이 조회 · `app_impact` 승격 |
+| `NOISE_APP_IMPACT_ENABLED` · `MCP_SOURCE_ENDPOINTS`의 `apm`(D-364) · `NOISE_APM_MCP_TOKEN` · `NOISE_APP_IMPACT_WINDOW_MINUTES` | 루트 `.env` | false · 빈 값 · 빈 값 · 10 | 게이트 → 게이트웨이 조회 · `app_impact` 승격 |
 | (J5) 두 번째 MCP 엔드포인트 | 루트 `.env` | — | **보류** — `plans/121` 처리기 설계 때 확정 |
 | (J7) `EXPOSE_APM_EXPORTER` · `APM_OPENMETRICS_CACHE_SECONDS` · (원시 도구) `EXPOSE_RAW_APM_API` | `apm_gateway/.env` | — | **만들지 않았다**(J7 보류 · 원시 도구 수용 기준 밖) |
 | `REMEDIATION_EXECUTOR_ENABLED` | (J6 · 신규 패키지 `remediation/`) | — | **보류** — G-6 착수 조건(J3 완료 + 목업 검증 뒤) |
@@ -1309,7 +1309,7 @@ hostname으로 다시 `apm_instance_map(hostname=…)`을 불러(E1r) 인스턴�
 
 ### 8.4 게이트 통합과 주의점 【현재 가능 — v4 · J4 · `noise_gate`에 남는 부분 · 설정 §4.7】
 
-1. **`app_impact`는 승격 전용**이다(`NOISE_APP_IMPACT_ENABLED=true` + `NOISE_APM_MCP_URL`). 매트릭스 단계에서 DASHBOARD·TICKET으로 판정된
+1. **`app_impact`는 승격 전용**이다(`NOISE_APP_IMPACT_ENABLED=true` + `MCP_SOURCE_ENDPOINTS`의 `apm` — D-364). 매트릭스 단계에서 DASHBOARD·TICKET으로 판정된
    **폴스타(비 APM) 알람**에 대해서만 게이트웨이 `apm_events(hostname, reference_time=<알람 시각>, lookback_minutes=<사건창>, level="fatal")`를 부르고,
    fatal 이벤트가 1건 이상이면 **PAGE로 올린다**. 억제 단계·SUPPRESS·심각도 3 단락은 건드리지 않는다. **v5 — 알람 존의 제니퍼 소스만 부른다**(`source_ids` · §4.7 — 다른 존의 같은 hostname으로 승격하지 않는다). 게이트웨이 오류·미가용·계약 위반은 판정을 바꾸지 않고
    사유를 로그와 결정 기록(`stage_evidence.app_impact_error`)에 남긴다(`noise_gate/application/nodes/notification_gate.py` · 도메인 규칙 `domain/notification_policy.py` step 9.5).
@@ -1517,7 +1517,7 @@ export APM_EVENT_POLLER_ENABLED=true REDIS_HOST=127.0.0.1 REDIS_PORT=16390
 ```
 
 - 포트 19096·16390은 예시다. 기동 전에 `lsof -nP -iTCP:<포트> -sTCP:LISTEN`으로 비었는지 본다.
-- 소비자는 같은 주소·Bearer를 쓴다 — `sre_agent/.env` `APM_MCP_URL=http://127.0.0.1:19096/sse`·`APM_MCP_TOKEN` / 루트 `.env` `NOISE_APM_MCP_URL`·`NOISE_APM_MCP_TOKEN`.
+- 소비자는 같은 주소·Bearer를 쓴다 — `sre_agent/.env` `APM_MCP_URL=http://127.0.0.1:19096/sse`·`APM_MCP_TOKEN` / 루트 `.env` `MCP_SOURCE_ENDPOINTS`의 `apm`(채팅·노이즈 게이트 공용 · D-364)·`NOISE_APM_MCP_TOKEN`.
 
 라이선스가 없을 때 **정상 응답**: `gateway_health` = `status: degraded` · `jennifer_reachable: true` · `domain_count: 0` · `allowlist_size: 16` / `apm_*` 8종 = 모두
 `{"error": "source_unavailable", "reason": "APM 도메인 0건 — …"}`(빈 결과를 정상으로 보지 않는다) / 폴러 = 발행 0 · 커서·멱등 키 0 · `gateway_health.poller.domains` 빈 객체.

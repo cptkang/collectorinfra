@@ -580,8 +580,9 @@ class NoiseGateConfig(BaseSettings):
     # 판정 불변 + 사유 로그·감사. 기본 off(또는 URL 비움)면 클라이언트 미생성·호출 0 → 게이트 판정
     # 비트동일(회귀 0). 토큰은 게이트웨이 Bearer(`APM_GATEWAY_BEARER_TOKEN`)이며 제니퍼 토큰이
     # 아니다(제니퍼 자격증명은 게이트웨이에만).
+    # 게이트웨이 주소는 채팅과 같은 `MCP_SOURCE_ENDPOINTS["apm"]` 하나만 쓴다 — 옛
+    # `NOISE_APM_MCP_URL`은 폐지(D-364 · 남아 있으면 기동 경고). 토큰은 주체 분리를 위해 따로 둔다.
     app_impact_enabled: bool = False          # (J4) app_impact 승격 옵트인
-    apm_mcp_url: str = ""                     # (J4) 게이트웨이 MCP SSE 엔드포인트 — 비면 off
     apm_mcp_token: SecretStr = SecretStr("")  # (J4) 게이트웨이 정적 Bearer 토큰(비면 무헤더)
     app_impact_window_minutes: int = 10       # (J4) 사건창(분) — apm_events lookback_minutes
     # ── plans/144 W1: 제니퍼(APM) 알람 유형 정책 — 노이즈 컨텍스트 공급자·지속 조건·정규화 유형 ──
