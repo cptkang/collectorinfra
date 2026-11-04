@@ -37,6 +37,7 @@ from sre_agent.domain.answer_markup import has_tool_call_markup
 from sre_agent.domain.failure_guards import StallTracker
 from sre_agent.infrastructure.activity_masking import mask_activity_text
 from sre_agent.infrastructure.bash_write_guard import install_bash_write_guard
+from sre_agent.infrastructure.harmony_retry_guard import install_harmony_retry_guard
 from sre_agent.infrastructure.llm_message_guard import install_system_message_guard
 from sre_agent.infrastructure.tool_call_markup_guard import install_tool_call_markup_guard
 from sre_agent.infrastructure.tool_result_cache import CacheClosedError, ToolResultCache
@@ -687,6 +688,13 @@ class DiagnosisAgent:
         그대로 유지한다.
         """
         self.settings = settings or AgentSettings()
+        # D-366 ①: Harmony 파싱 오류(vLLM 400 `expecting start token`)를 같은 요청 그대로 재시도한다.
+        # **가드 중 가장 안쪽** — 아래 D-213·C8보다 먼저 설치해 C8이 재시도 뒤 최종 응답을 보게 한다
+        # (조사 계측 훅이 먼저 설치돼 있으면 그 훅은 이 가드 안쪽이다).
+        # 표지 오류가 아니면 그대로 통과라 정상 경로는 비트 동일.
+        install_harmony_retry_guard(
+            self.settings.llm_harmony_retry_max, self.settings.llm_harmony_retry_skip_after_s
+        )
         # D-213 후속: holmes 압축 산출물이 Qwen 템플릿(system은 맨 앞만)과 충돌해 조사가
         # 전건 실패하는 것을 막는다. 교정할 것이 없으면 no-op이라 정상 경로는 비트 동일.
         if self.settings.system_message_position_fix:
