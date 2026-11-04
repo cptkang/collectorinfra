@@ -1,9 +1,9 @@
 # 211. 솔루션 간 호스트 이름 매칭 — 정규형 일치(L0) 공용화 · `hostname(업무명)` 꼬리 처리 · LIKE는 후보 전용
 
 > **작성일**: 2026-11-03 · **v1.0**
-> **상태**: **WIP** — W1~W5 구현(2026-11-04 · 플래그 기본 off) · 계획 끝 모듈 단위 회귀 = 원래 실패 29 · 이번 변경 귀속 0(`범위: 모듈 단위 — 전체 미실행`) · 알려진 위험 2건 교정(2026-11-04 · D-363 부기 3 — `exact` 숫자 사이 구분자 · FQDN 끝 점 값) · 잔여: W0 폐쇄망 확인(칸 등록명/호스트명·괄호 앞 공백·정규형 충돌·행 수) · ITAM P1 반출 뒤 빌더 재실행 · MariaDB 한글 식별자 확인 · 원 `plans/209`(main 선점으로 재부여)
+> **상태**: **WIP** — W1~W5 구현(2026-11-04 · 플래그 기본 off) · 계획 끝 모듈 단위 회귀 = 원래 실패 29 · 이번 변경 귀속 0(`범위: 모듈 단위 — 전체 미실행`) · 알려진 위험 2건 교정(2026-11-04 · D-363 부기 3 — `exact` 숫자 사이 구분자 · FQDN 끝 점 값) · 잔여: W0 폐쇄망 확인(칸 등록명/호스트명·괄호 앞 공백·정규형 충돌·행 수) · ITAM P1 반출 뒤 빌더 재실행 · MariaDB 한글 식별자 확인 · 원 `plans/209`(main 선점으로 재부여) · **확장 W6·W7 구현(§9 · 2026-11-04 · `63cb9960`·`0b50de4a` · 시작 SHA `c52e8667`) — 인벤토리 연계 표시(첫 매핑 · 수정/추가 분기 · 저장 뒤 재조회) · `HOST_CANONICAL_MATCH_ENABLED` on 스캔·다시 찾기 L0 정규형 색인 · L3 `name_candidate`(ambiguous 전용 · 파드 제외 · active 행 skip · 사유 `apm_map_name_candidate`) · 계획 끝 모듈 단위 회귀(base `c52e8667`) 실패 0(`범위: 모듈 단위 — 전체 미실행`) · 잔여: Redis SMS 색인·`handle_itam_request`·`probe_apm_host_map.py` 현행 키 · L3 접두 범위 한계**
 > **계획 시작 SHA**: `914b91fe`
-> **회귀 대상 파일**: 계획이 바꾼 파일 42개(가드 교정 4개 포함 — `regress.py --base 914b91fe --files …`)
+> **회귀 대상 파일**: 계획이 바꾼 파일 42개(가드 교정 4개 포함 — `regress.py --base 914b91fe --files …`) · W6·W7 17개(`--base c52e8667` — `noise_gate/application/apm_host_map_scan.py` · `noise_gate/domain/apm_host_map{,_itam,_scan}.py` · `src/api/routes/admin_apm_host_map.py` · `src/static/{admin/dashboard.html,js/admin-apm-host-map.js,manual/admin.html,manual/help_index.json,manual/user.html}` · `scripts/manual/{content/admin.md,content/user.md,features.yaml}` · `sre_agent/sre_agent/application/playbook_runner.py` · 테스트 4개)
 > **성격**: 행동 변경(D-337 ⑥) — 구조 리팩터와 섞지 않는다. 패키지별 플래그 기본 off = 현행 비트 동일.
 > **관련 결정**: **D-363**(이 계획의 정본) · D-348(APM → 폴스타 연결 학습 — ② 확정 연결만 자동 · ⑥ 공용 정규화) · D-224(폴스타 ↔ 자산관리 교차 — ② 값 기반 키 · ㉰ FQDN끼리는 도메인까지 비교 · ④ 모호 제외) · D-188(오진이 미표시보다 나쁘다) · D-061(등록명·호스트명·IP 구분) · D-139·D-274(패키지 경계 — import 0) · D-089(DB별 SQL은 어댑터에) · D-290(업무명 근거 — 후속 연결 후보)
 > **패키지**: 본체 `src/domain/`·`src/orchestration/`·`src/db_adapters/` · `noise_gate/` · `mcp_server/` · `apm_gateway/` · `config/db_profiles/itam.yaml`
@@ -127,3 +127,59 @@ SELECT REPLACE(REPLACE(LOWER(TRIM(split_part(split_part(hostname, '(', 1), '.', 
 | 괄호 종류·공백 | **반각 `(`**(2026-11-03 사용자) · 괄호 앞 공백 미확인 — 두 형태 모두 처리하므로 구현 차단 아님 |
 | 정규형 충돌 건수(시스템별) | (미확인) |
 | 대상 테이블 행 수 | (미확인) |
+
+## 9. 확장 — 사전 스캔 연계 표시·매칭(W6·W7 · 2026-11-04)
+
+> **W6·W7 시작 SHA**: `c52e8667` · **관련**: D-362(`plans/210` 사전 스캔 · 관리 탭) · D-363 부기 4(이 절의 결정)
+
+### 9.1 발단
+
+사용자 질문(2026-11-04) *"「이 인스턴스 연계 추가」에서 왜 대상 폴스타 서버는 비어 있냐?"* → *"스캔시 폴스타 정보도 채워 넣을 수 있도록 하는 것에 대해 검토해봐."* → *"검토한 내용을 211 계획에 반영하고 구현하라."*
+
+실측(`c52e8667`): 사전 스캔은 **이미** 폴스타 대상을 채운다 — `noise_gate/application/apm_host_map_scan.py` `_generate` → `plan_scan_proposals`가 node_address(노드 주소 IP 1대) · vm_exact(인스턴스 `ip`·`host_name` ↔ SMS 대표 IP·NIC IP·`normalize_hostname`, 1대 `active` · 2대 이상 `ambiguous`) · itam(도메인) 행을 대상까지 저장한다. 빈 칸으로 보이는 원인은 세 가지다.
+
+| # | 공백 | 이 절 |
+|---|---|---|
+| G1 | 인벤토리 APM 행에 그 인스턴스의 연계(상태·대상)가 안 보인다 · 「이 인스턴스 연계 추가」가 매핑 있는 인스턴스에도 떠서 저장하면 409 `exists` | **W6** |
+| G2 | `vm_exact_match`가 `none`이면 행이 아예 안 생긴다 — hostname 비교가 `normalize_hostname`(소문자·FQDN)뿐이라 `-`·`_`·`hostname(업무명)` 차이를 못 잇고, 이름이 비슷한 후보도 남지 않는다 | **W7** |
+| G3 | `NOISE_APM_HOST_MAP_AUTO_ENABLED` off면 스캔이 409로 거부된다 | **제외**(사용자 2026-11-04 · D-362 ⑪ 유지) |
+
+### 9.2 사용자 확정 (2026-11-04)
+
+| # | 질문 | 확정 |
+|---|---|---|
+| Q4 | G3(auto off에서도 제안 전용 스캔)을 넣는가 | **이번엔 제외** — D-362 ⑪ 그대로 |
+| Q5 | 스캔에서 L0 정규형으로 서버 1대가 맞으면 | **`active` 자동**(D-363 ② 그대로 — 2대 이상은 `ambiguous`) · L3 이름 후보는 `ambiguous`로만 |
+
+### 9.3 W6 — 인벤토리에 연계 표시 (G1)
+
+- `GET /api/v1/admin/apm-host-map/inventory/apm` 각 행에 `mapping`(없으면 `null`)을 붙인다 — 그 인스턴스의 키를 **instance → workload → domain** 순으로 보고 처음 있는 매핑 행 1건(`_unmapped_filter`와 같은 키 판정 `match_key_for` 재사용). 내용: 편집 칸이 쓰는 필드 그대로(`id`·`version`·`source_id`·`domain_id`·`domain_name`·`scope`·`match_key`·`instance_example`·`state`·`origin`·`basis`·`verified`·`targets`·`note`·검토 표시). 표시용이다 — 진단 조회 순서(D-362 ①)를 흉내 내지 않는다.
+- 화면(`src/static/js/admin-apm-host-map.js` · `dashboard.html`): APM 인벤토리에 「연계」 칸 — 범위 · 상태 · 근거 태그 + 대상 서버 요약(`db_id / 서버명`, 2대 이상은 「외 N대」) · 없으면 「없음」. 버튼:
+  - instance 매핑이 있으면 **「수정」**(`openEditor(mapping)` — 매핑 목록의 [수정]과 같은 편집 칸 · `ambiguous` 행이면 후보가 대상으로 채워져 열린다)
+  - instance 매핑이 없으면 **「이 인스턴스 연계 추가」**(현행 · workload·domain 매핑만 있으면 그 연계는 칸에 표시만 하고 instance 행 추가는 허용)
+- 플래그 없음 — 탭 자체가 `NOISE_APM_HOST_MAP_ENABLED` 뒤에 있고, 응답 필드 추가·화면 표시만이다(판정·저장 동작 불변).
+- 매뉴얼(D-255): `scripts/manual/features.yaml` A-90 앵커 · `content/admin.md` A-90 8단계 · build · `pytest tests/test_manual`.
+- 테스트: API — `mapping` instance/workload/domain/없음 4경우 · 인가(관리자 전용) 유지 · 「매핑 없음만」과 `mapping=null` 일치.
+
+### 9.4 W7 — 스캔 매칭에 정규형(L0)·이름 후보(L3) (G2)
+
+**`HOST_CANONICAL_MATCH_ENABLED`(본체 · 기본 off) on일 때만**. off면 스캔·다시 찾기 결과가 현행과 비트 동일.
+
+1. **L0** — `build_sms_index`의 hostname 색인 키와 조회 키를 정규형(`canonical_host_key` · §3.1)으로 바꾸고, 같은 키 아래 서버를 `host_keys_match`(§3.2 — FQDN끼리는 도메인까지)로 걸러 `vm_exact_match`에 넘긴다. 1대 `active`(basis `vm_exact` 그대로 · evidence에 `match: canonical`) · 2대 이상 `ambiguous`(현행 규칙). 색인을 만드는 쪽과 찾는 쪽은 **같은 함수**를 쓴다. ITAM 사슬(`resolve_itam_chain`)도 같은 색인을 받으므로 함께 정규형이 된다(D-363 ⑤와 같은 방향).
+2. **L3 이름 후보** — node_address·vm_exact(L0 포함)가 모두 `none`인 instance에 한해, 인스턴스 `host_name`(없으면 정규형 키가 될 때만 인스턴스 이름)으로 SMS 스냅샷에서 D-348 후보 등급(`noise_gate/domain/host_link.py` `build_probe_plan`·`rank_candidates`, `canonical=True`)을 **메모리에서** 매긴다(DB 조회 추가 0). 후보가 있으면 상위 `max_targets`대를 **`ambiguous` · basis `name_candidate`**(신규 · 화면 라벨 「이름 후보」 · evidence에 등급·사유)로 저장한다. 후보가 없으면 현행처럼 행 없음.
+   - 진단 경로: `ambiguous` 행은 지금도 연결로 쓰지 않는다(`apm_host_map_lookup.py` 7순 `apm_map_ambiguous`). L3 행 때문에 진단이 「연결」로 바뀌지 않음을 테스트로 단언하고, 7순 사유 문장이 이름 후보 행에도 사실과 맞는지 확인한다(안 맞으면 사유만 구분 · 연결 동작 불변).
+   - ITAM 규칙의 「인스턴스가 하나도 잇지 못한 도메인」 판정은 `active`만 센다(현행 `linked_any`) — L3 행은 잇지 못한 것으로 둔다.
+   - 비용: 인스턴스 × SMS 행 전수 대조 금지 — 정규형 토큰·접두 색인으로 먼저 좁힌다. 합성 SMS 5,000행 × 인스턴스 5,000건이 로컬에서 수 초 안에 끝나는지 테스트(또는 측정)로 확인한다.
+3. **다시 찾기**(`src/api/routes/admin_apm_host_map.py` `_proposal_for`)는 같은 도메인 함수를 쓰므로 같은 플래그로 대칭이 되게 배선한다.
+4. **진단 고속 경로 Redis SMS 색인**(`rebuild_sms_index` · `cache.sms_by_host`)은 **이번엔 현행 유지** — 만드는 쪽과 찾는 쪽 중 한쪽만 바꾸지 않는다. 잔여로 남긴다(스캔이 쓴 매핑 행이 hit하므로 진단 효과는 매핑으로 전달된다).
+5. 화면·매뉴얼: basis 라벨·근거 필터에 `name_candidate`(「이름 후보」) 추가 · A-90 근거 설명.
+6. 테스트: §5 벡터 기반 스캔 제안(대소문자·`-`/`_`·`webap01(인터넷뱅킹)`·FQDN 도메인 다름 불일치·`webap01` ≠ `webap010`) · L0 2대 `ambiguous` · L3 후보 행 저장·상한 · L3가 진단 연결을 만들지 않음 · 관리자 행 불변(scan_suggests 규칙 그대로) · 플래그 off 비트 동일(기존 plan210 스캔 테스트 무수정 통과).
+
+### 9.5 Wave 표 추가
+
+| Wave | 내용 | 대상 | 검증 |
+|---|---|---|---|
+| **W6** | 인벤토리 `mapping` 필드 · 「연계」 칸 · 「수정」/「이 인스턴스 연계 추가」 분기 · 매뉴얼 | `src/api/routes/admin_apm_host_map.py` · `src/static/` · `scripts/manual/` | §9.3 테스트 · `tests/test_manual` |
+| **W7** | 스캔·다시 찾기 L0 정규형 색인 · L3 `name_candidate` 후보 행 · 라벨·매뉴얼 | `noise_gate/domain/apm_host_map*.py` · `noise_gate/application/apm_host_map_scan.py` · 라우트 배선 · `src/static/` · `scripts/manual/` | §9.4 테스트 · off 비트 동일 |
+
+회귀(D-303): W6·W7 끝에 `python scripts/regress.py --base c52e8667 --files <W6·W7이 바꾼 파일…>`.

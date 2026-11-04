@@ -8,6 +8,9 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-11-04 | D-363 | 부기 4 ⑥ — W6·W7 구현(`63cb9960`·`0b50de4a`): 이름 후보는 `active` 행을 건너뜀 · 파드 제외 · 힌트 사유 `apm_map_name_candidate` 가산 · 잔여(Redis 색인·ITAM 요청 처리기 현행 키) |
+| 2026-11-04 | D-363 | 부기 4 — 사전 스캔(D-362)에 적용: 인벤토리 APM 행 연계 표시·「수정」 분기(W6) · `HOST_CANONICAL_MATCH_ENABLED` on이면 스캔·다시 찾기 SMS hostname 색인 L0 정규형(1대 `active`)(W7) · 이름 후보는 `ambiguous`·basis `name_candidate`만 · Redis 색인 현행 · auto off 스캔(G3) 제외(D-362 ⑪ 유지) · `plans/211` §9 |
+| 2026-11-04 | D-362 | 부기 4 — 관리자 「확인 취소」 `POST /{id}/unverify`(확인한 자동 행만 · `verified = FALSE`만 · 대상·상태·evidence 유지 · 감사·사본 갱신 · 취소 뒤 자동 갱신·정리 대상 복귀) · `plans/210` §6.4 |
 | 2026-11-04 | D-363 | 부기 3 — 알려진 위험 2건 교정: 게이트웨이 `exact` 규칙은 숫자 사이 `-`·`_` 유지(`webap01-1` ≠ `webap011`) · FQDN 정규형 SQL에 끝 점 키(`'n.'`·`'s.'`) 추가 |
 | 2026-11-04 | **D-363** (구현 · 부기 2 · 재부여) | `plans/211` W1~W5 구현(플래그 기본 off) · 부기 2 — 가드 안 A(함수형 `REPLACE(` 허용) · ITAM 키 빌더 경로 · 원 D-360/`plans/209` → D-363/`plans/211` 재부여(`origin/main`이 D-360~362·plans/209~210 선점) |
 | 2026-11-04 | D-003 | 부기 — 함수형 `REPLACE(…)`(바로 뒤 `(`)만 두 가드(`sql_guard`·`mcp_server.security`)의 금지 키워드 대조에서 제외 · `REPLACE`는 목록 유지 · `REPLACE INTO`·`REPLACE tbl` 차단 유지 · 플래그 없음(사용자 결정 「안 A」 · D-363 · `plans/211`) |
