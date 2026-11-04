@@ -20,7 +20,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
-from src.domain.host_names import normalize_hostname
+from src.domain.host_names import canonical_host_key, host_keys_match, normalize_hostname
 
 from noise_gate.domain.host_link import (
     MAX_CANDIDATES,
@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 ProbeFn = Callable[[str, list[str], list[str], list[str]], Awaitable[list[dict[str, Any]]]]
 #: `(db_id, tokens) -> 행 목록` — 미지정이면 `probe_host_tokens`(① d).
 TokenProbeFn = Callable[[str, list[str]], Awaitable[list[dict[str, Any]]]]
+
+
+def _canonical_enabled(app_config: Any) -> bool:
+    """`HOST_CANONICAL_MATCH_ENABLED`(plans/211) — `is True` 비교로 MagicMock 오발동을 막는다."""
+    return getattr(app_config, "host_canonical_match_enabled", False) is True
 
 
 def _default_probes(app_config: Any) -> tuple[ProbeFn, TokenProbeFn]:
@@ -205,7 +210,10 @@ async def find_host_candidates(
             unchecked.append({"db_id": db_id, "reason": _unchecked_reason(exc)})
             continue
         rows.extend((db_id, row) for row in found)
-    candidates = rank_candidates(plan, rows, patterns=patterns, confirmed=confirmed, limit=limit)
+    candidates = rank_candidates(
+        plan, rows, patterns=patterns, confirmed=confirmed, limit=limit,
+        canonical=_canonical_enabled(app_config),
+    )
     logger.info(
         "유사 호스트 후보: host=%s 소스=%d 행=%d 후보=%d 확인못함=%d",
         hostname, len(db_ids), len(rows), len(candidates), len(unchecked),
@@ -214,16 +222,20 @@ async def find_host_candidates(
     return out
 
 
-def _row_matches(row: Mapping[str, Any], value: str) -> bool:
+def _row_matches(row: Mapping[str, Any], value: str, *, canonical: bool = False) -> bool:
     """① a~c 정확 일치 — 서버명·hostname의 정규화 형태가 같거나(a 대소문자 · b FQDN 짧은 이름 ·
-    c 짧은 이름 → FQDN) IP 입력이 행 IP와 같다."""
+    c 짧은 이름 → FQDN) IP 입력이 행 IP와 같다.
+
+    `canonical`(plans/211)이면 서버명·hostname 비교를 `host_keys_match`로 한다(정규형이 빈 입력은
+    종전 비교). IP 비교는 그대로다."""
     wanted = normalize_hostname(value)
     if not wanted:
         return False
-    if wanted in (
-        normalize_hostname(str(row.get("name") or "")),
-        normalize_hostname(str(row.get("hostname") or "")),
-    ):
+    names = (str(row.get("name") or ""), str(row.get("hostname") or ""))
+    if canonical and canonical_host_key(value):
+        if any(host_keys_match(value, n) for n in names):
+            return True
+    elif wanted in (normalize_hostname(n) for n in names):
         return True
     return wanted == str(row.get("ipaddress") or "").strip().lower()
 
@@ -264,9 +276,10 @@ async def verify_selected_server(
         prefixes.extend(p for p in plan.prefixes if p not in prefixes)
         ips.extend(i for i in plan.ips if i not in ips)
     rows = await probe(db_id, plan_names, prefixes, ips)
+    canonical = _canonical_enabled(app_config)
     picked: list[Mapping[str, Any]] = []
     for value in values:
-        picked = [r for r in rows if _row_matches(r, value)]
+        picked = [r for r in rows if _row_matches(r, value, canonical=canonical)]
         if picked:
             break
     if not picked:

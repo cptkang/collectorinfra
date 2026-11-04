@@ -21,6 +21,11 @@ plans/102 §3.3 ②~⑤ · D-224 ③④.
 블록 렌더·게이트는 utils에 있다. utils는 domain을 import할 수 없어(계층 방향) 여기서 값을
 계산해 utils 함수에 **인자로** 넘긴다. 소비처는 노드와 orchestration이다.
 
+**정규형 대조(plans/211 · D-363 ⑤).** `HOST_CANONICAL_MATCH_ENABLED` on이면 선행 키 판정이
+괄호 업무명 꼬리·`_` 레이블을 받아들이고(`canonical=True`), 대상 매니페스트 호스트 키가
+`compare: canonical`이면 스코프 조건과 사후 판정을 정규형(`canonical_host_key`)으로 한다. off면
+그런 매니페스트는 로더가 돌려주지 않으므로(`entity_key_manifest`) 종전과 같다.
+
 **이름 힌트만 있는 선행 결과**(값 판정으로 키가 잡히지 않는 등록명 등)는 종전 경로를 그대로 탄다
 (plans/102 §3.2 — 이름 힌트만이면 현행 동작 유지).
 
@@ -50,8 +55,9 @@ from src.domain.entity_key import (
     short_name,
     typed_tokens,
 )
+from src.domain.host_names import build_canonical_host_condition, canonical_host_key
 from src.routing.domain_config import get_domain_by_id
-from src.schema_cache.entity_key_manifest import load_entity_key_manifest
+from src.schema_cache.entity_key_manifest import host_canonical_enabled, load_entity_key_manifest
 from src.utils.prior_dependency import NOTE_BRIDGE, DependencyVerdict, extract_result_rows
 from src.utils.query_gen_common import (
     _MAX_PRIOR_SCOPE_VALUES,
@@ -180,7 +186,7 @@ def ordered_key_columns(
     """
     found = detect_key_columns(
         _dict_rows(rows), name_hint=is_server_identity_col, exclude=(PRIOR_SOURCE_DB_KEY,),
-        declared=declared,
+        declared=declared, canonical=host_canonical_enabled(),
     )
     return sorted(
         found, key=lambda kc: (not kc.declared, 0 if _hostname_named(kc.column) else 1)
@@ -235,7 +241,9 @@ def select_prior_key(
         chosen = best.get(family)
         if chosen is None:
             continue
-        keys = collect_family_values(dict_rows, chosen.column, family)
+        keys = collect_family_values(
+            dict_rows, chosen.column, family, canonical=host_canonical_enabled(),
+        )
         if keys:
             return PriorKeySelection(family=family, column=chosen.column, keys=tuple(keys)), found
     return None, found
@@ -324,6 +332,10 @@ def _sql_literal(value: str) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
+#: LIKE 와일드카드 — 이 문자가 든 값으로는 LIKE 패턴을 만들지 않는다(plans/211 · D-363 ④).
+_LIKE_WILDCARDS = frozenset("_%")
+
+
 def _unique(values: Sequence[str]) -> list[str]:
     return list(dict.fromkeys(v for v in values if v))
 
@@ -334,6 +346,8 @@ def build_scope_condition(key: ManifestKey, keys: Sequence[TypedKey]) -> str:
     - 호스트명(casefold): `LOWER(col) IN (정규형 ∪ FQDN 단축명)` + 단일 레이블 원천값마다
       `LOWER(col) LIKE '<값>.%'`(대상 FQDN ↔ 원천 단축명 — G-2 가능한 일치 후보).
     - 호스트명(exact): `col IN (원문)`.
+    - 호스트명(canonical · plans/211): `build_canonical_host_condition`(괄호 꼬리 분기 없음 — ITAM은
+      업무명 꼬리를 저장하지 않는다 · D-363 부기 1). 유효 값이 없으면 casefold 조건으로 둔다.
     - IP: `col IN (...)`. 다중값 컬럼이면 토큰 `LIKE '%<ip>%'`로 넓게 좁히고 코드가
       토큰 완전 일치로 확정한다(`apply_bridge_postcheck` — SQL이 좁히고 코드가 확인한다).
     식별자는 인용하지 않는다(엔진마다 인용 규칙이 달라 인용이 문자열 리터럴로 해석될 수 있다).
@@ -347,13 +361,21 @@ def build_scope_condition(key: ManifestKey, keys: Sequence[TypedKey]) -> str:
         return f"{col} IN ({', '.join(_sql_literal(v) for v in values)})"
     if key.compare == "exact":
         return f"{col} IN ({', '.join(_sql_literal(v) for v in _unique([k.raw for k in keys]))})"
+    if key.compare == "canonical":
+        canonical = build_canonical_host_condition(
+            col, [k.normalized for k in keys], business_suffix=False,
+        )
+        if canonical is not None:
+            return canonical
     in_values: list[str] = []
     likes: list[str] = []
     for k in keys:
         in_values.append(k.normalized)
         if "." in k.normalized:
             in_values.append(short_name(k.normalized))
-        else:
+        elif not _LIKE_WILDCARDS.intersection(k.normalized):
+            # `_`·`%`가 든 값(플래그 on의 `web_ap01` 등)은 LIKE에서 와일드카드가 되므로 IN에만
+            # 둔다(D-363 ④). off에서는 그런 값이 키가 아니라 종전과 같다.
             likes.append(f"LOWER({col}) LIKE {_sql_literal(k.normalized + '.%')}")
     head = f"LOWER({col}) IN ({', '.join(_sql_literal(v) for v in _unique(in_values))})"
     return head if not likes else "(" + " OR ".join([head, *likes]) + ")"
@@ -453,14 +475,48 @@ def _row_manifests(
     return manifests, used
 
 
+def _fold_host(value: str) -> str:
+    """호스트 정규형 키(plans/211) — 키가 아니면 원래 정규형을 그대로 둔다."""
+    return canonical_host_key(value) or value
+
+
+def _is_canonical(key: ManifestKey | None) -> bool:
+    return key is not None and key.compare == "canonical"
+
+
+def _canonical_fold(
+    rows: Sequence[Any], default_db_ids: Sequence[str], family: str,
+) -> bool:
+    """사후 판정을 정규형으로 접는가 — 호스트 계열이고 행의 매니페스트 중 그 키가 `canonical`인
+    것이 있을 때. 한 결과 안에서는 선행 키와 대상 토큰을 **같은 규칙**으로 접어야 대조가 맞는다.
+    `canonical` 매니페스트는 플래그 on일 때만 로드되므로 off면 늘 False다.
+    """
+    if family != FAMILY_HOSTNAME:
+        return False
+    for row in rows:
+        if not isinstance(row, Mapping):
+            continue
+        manifests, _ = _row_manifests(row, default_db_ids)
+        if any(_is_canonical(m.key_for(family)) for m in manifests):
+            return True
+    return False
+
+
 def _row_entity(
-    row: Mapping[str, Any], manifests: Sequence[EntityKeyManifest], family: str,
+    row: Mapping[str, Any],
+    manifests: Sequence[EntityKeyManifest],
+    family: str,
+    *,
+    fold: bool = False,
 ) -> tuple[str, frozenset[str], str] | None:
     """결과 행 하나의 (엔터티 id, 해당 계열 키 정규형, 매니페스트 db_id). 판정 불가면 None.
 
     엔터티 id는 매니페스트의 호스트명 키 컬럼 값이다 — 한 서버가 IP마다 행을 갖는 대상
     (`row_multiplicity: per_ip`)도, 한 서버의 시계열 행이 여럿인 결과도 한 엔터티로 묶인다.
     호스트명 키 컬럼이 결과에 없으면 대조 컬럼의 토큰 집합을 id로 쓴다.
+
+    `fold`(호스트 계열 정규형 대조 · `_canonical_fold`)면 대조 토큰을, 호스트 키가 `canonical`이면
+    엔터티 id를 정규형으로 접는다(plans/211).
     """
     for manifest in manifests:
         key = manifest.key_for(family)
@@ -468,7 +524,9 @@ def _row_entity(
         if col is None:
             continue
         tokens = frozenset(
-            tk.normalized for tk in typed_tokens(row.get(col)) if tk.family == family
+            _fold_host(tk.normalized) if fold else tk.normalized
+            for tk in typed_tokens(row.get(col), canonical=fold or _is_canonical(key))
+            if tk.family == family
         )
         if not tokens:
             return None
@@ -476,8 +534,10 @@ def _row_entity(
         host_key = manifest.key_for(FAMILY_HOSTNAME)
         host_col = _find_column(row, host_key.column) if host_key is not None else None
         if host_col is not None:
+            host_canon = fold or _is_canonical(host_key)
             hosts = [
-                tk.normalized for tk in typed_tokens(row.get(host_col))
+                _fold_host(tk.normalized) if host_canon else tk.normalized
+                for tk in typed_tokens(row.get(host_col), canonical=host_canon)
                 if tk.family == FAMILY_HOSTNAME
             ]
             entity = hosts[0] if hosts else ""
@@ -512,6 +572,8 @@ def _filter_rows(
     default_db_ids: Sequence[str],
     family: str,
     cross_db: frozenset[str],
+    *,
+    fold: bool = False,
 ) -> tuple[list[Any], int]:
     """포함 엔터티(link·possible)의 행만 남긴다. 판정 불가 행은 유지한다(오제거보다 미제거)."""
     kept: list[Any] = []
@@ -519,7 +581,7 @@ def _filter_rows(
     for row in rows:
         if isinstance(row, Mapping):
             manifests, _ = _row_manifests(row, default_db_ids)
-            entity = _row_entity(row, manifests, family)
+            entity = _row_entity(row, manifests, family, fold=fold)
             if entity is not None and _entity_key(entity[0], entity[2], cross_db) not in included:
                 removed += 1
                 continue
@@ -538,6 +600,8 @@ def apply_bridge_postcheck(
     - 선행 키 N = `verdict.scope_values`(상한 적용 정규형). 등급 합계는 항상 N이다(D5).
     - 대상 엔터티는 결과 행의 대상 키 컬럼으로 만든다 — 매니페스트는 행의 `_source_db`,
       없으면 결과 `target_db_ids`로 고른다.
+    - 대상 호스트 키가 `compare: canonical`이면 선행 키와 대상 토큰을 정규형으로 접어 대조한다
+      (plans/211 · `_canonical_fold`).
     - **서로 다른 DB(존)에 같은 호스트명이 있으면 별개 엔터티로 본다**(권고 F) — 그 키는
       `ambiguous`가 되어 결과에 넣지 않고 사유를 노트에 싣는다.
     - `ambiguous`·스코프 밖 엔터티의 행은 제거한다. 결과 행은 있는데 대상 키 컬럼 값을
@@ -551,11 +615,12 @@ def apply_bridge_postcheck(
     family = context.family
     default_db_ids = [str(d) for d in (result.get("target_db_ids") or []) if d]
     rows = extract_result_rows(result)
+    fold = _canonical_fold(rows, default_db_ids, family)
     grouped: dict[tuple[str, str], set[str]] = {}
     judged_dbs: list[str] = []
     for row in rows:
         manifests, _ = _row_manifests(row, default_db_ids)
-        entity = _row_entity(row, manifests, family)
+        entity = _row_entity(row, manifests, family, fold=fold)
         if entity is None:
             continue
         grouped.setdefault((entity[2], entity[0]), set()).update(entity[1])
@@ -583,16 +648,23 @@ def apply_bridge_postcheck(
         TargetEntity(entity_id=_entity_key(eid, db_id, cross_db), keys=frozenset(keys))
         for (db_id, eid), keys in grouped.items()
     ]
-    report = grade_matches(verdict.scope_values, targets, family=family)
+    source_keys = (
+        [_fold_host(v) for v in verdict.scope_values] if fold else verdict.scope_values
+    )
+    report = grade_matches(source_keys, targets, family=family)
     included = set(report.included_entities(include_possible=True))
     removed = 0
     for key in ("query_results", "rows"):
         if isinstance(out.get(key), list):
-            out[key], n = _filter_rows(out[key], included, default_db_ids, family, cross_db)
+            out[key], n = _filter_rows(
+                out[key], included, default_db_ids, family, cross_db, fold=fold,
+            )
             removed = max(removed, n)
     organized = out.get("organized_data")
     if isinstance(organized, dict) and isinstance(organized.get("rows"), list):
-        filtered, n = _filter_rows(organized["rows"], included, default_db_ids, family, cross_db)
+        filtered, n = _filter_rows(
+            organized["rows"], included, default_db_ids, family, cross_db, fold=fold,
+        )
         out["organized_data"] = {**organized, "rows": filtered}
         removed = max(removed, n)
 

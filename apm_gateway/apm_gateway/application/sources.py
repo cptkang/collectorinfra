@@ -364,6 +364,7 @@ def build_source_set(
             cache_seconds=cfg.runtime.instance_cache_seconds,
             clock=clock,
             max_in_flight=min(fanout, client.max_in_flight),
+            canonical_match=cfg.runtime.host_canonical_match,
         )
         sources.append(JenniferSource(api_cfg.source_id, api, resolver, fanout=fanout))
     return SourceSet(sources)

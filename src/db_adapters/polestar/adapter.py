@@ -70,13 +70,21 @@ class PolestarAdapter:
         return _classify_metric_field(field)
 
     def entity_probe_sql(
-        self, value: str, *, db_engine: str | None, db_schema: str | None
+        self,
+        value: str,
+        *,
+        db_engine: str | None,
+        db_schema: str | None,
+        canonical: bool = False,
     ) -> str:
         """서버 식별자 1개의 존재 확인 SELECT(entity_probe 위임 · plans/123 S-4a).
 
         0건 진단(`src/nodes/result_organizer.py`)의 optional 훅 계약 — 행이 오면 등록돼 있다.
+        `canonical`은 정규형 비교(plans/211).
         """
-        return build_entity_probe_sql(value, db_engine=db_engine, db_schema=db_schema)
+        return build_entity_probe_sql(
+            value, db_engine=db_engine, db_schema=db_schema, canonical=canonical
+        )
 
     def hostname_lookup_sql(
         self, names: list[str], *, db_engine: str | None, db_schema: str | None

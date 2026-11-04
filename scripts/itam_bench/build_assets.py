@@ -330,7 +330,9 @@ def evidence_assets(catalog: Mapping[str, Any], allowed: Sequence[str]) -> dict[
             })
     rules, entity = inference.rules_and_entity_candidates(columns)
     out: dict[str, Any] = {}
-    entity_keys = inference.entity_keys_asset(entity, rows)
+    # 자산관리 호스트명은 다른 솔루션과 표기(`-`·`_`·대소문자)가 어긋나 정규형으로 비교한다
+    # (plans/211 · D-363 ⑤ — 소비처는 `HOST_CANONICAL_MATCH_ENABLED` on일 때만 이 키를 쓴다).
+    entity_keys = inference.entity_keys_asset(entity, rows, host_compare="canonical")
     if entity_keys:
         out["entity_keys"] = entity_keys
     relationships = inference.accepted_relationships(relation_evidence)

@@ -41,6 +41,7 @@ from mcp.server.fastmcp import Context, FastMCP
 
 from mcp_server.config import AppServerConfig
 from mcp_server.db import DBPoolManager
+from mcp_server.host_canonical import build_canonical_host_condition
 from mcp_server.polestar_helpers import (
     _DB2_SCHEMA as _DB2_SCHEMA,
     _MAX_LOOKBACK_MINUTES as _MAX_LOOKBACK_MINUTES,
@@ -293,16 +294,38 @@ def build_resource_status_sql(is_db2: bool, server_name: str, limit: int) -> str
 ANCHOR_LOOKUP_LIMIT = 10
 
 
+#: 호스트 정규형 일치(plans/211 W2 · D-363) — 기동 시 ``set_host_canonical_match``로 1회 정한다.
+#: 기본 False = 현행 완전 일치(비트 동일).
+_HOST_CANONICAL_MATCH = False
+
+
+def set_host_canonical_match(enabled: bool) -> None:
+    """앵커 해석의 호스트 정규형 일치 여부를 정한다(lifespan에서 1회 — ``sql_log.init`` 전례)."""
+    global _HOST_CANONICAL_MATCH
+    _HOST_CANONICAL_MATCH = bool(enabled)
+    logger.info("폴스타 앵커 호스트 정규형 일치: %s", "on" if _HOST_CANONICAL_MATCH else "off")
+
+
 def build_anchor_lookup_sql(
-    is_db2: bool, hostname: str, limit: int = ANCHOR_LOOKUP_LIMIT
+    is_db2: bool, hostname: str, limit: int = ANCHOR_LOOKUP_LIMIT, *, canonical: bool = False
 ) -> str:
     """Prometheus 라벨 앵커용 서버 신원 조회 SQL을 조립한다(plans/189 §2.2 · 읽기 전용 SELECT).
 
-    server.Server 행 중 ``NAME``(폴스타 등록명) 또는 ``HOSTNAME``(OS 호스트명)이 값과
-    **완전 일치**하는 행의 OS 호스트명·IP를 돌려준다(정규화하지 않는다 — 양쪽이 같은 OS 값).
+    server.Server 행 중 ``NAME``(폴스타 등록명) 또는 ``HOSTNAME``(OS 호스트명)이 값과 맞는 행의
+    OS 호스트명·IP를 돌려준다.
+
+    - ``canonical=False``(기본): **완전 일치**(정규화하지 않는다 — 현행 비트 동일).
+    - ``canonical=True``: 두 칸 모두 호스트 정규형 L0 조건(대소문자·FQDN·``-``·``_``·괄호 업무명
+      꼬리 — plans/211 §3.4)으로 맞춘다. 입력 정규형이 빈 값(키 아님)이거나 IP면 완전 일치 그대로다.
     """
     t_res = _q(is_db2, "cmm_resource")
     lit = _sql_literal(hostname)
+    match = f"(CR.NAME = {lit} OR CR.HOSTNAME = {lit})"
+    if canonical:
+        by_name = build_canonical_host_condition("CR.NAME", [hostname], business_suffix=True)
+        by_host = build_canonical_host_condition("CR.HOSTNAME", [hostname], business_suffix=True)
+        if by_name and by_host:
+            match = f"({by_name} OR {by_host})"
     return (
         "SELECT\n"
         "    CR.ID AS resource_id,\n"
@@ -312,7 +335,7 @@ def build_anchor_lookup_sql(
         f"FROM {t_res} CR\n"
         "WHERE CR.RESOURCE_TYPE = 'server.Server'\n"
         "  AND CR.DTIME IS NULL\n"
-        f"  AND (CR.NAME = {lit} OR CR.HOSTNAME = {lit})\n"
+        f"  AND {match}\n"
         "ORDER BY CR.NAME\n"
         f"{_row_limit(is_db2, limit)}"
     )
@@ -620,6 +643,8 @@ async def resolve_polestar_anchor(
 ) -> AnchorResolution:
     """폴스타에서 hostname(등록명 또는 OS 호스트명)의 OS 호스트명·IP를 해석한다(plans/189 §2.2).
 
+    - 일치 기준은 ``build_anchor_lookup_sql`` — 기동 플래그(``set_host_canonical_match``)가 켜지면
+      호스트 정규형 L0, 꺼지면 완전 일치(plans/211 W2).
     - 1행 → ``resolved`` · 0행(오류 없음) → ``not_found`` · 2행 이상(여러 source 합산) →
       ``ambiguous``(합치지 않는다).
     - 조회 오류: 모든 대상이 실패했거나, 일부 실패 + 나머지 0행이면 ``lookup_error``다. 일부만
@@ -642,7 +667,8 @@ async def resolve_polestar_anchor(
     rows: list[dict[str, str]] = []
     for name, is_db2 in targets:
         try:
-            raw = await pool.execute(name, build_anchor_lookup_sql(is_db2, host))
+            sql = build_anchor_lookup_sql(is_db2, host, canonical=_HOST_CANONICAL_MATCH)
+            raw = await pool.execute(name, sql)
         except Exception as e:
             logger.warning("폴스타 앵커 해석 실패 (%s, hostname=%s): %s", name, log_safe(host), e)
             failed.append(name)

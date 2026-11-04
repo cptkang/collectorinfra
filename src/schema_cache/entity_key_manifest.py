@@ -8,6 +8,11 @@
 `load_manifest_file`로 **명시 경로에서만** 읽는다. 런타임 로더는 testdata를 보지 않는다
 (샌드박스에서 운영 정본을 파생하지 않는다 — plans/95 §4.6.2).
 
+**정규형 키 가드(plans/211 · D-363 ⑤).** `compare: canonical` 키를 가진 매니페스트는
+`HOST_CANONICAL_MATCH_ENABLED` on일 때만 돌려준다. off면 **없는 것으로** 돌려준다 — 그 DB는
+매니페스트가 없던 종전과 같은 결과(키 브리지·소재 프로브 모두)가 된다. 판정 지점은
+`load_entity_key_manifest` 하나다.
+
 계층: infrastructure (파일 I/O).
 """
 
@@ -19,6 +24,7 @@ from pathlib import Path
 
 import yaml  # type: ignore[import-untyped]
 
+from src.config import load_config
 from src.domain.entity_key import EntityKeyManifest, ManifestError, parse_manifest
 
 logger = logging.getLogger(__name__)
@@ -52,9 +58,33 @@ def load_manifest_file(path: str | Path, db_id: str) -> EntityKeyManifest | None
         return None
 
 
+def host_canonical_enabled(app_config: object | None = None) -> bool:
+    """`HOST_CANONICAL_MATCH_ENABLED`(plans/211 · D-363) — `is True` 비교(설정 대역 오발동 방지).
+
+    `app_config`가 없으면 `load_config()`(프로세스 캐시)를 본다 — 요청마다 환경을 다시 읽지 않는다.
+    """
+    cfg = app_config if app_config is not None else load_config()
+    return getattr(cfg, "host_canonical_match_enabled", False) is True
+
+
+def _has_canonical_key(manifest: EntityKeyManifest) -> bool:
+    return any(key.compare == "canonical" for key in manifest.keys)
+
+
 @lru_cache(maxsize=64)
-def _load_cached(db_id: str, profiles_dir: str) -> EntityKeyManifest | None:
-    return load_manifest_file(Path(profiles_dir) / f"{db_id}.yaml", db_id)
+def _load_cached(
+    db_id: str, profiles_dir: str, canonical_enabled: bool,
+) -> EntityKeyManifest | None:
+    manifest = load_manifest_file(Path(profiles_dir) / f"{db_id}.yaml", db_id)
+    if manifest is not None and not canonical_enabled and _has_canonical_key(manifest):
+        # 캐시 키당 1회 — 기동 뒤 첫 조회에서만 남는다.
+        logger.info(
+            "엔터티 키 매니페스트 미적용: db_id=%s — compare: canonical 키는 "
+            "HOST_CANONICAL_MATCH_ENABLED on일 때만 쓴다(plans/211)",
+            db_id,
+        )
+        return None
+    return manifest
 
 
 def load_entity_key_manifest(
@@ -67,11 +97,13 @@ def load_entity_key_manifest(
         profiles_dir: 프로필 디렉터리(기본 `config/db_profiles`) — 테스트 주입용
 
     Returns:
-        매니페스트, 또는 프로필·블록이 없거나 구조가 틀리면 None
+        매니페스트, 또는 프로필·블록이 없거나 구조가 틀리면 None. `compare: canonical` 키를
+        가진 매니페스트는 `HOST_CANONICAL_MATCH_ENABLED` off면 None이다(모듈 독스트링
+        「정규형 키 가드」).
     """
     if not db_id:
         return None
-    return _load_cached(db_id, str(profiles_dir or PROFILES_DIR))
+    return _load_cached(db_id, str(profiles_dir or PROFILES_DIR), host_canonical_enabled())
 
 
 def clear_manifest_cache() -> None:

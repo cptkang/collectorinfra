@@ -172,6 +172,11 @@ class AppConfig(BaseSettings):
     # 식별자 소재 프로브(§3.4): 3단 `semantic_router` 직후에 `entity_locator` 노드를 등록해
     # 명시 식별자가 어느 시스템에 있는지 고정 조회로 먼저 확인한다. off면 노드·엣지 미등록.
     cross_system_probe_enabled: bool = False
+    # 솔루션 사이 호스트 정규형 대조(plans/211 · D-363): 괄호 업무명 꼬리·대소문자·끝 점·`-`·`_`를
+    # 접은 정규형으로 호스트를 맞춘다(`src/domain/host_names.canonical_host_key`). 기본 off = 현행과
+    # 비트 동일. 기동 시 1회 해석한다. 소비처: noise_gate 소재 프로브·후보 등급(W4) · 키 브리지·ITAM
+    # 조회(W5) — 이 필드만 추가된 단계에서는 읽는 곳이 없다.
+    host_canonical_match_enabled: bool = False
 
     # Plan 49 / D-037 트랙 B: deepagents 실제 패키지(vLLM 오케스트레이터 + FabriX 워커) 활성화 여부.
     # 명시적 opt-in(기본 False) — vLLM 인프라가 필요하므로 자동 활성화하지 않는다.

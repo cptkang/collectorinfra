@@ -25,6 +25,11 @@ FORBIDDEN_KEYWORDS: frozenset[str] = frozenset({
     "SHUTDOWN", "KILL",
 })
 
+# 문자열 함수 REPLACE(…) — 바로 뒤가 `(`(공백·개행 허용)일 때만 금지 키워드 대조에서 뺀다
+# (D-003 부기 2026-11-04 · D-363 — 호스트 이름 정규형 SQL). 쓰기 문 `REPLACE INTO …`·
+# `REPLACE tbl …`은 뒤가 `(`가 아니라 그대로 걸린다. REPLACE는 금지 목록에 남는다.
+_REPLACE_FUNCTION = re.compile(r"\bREPLACE\s*\(")
+
 
 # 폴스타 도메인 deny — execute_sql 옵트인 노출 시에만 추가 검증한다 (§6, D-022/D-028).
 # 데이터는 core_config_prop EAV(Vendor/OSType/OSParameter)에 있으므로 아래 lookup
@@ -253,7 +258,7 @@ def validate_readonly(sql: str) -> None:
     bodies = [_code_text(sql, d) for d in _DIALECTS]
 
     for body in bodies:
-        tokens = re.findall(r"\b([A-Z_]+)\b", body.upper())
+        tokens = re.findall(r"\b([A-Z_]+)\b", _REPLACE_FUNCTION.sub("(", body.upper()))
         found = [t for t in tokens if t in FORBIDDEN_KEYWORDS]
         if found:
             raise ReadOnlyViolationError(

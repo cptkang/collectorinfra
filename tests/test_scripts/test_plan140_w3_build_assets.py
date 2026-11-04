@@ -149,7 +149,8 @@ class TestEvidenceAssets:
         assert profile["entity_keys"] == {
             "entity": "server", "table": "t_srv",
             "keys": [
-                {"type": "hostname", "column": "host_name", "priority": 1, "compare": "casefold"},
+                # ITAM 빌더는 호스트명을 정규형으로 비교한다(plans/211 · D-363 ⑤)
+                {"type": "hostname", "column": "host_name", "priority": 1, "compare": "canonical"},
                 {"type": "ip", "column": "ip_addr", "priority": 2},
             ],
         }

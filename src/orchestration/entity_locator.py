@@ -34,6 +34,13 @@ orchestration 계층이라 안쪽 계층에서 부를 수 없다(`arch_check`).
 IP는 값 구문이 그 자체로 분명하므로(`ipaddress` 파싱) 필드명을 보지 않는다(plans/102 §3.2 —
 값 기반 판정).
 
+## 정규형 대조 (plans/211 · D-363 ⑤)
+
+`HOST_CANONICAL_MATCH_ENABLED` on이면 호스트 계열 판정(식별자 추출 · 조회 행 셀 · 등급 비교값)이
+괄호 업무명 꼬리·`_` 레이블을 받아들이고 정규형(`canonical_host_key`)으로 대조한다 — 존 순회 행과
+매니페스트 행 모두. 매니페스트 호스트 키가 `compare: canonical`이면 조회 SQL도
+`build_canonical_host_condition`(괄호 꼬리 분기 없음)으로 조립한다. off면 종전과 같다.
+
 계층: orchestration.
 """
 
@@ -74,11 +81,12 @@ from src.domain.host_discovery import (
     plan_probe,
     system_trace_payload,
 )
+from src.domain.host_names import build_canonical_host_condition, canonical_host_key
 from src.orchestration.host_sweep import _zone_label, authorized_zones, sweep_order
 from src.routing.domain_config import get_domain_by_id
 from src.routing.registry import DBRegistry as RegistrySpec
 from src.routing.registry import get_registry
-from src.schema_cache.entity_key_manifest import load_entity_key_manifest
+from src.schema_cache.entity_key_manifest import host_canonical_enabled, load_entity_key_manifest
 from src.security.sql_guard import SQLGuard
 from src.state import AgentState
 from src.utils.prior_dependency import NOTE_PROBE
@@ -91,7 +99,10 @@ _DATA_INTENTS: tuple[Any, ...] = (None, "data_query", "alarm_query")
 #: 식별자로 받는 연산자 — 부정·범위·부분 일치는 "그 서버"를 지목하지 않는다.
 _ANCHOR_OPS: frozenset[str] = frozenset({"", "=", "==", "in"})
 
-_IDENT_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+#: 매니페스트 식별자 — 한글 음절도 받는다(자산관리 한글 컬럼 · plans/211).
+#: 인용하지 않고 쓰므로(엔진마다 인용 규칙이 다르다 — `key_bridge.build_scope_condition`과
+#: 같다) 허용 문자를 좁게 둔다.
+_IDENT_RE = re.compile(r"^[A-Za-z_가-힣][A-Za-z0-9_가-힣]*$")
 
 #: 존 순회 조회 주입점 — `(db_id, names, prefixes, ips) -> 행`. 실패는 **예외**로 알린다.
 HostLookupFn = Callable[
@@ -128,8 +139,14 @@ def _condition_values(value: Any) -> list[Any]:
     return [value]
 
 
-def extract_identifiers(parsed_requirements: Mapping[str, Any] | None) -> ProbeIdentifiers:
-    """`filter_conditions`에서 명시 식별자를 뽑는다(모듈 독스트링 「명시 식별자 판정」)."""
+def extract_identifiers(
+    parsed_requirements: Mapping[str, Any] | None, *, canonical: bool = False,
+) -> ProbeIdentifiers:
+    """`filter_conditions`에서 명시 식별자를 뽑는다(모듈 독스트링 「명시 식별자 판정」).
+
+    `canonical`(plans/211)이면 괄호 업무명 꼬리·`_` 레이블을 받아들이고, 호스트명은 정규형
+    (`canonical_host_key`) 기준으로 중복을 없앤다.
+    """
     hostnames: dict[str, TypedKey] = {}
     ips: dict[str, TypedKey] = {}
     for cond in (parsed_requirements or {}).get("filter_conditions") or []:
@@ -141,11 +158,11 @@ def extract_identifiers(parsed_requirements: Mapping[str, Any] | None) -> ProbeI
         for raw in _condition_values(cond.get("value")):
             if raw is None or is_demonstrative_identifier(raw):
                 continue
-            for tk in typed_tokens(raw):
+            for tk in typed_tokens(raw, canonical=canonical):
                 if tk.family == FAMILY_IP:
                     ips.setdefault(tk.normalized, tk)
                 elif tk.family == FAMILY_HOSTNAME and identity_field:
-                    hostnames.setdefault(tk.normalized, tk)
+                    hostnames.setdefault(_compare_value(tk, False, canonical), tk)
     return ProbeIdentifiers(hostnames=tuple(hostnames.values()), ips=tuple(ips.values()))
 
 
@@ -195,22 +212,34 @@ def _row_get(row: Mapping[str, Any], column: str) -> Any:
     return None
 
 
-def _compare_value(key: TypedKey, exact: bool) -> str:
-    return key.raw.rstrip(".") if exact and key.family == FAMILY_HOSTNAME else key.normalized
+def _compare_value(key: TypedKey, exact: bool, canonical: bool = False) -> str:
+    """등급 비교값 — 호스트 계열은 `exact`면 원문, `canonical`(plans/211)이면 정규형 키."""
+    if key.family == FAMILY_HOSTNAME:
+        if exact:
+            return key.raw.rstrip(".")
+        if canonical:
+            return canonical_host_key(key.normalized) or key.normalized
+    return key.normalized
 
 
-def _cell_keys(value: Any, family: str, *, multi_value: bool) -> list[TypedKey]:
+def _cell_keys(
+    value: Any, family: str, *, multi_value: bool, canonical: bool = False,
+) -> list[TypedKey]:
     """셀의 키 토큰. 다중값 컬럼만 구분자로 나눈다 — 단일값 컬럼(등록명 등)의 공백을 쪼개면
-    `"web server"`가 `web`·`server` 두 키가 되어 엉뚱한 식별자와 일치한다."""
+    `"web server"`가 `web`·`server` 두 키가 되어 엉뚱한 식별자와 일치한다.
+
+    `canonical`(plans/211)이면 괄호 업무명 꼬리를 떼고 `_` 레이블을 받아들여 판정한다."""
     if multi_value:
-        return [tk for tk in typed_tokens(value) if tk.family == family]
+        return [tk for tk in typed_tokens(value, canonical=canonical) if tk.family == family]
     if value is None or isinstance(value, bool):
         return []
     text = str(value).strip()
-    kt = classify_value(text)
+    kt = classify_value(text, canonical=canonical)
     if family_of(kt) != family:
         return []
-    return [TypedKey(key_type=kt, normalized=normalize_value(text, kt), raw=text)]
+    return [TypedKey(
+        key_type=kt, normalized=normalize_value(text, kt, canonical=canonical), raw=text,
+    )]
 
 
 def _matched_entities(report: Any, value: str) -> tuple[str, ...]:
@@ -274,10 +303,15 @@ class _Entities:
     ip: dict[str, set[str]]
     db_of: dict[str, str]
     strong: dict[str, dict[str, set[str]]]
+    #: 호스트 계열 정규형 대조(plans/211) — 셀 판정과 등급 비교값 모두에 쓴다.
+    canonical: bool = False
 
     @classmethod
-    def empty(cls) -> _Entities:
-        return cls(host={}, ip={}, db_of={}, strong={FAMILY_HOSTNAME: {}, FAMILY_IP: {}})
+    def empty(cls, *, canonical: bool = False) -> _Entities:
+        return cls(
+            host={}, ip={}, db_of={}, strong={FAMILY_HOSTNAME: {}, FAMILY_IP: {}},
+            canonical=canonical,
+        )
 
     def add_rows(
         self,
@@ -301,8 +335,11 @@ class _Entities:
             host_strong: set[str] = set()
             for col, multi, declared in host_columns:
                 found = {
-                    _compare_value(tk, exact_host)
-                    for tk in _cell_keys(_row_get(row, col), FAMILY_HOSTNAME, multi_value=multi)
+                    _compare_value(tk, exact_host, self.canonical)
+                    for tk in _cell_keys(
+                        _row_get(row, col), FAMILY_HOSTNAME, multi_value=multi,
+                        canonical=self.canonical,
+                    )
                 }
                 host_keys |= found
                 if declared:
@@ -354,7 +391,8 @@ class _Entities:
             targets = [
                 TargetEntity(entity_id=eid, keys=frozenset(ks)) for eid, ks in keyed.items() if ks
             ]
-            report = grade_matches([_compare_value(k, exact) for k in keys], targets, family=family)
+            values = [_compare_value(k, exact, self.canonical) for k in keys]
+            report = grade_matches(values, targets, family=family)
             grades[family] = {
                 "link": len(report.link),
                 "possible": len(report.possible),
@@ -365,7 +403,7 @@ class _Entities:
             # 써야 "보조 컬럼 때문에 맞은 것"과 "선언 컬럼으로 맞은 것"이 정확히 갈린다.
             declared = self.strong.get(family) or {}
             strong_report = grade_matches(
-                [_compare_value(k, exact) for k in keys],
+                values,
                 [
                     TargetEntity(entity_id=eid, keys=frozenset(ks))
                     for eid, ks in declared.items() if ks
@@ -373,7 +411,7 @@ class _Entities:
                 family=family,
             )
             for key in keys:
-                value = _compare_value(key, exact)
+                value = _compare_value(key, exact, self.canonical)
                 entity_ids = _matched_entities(report, value)
                 db_ids = tuple(dict.fromkeys(self.db_of[e] for e in entity_ids))
                 if not db_ids:
@@ -422,7 +460,8 @@ def build_manifest_probe_sql(
     """매니페스트 키로 소재 확인 SELECT 1개를 조립한다(읽기 전용 · 검증 후 반환).
 
     - 호스트 키: `LOWER(col) IN (정규형·단축명) OR LOWER(col) LIKE 'x.%'`
-      (`compare: exact`면 LOWER 없이)
+      (`compare: exact`면 LOWER 없이 · `compare: canonical`이면 `build_canonical_host_condition`
+      — 괄호 꼬리 분기 없음 · plans/211 · D-363 부기 1)
     - IP 키: `col IN (…)`
     - `multi_value` 키: 한 칸에 값이 여럿이라 `col LIKE '%x%'`로 **넓게** 좁히고, 토큰 확정은
       코드가 한다(X-T6)
@@ -458,6 +497,13 @@ def build_manifest_probe_sql(
 def _host_conditions(key: ManifestKey, hostnames: Sequence[TypedKey]) -> list[str]:
     exact = key.compare == "exact"
     column = _identifier(key.column)
+    if key.compare == "canonical" and not key.multi_value:
+        # 유효 정규형이 없으면(None) 아래 casefold 조건으로 둔다 — 정확 일치는 와일드카드가 없다.
+        canonical = build_canonical_host_condition(
+            column, [k.normalized for k in hostnames], business_suffix=False,
+        )
+        if canonical is not None:
+            return [canonical]
     expr = column if exact else f"LOWER({column})"
     names, prefixes = _host_candidates(hostnames, exact=exact)
     if key.multi_value:
@@ -498,6 +544,7 @@ async def probe_zoned_system(
     lookup: HostLookupFn,
     db_labels: Mapping[str, str],
     manifest_loader: ManifestLoaderFn | None = None,
+    canonical: bool = False,
 ) -> ProbeRun:
     """존 순회 시스템 — 인가된 존마다 고정 조회 1회. 한 존의 실패가 순회를 멈추지 않는다.
 
@@ -508,7 +555,7 @@ async def probe_zoned_system(
     started = time.monotonic()
     names, prefixes = _host_candidates(identifiers.hostnames)
     ips = _ip_candidates(identifiers.ips)
-    entities = _Entities.empty()
+    entities = _Entities.empty(canonical=canonical)
     errors: dict[str, str] = {}
     for db_id in scope:
         try:
@@ -552,10 +599,11 @@ async def probe_manifest_system(
     manifest_loader: ManifestLoaderFn,
     run_sql: SqlRunnerFn,
     db_labels: Mapping[str, str],
+    canonical: bool = False,
 ) -> ProbeRun:
     """단일 DB 시스템 — DB별 키 매니페스트로 SELECT 1회. 매니페스트가 없으면 "확인하지 못함"."""
     started = time.monotonic()
-    entities = _Entities.empty()
+    entities = _Entities.empty(canonical=canonical)
     errors: dict[str, str] = {}
     supported: set[str] = set()
     exact_host = False
@@ -787,11 +835,12 @@ async def entity_locator(
         return _skip(state)
     if state.get("template_structure") or state.get("zone_clarification"):
         return _skip(state)
-    identifiers = extract_identifiers(state.get("parsed_requirements"))
+    config = app_config or load_config()
+    canonical = host_canonical_enabled(config)
+    identifiers = extract_identifiers(state.get("parsed_requirements"), canonical=canonical)
     if not identifiers:
         return _skip(state)
 
-    config = app_config or load_config()
     registry = get_registry()
     active = config.multi_db.get_active_db_ids()
     allowed = state.get("allowed_db_ids")
@@ -836,6 +885,7 @@ async def entity_locator(
                 lookup=lookup,
                 run_sql=run_sql,
                 loader=loader,
+                canonical=canonical,
             )
 
     probes = {name: run.probe for name, run in runs.items()}
@@ -906,6 +956,7 @@ async def _probe_system(
     lookup: HostLookupFn,
     run_sql: SqlRunnerFn,
     loader: ManifestLoaderFn,
+    canonical: bool = False,
 ) -> ProbeRun:
     scope = probe_scope(
         system, registry, active_db_ids=active, targeted_db_ids=targeted, allowed_db_ids=allowed
@@ -921,6 +972,7 @@ async def _probe_system(
             lookup=lookup,
             db_labels=db_labels,
             manifest_loader=loader,
+            canonical=canonical,
         )
     return await probe_manifest_system(
         system,
@@ -930,4 +982,5 @@ async def _probe_system(
         manifest_loader=loader,
         run_sql=run_sql,
         db_labels=db_labels,
+        canonical=canonical,
     )

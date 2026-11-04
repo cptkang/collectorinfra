@@ -30,6 +30,7 @@ name ≠ hostname 이므로(Known Mistakes 2026-06-10) 서버명을 그대로 ho
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import re
 from dataclasses import dataclass
@@ -37,6 +38,7 @@ from datetime import datetime
 from typing import Any, Optional
 
 from src.domain.host_availability import HostAvailability, judge_availability
+from src.domain.host_names import build_canonical_host_condition, canonical_host_key
 from src.routing.domain_config import get_domain_by_id
 
 logger = logging.getLogger(__name__)
@@ -162,6 +164,7 @@ def build_host_probe_sql(
     prefixes: list[str],
     ips: list[str],
     db_engine: str = "postgresql",
+    canonical: bool = False,
 ) -> str:
     """교차 시스템 소재 프로브용 고정 SELECT (plans/102 §3.4 · D-224 ⑤ — 읽기 전용 단일문).
 
@@ -177,6 +180,10 @@ def build_host_probe_sql(
         prefixes: FQDN 후보를 찾을 단일 레이블 이름(소문자)
         ips: IP 문자열 후보
         db_engine: 대상 DB 엔진(DB2면 무스키마 참조 규칙 — `_table`)
+        canonical: 정규형 비교(plans/211 · `HOST_CANONICAL_MATCH_ENABLED`). 켜면
+            `names`·`prefixes`의 hostname·name 조건을 `build_canonical_host_condition`
+            (업무명 괄호 꼬리 포함) 한 곳에서 만든다. 정규형이 빈 값이거나 IP인 이름은
+            그 값만 종전 `IN` 조건을 유지한다(LIKE 없음).
 
     Returns:
         읽기 전용 단일 SELECT 문자열
@@ -185,12 +192,24 @@ def build_host_probe_sql(
         ValueError: 후보가 하나도 없을 때(조건 없는 전수 조회를 만들지 않는다)
     """
     conditions: list[str] = []
-    if names:
-        literals = ", ".join(_sql_literal(v) for v in names)
-        conditions.append(f"LOWER(r.hostname) IN ({literals})")
-        conditions.append(f"LOWER(r.name) IN ({literals})")
-    for prefix in prefixes:
-        conditions.append(f"LOWER(r.hostname) LIKE {_sql_literal(prefix + '.%')}")
+    if canonical:
+        host_values = list(dict.fromkeys([*names, *prefixes]))
+        for column in ("r.hostname", "r.name"):
+            cond = build_canonical_host_condition(column, host_values, business_suffix=True)
+            if cond:
+                conditions.append(cond)
+        plain = [v for v in names if not _canonical_key_usable(v)]
+        if plain:
+            literals = ", ".join(_sql_literal(v) for v in plain)
+            conditions.append(f"LOWER(r.hostname) IN ({literals})")
+            conditions.append(f"LOWER(r.name) IN ({literals})")
+    else:
+        if names:
+            literals = ", ".join(_sql_literal(v) for v in names)
+            conditions.append(f"LOWER(r.hostname) IN ({literals})")
+            conditions.append(f"LOWER(r.name) IN ({literals})")
+        for prefix in prefixes:
+            conditions.append(f"LOWER(r.hostname) LIKE {_sql_literal(prefix + '.%')}")
     if ips:
         conditions.append(f"r.ipaddress IN ({', '.join(_sql_literal(v) for v in ips)})")
     if not conditions:
@@ -203,6 +222,23 @@ def build_host_probe_sql(
         "  AND r.dtime IS NULL\n"
         f"  AND ({' OR '.join(conditions)})"
     )
+
+
+def _canonical_key_usable(value: str) -> bool:
+    """정규형 SQL 조건을 만들 수 있는 이름인가 — 정규형이 비지 않고 IP가 아니다."""
+    key = canonical_host_key(value)
+    if not key:
+        return False
+    try:
+        ipaddress.ip_address(key)
+    except ValueError:
+        return True
+    return False
+
+
+def _host_canonical_enabled(app_config: Any) -> bool:
+    """`HOST_CANONICAL_MATCH_ENABLED` — `is True` 비교로 설정 대역(MagicMock) 오발동을 막는다."""
+    return getattr(app_config, "host_canonical_match_enabled", False) is True
 
 
 #: 토큰 넓힘 조회의 소스당 상한 행(plans/196 §1.1 ① d).
@@ -322,7 +358,10 @@ async def probe_hosts(
         raise LookupError(f"활성 DB가 아닙니다: {db_id}")
     domain = get_domain_by_id(db_id)
     db_engine = domain.db_engine if domain else "postgresql"
-    sql = build_host_probe_sql(db_id, names=names, prefixes=prefixes, ips=ips, db_engine=db_engine)
+    sql = build_host_probe_sql(
+        db_id, names=names, prefixes=prefixes, ips=ips, db_engine=db_engine,
+        canonical=_host_canonical_enabled(app_config),
+    )
     try:
         async with registry.get_client(db_id) as client:
             result = await client.execute_sql(sql)

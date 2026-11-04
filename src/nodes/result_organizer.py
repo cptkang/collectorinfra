@@ -509,6 +509,7 @@ async def _check_entities(
         return None
     groups: list[str] = []
     found: dict[str, list[str]] = {v: [] for v in values}
+    canonical = getattr(app_config, "host_canonical_match_enabled", False) is True
     for db_id in db_ids:
         adapter = get_adapter_for(db_id, app_config)
         build = getattr(adapter, "entity_probe_sql", None) if adapter else None
@@ -525,6 +526,7 @@ async def _check_entities(
                 value,
                 db_engine=domain.db_engine if domain else state.get("active_db_engine"),
                 db_schema=(domain.db_schema if domain else "") or None,
+                canonical=canonical,
             )
             try:
                 async with get_db_client(app_config, db_id=db_id) as client:

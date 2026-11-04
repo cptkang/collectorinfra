@@ -29,6 +29,9 @@
   웹 계정 `JENNIFER_<ID>_WEB_USER`·`_WEB_PASSWORD`(비면 그 소스는 `disabled`) · `_WEB_URL`(비면
   `_API_URL`) · `_WEB_TLS_VERIFY`(기본 true). 웹 키는 전역 값을 승계하지 않는다 — 소스마다 전용
   계정이다(사람 계정·소스 간 공유 금지). 단일 설정(소스 `default`)은 웹 키가 없어 `disabled`다.
+- 호스트 정규형 비교(plans/211 · D-363): `APM_HOST_CANONICAL_MATCH_ENABLED`(기본 off = 종전 정합
+  비교와 비트 동일) — 켜면 인스턴스 정합의 호스트 비교가 `-`·`_`·「(업무명)」 꼬리를 무시하고 둘 다
+  FQDN이면 도메인까지 본다.
 - 설정 관리 API(plans/191 · D-345): `APM_GATEWAY_ADMIN_TOKEN`이 있을 때만 `/admin/config`를 연다.
   `load_dotenv`가 `os.environ`에 넣은 키는 `DOTENV_INJECTED_KEYS`에 기록한다 — 거기 없는데
   `os.environ`에 있는 키는 프로세스 환경 원천(파일을 고쳐도 반영되지 않음)으로 판정한다.
@@ -136,6 +139,8 @@ class RuntimeConfig:
     profile_calls_per_investigation: int = 5
     # 소스별 지표 카탈로그 캐시 수명(plans/134 W2 N-6 — 지나면 다시 읽고 지문으로 변경을 알린다)
     metric_catalog_ttl_seconds: int = 3600
+    # 인스턴스 정합 호스트 정규형 비교(plans/211 · D-363 — 기본 off = 종전 비교)
+    host_canonical_match: bool = False
 
 
 @dataclass
@@ -543,6 +548,7 @@ def load_config(
                     get("APM_METRIC_CATALOG_TTL_SECONDS"), 3600, "APM_METRIC_CATALOG_TTL_SECONDS"
                 )
             ),
+            host_canonical_match=_bool(get("APM_HOST_CANONICAL_MATCH_ENABLED"), False),
         ),
         jobs=jobs,
         perf=PerfConfig(

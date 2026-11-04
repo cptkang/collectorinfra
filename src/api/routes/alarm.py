@@ -3405,7 +3405,10 @@ async def post_host_link(
         patterns = await link_store.patterns()
     except Exception:  # noqa: BLE001 — 패턴은 등급 사유일 뿐이다
         patterns = {}
-    grade = selection_grade(hostname, db_id, {**row, "name": row["server_name"]}, patterns=patterns)
+    grade = selection_grade(
+        hostname, db_id, {**row, "name": row["server_name"]}, patterns=patterns,
+        canonical=getattr(config, "host_canonical_match_enabled", False) is True,
+    )
     audit_base.update({"link_db_id": db_id, "link_server_name": row["server_name"]})
 
     alarm_time, reference_time_source = _manual_reference_time(decision)

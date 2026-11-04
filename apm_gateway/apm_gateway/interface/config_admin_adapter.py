@@ -191,6 +191,14 @@ _TABLE: tuple[tuple[str, str, str, Any, _Getter, str], ...] = (
         "지표 카탈로그 캐시 수명(초)",
     ),
     (
+        "APM_HOST_CANONICAL_MATCH_ENABLED",
+        "runtime",
+        "bool",
+        "false",
+        lambda c: c.runtime.host_canonical_match,
+        "인스턴스 정합 호스트 정규형 비교(-·_·(업무명) 무시 · FQDN은 도메인까지 · D-363)",
+    ),
+    (
         "APM_PARSE_WORKERS",
         "runtime",
         "int",
