@@ -132,7 +132,11 @@ def _turn_label(t: Turn) -> str:
     return " ".join(parts)
 
 
-def _providers(client: DemoClient, args: argparse.Namespace) -> tuple[tuple[str, str], str]:
+def _providers(client: DemoClient,
+               args: argparse.Namespace) -> tuple[tuple[str, str, dict[str, str]], str]:
+    """(워커, 오케스트레이터, 명시 역할 provider), 출처. 못 읽으면 전부 외부(`unknown`)로 본다."""
+    from scripts.scenario.preflight import ROLES_UNREADABLE, role_providers
+
     if args.admin_user:
         found, origin = client.admin_providers(args.admin_user, args.admin_password or "")
         if found:
@@ -143,19 +147,21 @@ def _providers(client: DemoClient, args: argparse.Namespace) -> tuple[tuple[str,
 
         cfg = load_config()
         return (str(cfg.llm.provider or "unknown").lower(),
-                str(cfg.orchestrator.provider or "unknown").lower()), "로컬 .env"
+                str(cfg.orchestrator.provider or "unknown").lower(),
+                role_providers(cfg)), "로컬 .env"
     except Exception as exc:  # 못 읽으면 외부로 본다 - 과금 게이트를 열지 않는다
         unknown = f"unknown({type(exc).__name__})"
-        return (unknown, unknown), "판독 실패"
+        return (unknown, unknown, {ROLES_UNREADABLE: unknown}), "판독 실패"
 
 
 def _billing_gate(client: DemoClient, args: argparse.Namespace) -> bool:
     """과금 프로바이더면 사람의 확인을 받는다(CLAUDE.md 과금 게이트 · D-222 판정 규칙)."""
-    from scripts.scenario.preflight import external_planes
+    from scripts.scenario.preflight import external_planes, plane_label
 
-    (worker, orch), origin = _providers(client, args)
-    external = external_planes(worker, orch)
-    print(f"LLM 프로바이더 ({origin}): 워커={worker} · 오케스트레이터={orch}")
+    (worker, orch, roles), origin = _providers(client, args)
+    external = external_planes(worker, orch, roles=roles)
+    role_text = "".join(f" · {plane_label(role)}={provider}" for role, provider in roles.items())
+    print(f"LLM 프로바이더 ({origin}): 워커={worker} · 오케스트레이터={orch}{role_text}")
     if not external:
         return True
     print(f"  ! 비과금 집합 밖 평면: {', '.join(external)} - 질의마다 외부 API 비용이 발생할 수 있습니다")

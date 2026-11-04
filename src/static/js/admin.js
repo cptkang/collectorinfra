@@ -1062,6 +1062,7 @@
             secretState.className = "setting-state-text";
             secretState.textContent = item.is_set ? "설정됨" : "미설정";
             nodes.state.appendChild(secretState);
+            if (!item.is_set) appendInheritedHint(nodes, item);
             return;
         }
         if (item.writable === false) {
@@ -1078,12 +1079,15 @@
         if (dirty) {
             stateText.textContent = "변경됨(미저장)";
             stateText.classList.add("setting-state-text--dirty");
+        } else if (item.inherited_hint) {
+            stateText.textContent = "";
         } else if (value === null || value === undefined) {
             stateText.textContent = "기본값 사용 중";
         } else {
             stateText.textContent = "";
         }
         nodes.state.appendChild(stateText);
+        if (!dirty) appendInheritedHint(nodes, item);
 
         if (value !== null && value !== undefined) {
             var resetBtn = document.createElement("button");
@@ -1099,6 +1103,15 @@
             });
             nodes.state.appendChild(resetBtn);
         }
+    }
+
+    // (plans/212) 비어 있는 LLM 역할 항목 — 서버가 해석해 보낸 승계 값(URL은 호스트만·키는 설정 여부만)을 회색으로 보인다.
+    function appendInheritedHint(nodes, item) {
+        if (!item.inherited_hint) return;
+        var hint = document.createElement("span");
+        hint.className = "setting-state-text setting-state-text--inherited";
+        hint.textContent = "현재 워커 값 사용 — " + item.inherited_hint;
+        nodes.state.appendChild(hint);
     }
 
     function rerenderWidget(key) {
@@ -1232,7 +1245,8 @@
         choices.forEach(function (choice) {
             var option = document.createElement("option");
             option.value = choice;
-            option.textContent = choice;
+            // 빈 선택지는 LLM 역할 provider에만 있다(plans/212 — 비우면 워커 승계).
+            option.textContent = choice === "" ? "(워커 승계)" : choice;
             select.appendChild(option);
         });
         select.value = value === null || value === undefined

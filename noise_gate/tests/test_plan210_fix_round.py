@@ -118,8 +118,13 @@ async def test_itam_request_before_retry_returns_retry_wait() -> None:
               next_retry_at=retry.isoformat())
     msg = hm.itam_request_message(source_id="s1", domain_id="30", domain_name="결제정산")
     out = await handle_itam_request(msg, repo=repo, cache=cache, gateway_client=gateway, now=NOW)
-    assert out == {"status": "retry_wait", "next_retry_at": retry.isoformat()}
-    assert gateway.calls == [] and cache.put_rows == []
+    # plans/211 W6 — 재시도 대기는 ITAM 단계에만: 노드 주소(N1)는 묻고 domain 행은 그대로
+    assert out["status"] == "retry_wait" and out["next_retry_at"] == retry.isoformat()
+    assert out["tried"]["itam"] == "skipped:retry_wait"
+    assert [name for name, _ in gateway.calls] == ["apm_instance_map", "apm_node_addresses"]
+    assert cache.put_rows == []
+    row = repo.row("s1", "30", "domain", "")
+    assert row and row["state"] == "failed" and row["evidence"] == {}
 
 
 @pytest.mark.parametrize("retry", [NOW - timedelta(minutes=1), None])
@@ -130,7 +135,12 @@ async def test_itam_request_after_retry_or_without_row_proceeds(retry: Any) -> N
                   next_retry_at=retry.isoformat())
     msg = hm.itam_request_message(source_id="s1", domain_id="30", domain_name="결제정산")
     out = await handle_itam_request(msg, repo=repo, cache=cache, gateway_client=gateway, now=NOW)
-    assert out["status"] == "ok" and len(gateway.calls) == 1
+    # plans/211 W6 — 호출 = 도메인 다시 읽기 + 노드 주소(N1) 1회 · ITAM 사슬은 돈다
+    assert out["status"] == "ok" and "state" in out and out["map_id"] > 0
+    assert [name for name, _ in gateway.calls] == ["apm_instance_map", "apm_node_addresses"]
+    row = repo.row("s1", "30", "domain", "")
+    assert row and row["basis"] == "itam" and out["map_id"] == row["id"]
+    assert cache.put_rows and cache.put_rows[0]["id"] == row["id"]
 
 
 async def test_itam_request_retry_wait_is_acked_by_consumer() -> None:
@@ -154,7 +164,9 @@ async def test_itam_request_retry_wait_is_acked_by_consumer() -> None:
     await cm.publish_request(redis, hm.itam_request_message(source_id="s1", domain_id="30"))
     assert await consumer.consume_once() == 1
     assert results[0]["status"] == "retry_wait" and len(redis.acked) == 1
-    assert gateway.calls == []
+    # plans/211 W6 — ITAM 단계만 대기 · 노드 주소(N1)는 묻는다
+    assert [name for name, _ in gateway.calls] == ["apm_instance_map", "apm_node_addresses"]
+    assert results[0]["tried"]["itam"] == "skipped:retry_wait"
 
 
 # ── 3. 스트림 메시지 검증 ──────────────────────────────────────────────

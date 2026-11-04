@@ -12,7 +12,7 @@ plans/210 §3.5 · D-362.
   2대 이상 → instance 행(ambiguous · 후보만 · 진단에 쓰지 않음).
 - itam: 이번 스캔에서 인스턴스가 하나도 잇지 못한 도메인만 → domain 행(`apm_host_map_itam`).
 
-`canonical`(plans/211 W7 · `HOST_CANONICAL_MATCH_ENABLED`)이 켜지면 SMS hostname 색인이
+`canonical`(plans/211 W8 · `HOST_CANONICAL_MATCH_ENABLED`)이 켜지면 SMS hostname 색인이
 정규형(L0)이다(`build_sms_index(canonical=True)` — 같은 색인을 itam 사슬도 쓴다). 그래도
 잇지 못한 인스턴스는 이름 후보(L3 · D-348 후보 등급 `rank_candidates`)를 메모리에서 매겨
 instance 행을 **`ambiguous` · `name_candidate`로만** 남긴다(진단 연결에 쓰지 않음 · DB 조회
@@ -51,10 +51,11 @@ from noise_gate.domain.apm_host_map import (
     WRITE_SUGGEST,
     WRITE_UPDATE,
     AutoProposal,
+    VmMatch,
     instance_match_key,
     make_target,
     normalize_targets,
-    sms_host_lookup,
+    sms_host_servers,
     target_identity,
     vm_exact_match,
     workload_match_key,
@@ -98,6 +99,18 @@ NODE_STATUS_OK = "ok"
 #: 이름 후보(L3) 좁힘 키 하나에 걸리는 SMS 색인 항목 상한 — 넘는 키(전 서버가 공유하는 흔한 토큰 ·
 #: 짧은 접두)는 좁힘에 쓰지 않는다. 너무 흔해 후보 의미가 없고, 인스턴스 × SMS 전수 대조를 막는다.
 NAME_CANDIDATE_BUCKET_CAP = 50
+#: 노드 주소 사유 카운터(`link_summary` 가산 키 · plans/211 §9.3 C).
+STAT_NODE_OK = "node_ok"                    # 노드 주소 상태 ok(IP 형식 통과)
+STAT_NODE_IP_UNMATCHED = "node_ip_unmatched"  # 노드 IP가 SMS 색인에 없음
+STAT_NODE_IP_AMBIGUOUS = "node_ip_ambiguous"  # 노드 IP가 SMS 서버 2대 이상
+STAT_NODE_NOT_OK = "node_not_ok"            # 노드 주소 상태가 ok가 아님(빈칸 포함)
+NODE_SUMMARY_KEYS: tuple[str, ...] = (
+    STAT_NODE_OK, STAT_NODE_IP_UNMATCHED, STAT_NODE_IP_AMBIGUOUS, STAT_NODE_NOT_OK,
+)
+#: VM 일치 카운터(`stats`에만 — 요청 처리의 단계별 결과 `tried`가 쓴다).
+STAT_VM_TRIED = "vm_tried"
+STAT_VM_LINKED = "vm_linked"
+STAT_VM_AMBIGUOUS = "vm_ambiguous"
 
 
 @dataclass
@@ -273,17 +286,36 @@ def plan_scan_proposals(
     max_targets: int = DEFAULT_MAX_TARGETS,
     evidence: Mapping[str, Any] | None = None,
     canonical: bool = False,
+    node_extra: Mapping[str, Sequence[Mapping[str, Any]]] | None = None,
+    vm_extra: Mapping[tuple[str, str, str], VmMatch] | None = None,
+    stats: dict[str, int] | None = None,
+    evidence_source: str = "scan",
+    name_candidates: bool = True,
 ) -> dict[str, list[AutoProposal]]:
     """APM 인벤토리 스냅샷 행 → `{source_id: [제안…]}`(모듈 머리 규칙).
 
     인벤토리 행: `{source_id, domain_id, domain_name, domain_description, instance_name, ip,
     host_name, host_address, host_address_status}`. `use_node_address`가 거짓(노드 주소 스캐너 실패·
     꺼짐)이면 node_address 규칙을, `itam`이 None(ITAM 스캐너 실패)이면 itam 규칙을 건너뛴다.
-    `canonical`은 `by_host`가 `build_sms_index(canonical=True)`일 때 켠다 — L0 조회 + L3 이름 후보.
+
+    선택 인자(plans/211 §9.3 — 기본값이면 현행과 같다):
+    - `canonical`: SMS hostname 색인 키 공간(`build_sms_index`와 같은 값) — 참이면 L0 조회
+    - `node_extra`: 노드 IP → 직접 조회로 찾은 서버(색인 miss일 때만 본다 · evidence `live`)
+    - `vm_extra`: `(source_id, domain_id, instance 키)` → 직접 조회한 VM 일치(색인 결과가 0대일
+      때만 본다 · evidence `live`)
+    - `stats`: 노드 주소 사유(`NODE_SUMMARY_KEYS`)·VM 일치 카운터를 더할 dict
+    - `evidence_source`: evidence `source` 값
+    - `name_candidates`: `canonical`과 함께 참이면 L0까지 못 이은 VM 인스턴스에 L3 이름 후보
+      (`ambiguous` · `name_candidate` · plans/211 §10.4) — 알람 miss 요청 처리는 끈다
     """
     cap = max(1, int(max_targets))
     base = dict(evidence or {})
     names: _NameCandidateIndex | None = None
+    counts: dict[str, int] = stats if stats is not None else {}
+
+    def _count(name: str) -> None:
+        counts[name] = counts.get(name, 0) + 1
+
     domains: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
     for row in inventory:
         source, domain = _text(row.get("source_id")), _text(row.get("domain_id"))
@@ -302,13 +334,29 @@ def plan_scan_proposals(
                 continue
             proposal = None
             node_ip = _ip(row.get("host_address"))
-            if use_node_address and node_ip and row.get("host_address_status") == NODE_STATUS_OK:
-                match = vm_exact_match(by_ip.get(node_ip), None, max_targets=cap)
+            node_ok = node_ip is not None and row.get("host_address_status") == NODE_STATUS_OK
+            if use_node_address and not node_ok:
+                _count(STAT_NODE_NOT_OK)
+            if use_node_address and node_ip and node_ok:
+                _count(STAT_NODE_OK)
+                servers = by_ip.get(node_ip)
+                live = False
+                if not servers and node_extra and node_extra.get(node_ip):
+                    servers, live = node_extra[node_ip], True
+                match = vm_exact_match(servers, None, max_targets=cap)
+                if match.status == "none":
+                    _count(STAT_NODE_IP_UNMATCHED)
+                elif match.status == "ambiguous":
+                    _count(STAT_NODE_IP_AMBIGUOUS)
                 if match.status == "linked":
+                    node_evidence: dict[str, Any] = {**base, "source": evidence_source,
+                                                       "node_ip": node_ip}
+                    if live:
+                        node_evidence["live"] = True
                     proposal = AutoProposal(
                         domain_id=domain, scope=SCOPE_INSTANCE, match_key=key,
                         basis=BASIS_NODE_ADDRESS, state=STATE_ACTIVE, targets=match.targets,
-                        evidence={**base, "source": "scan", "node_ip": node_ip},
+                        evidence=node_evidence,
                         domain_name=domain_name, instance_example=name,
                     )
                     wl_key = workload_match_key(name)
@@ -317,17 +365,31 @@ def plan_scan_proposals(
                         slot[1].extend(match.targets)
             if proposal is None:
                 ip = _ip(row.get("ip"))
-                host_hits = sms_host_lookup(by_host, row.get("host_name"), canonical=canonical)
+                host_name = _text(row.get("host_name"))
+                host_hits = sms_host_servers(by_host, host_name, canonical=canonical)
                 match = vm_exact_match(
                     by_ip.get(ip) if ip else None,
                     host_hits,
                     max_targets=cap,
                 )
+                live = False
+                extra = (vm_extra or {}).get((source, domain, key))
+                if match.state is None and extra is not None and extra.state is not None:
+                    match, live = extra, True
+                if ip or host_name:
+                    _count(STAT_VM_TRIED)
+                    if match.status == "linked":
+                        _count(STAT_VM_LINKED)
+                    elif match.status == "ambiguous":
+                        _count(STAT_VM_AMBIGUOUS)
                 if match.state is not None:
-                    vm_evidence = {**base, "source": "scan", "ip": ip or "",
-                                   "host_name": _text(row.get("host_name")),
-                                   "candidates": len(match.targets)}
-                    if canonical and host_hits:
+                    vm_evidence: dict[str, Any] = {
+                        **base, "source": evidence_source, "ip": ip or "", "host_name": host_name,
+                        "candidates": len(match.targets),
+                    }
+                    if live:
+                        vm_evidence["live"] = True
+                    elif canonical and host_hits:
                         vm_evidence["match"] = "canonical"
                     proposal = AutoProposal(
                         domain_id=domain, scope=SCOPE_INSTANCE, match_key=key,
@@ -336,7 +398,8 @@ def plan_scan_proposals(
                         evidence=vm_evidence,
                         domain_name=domain_name, instance_example=name,
                     )
-            if proposal is None and canonical and workload_match_key(name) is None:
+            if (proposal is None and canonical and name_candidates
+                    and workload_match_key(name) is None):
                 # 파드는 이름 후보를 만들지 않는다(D-355 ④ — 서버 선택을 유도하지 않음)
                 names = names or _NameCandidateIndex(by_host)
                 proposal = _name_candidate_proposal(
@@ -351,7 +414,7 @@ def plan_scan_proposals(
             proposals.append(AutoProposal(
                 domain_id=domain, scope=SCOPE_WORKLOAD, match_key=wl_key,
                 basis=BASIS_NODE_ADDRESS, state=STATE_ACTIVE, targets=tuple(merged),
-                evidence={**base, "source": "scan", "pods": sum(
+                evidence={**base, "source": evidence_source, "pods": sum(
                     1 for r in rows if workload_match_key(r.get("instance_name")) == wl_key)},
                 domain_name=domain_name, instance_example=example,
             ))
@@ -386,9 +449,9 @@ def present_servers(rows: Iterable[Mapping[str, Any]]) -> set[tuple[str, str]]:
 
 
 def empty_link_summary() -> dict[str, Any]:
-    """연계 요약 초기값(§3.5 `link_summary`)."""
+    """연계 요약 초기값(§3.5 `link_summary` + 노드 주소 사유 카운터 — plans/211 §9.3 C)."""
     return {"new": 0, "changed": 0, "ambiguous": 0, "failed": 0, "gone": 0, "kept_manual": 0,
-            "errors": 0, "skipped": []}
+            "errors": 0, "skipped": [], **dict.fromkeys(NODE_SUMMARY_KEYS, 0)}
 
 
 def add_write_results(
@@ -418,6 +481,7 @@ def add_write_results(
 __all__ = [
     "NAME_CANDIDATE_BUCKET_CAP",
     "NODE_STATUS_OK",
+    "NODE_SUMMARY_KEYS",
     "RULE_ITAM",
     "RULE_NODE_ADDRESS",
     "RULE_VM_EXACT",
@@ -433,6 +497,13 @@ __all__ = [
     "SCANNER_PARTIAL",
     "SCANNER_SMS",
     "SCANNER_USABLE",
+    "STAT_NODE_IP_AMBIGUOUS",
+    "STAT_NODE_IP_UNMATCHED",
+    "STAT_NODE_NOT_OK",
+    "STAT_NODE_OK",
+    "STAT_VM_AMBIGUOUS",
+    "STAT_VM_LINKED",
+    "STAT_VM_TRIED",
     "ItamSnapshot",
     "ScannerResult",
     "add_write_results",

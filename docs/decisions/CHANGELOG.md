@@ -8,6 +8,10 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-11-04 | D-362 · D-363 | 번호 재부여 — `origin/main` 병합 시 원격이 부기 4(`plans/211` W6)를 먼저 사용 → 이쪽 D-362 부기 4(「확인 취소」 · ㉑→㉗)·D-363 부기 4(사전 스캔 적용 · W6·W7→W7·W8 · `plans/211` §9→§10)를 각각 부기 5로 · L0 색인은 원격 `sms_host_servers`로 통합 · 이름 후보는 스캔·다시 찾기만 |
+| 2026-11-04 | D-365 · D-174 | D-365 신규 — 용도별 LLM 평면(`router`·`planner`·`answer`) · 미설정 = 워커 항목 단위 승계 · 필수값 누락 기동 실패 · 과금 판정 확장(plans/212 W0~W5) · D-174 부기 1(메커니즘 구현 · 운영 전환은 별도 결정) |
+| 2026-11-04 | D-363 | 부기 4 — `plans/211` W6 F: `HOST_CANONICAL_MATCH_ENABLED` on이면 APM↔SMS 연계의 SMS hostname 색인(도메인 색인·Redis 사본·ITAM 사슬) 키를 정규형으로 · off 비트 동일 |
+| 2026-11-04 | D-362 | 부기 4 — `plans/211` W6: 연계 생성 순서 노드 주소 우선(N1 게이트웨이 조회 → SMS IP 색인 → 직접 조회 → VM → ITAM은 아무것도 못 이었을 때만) · ⑬ 개정(재시도 대기는 ITAM 단계만) · 알람 3″순 · 대체된 domain 실패 행 표시 정리 · 관리자 행 같은 제안 재기록 금지 |
 | 2026-11-04 | D-364 | 신규 — 노이즈 게이트 APM 게이트웨이 주소를 채팅의 `MCP_SOURCE_ENDPOINTS["apm"]`로 통합 · `NOISE_APM_MCP_URL` 폐지(기동 경고) · 토큰은 분리 유지 · D-287 ①·D-345 부기 개정 |
 | 2026-11-04 | D-363 | 부기 4 ⑥ — W6·W7 구현(`63cb9960`·`0b50de4a`): 이름 후보는 `active` 행을 건너뜀 · 파드 제외 · 힌트 사유 `apm_map_name_candidate` 가산 · 잔여(Redis 색인·ITAM 요청 처리기 현행 키) |
 | 2026-11-04 | D-363 | 부기 4 — 사전 스캔(D-362)에 적용: 인벤토리 APM 행 연계 표시·「수정」 분기(W6) · `HOST_CANONICAL_MATCH_ENABLED` on이면 스캔·다시 찾기 SMS hostname 색인 L0 정규형(1대 `active`)(W7) · 이름 후보는 `ambiguous`·basis `name_candidate`만 · Redis 색인 현행 · auto off 스캔(G3) 제외(D-362 ⑪ 유지) · `plans/211` §9 |

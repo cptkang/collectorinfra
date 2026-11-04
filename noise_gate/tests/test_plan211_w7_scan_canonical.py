@@ -30,7 +30,7 @@ from noise_gate.domain.apm_host_map import (
     make_target,
     plan_auto_write,
     sms_host_key,
-    sms_host_lookup,
+    sms_host_servers,
 )
 from noise_gate.domain.apm_host_map_itam import ItamApp, ItamServer
 from noise_gate.domain.apm_host_map_scan import (
@@ -114,7 +114,7 @@ def test_l0_fqdn_domains_differ_is_not_l0() -> None:
 def test_l0_prefix_is_not_l0_but_can_be_name_candidate() -> None:
     sms = [_sms("zone_a", "webap010")]
     by_ip, by_host = build_sms_index(sms, canonical=True)
-    assert not sms_host_lookup(by_host, "webap01", canonical=True)  # L0 불성립
+    assert not sms_host_servers(by_host, "webap01", canonical=True)  # L0 불성립
     p = _instance(_plan([_inst("i1", host="webap01")], sms, canonical=True), "i1")
     assert p is not None
     assert (p.basis, p.state) == (BASIS_NAME_CANDIDATE, STATE_AMBIGUOUS)
@@ -143,7 +143,7 @@ def test_off_lookup_matches_plain_get() -> None:
     assert build_sms_index(rows) == build_sms_index(rows, canonical=False)
     _ip, by_host = build_sms_index(rows)
     for q in ("web-ap01", "WEB-AP01.corp.local", "db01", "", "x"):
-        assert sms_host_lookup(by_host, q) == by_host.get(hm.normalize_hostname(q))
+        assert sms_host_servers(by_host, q) == list(by_host.get(hm.normalize_hostname(q)) or [])
 
 
 # ── L3: 이름 후보 ───────────────────────────────────────────────────────
@@ -276,7 +276,7 @@ def test_name_candidate_basis_registered() -> None:
     assert "이름" in hm.evidence_text("auto", BASIS_NAME_CANDIDATE)
 
 
-# ── 서비스 배선: 스캔 on · Redis 색인 불변 ─────────────────────────────────
+# ── 서비스 배선: 스캔 on · Redis 색인은 같은 키 공간(원격 W6 F 병합 뒤) ─────────────
 SMS_ROWS = [_sms("zone_a", "WEB-AP01.corp.local", "10.1.0.1", rid=1),
             _sms("zone_a", "payweb01", "10.1.0.2", rid=2)]
 INVENTORY = [_inst("i1", host="webap01"), _inst("i2", host="payweb")]
@@ -294,13 +294,13 @@ def _service(repo: FakeRepo, cache: FakeCache, *, canonical: bool) -> ApmHostMap
         return ScannerResult("failed", error_kind="x")
 
     return ApmHostMapScanService(
-        repo=repo, cache=cache, lock=FakeLock(), auto_enabled=True, canonical_match=canonical,
+        repo=repo, cache=cache, lock=FakeLock(), auto_enabled=True, canonical=canonical,
         scanners=ScanScanners(apm_inventory=inv, node_address=failed, sms=sms, itam=failed),
     )
 
 
 @pytest.mark.parametrize("canonical", [True, False])
-async def test_scan_service_canonical_and_redis_index_unchanged(canonical: bool) -> None:
+async def test_scan_service_canonical_and_redis_index_same_key_space(canonical: bool) -> None:
     repo, cache = FakeRepo(), FakeCache()
     service = _service(repo, cache, canonical=canonical)
     await service.start_scan(requested_by="a")
@@ -313,9 +313,10 @@ async def test_scan_service_canonical_and_redis_index_unchanged(canonical: bool)
     else:
         assert vm is None and cand is None
     assert cache.sms_index is not None
-    # 진단 고속 경로 Redis 색인은 늘 현행 키(normalize_hostname)
-    assert cache.sms_index[1] == build_sms_index(SMS_ROWS)[1]
-    assert "web-ap01" in cache.sms_index[1] and "webap01" not in cache.sms_index[1]
+    # 진단 고속 경로 Redis 색인도 스캔과 같은 키 공간(D-363 부기 4 — 생성·조회 함께 정규형)
+    assert cache.sms_index[1] == build_sms_index(SMS_ROWS, canonical=canonical)[1]
+    if not canonical:
+        assert "web-ap01" in cache.sms_index[1] and "webap01" not in cache.sms_index[1]
 
 
 def test_build_scan_service_reads_flag(monkeypatch: pytest.MonkeyPatch) -> None:
@@ -339,7 +340,7 @@ def test_build_scan_service_reads_flag(monkeypatch: pytest.MonkeyPatch) -> None:
     for flag, want in ((True, True), (False, False), ("true", False)):
         cfg = SimpleNamespace(noise_gate=SimpleNamespace(), host_canonical_match_enabled=flag)
         app_scan.build_scan_service(cfg, repo=FakeRepo(), cache=cache)
-        assert captured["canonical_match"] is want
+        assert captured["canonical"] is want
 
 
 # ── 비용: 5k × 5k ───────────────────────────────────────────────────────
@@ -385,3 +386,29 @@ async def test_lookup_name_candidate_row_unresolved_with_reason(
     link = (await fp._attach(fp._cfg(), event, redis=redis))["polestar_link"]
     assert link["status"] == "unresolved" and link["reason"] == reason
     assert link["no_config_fallback"] is True
+
+
+# ── 병합(원격 W6) 뒤: 이름 후보는 스캔·관리자 다시 찾기만 (plans/211 §10.6) ─────────
+def test_l3_off_when_name_candidates_false() -> None:
+    sms = [_sms("zone_a", "payweb01", rid=1)]
+    by_ip, by_host = build_sms_index(sms, canonical=True)
+    inv = [_inst("i1", host="payweb")]
+    on = plan_scan_proposals(inv, by_ip, by_host, use_node_address=True, itam=None,
+                             canonical=True)
+    off = plan_scan_proposals(inv, by_ip, by_host, use_node_address=True, itam=None,
+                              canonical=True, name_candidates=False)
+    assert _instance(on, "i1") is not None and _instance(on, "i1").basis == BASIS_NAME_CANDIDATE
+    assert _instance(off, "i1") is None
+
+
+@pytest.mark.parametrize("flag", [False, True])
+async def test_plan_domain_link_name_candidates_opt_in(flag: bool) -> None:
+    from noise_gate.application.apm_host_map_scan import plan_domain_link
+
+    sms = [_sms("zone_a", "payweb01", rid=1)]
+    by_ip, by_host = build_sms_index(sms, canonical=True)
+    plan = await plan_domain_link(None, "s1", "10", [_inst("i1", host="payweb")],
+                                  by_ip=by_ip, by_host=by_host, canonical=True,
+                                  name_candidates=flag)
+    bases = [p.basis for p in plan.proposals if p.scope == "instance"]
+    assert bases == ([BASIS_NAME_CANDIDATE] if flag else [])

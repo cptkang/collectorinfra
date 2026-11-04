@@ -305,11 +305,15 @@ SECTION_BY_KEY: dict[str, str] = {
 #:   plans/163 X6+ 이후 `LLM_API_KEY` 보정은 없다.
 #: - DBHUB_BEARER_TOKEN / ORCHESTRATOR_API_KEY / LLM_VLLM_API_KEY: 전송 인증 크레덴셜
 #:   (Plan 68 §1.1 · D-340).
+#: - LLM_{ROUTER,PLANNER,ANSWER}_API_KEY: 용도별 LLM 평면 키(plans/212 — LLM_VLLM_API_KEY 선례).
 _MANUAL_SECRET_KEYS: frozenset[str] = frozenset({
     "LLM_OLLAMA_API_KEY",
     "DBHUB_BEARER_TOKEN",
     "ORCHESTRATOR_API_KEY",
     "LLM_VLLM_API_KEY",
+    "LLM_ROUTER_API_KEY",
+    "LLM_PLANNER_API_KEY",
+    "LLM_ANSWER_API_KEY",
 })
 
 #: `.encenv.example`을 읽을 수 없을 때 쓰는 폴백(파일 부재로 시크릿이 편집 가능해지는 것을 막는다).
@@ -401,6 +405,20 @@ RELOADABLE_KEYS: frozenset[str] = frozenset({
     "LLM_FABRIX_CHAT_MODEL",
     "LLM_FABRIX_LLM_CONFIG",
     "LLM_FABRIX_ANSWER_LLM_CONFIG",
+    # plans/212 용도별 LLM 평면 — 빌드 시 create_llm(role=)·create_role_llm
+    # (*_API_KEY는 시크릿이라 제외)
+    "LLM_ROUTER_PROVIDER",
+    "LLM_ROUTER_BASE_URL",
+    "LLM_ROUTER_MODEL",
+    "LLM_ROUTER_TIMEOUT",
+    "LLM_PLANNER_PROVIDER",
+    "LLM_PLANNER_BASE_URL",
+    "LLM_PLANNER_MODEL",
+    "LLM_PLANNER_TIMEOUT",
+    "LLM_ANSWER_PROVIDER",
+    "LLM_ANSWER_BASE_URL",
+    "LLM_ANSWER_MODEL",
+    "LLM_ANSWER_TIMEOUT",
     # --- orchestrator: 빌드 시 create_orchestrator_llm·deep_agent 조립 ---
     "ORCHESTRATOR_PROVIDER",
     "ORCHESTRATOR_BASE_URL",
@@ -608,6 +626,9 @@ class SettingSchemaItem(BaseModel):
     consumed: bool = True
     description: Optional[str] = None
     grade: str = "B"                       # A|B|C — C는 웹UI 기본 화면에서 숨긴다
+    # 비어 있는 LLM 역할 항목이 승계하는 현재 워커 값(plans/212 §4.2) — URL은 호스트만, 키는
+    # 「설정됨/미설정」만. 역할 항목이 아니거나 값을 적었으면 None.
+    inherited_hint: str | None = None
 
 
 class SettingGroupSchema(BaseModel):
@@ -1228,6 +1249,49 @@ def _secret_is_set(config: Optional[AppConfig], spec: FieldSpec,
     return False
 
 
+def role_inherited_hints(config: AppConfig) -> dict[str, str]:
+    """비어 있는 LLM 역할 항목(env 키) → 승계하는 현재 워커 값의 표시 문자열(plans/212 §4.2).
+
+    해석 규칙은 `src.llm`의 역할 대응표를 그대로 쓴다 — provider는 역할 provider가 없으면 워커
+    provider, 나머지 항목은 해석된 provider의 워커 필드다. URL은 호스트(:포트)만, 키는 값 대신
+    「설정됨/미설정」만 싣는다.
+    """
+    # 지연 import — 벤치·시나리오 스크립트가 이 모듈 상수만 쓸 때 LLM 팩토리를 끌어오지 않는다.
+    from src.llm import _ROLE_WORKER_FIELDS, LLM_ROLES, _url_host
+
+    llm_cfg = config.llm
+    hints: dict[str, str] = {}
+    for role in LLM_ROLES:
+        prefix = f"LLM_{role.upper()}_"
+        role_provider = getattr(llm_cfg, f"{role}_provider")
+        provider = role_provider or llm_cfg.provider
+        if not role_provider:
+            hints[prefix + "PROVIDER"] = llm_cfg.provider
+        fields = _ROLE_WORKER_FIELDS.get(provider, {})
+        for item in ("base_url", "model", "api_key", "timeout"):
+            if getattr(llm_cfg, f"{role}_{item}"):
+                continue
+            field = fields.get(item)
+            if field is None:
+                hints[prefix + item.upper()] = f"{provider}에는 해당 없음"
+                continue
+            value = getattr(llm_cfg, field)
+            if item == "api_key":
+                text = "설정됨" if value else "미설정"
+            elif item == "base_url":
+                text = _url_host(value)
+            elif item == "model":
+                if provider in ("fabrix", "gemini"):
+                    value = value or llm_cfg.model  # 팩토리와 같은 폴백
+                elif provider == "mlx":
+                    value = value or "default_model"  # 팩토리와 같은 폴백(서버 --model로 매핑)
+                text = value or "미설정"
+            else:
+                text = f"{value}초"
+            hints[prefix + item.upper()] = f"{provider} · {text}"
+    return hints
+
+
 def _cluster_by_section(items: list[SettingSchemaItem]) -> list[SettingSchemaItem]:
     """같은 구획(section)의 항목을 연속 배치한다(구획 최초 등장 순서·구획 내 정의 순서 유지).
 
@@ -1264,6 +1328,7 @@ def build_catalog(
     """
     index = field_index()
     encenv_keys = encenv_present_keys()
+    inherited = role_inherited_hints(config) if config is not None else {}
     grouped: dict[str, list[SettingSchemaItem]] = {key: [] for key in GROUP_ORDER}
 
     for spec in index.values():
@@ -1309,6 +1374,7 @@ def build_catalog(
             consumed=spec.consumed,
             description=spec.description,
             grade=spec.grade,
+            inherited_hint=inherited.get(spec.env_key),
         ))
 
     groups = [

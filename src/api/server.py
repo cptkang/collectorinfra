@@ -982,7 +982,9 @@ async def _start_apm_host_map(app: FastAPI, config: AppConfig) -> tuple[Any, Any
         logger.warning("APM·SMS 연계 매핑 기동 정리 실패(계속): %s", e)
     try:
         redis = connect_redis(config)
-        cache = RedisApmHostMapCache(redis)
+        cache = RedisApmHostMapCache(
+            redis, canonical=getattr(config, "host_canonical_match_enabled", False) is True,
+        )
         app.state.apm_host_map_cache = cache
         counts = await cache.sync_from_repo(repo)
         logger.info(

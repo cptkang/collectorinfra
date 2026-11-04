@@ -112,7 +112,7 @@ async def replanner(
     if app_config is None:
         app_config = load_config()
     if llm is None:
-        llm = create_llm(app_config)
+        llm = create_llm(app_config, role="planner")  # plans/212 — 미설정이면 워커와 같은 인자
 
     ctx = _ReplanCtx(
         state=state,

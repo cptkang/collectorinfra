@@ -13,7 +13,7 @@ plans/210 §3.4 itam · D-362.
 3. 업무가 0건이거나 업무 서버가 0대면 서버 단서 칸에 토큰이 직접 들어 있는 활성 서버.
 4. ITAM 서버 수가 상한(기본 50)을 넘으면 `ambiguous`. 업무가 서로 다른 서버 집합으로 갈려도
    `ambiguous`.
-5. ITAM 서버 → SMS 색인(대표 IP·NIC IP·정규화 hostname — `canonical`이면 정규형 · plans/211 W7)
+5. ITAM 서버 → SMS 색인(대표 IP·NIC IP·정규화 hostname — `canonical`이면 정규형 · plans/211 W8)
    정확 일치 1대인 서버만 대상.
 6. 대상 1~상한(10) `active` · 0 `failed` · 상한 초과 `ambiguous`.
 
@@ -40,7 +40,7 @@ from noise_gate.domain.apm_host_map import (
     STATE_FAILED,
     AutoProposal,
     normalize_targets,
-    sms_host_lookup,
+    sms_host_servers,
     vm_exact_match,
 )
 
@@ -234,7 +234,7 @@ def _sms_servers(
 ) -> list[Mapping[str, Any]] | None:
     """ITAM 서버 1대 → SMS 서버(정확히 1대면 `[서버]` · 0대 `[]` · 2대 이상 None)."""
     ip_hits = [s for ip in server.ips for s in by_ip.get(ip, ())]
-    host_hits = list(sms_host_lookup(by_host, server.hostname, canonical=canonical) or ())
+    host_hits = sms_host_servers(by_host, server.hostname, canonical=canonical)
     match = vm_exact_match(ip_hits, host_hits)
     if match.status == "linked":
         return [match.targets[0]]
@@ -269,7 +269,7 @@ def resolve_itam_chain(
 ) -> ItamChainResult:
     """APM 도메인 하나의 ITAM 사슬 판정(§3.4 itam — 모듈 머리 1~6).
 
-    `canonical`은 `by_host`가 `build_sms_index(canonical=True)`로 만든 색인일 때 켠다(같은 키 함수).
+    `canonical`은 SMS hostname 색인 키 공간(`build_sms_index`와 같은 값 · plans/211 §9.3 F)이다.
     """
     tokens = domain_tokens((domain_name, domain_description), generic_terms)
     evidence: dict[str, Any] = {"source": "itam", "tokens": tokens[:_EVIDENCE_SAMPLE]}

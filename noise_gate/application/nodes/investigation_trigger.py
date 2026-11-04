@@ -726,7 +726,9 @@ async def _attach_polestar_link(
         if map_cache is None and redis is not None:
             from noise_gate.infrastructure.apm_host_map_cache import RedisApmHostMapCache
 
-            map_cache = RedisApmHostMapCache(redis)
+            map_cache = RedisApmHostMapCache(
+                redis, canonical=getattr(cfg, "host_canonical_match_enabled", False) is True,
+            )
         publish_redis = redis if redis is not None else getattr(map_cache, "redis", None)
         stored_memo: list[dict[str, Any]] = []
 

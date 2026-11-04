@@ -467,14 +467,18 @@ async def test_itam_request_upserts_domain_row() -> None:
 
 async def test_itam_request_without_snapshot_writes_nothing(caplog: pytest.LogCaptureFixture
                                                             ) -> None:
+    # plans/211 W6 — 스냅샷이 없어도 노드 주소(N1)·VM 일치는 시도하고 ITAM(I) 단계만 건너뛴다
     repo, cache = FakeRepo(), FakeCache()
-    gateway = FakeGateway({})
+    gateway = FakeGateway({"apm_instance_map": lambda args: {"rows": [
+        apm_row("s1", "30", "b1", "settle-batch", domain_name="결제정산")]}})
     msg = itam_request_message(source_id="s1", domain_id="30")
     with caplog.at_level("INFO"):
         out = await handle_itam_request(msg, repo=repo, cache=cache, gateway_client=gateway)
-    assert out == {"status": "no_inventory", "reason": REASON_NO_INVENTORY}
+    assert out["status"] == "no_inventory" and out["reason"] == REASON_NO_INVENTORY
+    assert out["tried"]["itam"] == "skipped:no_inventory"
     assert REASON_NO_INVENTORY in caplog.text
-    assert repo.rows == {} and cache.put_rows == [] and gateway.calls == []
+    assert repo.rows == {} and cache.put_rows == []
+    assert [name for name, _ in gateway.calls] == ["apm_instance_map", "apm_node_addresses"]
 
 
 @pytest.mark.parametrize("msg", [

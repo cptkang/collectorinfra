@@ -417,7 +417,10 @@ class TestNodeCodeUnchanged:
 
         sig = inspect.signature(create_llm)
         params = sig.parameters
-        assert list(params.keys()) == ["config", "provider_override", "purpose"]
+        assert list(params.keys()) == ["config", "provider_override", "purpose", "role"]
+        # role: keyword-only + 기본 None (plans/212 — 용도별 LLM 평면 · 기존 호출 무변경)
+        assert params["role"].kind is inspect.Parameter.KEYWORD_ONLY
+        assert params["role"].default is None
         # config: 위치 가능 / provider_override: keyword-only + 기본 None
         assert params["provider_override"].kind is inspect.Parameter.KEYWORD_ONLY
         assert params["provider_override"].default is None

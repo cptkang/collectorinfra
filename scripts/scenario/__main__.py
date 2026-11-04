@@ -27,7 +27,13 @@ from typing import Optional
 
 from .analyze import analyze
 from .catalog import Catalog, CatalogError, load_catalog
-from .preflight import external_planes, mlx_run_blockers
+from .preflight import (
+    ROLES_UNREADABLE,
+    external_planes,
+    mlx_run_blockers,
+    plane_label,
+    role_providers,
+)
 from .report import write_report
 from .runner import (
     RESULTS_ROOT,
@@ -59,13 +65,29 @@ def llm_providers() -> tuple[str, str]:
         return unknown, unknown
 
 
-def _mlx_not_ready(worker: str, orchestrator: str) -> Optional[str]:
+def llm_role_providers() -> dict[str, str]:
+    """이 프로세스가 읽는 명시 역할 provider(plans/212 · D-365). 비면 전 역할이 워커 승계다.
+
+    `llm_providers` 와 함께 `external_planes(..., roles=)` 에 넘긴다 - 빠뜨리면
+    `LLM_ROUTER_PROVIDER=gemini` 가 승인 없이 돈다(D-127 우회).
+    """
+    try:
+        from src.config import load_config
+
+        return role_providers(load_config())
+    except Exception as exc:  # 설정을 못 읽으면 외부로 본다 - 과금 게이트를 열지 않는다
+        return {ROLES_UNREADABLE: f"unknown({type(exc).__name__})"}
+
+
+def _mlx_not_ready(worker: str, orchestrator: str,
+                   roles: dict[str, str] | None = None) -> str | None:
     """provider 가 mlx 인 평면이 있으면 로컬 서버가 실제로 생성하는지 본다. 막히면 출력할 문구.
 
     실 실행은 사전 점검(`--preflight`)을 부르지 않는다. 서버가 꺼졌거나 생성 스레드가 죽은 채로
     프로파일을 띄우면 1단이 오케스트레이터 미가용으로 강등되거나 전 턴이 LLM 오류로 끝난다.
+    역할 평면(`roles`)이 mlx 여도 본다 - 점검은 서로 다른 base_url 마다 1회다.
     """
-    if "mlx" not in (worker, orchestrator):
+    if "mlx" not in (worker, orchestrator, *(roles or {}).values()):
         return None
     blockers = mlx_run_blockers()
     if not blockers:
@@ -77,8 +99,11 @@ def _mlx_not_ready(worker: str, orchestrator: str) -> Optional[str]:
     return "\n".join(lines)
 
 
-def _provider_label(worker: str, orchestrator: str) -> str:
-    return f"워커 {worker}, 오케스트레이터 {orchestrator}"
+def _provider_label(worker: str, orchestrator: str,
+                    roles: dict[str, str] | None = None) -> str:
+    label = f"워커 {worker}, 오케스트레이터 {orchestrator}"
+    return label + "".join(f", {plane_label(role)} {provider}"
+                           for role, provider in (roles or {}).items())
 
 
 def _require_optin() -> None:
@@ -304,11 +329,12 @@ def _apply_resume_failed(config: RunConfig) -> Optional[str]:
 def cmd_run(args: argparse.Namespace) -> int:
     """4단 - 실 LLM/실 DB. 외부 프로바이더는 옵트인·승인 뒤에만 열린다."""
     worker, orchestrator = llm_providers()
-    external = external_planes(worker, orchestrator)
+    roles = llm_role_providers()
+    external = external_planes(worker, orchestrator, roles=roles)
     internal = not external
     if not internal:
         _require_optin()
-    problem = _mlx_not_ready(worker, orchestrator)
+    problem = _mlx_not_ready(worker, orchestrator, roles)
     if problem:
         print(problem, file=sys.stderr)
         return 1
@@ -332,7 +358,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     print("[4단] 실 실행")
     print(source_line)
     if internal:
-        print(f"       프로바이더 {_provider_label(worker, orchestrator)} - "
+        print(f"       프로바이더 {_provider_label(worker, orchestrator, roles)} - "
               "내부망/로컬이라 승인 없이 진행합니다 (D-216)")
     else:
         print(f"       프로바이더 {', '.join(external)} - 외부 과금 경로입니다 (D-127)")
@@ -497,9 +523,11 @@ def main(argv: Optional[list[str]] = None) -> int:
 
     # 인자 없음. 1단(카탈로그)을 통과하지 못하면 어떤 실행도 시작되지 않는다.
     worker, orchestrator = llm_providers()
-    external = external_planes(worker, orchestrator)
+    roles = llm_role_providers()
+    external = external_planes(worker, orchestrator, roles=roles)
     if not external:
-        print(f"기본 동작 - 내부망/로컬 프로바이더({_provider_label(worker, orchestrator)}): "
+        label = _provider_label(worker, orchestrator, roles)
+        print(f"기본 동작 - 내부망/로컬 프로바이더({label}): "
               "1단 카탈로그 검증 -> 4단 전 시나리오 실 실행")
         print("역질문은 스크립트가 자동으로 답합니다 (config/scenarios/auto_answer.yaml).\n")
         code = cmd_dry_run(args)

@@ -26,16 +26,19 @@ from noise_gate.domain.apm_host_map import (
     AUTO_INSTANCE_IDLE_DAYS,
     AUTO_UNSEEN_DAYS,
     BASIS_MANUAL,
+    EVIDENCE_SUPERSEDED,
     ORIGIN_AUTO,
     ORIGIN_MANUAL,
     SCAN_ABORTED,
     SCAN_RUN_RETENTION_DAYS,
     SCAN_RUNNING,
     SCAN_STATUSES,
+    SCOPE_DOMAIN,
     SCOPE_INSTANCE,
     STATE_ACTIVE,
     STATE_DISABLED,
     STATES,
+    SUPERSEDABLE_STATES,
     WRITE_INSERT,
     WRITE_SAME,
     WRITE_SKIP,
@@ -83,10 +86,12 @@ _AUTO_BY = "auto"
 #: 같은 키 신규 삽입이 경쟁으로 비었을 때 다시 시도하는 횟수.
 _INSERT_ATTEMPTS = 2
 
-#: 「검토 필요」 조건 — ambiguous·failed · 변경됨 · scan_suggests · target_gone 대상.
+#: 「검토 필요」 조건 — ambiguous·failed · 변경됨 · scan_suggests · target_gone 대상. 「대체됨」
+#: 표지가 달린 행(plans/211 §9.3 E — 노드 주소·VM 일치로 이은 도메인의 남은 domain 행)은 뺀다.
 _REVIEW_SQL = (
-    "(state IN ('ambiguous', 'failed') OR evidence ? 'changed' OR evidence ? 'scan_suggests'"
-    " OR targets @> '[{\"target_gone\": true}]'::jsonb)"
+    "(NOT (evidence ? 'superseded') AND (state IN ('ambiguous', 'failed')"
+    " OR evidence ? 'changed' OR evidence ? 'scan_suggests'"
+    " OR targets @> '[{\"target_gone\": true}]'::jsonb))"
 )
 
 
@@ -483,6 +488,32 @@ class PostgresApmHostMapRepository(ApmHostMapRepository):
                 )
                 out.append(("error", None))
         return out
+
+    async def set_domain_superseded(
+        self, source_id: str, domain_id: str, marker: Mapping[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """「대체됨」 표지를 단다(`marker`)·뗀다(None) → 바뀐 행(조건 밖이면 None).
+
+        자동·미확인 domain 행 중 state가 failed·ambiguous인 행만(관리자 행 불변 · 값은 바인딩).
+        이미 표지가 있으면 다시 달지 않는다 — 알람 miss마다 `version`이 오르면 관리자 수정이
+        `version_conflict`로 반복 거절된다(D-362 ③).
+        """
+        args: tuple[str, ...] = ()
+        if marker is None:
+            change = f"evidence - '{EVIDENCE_SUPERSEDED}'"
+            guard = f" AND evidence ? '{EVIDENCE_SUPERSEDED}'"
+        else:
+            change, args = "evidence || $6::jsonb", (_dumps({EVIDENCE_SUPERSEDED: dict(marker)}),)
+            guard = f" AND NOT (evidence ? '{EVIDENCE_SUPERSEDED}')"
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                f"UPDATE apm_host_map SET evidence = {change}, version = version + 1"
+                " WHERE source_id = $1 AND domain_id = $2 AND scope = $3 AND match_key = ''"
+                " AND origin = $4 AND verified = FALSE AND state = ANY($5::text[])"
+                f"{guard} RETURNING *",
+                source_id, domain_id, SCOPE_DOMAIN, ORIGIN_AUTO, list(SUPERSEDABLE_STATES), *args,
+            )
+        return _row(row) if row is not None else None
 
     async def touch(self, map_ids: Sequence[int], *, at: datetime | None = None) -> int:
         """`last_used_at` 묶음 갱신 → 갱신 행 수."""
