@@ -1167,32 +1167,43 @@ async def get_scan_run(
 
 
 # ── 인벤토리 ────────────────────────────────────────────────────────────
+def _apm_first_mapping(maps: Sequence[Mapping[str, Any]]) -> Any:
+    """APM 인벤토리 행 → 그 인스턴스의 첫 매핑 행(없으면 None) 함수.
+
+    키를 instance → workload → domain(`SCOPES` 순서)으로 보고 처음 있는 매핑 1건 — 표시용이며
+    진단 조회 순서(D-362 ①)를 흉내 내지 않는다. 「매핑 없음만」 판정도 이 결과로 한다."""
+    from noise_gate.domain.apm_host_map import SCOPES, match_key_for
+
+    index: dict[tuple[str, str, str, str], Mapping[str, Any]] = {}
+    for m in maps:
+        key = (
+            str(m.get("source_id") or ""),
+            str(m.get("domain_id") or ""),
+            str(m.get("scope") or ""),
+            str(m.get("match_key") or ""),
+        )
+        index.setdefault(key, m)
+
+    def _first(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        base = (str(row.get("source_id") or ""), str(row.get("domain_id") or ""))
+        for scope in SCOPES:
+            key = match_key_for(scope, row.get("instance_name"))
+            if key is not None and (*base, scope, key) in index:
+                return index[(*base, scope, key)]
+        return None
+
+    return _first
+
+
 def _unmapped_filter(kind: str, maps: Sequence[Mapping[str, Any]]) -> Any:
     """「매핑 없음만」 판정 함수 — apm: 그 인스턴스의 instance·workload·domain 키가 모두 없음 ·
     sms: 어느 매핑의 대상도 아님 · itam: hostname이 어느 매핑 대상의 서버명·hostname도 아님."""
-    from noise_gate.domain.apm_host_map import SCOPES, match_key_for, target_identity
+    from noise_gate.domain.apm_host_map import target_identity
     from src.domain.host_names import normalize_hostname
 
     if kind == "apm":
-        keys = {
-            (
-                str(m.get("source_id") or ""),
-                str(m.get("domain_id") or ""),
-                str(m.get("scope") or ""),
-                str(m.get("match_key") or ""),
-            )
-            for m in maps
-        }
-
-        def _apm(row: Mapping[str, Any]) -> bool:
-            base = (str(row.get("source_id") or ""), str(row.get("domain_id") or ""))
-            for scope in SCOPES:
-                key = match_key_for(scope, row.get("instance_name"))
-                if key is not None and (*base, scope, key) in keys:
-                    return False
-            return True
-
-        return _apm
+        first = _apm_first_mapping(maps)
+        return lambda row: first(row) is None
     targets = [t for m in maps for t in (m.get("targets") or []) if isinstance(t, Mapping)]
     if kind == "sms":
         idents = {target_identity(t) for t in targets}
@@ -1230,18 +1241,21 @@ async def inventory(
 ) -> dict[str, Any]:
     """`{kind, run_id, rows[], has_more, limit, offset}`.
 
-    스냅샷이 없으면 `run_id: null` · 빈 목록.
+    스냅샷이 없으면 `run_id: null` · 빈 목록. apm 행에는 `mapping`(그 인스턴스의 첫 매핑 ·
+    없으면 null — `_apm_first_mapping`)을 붙인다.
     """
     _assert_admin(request, admin)
     repo = _repo(request)
     table = _INVENTORY_TABLES[kind]
     try:
         run_id = await repo.current_snapshot_run(table)
+        maps: list[dict[str, Any]] | None = None
         if run_id is None:
             rows: list[dict[str, Any]] = []
             has_more = False
         elif unmapped:
-            keep = _unmapped_filter(kind, await repo.all_rows())
+            maps = await repo.all_rows()
+            keep = _unmapped_filter(kind, maps)
             matched = [r for r in await repo.snapshot_rows(table, query=q) if keep(r)]
             rows = matched[offset : offset + limit]
             has_more = len(matched) > offset + limit
@@ -1249,6 +1263,11 @@ async def inventory(
             fetched = await repo.snapshot_rows(table, query=q, limit=limit + 1, offset=offset)
             rows = fetched[:limit]
             has_more = len(fetched) > limit
+        if kind == "apm" and run_id is not None:
+            first = _apm_first_mapping(maps if maps is not None else await repo.all_rows())
+            rows = [
+                {**r, "mapping": _view(m) if (m := first(r)) is not None else None} for r in rows
+            ]
     except Exception as exc:  # noqa: BLE001
         logger.warning("APM·SMS 연계 인벤토리 조회 실패: %s", kind, exc_info=True)
         raise _store_failed("조회", exc) from None
