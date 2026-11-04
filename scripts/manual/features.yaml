@@ -220,6 +220,7 @@ admin:
   - {id: A-87, title: "조사 결과 「한눈에 보기」 설정", anchors: ["NOISE_INVESTIGATION_SUMMARY_VIEW_ENABLED", "investigation_summary_view_enabled", "원문 포함", "운영자 화면 — 가리지 않은 원문이 그대로 복사됩니다"], files: [src/api/routes/alarm_schemas.py, src/static/js/briefing-view.js], captures: [], no_ui: true}
   - {id: A-84, title: 노이즈 관제 포털 탭 설정, anchors: ["NOISE_CONSOLE_PORTAL_TAB_ENABLED"], files: [config/settings_help/noise_gate_core.yaml], captures: [], no_ui: true}
   - {id: A-55, title: LLM 설정, anchors: ["LLM_PROVIDER"], files: [.env.example], captures: [], no_ui: true}
+  - {id: A-91, title: "용도별 LLM 평면(라우팅·계획·응답 합성)", anchors: ["LLM_ROUTER_PROVIDER", "LLM_PLANNER_PROVIDER", "LLM_ANSWER_PROVIDER", "현재 워커 값 사용", "(워커 승계)"], files: [src/api/settings_catalog.py, src/static/js/admin.js], captures: [], no_ui: true, aliases: [역할 평면, 워커 승계]}
   - {id: A-56, title: Redis 백업·이관, anchors: ["redis"], files: [docs/14_redis_export_import_guide.md], captures: [], no_ui: true}
   - {id: A-57, title: 장애 조사(sre_agent) 연동, anchors: ["sre_agent"], files: [docs/26_sre_agent_guide.md], captures: [], no_ui: true}
   - {id: A-58, title: Prometheus 연동, anchors: ["Prometheus"], files: [docs/27_prometheus_integration_guide.md], captures: [], no_ui: true}

@@ -913,13 +913,15 @@ def p2_billing_refusal(cfg: Any) -> str | None:
     판정은 시나리오 사전 점검의 단일 정의(`scripts.scenario.preflight.external_planes`)를 쓴다.
     설정을 못 읽은 평면은 과금으로 본다.
     """
-    from scripts.scenario.preflight import external_planes
+    from scripts.scenario.preflight import external_planes, role_providers
 
     worker = str(getattr(getattr(cfg, "llm", None), "provider", "") or "").strip().lower()
     orchestrator = (
         str(getattr(getattr(cfg, "orchestrator", None), "provider", "") or "").strip().lower()
     )
-    planes = external_planes(worker or "unknown()", orchestrator or "unknown()")
+    # 명시된 역할 평면(plans/212)도 같은 정의로 본다 — 설정에 과금 평면이 있으면 열지 않는다.
+    planes = external_planes(worker or "unknown()", orchestrator or "unknown()",
+                             roles=role_providers(cfg))
     if not planes:
         return None
     return (

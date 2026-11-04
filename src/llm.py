@@ -158,6 +158,7 @@ def create_llm(
     *,
     provider_override: str | None = None,
     purpose: str = "deterministic",
+    role: str | None = None,
 ) -> BaseChatModel:
     """설정에 따라 워커(데이터 평면) LLM 인스턴스를 생성한다.
 
@@ -171,15 +172,31 @@ def create_llm(
             분류 등 중간 호출)이면 `fabrix_llm_config`, "answer"(최종 사용자 응답 합성
             — USER_RESPONSE_TAG 부여 3개 지점)면 `fabrix_answer_llm_config`를 적용한다.
             현재 fabrix provider에만 반영되며 ollama/gemini는 무시한다(temperature 0.0 고정 유지).
+        role: 용도별 LLM 평면(plans/212 · `LLM_ROLES`). 역할에 적은 항목만 워커 설정 위에
+            덮어써 생성한다(`resolve_role_config`). 미지정이고 `purpose="answer"`면
+            "answer"를 자동 적용한다 — `purpose`는 프로파일, `role`은 엔드포인트라 직교한다.
+            역할 항목이 하나도 없으면 아래 워커 분기를 그대로 탄다(인자 비트 동일).
 
     Returns:
         LLM 인스턴스
 
     Raises:
-        ValueError: 필수 설정이 누락된 경우
+        ValueError: 필수 설정이 누락된 경우 · 알 수 없는 역할 · 역할 해석 뒤 필수값이 빈 경우
+            (워커로 침묵 폴백하지 않는다 — D-340 ③)
     """
-    provider = provider_override or config.llm.provider
+    if role is None and purpose == "answer":
+        role = "answer"
+    if role is not None:
+        role_config = resolve_role_config(config, role, provider_override=provider_override)
+        if role_config is not None:
+            return _create_role_llm(role_config, role, purpose)
 
+    provider = provider_override or config.llm.provider
+    return _create_for_provider(config, provider, purpose)
+
+
+def _create_for_provider(config: AppConfig, provider: str, purpose: str) -> BaseChatModel:
+    """provider별 워커 팩토리로 분기한다(D-042·D-060·D-194·D-222)."""
     if provider == "ollama":
         return _create_ollama(config)
     elif provider == "fabrix":
@@ -192,6 +209,250 @@ def create_llm(
         return _create_vllm(config)
     else:
         raise ValueError(f"지원하지 않는 LLM 프로바이더: {provider}")
+
+
+# ── 용도별 LLM 평면 (plans/212 · D-365) ─────────────────────────────────────
+# 「따로 설정하지 않으면 현재 설정된 LLM을 쓴다」 — 역할에 적지 않은 항목은 하나하나 현재 워커
+# 설정에서 가져온다(항목 단위 승계). 해석은 호출마다 다시 한다 — 리로드로 바뀐 워커를 따라간다.
+
+#: 역할 이름. 설정 키는 `LLM_<ROLE>_{PROVIDER,BASE_URL,MODEL,API_KEY,TIMEOUT}`이다.
+LLM_ROLES: tuple[str, ...] = ("router", "planner", "answer")
+
+#: 역할 항목(provider 제외).
+_ROLE_ITEMS: tuple[str, ...] = ("base_url", "model", "api_key", "timeout")
+
+#: provider → 역할 항목이 덮어쓰는 워커 필드(`LLMConfig`). None = 그 provider에 대응 필드가 없다
+#: (역할에 적어도 무시하고 경고 1줄을 남긴다). 해석 provider의 필수값 판정도 이 표를 따른다.
+_ROLE_WORKER_FIELDS: dict[str, dict[str, str | None]] = {
+    "ollama": {
+        "base_url": "ollama_base_url", "model": "model",
+        "api_key": "ollama_api_key", "timeout": "ollama_timeout",
+    },
+    "fabrix": {
+        "base_url": "fabrix_base_url", "model": "fabrix_chat_model",
+        "api_key": "fabrix_api_key", "timeout": "fabrix_total_timeout",
+    },
+    "mlx": {
+        "base_url": "mlx_base_url", "model": "mlx_model",
+        "api_key": None, "timeout": "mlx_timeout",
+    },
+    "vllm": {
+        "base_url": "vllm_base_url", "model": "vllm_model",
+        "api_key": "vllm_api_key", "timeout": "vllm_timeout",
+    },
+    "gemini": {
+        "base_url": None, "model": "gemini_model",
+        "api_key": "gemini_api_key", "timeout": None,
+    },
+}
+
+
+def _role_key(role: str, item: str) -> str:
+    """역할 항목의 env 키 이름(`LLM_ROUTER_BASE_URL` 등)."""
+    return f"LLM_{role.upper()}_{item.upper()}"
+
+
+def _role_settings(config: AppConfig, role: str) -> tuple[str, dict[str, Any]]:
+    """역할의 (provider, 적은 항목 → 값). 빈 문자열·0은 「적지 않음」이다.
+
+    Raises:
+        ValueError: 알 수 없는 역할
+    """
+    if role not in LLM_ROLES:
+        raise ValueError(f"알 수 없는 LLM 역할: {role} (허용: {', '.join(LLM_ROLES)})")
+    llm_cfg = config.llm
+    items = {
+        item: value
+        for item in _ROLE_ITEMS
+        if (value := getattr(llm_cfg, f"{role}_{item}"))
+    }
+    return getattr(llm_cfg, f"{role}_provider"), items
+
+
+def _resolve_role(
+    config: AppConfig, role: str, provider_override: str | None
+) -> tuple[AppConfig, list[str], list[str]] | None:
+    """역할을 해석한다 — (설정 사본, 적용 항목, 무시 항목). 역할 항목이 없으면 None.
+
+    로그를 남기지 않는 순수 해석이다(기동 로그 서술과 생성이 같이 쓴다).
+    """
+    role_provider, items = _role_settings(config, role)
+    if not role_provider and not items:
+        return None
+    provider = role_provider or provider_override or config.llm.provider
+    field_map = _ROLE_WORKER_FIELDS.get(provider)
+    if field_map is None:
+        raise ValueError(f"지원하지 않는 LLM 프로바이더: {provider} (역할 {role})")
+
+    update: dict[str, Any] = {"provider": provider}
+    applied = ["provider"] if role_provider else []
+    ignored: list[str] = []
+    for item, value in items.items():
+        target = field_map[item]
+        if target is None:
+            ignored.append(item)
+            continue
+        update[target] = value
+        applied.append(item)
+    role_llm = config.llm.model_copy(update=update)
+    return config.model_copy(update={"llm": role_llm}), applied, ignored
+
+
+def resolve_role_config(
+    config: AppConfig, role: str, *, provider_override: str | None = None
+) -> AppConfig | None:
+    """역할 평면의 설정 사본을 만든다. 역할 항목이 하나도 없으면 None(= 워커 그대로).
+
+    provider는 역할 provider → `provider_override`(테스트 전용 워커 교체) → `config.llm.provider`
+    순으로 정한다. 적은 항목만 해석된 provider의 워커 필드에 덮어쓰고 나머지(고유 노브 포함)는
+    워커 값 그대로다. 원본 `config`는 바꾸지 않고, 사본을 저장해 두지 않는다(호출마다 재해석).
+
+    Raises:
+        ValueError: 알 수 없는 역할 · 지원하지 않는 provider
+    """
+    resolved = _resolve_role(config, role, provider_override)
+    if resolved is None:
+        return None
+    role_config, _applied, ignored = resolved
+    for item in ignored:
+        logger.warning(
+            "LLM 역할 %s: provider=%s에는 %s 대응 필드가 없어 %s를 무시한다",
+            role, role_config.llm.provider, item, _role_key(role, item),
+        )
+    return role_config
+
+
+def _missing_role_value(role_config: AppConfig, role: str) -> tuple[str, str] | None:
+    """해석 뒤 비어 있는 필수값의 (역할 항목, 승계 대상 워커 필드). 다 있으면 None."""
+    llm_cfg = role_config.llm
+    provider = llm_cfg.provider
+    fields = _ROLE_WORKER_FIELDS[provider]
+    if provider == "gemini":
+        required = ["api_key"]
+    else:
+        required = ["base_url"]
+        if provider in ("vllm", "fabrix"):
+            required.append("model")
+    for item in required:
+        field = fields[item]
+        if field is None:  # 표에서 필수 항목은 대응 필드가 있다(방어)
+            continue
+        value = getattr(llm_cfg, field)
+        if provider == "fabrix" and item == "model":
+            value = value or llm_cfg.model  # _create_fabrix와 같은 규칙(chat_model 또는 model)
+        if not value:
+            return item, field
+    return None
+
+
+def _create_role_llm(role_config: AppConfig, role: str, purpose: str) -> BaseChatModel:
+    """해석된 역할 설정 사본으로 기존 provider 팩토리를 호출한다.
+
+    필수값이 비면 워커로 바꾸지 않고 ValueError를 낸다(D-340 ③). 메시지에는 키 이름만 싣고
+    값은 싣지 않는다.
+    """
+    provider = role_config.llm.provider
+    missing = _missing_role_value(role_config, role)
+    if missing is not None:
+        item, field = missing
+        raise ValueError(
+            f"LLM 역할 {role}(provider={provider})의 {item}이 비었다 — "
+            f"{_role_key(role, item)}를 적거나 승계 대상 워커 키 LLM_{field.upper()}를 채운다"
+            "(워커로 대체하지 않는다)."
+        )
+    logger.info("LLM 역할 %s 생성: provider=%s · purpose=%s", role, provider, purpose)
+    try:
+        return _create_for_provider(role_config, provider, purpose)
+    except ValueError as e:
+        raise ValueError(f"LLM 역할 {role}(provider={provider}) 생성 실패: {e}") from e
+
+
+def create_role_llm(
+    config: AppConfig,
+    role: str,
+    worker_llm: BaseChatModel,
+    *,
+    provider_override: str | None = None,
+) -> BaseChatModel:
+    """그래프 조립용 — 역할 항목이 없으면 `worker_llm`을 그대로(같은 객체) 돌려준다.
+
+    역할 항목이 있으면 `create_llm(config, role=role, ...)`로 따로 만든다. "answer" 역할은
+    최종 응답 합성 평면이라 프로파일도 answer(D-194)로 만든다.
+
+    Raises:
+        ValueError: 알 수 없는 역할 · 역할 해석 뒤 필수값이 빈 경우
+    """
+    role_provider, items = _role_settings(config, role)
+    if not role_provider and not items:
+        return worker_llm
+    purpose = "answer" if role == "answer" else "deterministic"
+    return create_llm(config, provider_override=provider_override, purpose=purpose, role=role)
+
+
+def _url_host(url: str) -> str:
+    """URL의 호스트(:포트)만. 경로·자격증명은 싣지 않는다."""
+    if not url:
+        return "주소 미설정"
+    from urllib.parse import urlsplit
+
+    try:
+        parts = urlsplit(url)
+        host, port = parts.hostname, parts.port
+    except ValueError:
+        return "주소 형식 오류"
+    if not host:
+        return "주소 형식 오류"
+    return f"{host}:{port}" if port else host
+
+
+def _plane_label(llm_cfg: Any, provider: str, note: str = "") -> str:
+    """`provider(모델@호스트 · note)` — 키는 어떤 형태로도 싣지 않는다."""
+    fields = _ROLE_WORKER_FIELDS.get(provider, {})
+    model_field = fields.get("model")
+    model = getattr(llm_cfg, model_field) if model_field else ""
+    if provider in ("fabrix", "gemini"):
+        model = model or llm_cfg.model  # 팩토리와 같은 폴백
+    elif provider == "mlx":
+        model = model or "default_model"
+    body = model or "모델 미설정"
+    base_field = fields.get("base_url")
+    if base_field:
+        body = f"{body}@{_url_host(getattr(llm_cfg, base_field))}"
+    if note:
+        body = f"{body} · {note}"
+    return f"{provider}({body})"
+
+
+def describe_llm_planes(config: AppConfig, *, provider_override: str | None = None) -> str:
+    """기동 로그 1줄 — 워커·역할·오케스트레이터 평면을 서술한다(plans/212 §4.5).
+
+    URL은 호스트(:포트)만, 키는 싣지 않는다. 역할은 「워커 승계」 또는 직접 지정한 항목을 적는다.
+    """
+    worker_provider = provider_override or config.llm.provider
+    parts = [f"worker={_plane_label(config.llm, worker_provider)}"]
+    for role in LLM_ROLES:
+        resolved = _resolve_role(config, role, provider_override)
+        if resolved is None:
+            parts.append(f"{role}=워커 승계")
+            continue
+        role_config, applied, ignored = resolved
+        notes = []
+        if applied:
+            notes.append(f"{'·'.join(applied)} 지정")
+        if ignored:
+            notes.append(f"{'·'.join(ignored)} 무시")
+        parts.append(
+            f"{role}={_plane_label(role_config.llm, role_config.llm.provider, ' · '.join(notes))}"
+        )
+
+    orch = config.orchestrator
+    if orch.provider == "gemini":
+        parts.append(f"orchestrator=gemini({orch.model or '모델 미설정'})")
+    elif not orch.base_url:
+        parts.append("orchestrator=미설정")
+    else:
+        parts.append(f"orchestrator={orch.provider}({orch.model}@{_url_host(orch.base_url)})")
+    return "LLM 평면: " + " ".join(parts)
 
 
 def create_orchestrator_llm(config: AppConfig) -> BaseChatModel:

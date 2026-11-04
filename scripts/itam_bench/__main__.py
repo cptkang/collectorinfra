@@ -906,21 +906,22 @@ def run_scenarios(
 
 def preflight(cfg: Any, *, check_mlx: bool = True) -> list[str]:
     """실행 전에 멈출 사유 목록(빈 목록이면 진행). LLM 호출 0 — MLX 면 1토큰 생성 점검 1건뿐."""
-    from scripts.scenario.preflight import external_planes, mlx_run_blockers
+    from scripts.scenario.preflight import external_planes, mlx_run_blockers, role_providers
 
     reasons: list[str] = []
     worker = str(getattr(getattr(cfg, "llm", None), "provider", "") or "").strip().lower()
     orchestrator = (
         str(getattr(getattr(cfg, "orchestrator", None), "provider", "") or "").strip().lower()
     )
-    planes = external_planes(worker or "unknown()", orchestrator or "unknown()")
+    roles = role_providers(cfg)  # 명시된 역할 평면(plans/212)도 같은 정의로 판정한다
+    planes = external_planes(worker or "unknown()", orchestrator or "unknown()", roles=roles)
     if planes and os.environ.get("RUN_E2E") != "1":
         # 키 존재로 열지 않는다 — 과금 평면은 사용자 건별 승인 뒤 RUN_E2E=1 로만(D-127·D-240).
         reasons.append(
             f"과금 평면 {planes} — 실행하지 않는다. 로컬 MLX(두 평면 mlx)로 돌리거나 "
             "사용자 승인 뒤 RUN_E2E=1 로 연다(D-127)"
         )
-    if check_mlx and "mlx" in (worker, orchestrator):
+    if check_mlx and "mlx" in (worker, orchestrator, *roles.values()):
         reasons += [f"MLX: {c.key} {c.observed} — {c.action}" for c in mlx_run_blockers(cfg)]
     active = list(cfg.multi_db.get_active_db_ids()) if getattr(cfg, "multi_db", None) else []
     if DB_ID not in active:

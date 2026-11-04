@@ -14,6 +14,9 @@ from typing import Literal
 from pydantic import field_validator
 from pydantic_settings import BaseSettings
 
+# 역할 평면 provider(plans/212 · D-365) — 빈 값 = 현재 워커 provider 승계
+_RoleProvider = Literal["", "ollama", "fabrix", "gemini", "mlx", "vllm"]
+
 
 class LLMConfig(BaseSettings):
     """LLM 관련 설정."""
@@ -75,6 +78,28 @@ class LLMConfig(BaseSettings):
     # 최종 사용자 응답 합성(create_llm purpose="answer") 전용 프로파일.
     # 빈 값이면 fabrix_llm_config로 폴백한다.
     fabrix_answer_llm_config: str = ""
+
+    # 용도별 LLM 평면(plans/212 · D-365) — 역할 router(시맨틱 라우팅)·planner(의도 계획)·
+    # answer(최종 응답 합성)마다 바꾸고 싶은 항목만 적는다. **비운 항목은 현재 워커 설정에서
+    # 항목 단위로 승계한다**(provider는 LLM_PROVIDER, 나머지는 해석된 provider의 워커 필드 —
+    # 대응표는 src/llm.py `_ROLE_WORKER_FIELDS`). 전부 비우면 워커와 같은 인스턴스(현행 비트 동일).
+    # provider 고유 노브(FabriX client_key·llm_config · vllm verify_ssl·thinking · mlx max_tokens)는
+    # 항상 워커 값이다. 키(*_api_key)는 .encenv에서 관리한다.
+    router_provider: _RoleProvider = ""
+    router_base_url: str = ""
+    router_model: str = ""
+    router_api_key: str = ""
+    router_timeout: int = 0          # 0 = 워커 타임아웃 승계
+    planner_provider: _RoleProvider = ""
+    planner_base_url: str = ""
+    planner_model: str = ""
+    planner_api_key: str = ""
+    planner_timeout: int = 0
+    answer_provider: _RoleProvider = ""
+    answer_base_url: str = ""
+    answer_model: str = ""
+    answer_api_key: str = ""
+    answer_timeout: int = 0
 
     model_config = {"env_prefix": "LLM_", "env_file": [".env", ".encenv"], "extra": "ignore"}
 

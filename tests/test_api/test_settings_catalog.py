@@ -238,7 +238,10 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # ROTATE_DAILY} +3 (noise_gate 기존 그룹)
     # plans/208 트랙 B W5 ALARM_WORKER_{IN_PROCESS,SINGLETON_GUARD} +2 (alarm 기존 그룹)
     # plans/211 W1 HOST_CANONICAL_MATCH_ENABLED +1 (top-level general)
-    assert len(items) == 484  # 195 W2까지 478 · 210 W1 +6 · 211 W1 +1 · D-364 -1
+    # plans/212 W1 LLM_{ROUTER,PLANNER,ANSWER}_{PROVIDER,BASE_URL,MODEL,API_KEY,TIMEOUT}
+    # +15(llm 기존 그룹)
+    # 195 W2까지 478 · 210 W1 +6 · 211 W1 +1 · D-364 -1 · 212 W1 +15
+    assert len(items) == 499
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -432,7 +435,10 @@ def test_t2_group_and_field_counts():
     # ROTATE_DAILY} +3 (noise_gate 기존 그룹)
     # plans/208 트랙 B W5 ALARM_WORKER_{IN_PROCESS,SINGLETON_GUARD} +2 (alarm 기존 그룹)
     # plans/211 W1 HOST_CANONICAL_MATCH_ENABLED +1 (top-level general)
-    assert len(index) == 484  # 195 W2까지 478 · 210 W1 +6 · 211 W1 +1 · D-364 -1
+    # plans/212 W1 LLM_{ROUTER,PLANNER,ANSWER}_{PROVIDER,BASE_URL,MODEL,API_KEY,TIMEOUT}
+    # +15(llm 기존 그룹)
+    # 195 W2까지 478 · 210 W1 +6 · 211 W1 +1 · D-364 -1 · 212 W1 +15
+    assert len(index) == 499
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     # plans/211 HOST_CANONICAL_MATCH_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 22
@@ -500,6 +506,8 @@ def test_t2_secret_detection():
         "ADMIN_JWT_SECRET", "ADMIN_PASSWORD", "AUTH_JWT_SECRET",
         "DBHUB_BEARER_TOKEN", "LLM_FABRIX_API_KEY", "LLM_FABRIX_CLIENT_KEY",
         "LLM_GEMINI_API_KEY", "LLM_OLLAMA_API_KEY", "LLM_VLLM_API_KEY", "ORCHESTRATOR_API_KEY",
+        # plans/212 용도별 LLM 평면 키(LLM_VLLM_API_KEY 선례 — 수동 시크릿 + .encenv.example)
+        "LLM_ROUTER_API_KEY", "LLM_PLANNER_API_KEY", "LLM_ANSWER_API_KEY",
         "REDIS_PASSWORD", "WORKB_BEARER_TOKEN",
         "NOISE_INVESTIGATION_SERVICE_TOKEN",  # SecretStr 자동 판정
         "OBS_METRICS_BEARER_TOKEN",  # SecretStr 자동 판정(plans/92 O4)

@@ -924,6 +924,18 @@ def _body_plane(plane: str) -> str:
         return "unknown"
 
 
+def _body_roles() -> dict[str, str]:
+    """본체 설정의 명시 역할 provider(plans/212) · 못 읽으면 외부로 판정되는 `unknown(...)`."""
+    from scripts.scenario.preflight import ROLES_UNREADABLE, role_providers
+
+    try:
+        from src.config import load_config
+
+        return role_providers(load_config())
+    except Exception as exc:  # noqa: BLE001 — 닫힌 쪽(과금 게이트를 열지 않는다)
+        return {ROLES_UNREADABLE: f"unknown({type(exc).__name__})"}
+
+
 def _pick_port() -> int:
     from scripts.scenario.server import pick_port
 
@@ -981,7 +993,8 @@ def run(
         ValueError: 뷰 서버 버전 미달·미입력(E2) · E2 에 `out_dir` · E2 에 `llm="mlx"`
         LLMBlockedError: `llm="mlx"` 사전 점검 실패 · E2 본체 평면 중 하나라도 과금 평면
             (`preflight.external_planes` — 워커 `fabrix·ollama·mlx·vllm` · 오케스트레이터 `vllm·mlx`
-            밖 · 못 읽음 포함 · D-222). 아무것도 띄우지 않는다. 우회 옵션은 두지 않는다
+            밖 · 못 읽음 포함 · D-222) · E1·E2 본체의 명시 역할 평면이 과금(plans/212 — E1 은 역할
+            평면을 주입하지 않는다). 아무것도 띄우지 않는다. 우회 옵션은 두지 않는다
         RunAbortError: 기동 검증·로그인 실패 · 포트 없음 · E2 인벤토리 이름 0 — 고정 문구와 오류
             코드만 싣는다(plans/164 W2a · 실행 로그에 원문이 남지 않게)
     """
@@ -1015,13 +1028,23 @@ def run(
         blocked = (mlx_check or mlx_blockers)(mlx_url, mlx_model)
         if blocked:
             raise LLMBlockedError("; ".join(blocked))
-    if env == "e2":
-        from scripts.scenario.preflight import external_planes
+    from scripts.scenario.preflight import external_planes
 
-        billed = external_planes(_body_plane("llm"), _body_plane("orchestrator"))
+    if env == "e1":
+        # E1 은 워커·오케스트레이터만 주입한다(`_server_overrides`) — 역할 평면
+        # (`LLM_<역할>_*` · plans/212)은 본체 `.env` 를 그대로 읽으므로 가짜 LLM 이어도
+        # 그 평면이 과금이면 열지 않는다.
+        billed = external_planes("mlx", "mlx", roles=_body_roles())
+        if billed:
+            raise LLMBlockedError(f"E1 본체 역할 과금 평면 {billed} — 실행하지 않는다(D-127 · "
+                                  "E1 은 역할 평면을 주입하지 않는다 · 비과금 "
+                                  "fabrix·ollama·mlx·vllm)")
+    if env == "e2":
+        billed = external_planes(_body_plane("llm"), _body_plane("orchestrator"),
+                                 roles=_body_roles())
         if billed:
             raise LLMBlockedError(f"E2 본체 과금 평면 {billed} — 실행하지 않는다(D-222 · 비과금 "
-                                  "워커 fabrix·ollama·mlx·vllm · 오케스트레이터 vllm·mlx)")
+                                  "워커·역할 fabrix·ollama·mlx·vllm · 오케스트레이터 vllm·mlx)")
 
     started = time.monotonic()
     meta: dict[str, Any] = {"env": env, "started_at": now_kst(), "view_server_version":

@@ -205,8 +205,15 @@ class DemoClient:
         self._token = str(token)
         return None
 
-    def admin_providers(self, username: str, password: str) -> tuple[Optional[tuple[str, str]], str]:
-        """서버의 실효 (LLM_PROVIDER, ORCHESTRATOR_PROVIDER)를 운영자 설정 화면 API 에서 읽는다."""
+    def admin_providers(
+        self, username: str, password: str
+    ) -> tuple[tuple[str, str, dict[str, str]] | None, str]:
+        """서버의 실효 (LLM_PROVIDER, ORCHESTRATOR_PROVIDER, 명시 역할 provider)를 읽는다.
+
+        운영자 설정 화면 API(`/admin/settings/schema`)의 실효값이다.
+
+        역할 provider(`LLM_<역할>_PROVIDER` — plans/212)는 비어 있으면 워커 승계라 싣지 않는다.
+        """
         try:
             resp = self._http.post(f"{self.api}/admin/login",
                                    json={"username": username, "password": password}, timeout=20.0)
@@ -226,7 +233,11 @@ class DemoClient:
                     values[str(item["env_key"])] = str(item.get("effective_value") or "")
         worker = values.get("LLM_PROVIDER", "unknown").strip().lower() or "unknown"
         orch = values.get("ORCHESTRATOR_PROVIDER", "unknown").strip().lower() or "unknown"
-        return (worker, orch), "서버 설정"
+        from scripts.scenario.preflight import role_provider_key, role_providers_from
+
+        roles = role_providers_from(lambda role: values.get(role_provider_key(role), ""),
+                                    override=values.get("WORKER_PROVIDER_OVERRIDE", ""))
+        return (worker, orch, roles), "서버 설정"
 
     # --- 질의 ---------------------------------------------------------
 

@@ -82,7 +82,7 @@ agents/         Claude Agent SDK 그린필드 실행기 (D-298 보존 · Phase 1
 | Component | Technology |
 |-----------|-----------|
 | 에이전트 프레임워크 | LangGraph ≥0.2 (+ 옵트인 `deepagents` extra) |
-| LLM provider | `ollama` / `fabrix`(KBGenAI, 운영) / `gemini` / `mlx`(맥북 로컬 테스트 전용 — 앱 밖 `mlx_lm.server`) / `vllm`(사내 vLLM · D-340) — `LLM_PROVIDER`로 선택. 오케스트레이터는 `ORCHESTRATOR_PROVIDER`(`vllm`/`gemini`/`mlx`)로 별도 지정. **과금 판정은 두 평면을 모두 본다**(워커 비과금 `fabrix·ollama·mlx·vllm` / 오케스트레이터 비과금 `vllm·mlx` — D-222 · D-340) |
+| LLM provider | `ollama` / `fabrix`(KBGenAI, 운영) / `gemini` / `mlx`(맥북 로컬 테스트 전용 — 앱 밖 `mlx_lm.server`) / `vllm`(사내 vLLM · D-340) — `LLM_PROVIDER`로 선택. 오케스트레이터는 `ORCHESTRATOR_PROVIDER`(`vllm`/`gemini`/`mlx`)로 별도 지정. **과금 판정은 두 평면을 모두 본다**(워커 비과금 `fabrix·ollama·mlx·vllm` / 오케스트레이터 비과금 `vllm·mlx` — D-222 · D-340). 라우팅·계획·응답 합성은 역할 평면 `LLM_<ROLE>_*`(ROUTER·PLANNER·ANSWER)로 따로 지정할 수 있고, 미설정 항목은 워커를 승계한다(plans/212 · D-365) |
 | DB 접근 | DBHub 계열 MCP 서버(`mcp_server/`, readonly) 또는 direct(asyncpg) — `DB_BACKEND` |
 | DB 엔진 | PostgreSQL · IBM DB2 · MariaDB(ITAM) (방언 분기 필수) |
 | 문서 처리 | openpyxl(Excel) · python-docx(Word) — `document` extra |

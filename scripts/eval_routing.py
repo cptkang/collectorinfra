@@ -88,12 +88,15 @@ def local_mlx_mode(cfg: Any = None) -> tuple[bool, str]:
     과금 판정은 D-222 정본 `scripts.scenario.preflight.external_planes` 한 곳을 그대로 쓰고,
     그 위에 **더 좁게** 두 평면 `mlx` + 루프백을 요구한다 — 내부망 FabriX·vLLM 은 비과금이지만
     이 모드의 대상이 아니다(`RUN_E2E=1` 경로 그대로). 설정을 못 읽으면 열지 않는다.
+    명시된 역할 평면(`LLM_<역할>_*` — plans/212)도 `mlx` + 루프백이어야 한다.
     """
     from scripts.scenario.preflight import (
         _is_loopback,
         _mlx_planes,
         _plane_provider,
         external_planes,
+        plane_label,
+        role_providers,
     )
 
     try:
@@ -105,11 +108,15 @@ def local_mlx_mode(cfg: Any = None) -> tuple[bool, str]:
         orchestrator = _plane_provider(cfg.orchestrator)
     except Exception as exc:
         return False, f"설정을 읽지 못했다({type(exc).__name__}) — 과금 게이트를 열지 않는다"
-    planes = f"워커 {worker or '?'}, 오케스트레이터 {orchestrator or '?'}"
-    if external_planes(worker, orchestrator):
+    # 명시된 역할 평면(plans/212 · D-365)도 같은 판정과 같은 「mlx + 루프백」 조건을 받는다.
+    roles = role_providers(cfg)
+    planes = f"워커 {worker or '?'}, 오케스트레이터 {orchestrator or '?'}" + "".join(
+        f", {plane_label(role)} {provider}" for role, provider in roles.items())
+    if external_planes(worker, orchestrator, roles=roles):
         return False, f"과금 평면이 있다({planes})"
-    if (worker, orchestrator) != ("mlx", "mlx"):
-        return False, f"두 평면이 모두 mlx 가 아니다({planes})"
+    if (worker, orchestrator) != ("mlx", "mlx") or any(p != "mlx" for p in roles.values()):
+        scope = "역할 평면을 포함한 모든 평면이" if roles else "두 평면이 모두"
+        return False, f"{scope} mlx 가 아니다({planes})"
     remote = [f"{plane} {url or '(base_url 미설정)'}" for plane, url, _ in _mlx_planes(cfg)
               if not _is_loopback(url)]
     if remote:
