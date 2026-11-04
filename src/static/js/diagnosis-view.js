@@ -247,6 +247,10 @@
             },
             linkedHead: "폴스타 서버 연결",
             change: "연결 변경",
+            // (plans/210 §3.11) APM↔SMS 연계 — 근거·대상은 누구나 보고, 수정 링크는 관리자에게만
+            apmAuto: "자동 · 추정",
+            apmTargets: "연계 대상",
+            apmEdit: "연계 정보 수정",
         },
         // (plans/198 W0 I-1) 완료 조사 하단 「실제 원인」 1줄 — 조사 요청자·관리자만(서버가 판정)
         cause: {
@@ -1138,8 +1142,14 @@
     var HOST_WAIT_RE = /폴스타 서버 (선택 대기|미확정)/;
     var HOST_POD_RE = /K8s 파드/;
     var HOST_ABSENT_RE = /폴스타 미등록\(사용자 확인/;
-    var HOST_LINKED_RE = /^(이전 확정 연결|사용자 선택으로 연결|제니퍼 노드 주소 일치)/;
+    var HOST_LINKED_RE = /^(이전 확정 연결|사용자 선택으로 연결|제니퍼 노드 주소 일치|APM↔SMS 연계 — )/;
     var HOST_NODE_RE = /^제니퍼 노드 주소 일치/;
+    // (plans/210 §3.11) APM↔SMS 연계 정보 DB — 연결 근거 「APM↔SMS 연계 — 관리자 등록|자동(…)」 ·
+    // 생략 사유 「폴스타 서버 미확정 — APM↔SMS 연계 미확정(…)」(대기 — D-348 선택 UI 그대로)·「APM↔SMS 연계 없음(관리자 지정 …)」 ·
+    // 사유 뒤 노드 주소 조회 상태 「제니퍼 노드 주소 조회 비활성(…)」/「노드 주소 조회 실패(…)」
+    var HOST_APM_MAP_RE = /^APM↔SMS 연계 — /;
+    var HOST_APM_SKIP_RE = /APM↔SMS 연계 (미확정|없음)/;
+    var HOST_NODE_STATUS_RE = /(제니퍼 노드 주소 조회 비활성|노드 주소 조회 실패)[^·]*/;
     // (plans/198 W0 I-1) 라벨 한 줄 표기 — `{verdict, rank, note}` → 「2순위 가설 맞음」 등
     function causeLabelText(label) {
         if (!isObj(label)) return "";
@@ -2025,7 +2035,7 @@
             return box;
         }
 
-        function cardNode(tab, m, host, rq) {
+        function cardNode(tab, m, host, rq, scope) {
             var li = el("li", "dv-card" + (m.skipped ? " dv-card--skip" : "") + (m.running ? " dv-card--running" : "") +
                 (m.warn ? " dv-card--warn" : ""));
             li.setAttribute("data-step", m.step);
@@ -2037,6 +2047,10 @@
                     (m.because || TEXT.skipNoReason)));
                 li.appendChild(head);
                 detailNode(tab, m, li);
+                if (HOST_APM_SKIP_RE.test(String(m.because || "") + " " + String(m.skipRaw || ""))) {
+                    var an = apmMapNode(String(m.because || m.skipRaw || ""), scope, false);
+                    if (an) li.appendChild(an);
+                }
                 if (host) {
                     var hn = hostNode(tab, host);
                     if (hn) li.appendChild(hn);
@@ -2117,6 +2131,41 @@
                 h.state = "error";
                 h.error = (err && err.message) || String(err || "");
             }).then(function () { if (tabs[tab.id]) renderFlow(tab); });
+        }
+
+        // (plans/210 §3.11) APM↔SMS 연계 상자 — 연결 근거(자동이면 「자동 · 추정」 표지)·연계 대상 목록 ·
+        // 생략 사유의 노드 주소 조회 상태 · 관리자에게만 「연계 정보 수정」(관리 화면 링크 — 이 화면은 읽기만).
+        // 연계 근거에는 [연결 변경]을 두지 않는다 — 고치는 곳은 관리 화면 하나다. D-348 선택 UI와는 별개
+        function apmMapNode(text, scope, linked) {
+            var T = TEXT.host;
+            var box = el("div", "dv-host dv-apm-map");
+            if (linked) {
+                var head = el("div", "dv-host-basis", T.linkedHead + " — " + text);
+                if (/— 자동/.test(text)) head.appendChild(el("span", "dv-badge", T.apmAuto));
+                box.appendChild(head);
+                var targets = (isObj(scope) ? asList(scope.polestar_targets) : []).filter(isObj);
+                if (targets.length) {
+                    box.appendChild(el("div", "dv-label", T.apmTargets + " " + targets.length + "대"));
+                    var ul = el("ul", "dv-apm-targets");
+                    targets.forEach(function (t) {
+                        var name = String(t.server_name || t.hostname || "");
+                        ul.appendChild(el("li", "dv-apm-target", t.db_id ? name + " (" + t.db_id + ")" : name));
+                    });
+                    box.appendChild(ul);
+                }
+            } else {
+                var status = HOST_NODE_STATUS_RE.exec(text);
+                if (status) box.appendChild(el("div", "dv-note", status[0].trim()));
+            }
+            if (operator) {
+                var q = isObj(scope) ? String(scope.alarm_instance || scope.host || "") : "";
+                var a = el("a", "dv-host-change dv-apm-edit", T.apmEdit);
+                a.setAttribute("href", "/admin" + (q ? "?apm_map_q=" + encodeURIComponent(q) : "") + "#apmhostmap");
+                a.setAttribute("target", "_blank");
+                a.setAttribute("rel", "noopener");
+                box.appendChild(a);
+            }
+            return box.children.length ? box : null;
         }
 
         function hostNode(tab, host) {
@@ -2299,14 +2348,14 @@
             var body = tab.dom.flowBody;
             body.textContent = "";
             if (host && host.mode === "linked") {
-                var hostBox = hostNode(tab, host);
+                var hostBox = HOST_APM_MAP_RE.test(host.basis) ? apmMapNode(host.basis, src.scope, true) : hostNode(tab, host);
                 if (hostBox) body.appendChild(hostBox);
             }
             var groups = [];
             if (model.cards.length) {
                 groups.push(["playbook", model.cards.map(function (m) {
                     return cardNode(tab, m, host && host.step && host.step === m.step ? host : null,
-                        rq ? rq[String(m.step)] : null);
+                        rq ? rq[String(m.step)] : null, src.scope);
                 })]);
             }
             if (model.holmes.length) groups.push(["holmes", model.holmes.map(function (r) { return roundNode(tab, r); })]);

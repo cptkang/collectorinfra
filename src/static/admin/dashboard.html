@@ -65,6 +65,23 @@
         .inv-summary__gauge-value { font-size: 1.375rem; font-weight: 700; }
         .inv-summary__gauge-max { font-size: 0.8125rem; color: var(--text-muted); }
         .inv-summary__note { color: var(--text-muted); font-size: 0.75rem; margin-top: 6px; }
+
+        /* plans/210 W6 「APM·SMS 연계」 탭 — 기존 클래스(settings-table·dbs-form·incident-kb-notice)를 재사용하고
+           탭 고유 배치만 여기 둔다. 내용은 admin-apm-host-map.js가 textContent로 그린다. */
+        #apmMapTable td, #apmInvTable td, #apmScanScannerTable td { vertical-align: top; }
+        .ahm-sub { color: var(--text-muted); font-size: 0.72rem; }
+        .ahm-tag { display: inline-block; padding: 0 8px; margin: 0 4px 2px 0; border-radius: 999px; font-size: 0.7rem;
+                   border: 1px solid var(--border); color: var(--text-secondary); }
+        .ahm-tag--warn { color: var(--warning); border-color: var(--warning); background: var(--warning-bg); }
+        .ahm-tag--auto { color: var(--info); border-color: var(--info); background: var(--info-bg); }
+        .ahm-btn { padding: 4px 10px; font-size: 0.75rem; margin: 0 4px 4px 0; }
+        .ahm-panel { border: 1px solid var(--border); border-radius: var(--radius-sm); padding: 12px 14px; margin: 12px 0;
+                     background: var(--bg); font-size: 0.8rem; }
+        .ahm-panel h3 { font-size: 0.9rem; margin-bottom: 8px; }
+        .ahm-targets { list-style: none; padding: 0; margin: 6px 0; }
+        .ahm-targets li { margin-bottom: 4px; }
+        .ahm-pager { display: flex; gap: 8px; align-items: center; margin-top: 8px; font-size: 0.78rem; }
+        .ahm-summary { font-size: 0.8125rem; line-height: 1.6; margin-bottom: 10px; }
     </style>
 </head>
 <body class="admin-dashboard">
@@ -121,6 +138,8 @@
                 <button class="tab" data-tab="apmsources">제니퍼 소스</button>
                 <button class="tab" data-tab="incidentkb">조사 지식</button>
                 <button class="tab" data-tab="hostlinks">호스트 연결</button>
+                <!-- (plans/210 W6) NOISE_APM_HOST_MAP_ENABLED 켜진 기동에서만 보인다(admin-apm-host-map.js가 연다) -->
+                <button class="tab" data-tab="apmhostmap" hidden>APM·SMS 연계</button>
                 <!-- (plans/198 W0 I-1) NOISE_INVESTIGATION_LABEL_ENABLED 켜진 기동에서만 보인다(admin-investigation-accuracy.js가 연다) -->
                 <button class="tab" data-tab="invaccuracy" hidden>조사 정확도</button>
             </div>
@@ -785,6 +804,183 @@
                 </div>
             </div>
 
+            <!-- APM·SMS 연계 탭 (plans/210 §3.10 · D-362) — 제니퍼 인스턴스 ↔ 폴스타(SMS) 서버 매핑 · 사전 스캔 · 인벤토리 -->
+            <div class="tab-content" id="tab-apmhostmap">
+                <div class="card">
+                    <div class="toolbar">
+                        <h2>APM·SMS 연계 매핑</h2>
+                        <span>
+                            <button class="btn btn-secondary" id="apmMapAddBtn" style="padding: 8px 18px; font-size: 0.8125rem;">수동 추가</button>
+                            <button class="btn btn-secondary" id="apmMapRefreshBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                        </span>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        장애 진단이 제니퍼 인스턴스(파드·VM)의 <strong>폴스타 서버</strong>를 바로 찾도록 쓰는 연계 정보입니다.
+                        <strong>자동</strong> 행은 노드 주소·VM 일치·ITAM 업무 추정으로 만들어지며 진단 화면에 「자동 · 추정」으로 표시됩니다.
+                        관리자가 <strong>수정</strong>하거나 <strong>확인</strong>한 행은 자동 결과가 덮지 않습니다(다른 결과는 「스캔 제안」으로만 남습니다).
+                        <strong>연계 없음</strong>(disabled)으로 두면 그 대상은 폴스타 조회를 생략합니다.
+                        이 탭은 <code>NOISE_APM_HOST_MAP_ENABLED</code>가 켜진 채 <strong>본체를 기동</strong>했을 때만 보입니다.
+                    </p>
+                    <div class="dbs-form">
+                        <label>제니퍼 소스<input type="text" id="apmMapFilterSource" maxlength="64"></label>
+                        <label>상태
+                            <select id="apmMapFilterState">
+                                <option value="">전체</option>
+                                <option value="active">사용</option>
+                                <option value="ambiguous">모호</option>
+                                <option value="failed">실패</option>
+                                <option value="disabled">연계 없음</option>
+                            </select>
+                        </label>
+                        <label>출처
+                            <select id="apmMapFilterOrigin">
+                                <option value="">전체</option>
+                                <option value="auto">자동</option>
+                                <option value="manual">관리자</option>
+                            </select>
+                        </label>
+                        <label>근거
+                            <select id="apmMapFilterBasis">
+                                <option value="">전체</option>
+                                <option value="node_address">노드 주소</option>
+                                <option value="vm_exact">VM 일치</option>
+                                <option value="itam">ITAM 업무 추정</option>
+                                <option value="manual">관리자 지정</option>
+                            </select>
+                        </label>
+                        <label>검색어<input type="text" id="apmMapFilterQuery" maxlength="200" placeholder="도메인·인스턴스·서버명"></label>
+                        <label style="flex-direction: row; align-items: center; gap: 4px;"><input type="checkbox" id="apmMapFilterReview">검토 필요만</label>
+                        <button class="btn btn-secondary dbs-btn" id="apmMapSearchBtn">검색</button>
+                    </div>
+                    <div id="apmMapNotice" class="incident-kb-notice" style="display: none;"></div>
+                    <div id="apmMapEditor" class="ahm-panel" hidden>
+                        <h3 id="apmMapEditTitle">연계 수정</h3>
+                        <div class="dbs-form" id="apmMapEditKeyFields">
+                            <label>제니퍼 소스<input type="text" id="apmMapEditSource" maxlength="64"></label>
+                            <label>도메인 id<input type="text" id="apmMapEditDomain" maxlength="64"></label>
+                            <label>도메인 이름<input type="text" id="apmMapEditDomainName" maxlength="255"></label>
+                            <label>범위
+                                <select id="apmMapEditScope">
+                                    <option value="instance">인스턴스</option>
+                                    <option value="workload">워크로드(파드 묶음)</option>
+                                    <option value="domain">도메인 기본값</option>
+                                </select>
+                            </label>
+                            <label>인스턴스 이름<input type="text" id="apmMapEditInstance" maxlength="255"></label>
+                        </div>
+                        <div class="dbs-form">
+                            <label>상태
+                                <select id="apmMapEditState">
+                                    <option value="active">사용</option>
+                                    <option value="disabled">연계 없음(폴스타 조회 생략)</option>
+                                </select>
+                            </label>
+                            <label style="flex: 1;">메모<input type="text" id="apmMapEditNote" maxlength="1000"></label>
+                        </div>
+                        <div>대상 폴스타 서버</div>
+                        <ul class="ahm-targets" id="apmMapEditTargets"></ul>
+                        <div class="dbs-form">
+                            <label>폴스타 소스(db_id · 비우면 전 존)<input type="text" id="apmMapEditTargetDb" maxlength="64"></label>
+                            <label>서버명<input type="text" id="apmMapEditTargetServer" maxlength="255"></label>
+                            <button class="btn btn-secondary dbs-btn" id="apmMapEditTargetAddBtn">대상 추가</button>
+                        </div>
+                        <div class="ahm-sub" style="margin-bottom: 8px;">저장할 때 새 대상은 폴스타에 실제로 있는지 확인합니다. 아래 인벤토리의 [대상으로] 버튼으로도 추가할 수 있습니다.</div>
+                        <button class="btn btn-primary dbs-btn" id="apmMapEditSaveBtn">저장</button>
+                        <button class="btn btn-secondary dbs-btn" id="apmMapEditCancelBtn">닫기</button>
+                    </div>
+                    <div id="apmMapPreview" class="ahm-panel" hidden>
+                        <h3>다시 찾기 미리보기</h3>
+                        <div id="apmMapPreviewBody"></div>
+                        <button class="btn btn-primary dbs-btn" id="apmMapPreviewApplyBtn">적용</button>
+                        <button class="btn btn-secondary dbs-btn" id="apmMapPreviewCloseBtn">닫기</button>
+                    </div>
+                    <div class="users-table-scroll">
+                        <table class="settings-table" id="apmMapTable">
+                            <thead>
+                                <tr>
+                                    <th>상태</th>
+                                    <th>제니퍼 소스 · 도메인</th>
+                                    <th>범위 · 인스턴스</th>
+                                    <th>대상 폴스타 서버</th>
+                                    <th>근거</th>
+                                    <th>갱신</th>
+                                    <th></th>
+                                </tr>
+                            </thead>
+                            <tbody id="apmMapBody"></tbody>
+                        </table>
+                    </div>
+                    <div class="ahm-pager">
+                        <button class="btn btn-secondary dbs-btn" id="apmMapPrevBtn">이전</button>
+                        <span id="apmMapPageInfo"></span>
+                        <button class="btn btn-secondary dbs-btn" id="apmMapNextBtn">다음</button>
+                    </div>
+                </div>
+
+                <div class="card" style="margin-top: 18px;">
+                    <div class="toolbar">
+                        <h2>사전 스캔</h2>
+                        <span>
+                            <button class="btn btn-primary" id="apmScanStartBtn" style="padding: 8px 18px; font-size: 0.8125rem;">지금 스캔</button>
+                            <button class="btn btn-secondary" id="apmScanRefreshBtn" style="padding: 8px 18px; font-size: 0.8125rem;">새로고침</button>
+                        </span>
+                    </div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        제니퍼 인벤토리·노드 주소, 폴스타(SMS) 서버, ITAM 업무·서버 원장을 한 번에 읽어 스냅샷을 바꾸고 자동 연계를 만듭니다.
+                        관리자가 눌렀을 때만 돌며(주기 실행 없음) 한 번에 하나만 돕니다. 실패한 스캐너는 이전 스냅샷을 그대로 씁니다.
+                        <code>NOISE_APM_HOST_MAP_AUTO_ENABLED</code>가 꺼져 있으면 스캔할 수 없습니다.
+                    </p>
+                    <div id="apmScanNotice" class="incident-kb-notice" style="display: none;"></div>
+                    <div id="apmScanLatest" class="ahm-summary"></div>
+                    <table class="settings-table" id="apmScanScannerTable">
+                        <thead><tr><th>스캐너</th><th>결과</th><th>행</th><th>소요</th><th>사유</th></tr></thead>
+                        <tbody id="apmScanScannerBody"></tbody>
+                    </table>
+                    <h3 style="font-size: 0.9rem; margin: 14px 0 6px;">노드 주소 — 제니퍼 소스별</h3>
+                    <table class="settings-table" id="apmScanNodeSourcesTable">
+                        <thead><tr><th>제니퍼 소스</th><th>결과</th><th>사유</th></tr></thead>
+                        <tbody id="apmScanNodeSourcesBody"></tbody>
+                    </table>
+                    <h3 style="font-size: 0.9rem; margin: 14px 0 6px;">스캔 이력</h3>
+                    <table class="settings-table" id="apmScanRunsTable">
+                        <thead><tr><th>시작</th><th>결과</th><th>소요</th><th>요청자</th><th>연계 요약</th></tr></thead>
+                        <tbody id="apmScanRunsBody"></tbody>
+                    </table>
+                </div>
+
+                <div class="card" style="margin-top: 18px;">
+                    <div class="toolbar"><h2>인벤토리</h2></div>
+                    <p style="font-size: 0.75rem; color: var(--text-muted); margin-bottom: 12px;">
+                        마지막 스캔의 스냅샷을 찾아봅니다. 제니퍼 인스턴스 행의 [이 인스턴스 연계 추가]로 수동 추가를 시작하고,
+                        폴스타 서버 행의 [대상으로]로 열린 편집 칸에 대상을 넣습니다.
+                    </p>
+                    <div class="dbs-form">
+                        <label>종류
+                            <select id="apmInvKind">
+                                <option value="apm">제니퍼 인스턴스(APM)</option>
+                                <option value="sms">폴스타 서버(SMS)</option>
+                                <option value="itam">ITAM 서버</option>
+                            </select>
+                        </label>
+                        <label>검색어<input type="text" id="apmInvQuery" maxlength="200"></label>
+                        <label style="flex-direction: row; align-items: center; gap: 4px;"><input type="checkbox" id="apmInvUnmapped">매핑 없음만</label>
+                        <button class="btn btn-secondary dbs-btn" id="apmInvSearchBtn">검색</button>
+                    </div>
+                    <div id="apmInvNotice" class="incident-kb-notice" style="display: none;"></div>
+                    <div class="users-table-scroll">
+                        <table class="settings-table" id="apmInvTable">
+                            <thead id="apmInvHead"></thead>
+                            <tbody id="apmInvBody"></tbody>
+                        </table>
+                    </div>
+                    <div class="ahm-pager">
+                        <button class="btn btn-secondary dbs-btn" id="apmInvPrevBtn">이전</button>
+                        <span id="apmInvPageInfo"></span>
+                        <button class="btn btn-secondary dbs-btn" id="apmInvNextBtn">다음</button>
+                    </div>
+                </div>
+            </div>
+
             <!-- 조사 정확도 탭 (plans/198 W0 I-1 · D-350 ②) — 읽기·내려받기만. 집계는 규칙 기반(AI 호출 없음) -->
             <div class="tab-content" id="tab-invaccuracy">
                 <div class="card">
@@ -898,12 +1094,13 @@
 
     <div class="footer"><img class="brand-mark" src="/static/img/kb-mark.svg" alt="">KB AIOps 포탈 v1.0 &mdash; ADMIN</div>
 
-    <script src="/static/js/admin.js?v=16"></script>
+    <script src="/static/js/admin.js?v=17"></script>
     <script src="/static/js/admin-components.js?v=1"></script>
     <script src="/static/js/admin-db-structure.js?v=1"></script>
     <script src="/static/js/admin-rag-docs.js?v=3"></script>
     <script src="/static/js/admin-incident-kb.js?v=1"></script>
     <script src="/static/js/admin-host-links.js?v=1"></script>
     <script src="/static/js/admin-investigation-accuracy.js?v=1"></script>
+    <script src="/static/js/admin-apm-host-map.js?v=2"></script>
 </body>
 </html>

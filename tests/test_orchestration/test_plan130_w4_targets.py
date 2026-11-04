@@ -590,6 +590,7 @@ def test_server_consumers_skip_apm_only_targets() -> None:
 _DUMP_SCHEMA = """
 import asyncio, json, sys, tempfile
 from apm_gateway.application.jobs import JobManager
+from apm_gateway.application.node_address import build_node_address
 from apm_gateway.application.sources import build_source_set
 from apm_gateway.application.tools import ApmTools
 from apm_gateway.config import load_config
@@ -597,9 +598,10 @@ from apm_gateway.interface.server import create_server
 
 async def main():
     spool = tempfile.mkdtemp(prefix="gw-schema-")
+    # plans/210 W2 — 노드 주소 도구(`apm.node_address` 보기)는 플래그 on일 때만 등록된다
     cfg = load_config({"JENNIFER_API_URL": "http://127.0.0.1:1", "JENNIFER_API_TOKEN": "x",
-                       "APM_SPOOL_DIR": spool})
-    tools = ApmTools(build_source_set(cfg), cfg)
+                       "APM_SPOOL_DIR": spool, "JENNIFER_NODE_ADDRESS_ENABLED": "true"})
+    tools = ApmTools(build_source_set(cfg), cfg, node_address=build_node_address(cfg))
     jobs = JobManager.from_config(cfg, envelope=tools.ok, error_envelope=tools.err)
     mcp = create_server(tools, jobs=jobs, port=0)
     listed = await mcp.list_tools()

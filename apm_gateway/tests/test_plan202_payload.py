@@ -248,15 +248,17 @@ async def test_instance_map_on_adds_host_address(kwargs):
 
 
 async def test_instance_map_over_domain_limit_reads_cache_only(monkeypatch):
-    """결과 도메인 수가 상한을 넘으면 새로 조회하지 않고 캐시만 읽는다(전 도메인 조회 방지)."""
+    """결과 도메인 수가 상한을 넘으면 새로 조회하지 않고 캐시만 읽는다(전 도메인 조회 방지 ·
+    plans/210 W8 B — 상한은 `MAX_DOMAINS_PER_CALL` · 넘으면 `[한계]`·partial)."""
     from apm_gateway.application import instance_tools
 
-    monkeypatch.setattr(instance_tools, "MCP_FETCH_DOMAIN_LIMIT", 0)
+    monkeypatch.setattr(instance_tools, "MAX_DOMAINS_PER_CALL", 0)
     lister = FakeLister(_rows("10.139.0.5", "10.136.1.7"))
     service = _service(lister)
     tools = _tools(service)
     cold = await tools.apm_instance_map(domain_id=1000)
     assert lister.calls == [] and all(r["host_address"] == "" for r in cold["rows"])
+    assert cold["partial"] is True and any("[한계] 노드 주소" in x for x in cold["limits"])
     await service.lookup("default", 1000, 1001)  # 알람 경로가 채운 캐시
     warm = await tools.apm_instance_map(domain_id=1000)
     assert lister.calls == [1000]

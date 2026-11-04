@@ -60,7 +60,9 @@ def test_view_table_is_registry_data() -> None:
                            # plans/134 W6 A-1(두 기간 비교 — 뒤에 덧붙임 · 의도된 갱신)
                            "apm.period_compare",
                            # plans/164 W7-A(인스턴스 추세 — 뒤에 덧붙임 · 의도된 갱신)
-                           "apm.instance_trend"]
+                           "apm.instance_trend",
+                           # plans/210 W2(노드 주소 — 뒤에 덧붙임 · 의도된 갱신)
+                           "apm.node_address"]
     assert views["apm.instances"].first_hop and not views["apm.instances"].required_input
     assert views["apm.app_health"].required_input == "hostname"
     # plans/134 M-2 — 창은 상한이 아니라 의미(current·range·hourly·none) · window_max_minutes 폐지

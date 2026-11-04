@@ -10,6 +10,12 @@ from typing import Any
 
 from src.orchestration.apm.calls import _Call, _call_args, _host_calls
 from src.orchestration.apm.context import _RunCtx
+from src.orchestration.apm.node_address import (
+    NODE_ADDRESS_VIEW,
+    node_address_args,
+    target_groups,
+    targeted_args,
+)
 from src.orchestration.apm.targets import (
     _answer_call,
     _instance_calls,
@@ -28,7 +34,7 @@ def _build_calls(ctx: _RunCtx) -> list[_Call]:
         if vid in ctx.blocked:  # 필수 조건·참조 미해결 — 되묻기(고지는 위에서 실었다)
             continue
         view = ctx.by_id[vid]
-        build = _CALL_BUILDERS.get(view.target, _calls_host)
+        build = _VIEW_BUILDERS.get(view.id) or _CALL_BUILDERS.get(view.target, _calls_host)
         calls += build(ctx, view, ctx.windows[vid], ctx.view_args.get(vid))
     return calls
 
@@ -96,6 +102,17 @@ def _calls_optional(ctx: _RunCtx, view: ViewSpec, plan: WindowPlan,
             for h in opt_hosts or [None]]
 
 
+def _calls_node_address(ctx: _RunCtx, view: ViewSpec, plan: WindowPlan,
+                        args: dict[str, Any] | None) -> list[_Call]:
+    """노드 주소 보기(plans/210 W2·W8 A) — 대상이 없으면 도구 1회(도메인 조건은 목록 인자로) ·
+    대상이 있으면 해석 인스턴스의 (소스, 도메인)마다 1회(`instance_ids`) · 해석 0건이면 0회."""
+    base = node_address_args(_call_args(view, None, plan, ctx.scope, args))
+    if ctx.node_targets is None:
+        return [_Call(view, None, base)]
+    return [_Call(view, None, targeted_args(base, source, domain, ids))
+            for source, domain, ids in target_groups(ctx.node_targets)]
+
+
 def _calls_host(ctx: _RunCtx, view: ViewSpec, plan: WindowPlan,
                 args: dict[str, Any] | None) -> list[_Call]:
     """대상별 호출: 대상이 필요한 보기 · 대상으로 좁힐 수 있는 첫 홉 목록(인스턴스).
@@ -127,4 +144,9 @@ _CALL_BUILDERS = {
     "none": _calls_none,
     "optional": _calls_optional,
     "": _calls_host,
+}
+
+#: 보기 id → 호출 구성 함수(대상 종류 표보다 먼저 본다) — 보기 하나에 고정 배선이 필요한 경우만.
+_VIEW_BUILDERS = {
+    NODE_ADDRESS_VIEW: _calls_node_address,
 }

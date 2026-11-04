@@ -17,6 +17,7 @@ from src.clients.source_mcp_client import SourceMcpError
 from src.domain import disclosure as disc
 from src.orchestration import apm_jobs as jobs
 from src.orchestration.apm.common import APM_QUERY_AGENT, APM_SYSTEM, META_KEY
+from src.orchestration.apm.node_address import missing_tool_error
 from src.orchestration.apm.window import WindowPlan
 from src.routing.registry import ViewSpec
 from src.utils.task_result_keys import DEGRADED_KEY
@@ -125,7 +126,9 @@ async def _run_calls(session: Any, calls: list[_Call], concurrency: int,
             try:
                 call.envelope = await session.call_tool(call.view.tool, call.args)
             except SourceMcpError as e:
-                call.error = _exception_error(e, call.view.tool)
+                # 게이트웨이가 도구를 등록하지 않은 노드 주소 보기 — 비활성 사유(plans/210 W2)
+                call.error = (missing_tool_error(call.view.tool, str(e))
+                              or _exception_error(e, call.view.tool))
                 return
             call.error = _envelope_error(call.envelope)
 

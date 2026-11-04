@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import itertools
 import json
+import re
 import time
 from pathlib import Path
 from types import SimpleNamespace
@@ -27,6 +28,7 @@ from sre_agent.application.investigation_dispatcher import (
     InvestigationDispatcher,
 )
 from sre_agent.application.investigation_guidance import (
+    POLESTAR_IDENTIFIER_NOTE,
     ANCHORED_TOOLS,
     APM_ANCHORED_TOOLS,
     APM_FALLBACK_NOTE,
@@ -232,10 +234,23 @@ def test_guidance_off_is_byte_identical_for_polestar_events(remote, scope, corr,
                           job, remote=remote) == expected
 
 
+def _without_identifier_note(g: str | None) -> str | None:
+    """plans/209 W2 — 이벤트에 서버 식별자가 있으면 붙는 가산 블록(폴스타 식별자 지침, 최대 1회)을 뺀다.
+
+    아래 고정 해시·동치는 이 블록이 생기기 전 렌더 기준이다 — 블록을 빼면 종전과 바이트 동일해야 한다.
+    도구 이름 필터가 블록의 줄을 지웠을 수 있어 머리줄부터 다음 빈 줄까지를 뺀다.
+    """
+    if g is None:
+        return None
+    head = POLESTAR_IDENTIFIER_NOTE.split("\n", 1)[0]
+    assert g.count(head) <= 1
+    return re.sub(r"\n\n" + re.escape(head) + r".*?(?=\n\n|\Z)", "", g, flags=re.S)
+
+
 def test_guidance_off_apm_event_gets_no_os_playbook():
     """R-16(플래그 무관) — WAS 사건에 OS 메모리 플레이북이 붙지 않는다 · APM 노트도 없다."""
     g = build_guidance(_settings(), _job(payload=_APM_EVENT))
-    assert g == build_guidance(_settings(), _job())
+    assert _without_identifier_note(g) == build_guidance(_settings(), _job())
     assert PLAYBOOK_NOTES["memory"] not in g and APM_PLAYBOOK_NOTE not in g
 
 

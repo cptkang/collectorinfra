@@ -86,6 +86,9 @@ class CorrelationResult:
     change_finding: dict | None = None   # plans/91 1-2 — 변경 오버레이 off/미수집이면 None(키 자체를 내지 않는다)
     # plans/198 I-7 — 토폴로지 1홉 이웃. off면 None(키 자체를 내지 않는다)
     neighbors: dict | None = None
+    # plans/210 §3.7 — 연계 대상 여럿의 대상별 판정(첫 행 = 대표). 단일 대상이면 None(키 자체를
+    # 내지 않는다)
+    targets: list | None = None
 
     def to_dict(self) -> dict:
         out = {
@@ -102,6 +105,8 @@ class CorrelationResult:
             out["change_finding"] = self.change_finding
         if self.neighbors is not None:
             out["neighbors"] = self.neighbors
+        if self.targets is not None:
+            out["targets"] = self.targets
         return out
 
 
@@ -131,8 +136,23 @@ def leads(offset: int, first_alarm: int | None, anchor: int | None = None) -> bo
     return ref is None or offset < ref
 
 
+def _unjudgeable(finding: dict, reason: str) -> dict:
+    """판정 불가 표기 — `is_anomalous=None`·`judgeable=False`·`reason`(plans/209 W3)."""
+    finding["is_anomalous"] = None
+    finding["judgeable"] = False
+    finding["reason"] = reason
+    return finding
+
+
 def metric_finding(series: MetricSeries, reference_time: str) -> tuple[dict, list[str]]:
-    """지표 1종의 이상 판정(§6.2). (finding, notes)를 돌려준다 — 판정 불가 사유는 notes에 남긴다."""
+    """지표 1종의 이상 판정(§6.2). (finding, notes)를 돌려준다 — 판정 불가 사유는 notes에 남긴다.
+
+    `is_anomalous`는 3상태다(plans/209 W3 · D-360 ⑤). 판정할 기준이 없으면 「이상 없음」(False)이
+    아니라 None이고 `judgeable: False`·`reason`을 단다 — ① 사건 구간 점 0개 ② z-score를 못 구했고
+    (기준선 부족, 또는 분산 0인데 사건 구간 최대값이 기준선 평균 초과) 절대 임계도 없음. 분산 0이고
+    최대값이 평균 이하면 판정 가능·이상 없음(False)이다(유휴 disk_io 남발 방지). z-score를 못 구해도 절대 임계가 있으면 그 임계로 판정한
+    결과(True/False)를 그대로 둔다. 판정 가능한 경로의 finding 키는 종전과 같다(`judgeable` 미부착).
+    """
     notes: list[str] = []
     finding: dict = {
         "is_anomalous": False,
@@ -147,7 +167,7 @@ def metric_finding(series: MetricSeries, reference_time: str) -> tuple[dict, lis
     }
     if not series.points:
         notes.append(f"{series.name}: 사건 구간 데이터 없음")
-        return finding, notes
+        return _unjudgeable(finding, notes[-1]), notes
 
     values = [v for _, v in series.points]
     peak_idx = max(range(len(values)), key=lambda i: values[i])
@@ -173,6 +193,12 @@ def metric_finding(series: MetricSeries, reference_time: str) -> tuple[dict, lis
 
     flags = [_exceeds(v) for v in values]
     if not any(flags):
+        if z_ok and sigma == 0 and max(values) <= mu:  # type: ignore[operator]
+            # 일정한 기준선(유휴 disk_io 0 등)을 넘지 않았다 — 판정 가능·이상 없음
+            return finding, notes
+        if finding["z_score"] is None and series.abs_threshold is None:
+            # 기준선 부족이거나 일정한 기준선을 넘었는데 절대 임계가 없다 — 「이상 없음」이 아니라 판정 불가
+            return _unjudgeable(finding, f"{series.name}: 기준선·절대 임계 없음 — 판정 불가"), notes
         return finding, notes
 
     onset_idx = flags.index(True)

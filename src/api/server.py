@@ -336,6 +336,115 @@ async def _ensure_incident_tables(pool) -> None:
         logger.warning("incident 테이블 DDL 실행 실패: %s", e)
 
 
+# plans/210 · D-362: APM·SMS 연계 매핑·스캔 실행 기록·스냅샷 (ddl/apm_host_map.sql과 동일)
+_APM_HOST_MAP_DDL = """
+CREATE TABLE IF NOT EXISTS apm_host_map (
+    id               BIGSERIAL PRIMARY KEY,
+    source_id        VARCHAR(64)  NOT NULL,
+    domain_id        VARCHAR(64)  NOT NULL,
+    scope            VARCHAR(16)  NOT NULL,
+    match_key        VARCHAR(255) NOT NULL DEFAULT '',
+    domain_name      VARCHAR(255),
+    instance_example VARCHAR(255),
+    origin           VARCHAR(16)  NOT NULL,
+    basis            VARCHAR(16)  NOT NULL,
+    state            VARCHAR(16)  NOT NULL DEFAULT 'active',
+    verified         BOOLEAN      NOT NULL DEFAULT FALSE,
+    targets          JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    evidence         JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    note             TEXT,
+    created_by       VARCHAR(100),
+    created_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_by       VARCHAR(100),
+    updated_at       TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    last_used_at     TIMESTAMPTZ,
+    last_seen_at     TIMESTAMPTZ,
+    next_retry_at    TIMESTAMPTZ,
+    version          INTEGER      NOT NULL DEFAULT 1,
+    CONSTRAINT uq_apm_host_map_key UNIQUE (source_id, domain_id, scope, match_key)
+);
+CREATE INDEX IF NOT EXISTS idx_apm_host_map_state ON apm_host_map(state);
+CREATE INDEX IF NOT EXISTS idx_apm_host_map_updated_at ON apm_host_map(updated_at DESC);
+
+CREATE TABLE IF NOT EXISTS apm_host_map_scan_run (
+    run_id        VARCHAR(64)  PRIMARY KEY,
+    requested_by  VARCHAR(100),
+    started_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    finished_at   TIMESTAMPTZ,
+    status        VARCHAR(16)  NOT NULL DEFAULT 'running',
+    scanners      JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    link_summary  JSONB        NOT NULL DEFAULT '{}'::jsonb
+);
+CREATE INDEX IF NOT EXISTS idx_apm_host_map_scan_run_started_at
+    ON apm_host_map_scan_run(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS apm_host_map_snapshot_current (
+    snapshot    VARCHAR(32)  PRIMARY KEY,
+    run_id      VARCHAR(64)  NOT NULL,
+    swapped_at  TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS apm_inventory (
+    id                  BIGSERIAL PRIMARY KEY,
+    run_id              VARCHAR(64)  NOT NULL,
+    source_id           VARCHAR(64),
+    domain_id           VARCHAR(64),
+    domain_name         VARCHAR(255),
+    domain_description  TEXT,
+    instance_id         VARCHAR(64),
+    instance_name       VARCHAR(255),
+    ip                  VARCHAR(64),
+    host_name           VARCHAR(255),
+    workload_key        VARCHAR(255),
+    host_address        VARCHAR(64),
+    host_address_status VARCHAR(32)
+);
+CREATE INDEX IF NOT EXISTS idx_apm_inventory_run_id ON apm_inventory(run_id);
+
+CREATE TABLE IF NOT EXISTS sms_inventory (
+    id           BIGSERIAL PRIMARY KEY,
+    run_id       VARCHAR(64)  NOT NULL,
+    db_id        VARCHAR(64),
+    resource_id  VARCHAR(64),
+    server_name  VARCHAR(255),
+    hostname     VARCHAR(255),
+    ip           VARCHAR(64),
+    nic_ips      TEXT[]
+);
+CREATE INDEX IF NOT EXISTS idx_sms_inventory_run_id ON sms_inventory(run_id);
+
+CREATE TABLE IF NOT EXISTS itam_snapshot_app (
+    id        BIGSERIAL PRIMARY KEY,
+    run_id    VARCHAR(64)  NOT NULL,
+    app_code  VARCHAR(64),
+    app_name  VARCHAR(255)
+);
+CREATE INDEX IF NOT EXISTS idx_itam_snapshot_app_run_id ON itam_snapshot_app(run_id);
+
+CREATE TABLE IF NOT EXISTS itam_snapshot_server (
+    id        BIGSERIAL PRIMARY KEY,
+    run_id    VARCHAR(64)  NOT NULL,
+    app_code  VARCHAR(64),
+    app_name  VARCHAR(255),
+    hostname  VARCHAR(255),
+    ips       TEXT[],
+    active    BOOLEAN,
+    clue_text TEXT
+);
+ALTER TABLE itam_snapshot_server ADD COLUMN IF NOT EXISTS clue_text TEXT;
+CREATE INDEX IF NOT EXISTS idx_itam_snapshot_server_run_id ON itam_snapshot_server(run_id);
+"""
+
+
+async def _ensure_apm_host_map_tables(pool: Any) -> None:
+    """연계 매핑 테이블/인덱스가 없으면 생성한다 (plans/210 · _ensure_incident_tables 미러)."""
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(_APM_HOST_MAP_DDL)
+    except Exception as e:
+        logger.warning("APM·SMS 연계 매핑 테이블 DDL 실행 실패: %s", e)
+
+
 async def _check_apm_sources(config: AppConfig) -> SourceHealthReport | None:
     """제니퍼 소스 정합 점검을 1회 돌려 사용 가능 소스 집합을 확정한다(plans/147 W4 · D-322 ⑥).
 
@@ -417,6 +526,7 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         incident_sub_task,
         incident_sub_stop,
     ) = await _start_incident_tracking(app, config)
+    apm_host_map_task, apm_host_map_redis = await _start_apm_host_map(app, config)
     loop_lag_task = _start_loop_lag_monitor(config)
 
     yield
@@ -471,6 +581,16 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
         await _close_quietly(incident_redis, "aclose")
     if incident_pool is not None:
         await _close_quietly(incident_pool)
+
+    # 종료 시: APM·SMS 연계 매핑 주기 대조 태스크·Redis 연결 정리(plans/210 — 켰을 때만 있다)
+    if apm_host_map_task:
+        apm_host_map_task.cancel()
+        try:
+            await apm_host_map_task
+        except (Exception, _asyncio.CancelledError):
+            pass
+    if apm_host_map_redis is not None:
+        await _close_quietly(apm_host_map_redis, "aclose")
 
     # 종료 시: 감사 로그 로테이션 주기 태스크 정리
     if audit_retention_task:
@@ -793,6 +913,97 @@ def _start_sse_bridge(app: FastAPI, config: AppConfig) -> tuple[Any, Any, Any]:
     return sse_bridge_task, sse_bridge_redis, sse_bridge_stop
 
 
+async def _start_apm_host_map(app: FastAPI, config: AppConfig) -> tuple[Any, Any]:
+    """기동 단계 — APM·SMS 연계 매핑 저장소·Redis 사본(plans/210 §3.3 · D-362).
+
+    `NOISE_APM_HOST_MAP_ENABLED`가 정확히 True **그리고** auth 풀이 있을 때만 DDL·저장소·사본 전체
+    재구성·10분 주기 대조 태스크를 띄운다(`MagicMock` 설정 오판 방지). 꺼져 있으면 아무것도 하지
+    않는다 — `app.state`에도 대입하지 않는다(기동 경로 비트 동일 · 소비자는 `getattr(…, None)`).
+    켜졌을 때 `app.state.apm_host_map_repo`·`app.state.apm_host_map_cache`를 둔다. 실패는 warning 후
+    계속한다(매핑 없음 = 직접 조회 — 오연결 없음).
+
+    (W3) `NOISE_APM_HOST_MAP_AUTO_ENABLED`도 True면 되적재 소비자(`apmhostmap:req` consumer group)를
+    `app.state.apm_host_map_consumer`에 두고 주기 대조와 같은 태스크에서 돌린다(W5는
+    `set_itam_handler`로 ITAM 생성 요청 처리기를 끼운다). 태스크 취소가 둘 다 멈춘다.
+
+    Returns:
+        (주기 대조[+소비] 태스크, Redis 연결) — 만든 것만 채워진다(나머지 None).
+    """
+    ng: Any = getattr(config, "noise_gate", None)
+    if getattr(ng, "apm_host_map_enabled", False) is not True:
+        return None, None
+    pool = getattr(app.state, "auth_pool", None)
+    if pool is None:
+        logger.warning(
+            "APM·SMS 연계 매핑 비활성 — auth 풀(내부 PG)이 없다 (NOISE_APM_HOST_MAP_ENABLED)"
+        )
+        return None, None
+    import asyncio as _asyncio
+
+    from noise_gate.infrastructure.apm_host_map_cache import (
+        RedisApmHostMapCache,
+        connect_redis,
+        run_sync_loop,
+    )
+    from noise_gate.infrastructure.apm_host_map_repository import PostgresApmHostMapRepository
+
+    await _ensure_apm_host_map_tables(pool)
+    repo = PostgresApmHostMapRepository(pool)
+    app.state.apm_host_map_repo = repo
+    redis = None
+    try:
+        aborted = await repo.abort_running_scan_runs()
+        if aborted:
+            logger.info("APM·SMS 연계 스캔 — 남은 실행 기록 %d건을 aborted로 정리", aborted)
+        await repo.cleanup()
+    except Exception as e:
+        logger.warning("APM·SMS 연계 매핑 기동 정리 실패(계속): %s", e)
+    try:
+        redis = connect_redis(config)
+        cache = RedisApmHostMapCache(redis)
+        app.state.apm_host_map_cache = cache
+        counts = await cache.sync_from_repo(repo)
+        logger.info(
+            "APM·SMS 연계 매핑 사본 재구성 (필드 %d · 색인 키 %d)",
+            counts["map_fields"], counts["index_keys"],
+        )
+    except Exception as e:
+        logger.warning("APM·SMS 연계 매핑 사본 재구성 실패 — 주기 대조가 다시 시도한다: %s", e)
+        if redis is None:
+            return None, None
+    cache = app.state.apm_host_map_cache
+    loops: list[Any] = [lambda: run_sync_loop(repo, cache)]
+    if getattr(ng, "apm_host_map_auto_enabled", False) is True:
+        from noise_gate.application.apm_host_map_consumer import ApmHostMapConsumer
+        from noise_gate.application.host_candidates import node_lookup_db_ids
+
+        consumer = ApmHostMapConsumer(
+            repo, cache, redis=redis,
+            max_targets=int(getattr(ng, "apm_host_map_max_targets", 10)),
+            retry_hours=int(getattr(ng, "apm_host_map_retry_hours", 24)),
+            allowed_db_ids=lambda: node_lookup_db_ids(config),
+        )
+        app.state.apm_host_map_consumer = consumer
+        loops.append(consumer.run)
+        # (W5) ITAM 비동기 요청 처리기 · 관리자 수동 스캔 서비스 — 조립 실패는 기동을 막지 않는다
+        try:
+            from noise_gate.application.apm_host_map_scan import (
+                build_itam_request_handler,
+                build_scan_service,
+            )
+
+            consumer.set_itam_handler(build_itam_request_handler(config, repo=repo, cache=cache))
+            app.state.apm_host_map_scan_service = build_scan_service(config, repo=repo, cache=cache)
+        except Exception as e:
+            logger.warning("APM·SMS 연계 스캔 서비스 조립 실패 — 스캔·ITAM 요청 비활성: %s", e)
+
+    async def _run_all() -> None:
+        await _asyncio.gather(*(start() for start in loops))
+
+    task = _asyncio.create_task(_run_all(), name="apm-host-map-sync")
+    return task, redis
+
+
 async def _start_incident_tracking(app: FastAPI, config: AppConfig) -> tuple[Any, Any, Any, Any]:
     """기동 단계 — D-049: ack/incident 라이프사이클 계측 (PostgreSQL 단일 저장소).
 
@@ -1019,6 +1230,12 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
         from src.api.routes import admin_host_links
 
         application.include_router(admin_host_links.router, prefix="/api/v1", tags=["admin"])
+    # (plans/210 W6) 관리자 「APM·SMS 연계」
+    # — NOISE_APM_HOST_MAP_ENABLED 켰을 때만 등록(기동 시 1회 · 끄면 404).
+    if getattr(config.noise_gate, "apm_host_map_enabled", False) is True:
+        from src.api.routes import admin_apm_host_map
+
+        application.include_router(admin_apm_host_map.router, prefix="/api/v1", tags=["admin"])
     # (Plan 54) 알람 노이즈 캔슬링 관제 — 운영자 JWT 뒤의 집계·조회·침묵 관리.
     application.include_router(
         noise_dashboard.router, prefix="/api/v1", tags=["noise-console"]

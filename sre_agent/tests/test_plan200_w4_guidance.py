@@ -11,6 +11,7 @@
 from __future__ import annotations
 
 import hashlib
+import re
 import string
 from collections.abc import Callable
 from types import ModuleType, SimpleNamespace
@@ -19,6 +20,7 @@ from typing import Any
 import pytest
 from sre_agent.application import investigation_guidance as guide_mod
 from sre_agent.application.investigation_guidance import (
+    POLESTAR_IDENTIFIER_NOTE,
     APM_FOCUS_NOTE_TEMPLATE,
     APM_FOCUS_NOTE_TEMPLATE_PARALLEL,
     INCIDENT_SCOPE_NOTE_TEMPLATE,
@@ -176,12 +178,25 @@ _PAIRS: tuple[tuple[str, str], ...] = (
 )
 
 
+def _without_identifier_note(g: str | None) -> str | None:
+    """plans/209 W2 — 이벤트에 서버 식별자가 있으면 붙는 가산 블록(폴스타 식별자 지침, 최대 1회)을 뺀다.
+
+    아래 고정 해시·동치는 이 블록이 생기기 전 렌더 기준이다 — 블록을 빼면 종전과 바이트 동일해야 한다.
+    도구 이름 필터가 블록의 줄을 지웠을 수 있어 머리줄부터 다음 빈 줄까지를 뺀다.
+    """
+    if g is None:
+        return None
+    head = POLESTAR_IDENTIFIER_NOTE.split("\n", 1)[0]
+    assert g.count(head) <= 1
+    return re.sub(r"\n\n" + re.escape(head) + r".*?(?=\n\n|\Z)", "", g, flags=re.S)
+
+
 # ── ① off = HEAD 바이트 동일 ──────────────────────────────────────────────
 
 
 @pytest.mark.parametrize("name", sorted(CASES))
 def test_off_assembly_matches_head_baseline(name: str) -> None:
-    assert _sha(CASES[name](guide_mod, False)) == BASELINE[name], name
+    assert _sha(_without_identifier_note(CASES[name](guide_mod, False))) == BASELINE[name], name
 
 
 def test_off_explicit_false_equals_flag_absent() -> None:

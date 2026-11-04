@@ -25,7 +25,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from statistics import mean
 from typing import Any, Literal
@@ -123,6 +123,7 @@ APM_SOURCE_IDS_TOOLS = frozenset(
         "apm_transaction_trace",
         APM_CHANGE_IMPACT,
         APM_PERIOD_COMPARE,
+        "apm_node_addresses",  # (plans/210 W2) 플래그 on일 때만 등록 · sre_agent는 부르지 않음
     }
 )
 #: 옵트인 `xview_confirm_over`를 받는 도구(W0 실측 — `apm_app_health`뿐).
@@ -209,6 +210,10 @@ class RunScope:
     #: 페이로드 `meta.hints.polestar_link`를 실제로 쓴 상태(`linked`·`absent`·`unresolved` —
     #: plans/196 §5.2). None이면 힌트 미사용(종전 동작)이고 브리핑 범위에 키를 싣지 않는다.
     polestar_link: str | None = None
+    #: 연계 힌트의 폴스타 대상 여럿 `[{db_id, server_name, hostname?, resource_id?}]`(plans/210 §3.7
+    #: — 첫 원소 = `polestar_source`·`polestar_server`). 지표 단계(S4)가 대상마다 조회한다. 비면
+    #: 단일 대상(종전 동작)이고 브리핑 범위에 키를 싣지 않는다.
+    polestar_targets: list[dict[str, str]] = field(default_factory=list)
 
     def target_names(self) -> list[str]:
         return [name for name, _ in self.target_entries()]
@@ -233,6 +238,8 @@ class RunScope:
         for key in ("polestar_basis", "polestar_link"):
             if out.get(key) is None:
                 out.pop(key, None)
+        if not out.get("polestar_targets"):
+            out.pop("polestar_targets", None)
         return out
 
 
@@ -1144,6 +1151,46 @@ def _instance_rows(resp: ToolResponse) -> list[dict[str, Any]]:
     ]
 
 
+#: S0이 폴스타 조회 서버를 제니퍼 호스트명으로 정했을 때의 근거 문장(plans/209 W2 · D-360 ④).
+POLESTAR_JENNIFER_HOST_BASIS = "제니퍼 호스트명으로 조회({host})"
+
+
+def _event_names(ctx: StepContext) -> tuple[str, str]:
+    """이벤트의 (`serverName`, `hostname`) — 앞뒤 공백 제거 · 없으면 빈 문자열."""
+    event = ctx.payload.get("event") if isinstance(ctx.payload, Mapping) else None
+    event = event if isinstance(event, Mapping) else {}
+    return str(event.get("serverName") or "").strip(), str(event.get("hostname") or "").strip()
+
+
+def _rescoped_polestar_server(ctx: StepContext, host: str | None) -> tuple[str | None, str | None]:
+    """S0 뒤 폴스타 조회 서버와 근거 문장(plans/209 W2 · D-360 ④).
+
+    확정 연결(`linked` — plans/196 §5.2)과 등록명(이벤트 `serverName` ≠ `hostname`, 또는 범위 값이
+    이벤트 호스트명과 다름)은 제니퍼 호스트명으로 덮지 않는다. 덮는 경우(원래 값이 비었거나 호스트명과
+    같을 때)에만 `host`를 쓰고 근거에 「제니퍼 호스트명으로 조회」를 남긴다.
+    """
+    current = ctx.scope.polestar_server
+    basis = ctx.scope.polestar_basis
+    if ctx.scope.polestar_link == "linked":
+        return current, basis
+    event_server, event_host = _event_names(ctx)
+    if event_server and event_host and event_server != event_host:
+        # 이벤트가 호스트명과 구별되는 등록명을 줬다(역조회로 승격된 값). D-348 소스 순위가 정한
+        # 범위 값이 호스트명이 아니면 그대로 두고, 비었거나 호스트명일 때만 등록명으로 바꾼다
+        if current and current != event_host:
+            return current, basis
+        return event_server, basis
+    if current and current != (event_host or ctx.scope.host):
+        return current, basis
+    if not host:
+        return current, basis
+    if not ctx.scope.polestar_source:
+        # 폴스타 소스가 없는 런(조회 생략)은 「조회」 근거를 남기지 않는다
+        return host, basis
+    note = POLESTAR_JENNIFER_HOST_BASIS.format(host=host)
+    return host, f"{basis} · {note}" if basis else note
+
+
 def resolve_was_targets(ctx: StepContext) -> StepResult:
     """S0 — 알람 인스턴스 → 호스트 → 그 호스트 인스턴스 + 같은 업무 인스턴스 → 판정 → 대상 선별.
 
@@ -1285,20 +1332,19 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
         }
         for i in chosen
     ]
+    polestar_server, polestar_basis = _rescoped_polestar_server(ctx, host)
     scope = RunScope(
         alarm_instance=alarm_instance,
         host=host,
         polestar_source=ctx.scope.polestar_source,
-        # 확정 연결(plans/196 §5.2)의 폴스타 등록명은 제니퍼 hostname으로 덮지 않는다
-        polestar_server=ctx.scope.polestar_server
-        if ctx.scope.polestar_link == "linked"
-        else host or ctx.scope.polestar_server,
+        polestar_server=polestar_server,
         polestar_reason=ctx.scope.polestar_reason,
         alarm_name=ctx.scope.alarm_name,
         targets=targets,
-        polestar_basis=ctx.scope.polestar_basis,
+        polestar_basis=polestar_basis,
         polestar_reason_detail=ctx.scope.polestar_reason_detail,
         polestar_link=ctx.scope.polestar_link,
+        polestar_targets=ctx.scope.polestar_targets,
     )
     polestar_reason = scope_polestar_reason(scope)
     if polestar_reason:
@@ -1459,6 +1505,7 @@ def host_to_was(ctx: StepContext) -> StepResult:
         polestar_basis=ctx.scope.polestar_basis,
         polestar_reason_detail=ctx.scope.polestar_reason_detail,
         polestar_link=ctx.scope.polestar_link,
+        polestar_targets=ctx.scope.polestar_targets,
     )
     v, s = _worst([(i["verdict"], i["verdict_source"]) for i in instances])
     return StepResult(
@@ -1836,25 +1883,67 @@ def usage_trend(ctx: StepContext) -> StepResult:
     blocked = _polestar_reason(ctx)
     if blocked:
         return _polestar_blocked(ctx, kinds, blocked)
-    scope = _evidence_scope(ctx, str(ctx.args.get("granularity", "h")))
-    calls = [c for c in build_calls(scope) if c[0] == TOOL_METRIC and c[1].get("kind") in kinds]
+    head = _evidence_scope(ctx, str(ctx.args.get("granularity", "h")))
+    # 연계 대상 여럿(plans/210 §3.7)이면 대상마다 같은 지표를 부른다 — 한 배치로 묶고 결손은
+    # 호출(대상·지표)별이다(한 대상 실패가 나머지를 막지 않는다).
+    scopes = [head] + [
+        replace(head, source=t["db_id"], server_name=t["server_name"])
+        for t in ctx.scope.polestar_targets
+        if (t["db_id"], t["server_name"]) != (head.source, head.server_name)
+    ]
+    plans = [
+        (sc, [c for c in build_calls(sc) if c[0] == TOOL_METRIC and c[1].get("kind") in kinds])
+        for sc in scopes
+    ]
+    resps = ctx.call("polestar", [c for _, calls in plans for c in calls])
+    # 설정 매핑으로 정한 소스면 근거를 사유 끝에 남긴다(W21 P6 · 없으면 종전 사유 그대로).
+    basis = [ctx.scope.polestar_basis] if ctx.scope.polestar_basis else []
+    if len(plans) == 1:
+        return _trend_result(ctx, head, plans[0][1], resps, basis)
+    parts: list[tuple[EvidenceScope, StepResult]] = []
+    at = 0
+    for sc, calls in plans:
+        parts.append((sc, _trend_result(ctx, sc, calls, resps[at : at + len(calls)], [])))
+        at += len(calls)
+    return _merge_target_trends(parts, basis)
+
+
+def _trend_result(
+    ctx: StepContext,
+    scope: EvidenceScope,
+    calls: Sequence[tuple[str, dict]],
+    resps: Sequence[ToolResponse],
+    basis: list[str],
+) -> StepResult:
+    """S4 대상 1대의 판독 — 지표 응답 → 계열 → `correlate` 이상 판정(`basis`는 사유 끝 근거)."""
+    thresholds = dict(METRIC_KINDS)
     notes: list[str] = []
     series: list[MetricSeries] = []
     missing: list[str] = []
-    for (_, args), resp in zip(calls, ctx.call("polestar", calls)):
+    for (_, args), resp in zip(calls, resps):
         kind = str(args["kind"])
         if resp.data is None:
             missing.append(kind)
             notes.append(f"{kind} 축 결손: {resp.error}")
             continue
         series.append(_series(kind, thresholds[kind], resp.data, scope, notes))
-    # 설정 매핑으로 정한 소스면 근거를 사유 끝에 남긴다(W21 P6 · 없으면 종전 사유 그대로).
-    basis = [ctx.scope.polestar_basis] if ctx.scope.polestar_basis else []
     if not series:
         return StepResult(status="missing", missing=missing, reason=" · ".join(notes + basis))
     result = correlate(ctx.windows.alarm_time, [], series, notes, alarm_axis=False)
     findings = result.metric_findings
+    # 판정 불가(조회 성공 0행 등 — `is_anomalous` None · plans/209 W3 · D-360 ⑤)는 「정상」이 아니다
+    unjudged = [s.name for s in series if findings[s.name].get("is_anomalous") is None]
+    if len(unjudged) == len(series):
+        return StepResult(
+            status="missing", missing=missing + unjudged, reason=" · ".join(list(result.notes) + basis)
+        )
     anomalous = [k for k, f in findings.items() if f.get("is_anomalous")]
+    if anomalous:
+        verdict: str | None = "degraded"
+    else:
+        verdict = None if unjudged else "normal"  # 일부만 판정 불가 · 나머지 이상 없음 = 판단 보류
+    missing = missing + unjudged
+    unjudged_notes = [str(findings[k].get("reason")) for k in unjudged if findings[k].get("reason")]
     rows = [
         [
             s.name,
@@ -1868,7 +1957,7 @@ def usage_trend(ctx: StepContext) -> StepResult:
     ]
     return StepResult(
         status="ok",
-        verdict="degraded" if anomalous else "normal",
+        verdict=verdict,
         verdict_source=VERDICT_SOURCE_RULE,
         table={
             "columns": ["kind", "peak", "baseline_mean", "z_score", "is_anomalous", "anomaly_kind"],
@@ -1890,8 +1979,77 @@ def usage_trend(ctx: StepContext) -> StepResult:
             "server_name": scope.server_name,
         },
         missing=missing,
-        reason=" · ".join([n for n in notes if "결손" in n] + basis) or None,
+        reason=" · ".join([n for n in notes if "결손" in n] + unjudged_notes + basis) or None,
         artifacts={"series": series},
+    )
+
+
+#: S4 연계 대상 여럿(plans/210 §3.7)의 대상별 판정 요약 머리 — 이상 노드를 결론이 짚게 한다.
+TARGET_TREND_HEAD = "대상별 지표({n}대): "
+_TARGET_TREND_STATE = {"degraded": "이상", "normal": "이상 없음"}
+
+
+def _target_trend_state(res: StepResult) -> str:
+    """대상 1대의 S4 판정 한 토막 — 이상(지표)·이상 없음·판단 보류·결손(사유)."""
+    if res.status != "ok":
+        return f"결손({res.reason})" if res.reason else "결손"
+    state = _TARGET_TREND_STATE.get(res.verdict or "", "판단 보류")
+    anomalous = res.data.get("anomalous") or []
+    return f"{state}({'·'.join(anomalous)})" if anomalous else state
+
+
+def _merge_target_trends(
+    parts: Sequence[tuple[EvidenceScope, StepResult]], basis: list[str]
+) -> StepResult:
+    """S4 대상별 결과를 섹션 1개로 합친다(plans/210 §3.7).
+
+    대표 = 첫 이상 대상(없으면 첫 성공 대상 · 그것도 없으면 첫 대상) — 판독 재료(`data`·계열)는
+    대표 것이다. 판정은 대상 전부의 최악(`_worst` — 하나라도 이상이면 이상 · 결손이 섞이면 판단
+    보류). 표는 대상 칸을 앞에 붙여 성공 대상 행을 모두 싣고, `data["polestar_targets"]`와 사유가
+    대상별 판정을 싣는다."""
+    results = [r for _, r in parts]
+    lead = next(
+        (r for r in results if r.verdict == "degraded"),
+        next((r for r in results if r.status == "ok"), results[0]),
+    )
+    verdict, source = _worst([(r.verdict, r.verdict_source) for r in results])
+    missing: list[str] = []
+    for r in results:
+        for m in r.missing:
+            if m not in missing:
+                missing.append(m)
+    ok = [(sc, r) for sc, r in parts if r.status == "ok" and r.table]
+    table = (
+        {
+            "columns": ["target", *ok[0][1].table["columns"]],  # type: ignore[index]
+            "rows": [[sc.server_name, *row] for sc, r in ok for row in r.table["rows"]],  # type: ignore[index]
+        }
+        if ok
+        else None
+    )
+    summary = [
+        {
+            "db_id": sc.source,
+            "server_name": sc.server_name,
+            "status": r.status,
+            "verdict": r.verdict,
+            "anomalous": list(r.data.get("anomalous") or []),
+            "missing": list(r.missing),
+        }
+        for sc, r in parts
+    ]
+    states = " / ".join(
+        f"{sc.server_name}({sc.source}) {_target_trend_state(r)}" for sc, r in parts
+    )
+    return StepResult(
+        status="ok" if ok else "missing",
+        verdict=verdict if ok else None,
+        verdict_source=source if ok else None,
+        table=table,
+        data={**lead.data, "polestar_targets": summary},
+        missing=missing,
+        reason=" · ".join([TARGET_TREND_HEAD.format(n=len(parts)) + states, *basis]),
+        artifacts=dict(lead.artifacts),
     )
 
 

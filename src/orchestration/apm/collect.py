@@ -10,6 +10,7 @@ from datetime import datetime
 from typing import Any
 
 from src.orchestration.apm.common import DISPLAY_CELL_MAX
+from src.orchestration.apm.node_address import node_address_lines
 
 
 def display_rows(rows: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -114,6 +115,10 @@ def _answer_lines(meta: dict[str, Any]) -> list[str]:
         fleet = _fleet_lines(agg, scope)
         if fleet is not None:  # 전 대상 순위·이벤트(plans/134 W3) — 다른 집계 줄과 섞지 않는다
             lines += fleet
+            continue
+        node = node_address_lines(agg)
+        if node is not None:  # 노드 주소(plans/210 W2) — 확인 수 · ok 아닌 소스 사유
+            lines += node
             continue
         compare = _compare_line(agg, scope)
         if compare:  # 두 기간 비교(plans/134 W6 A-1) — 게이트웨이 값 그대로
