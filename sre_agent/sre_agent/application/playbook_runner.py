@@ -354,6 +354,8 @@ POLESTAR_APM_MAP_REASONS: dict[str, str] = {
         "사전 스캔 스냅샷 없음 — 관리자 수동 매핑 또는 자동 매핑을 켠 뒤 「지금 스캔」"
     ),
     "apm_map_ambiguous": "후보가 너무 넓어 자동 연결 안 함",
+    # plans/211 W7 — 이름 후보(`name_candidate`) 행만 있을 때(연결 동작은 ambiguous와 같다)
+    "apm_map_name_candidate": "이름이 비슷한 후보만 있음 — 관리자 확인 전 자동 연결 안 함",
 }
 POLESTAR_APM_MAP_OTHER = "사유 미상"
 APM_MAP_BASIS = "apm_map"

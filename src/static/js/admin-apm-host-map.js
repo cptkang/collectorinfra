@@ -25,7 +25,7 @@
     var L = {
         state: { active: "사용", ambiguous: "모호", failed: "실패", disabled: "연계 없음" },
         origin: { auto: "자동", manual: "관리자" },
-        basis: { node_address: "노드 주소", vm_exact: "VM 일치", itam: "ITAM 업무 추정", manual: "관리자 지정" },
+        basis: { node_address: "노드 주소", vm_exact: "VM 일치", itam: "ITAM 업무 추정", manual: "관리자 지정", name_candidate: "이름 후보" },
         scope: { instance: "인스턴스", workload: "워크로드", domain: "도메인 기본값" },
         review: { ambiguous: "모호", failed: "실패", changed: "변경됨", scan_suggests: "스캔 제안 있음", target_gone: "대상 사라짐" },
         run: { running: "실행 중", ok: "정상", partial: "일부 실패", failed: "실패", aborted: "중단" },

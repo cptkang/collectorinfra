@@ -13,7 +13,8 @@ plans/210 §3.4 itam · D-362.
 3. 업무가 0건이거나 업무 서버가 0대면 서버 단서 칸에 토큰이 직접 들어 있는 활성 서버.
 4. ITAM 서버 수가 상한(기본 50)을 넘으면 `ambiguous`. 업무가 서로 다른 서버 집합으로 갈려도
    `ambiguous`.
-5. ITAM 서버 → SMS 색인(대표 IP·NIC IP·정규화 hostname) 정확 일치 1대인 서버만 대상.
+5. ITAM 서버 → SMS 색인(대표 IP·NIC IP·정규화 hostname — `canonical`이면 정규형 · plans/211 W7)
+   정확 일치 1대인 서버만 대상.
 6. 대상 1~상한(10) `active` · 0 `failed` · 상한 초과 `ambiguous`.
 
 근거(evidence)는 단계·건수·업무 코드/명·서버 호스트/IP만 싣는다(담당자 등 PII 없음).
@@ -30,8 +31,6 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.domain.host_names import normalize_hostname
-
 from noise_gate.domain.apm_host_map import (
     BASIS_ITAM,
     DEFAULT_MAX_TARGETS,
@@ -41,6 +40,7 @@ from noise_gate.domain.apm_host_map import (
     STATE_FAILED,
     AutoProposal,
     normalize_targets,
+    sms_host_lookup,
     vm_exact_match,
 )
 
@@ -229,10 +229,12 @@ def _sms_servers(
     server: ItamServer,
     by_ip: Mapping[str, Sequence[Mapping[str, Any]]],
     by_host: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    canonical: bool = False,
 ) -> list[Mapping[str, Any]] | None:
     """ITAM 서버 1대 → SMS 서버(정확히 1대면 `[서버]` · 0대 `[]` · 2대 이상 None)."""
     ip_hits = [s for ip in server.ips for s in by_ip.get(ip, ())]
-    host_hits = list(by_host.get(normalize_hostname(server.hostname), ()))
+    host_hits = list(sms_host_lookup(by_host, server.hostname, canonical=canonical) or ())
     match = vm_exact_match(ip_hits, host_hits)
     if match.status == "linked":
         return [match.targets[0]]
@@ -263,8 +265,12 @@ def resolve_itam_chain(
     generic_terms: Collection[str] = (),
     max_servers: int = DEFAULT_MAX_SERVERS,
     max_targets: int = DEFAULT_MAX_TARGETS,
+    canonical: bool = False,
 ) -> ItamChainResult:
-    """APM 도메인 하나의 ITAM 사슬 판정(§3.4 itam — 모듈 머리 1~6)."""
+    """APM 도메인 하나의 ITAM 사슬 판정(§3.4 itam — 모듈 머리 1~6).
+
+    `canonical`은 `by_host`가 `build_sms_index(canonical=True)`로 만든 색인일 때 켠다(같은 키 함수).
+    """
     tokens = domain_tokens((domain_name, domain_description), generic_terms)
     evidence: dict[str, Any] = {"source": "itam", "tokens": tokens[:_EVIDENCE_SAMPLE]}
     if not tokens:
@@ -307,7 +313,7 @@ def resolve_itam_chain(
     found_targets: list[Mapping[str, Any]] = []
     unmatched = ambiguous = 0
     for server in picked:
-        hits = _sms_servers(server, by_ip, by_host)
+        hits = _sms_servers(server, by_ip, by_host, canonical=canonical)
         if hits is None:
             ambiguous += 1
         elif not hits:

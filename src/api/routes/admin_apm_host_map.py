@@ -451,12 +451,13 @@ def _rate_retry_local(request: Request, sub: str) -> int | None:
 
 # ── 다시 찾기 제안 ──────────────────────────────────────────────────────
 async def _proposal_for(
-    repo: Any, row: Mapping[str, Any], *, max_targets: int
+    repo: Any, row: Mapping[str, Any], *, max_targets: int, canonical: bool = False
 ) -> tuple[Any, str | None]:
     """행의 키로 현재 스냅샷 기준 자동 제안 → `(AutoProposal | None, 사유)`.
 
     instance·workload = 노드 주소·VM 일치(`plan_scan_proposals` · ITAM 제외) · domain = ITAM
-    사슬. 사유:
+    사슬. `canonical`(`HOST_CANONICAL_MATCH_ENABLED` · plans/211 W7)은 스캔과 같이 정규형 색인 ·
+    이름 후보를 쓴다. 사유:
     `apm_map_no_inventory`(스냅샷 없음) · `not_in_inventory`(인벤토리에 그 인스턴스·도메인 없음) ·
     `no_match`(현재 스냅샷으로 잇지 못함) · `itam_config_invalid`.
     """
@@ -497,7 +498,9 @@ async def _proposal_for(
             return None, "not_in_inventory"
     elif not domain_rows:
         return None, "not_in_inventory"
-    by_ip, by_host = build_sms_index(await repo.snapshot_rows("sms_inventory"))
+    by_ip, by_host = build_sms_index(
+        await repo.snapshot_rows("sms_inventory"), canonical=canonical
+    )
     if scope == SCOPE_DOMAIN:
         from noise_gate.infrastructure.apm_host_map_sql_scanners import (
             ScanSqlError,
@@ -530,6 +533,7 @@ async def _proposal_for(
             generic_terms=itam_cfg.generic_terms,
             max_servers=itam_cfg.max_servers,
             max_targets=max_targets,
+            canonical=canonical,
         )
         return itam_proposal(
             domain_id=domain_id,
@@ -546,6 +550,7 @@ async def _proposal_for(
         itam=None,
         max_targets=max_targets,
         evidence={"trigger": "admin_resolve"},
+        canonical=canonical,
     )
     for proposal in plan.get(source_id, []):
         if proposal.scope == scope and proposal.match_key == match_key:
@@ -580,7 +585,7 @@ async def list_maps(
     source_id: str | None = Query(None, max_length=64),
     state: Literal["active", "ambiguous", "failed", "disabled"] | None = None,
     origin: Literal["auto", "manual"] | None = None,
-    basis: Literal["node_address", "vm_exact", "itam", "manual"] | None = None,
+    basis: Literal["node_address", "vm_exact", "itam", "manual", "name_candidate"] | None = None,
     q: str | None = Query(None, max_length=200),
     review: bool = False,
     limit: int = Query(50, ge=1, le=500),
@@ -875,7 +880,13 @@ async def _resolve(
         )
     before = await _get_or_404(repo, map_id)
     try:
-        proposal, reason = await _proposal_for(repo, before, max_targets=_max_targets(request))
+        proposal, reason = await _proposal_for(
+            repo,
+            before,
+            max_targets=_max_targets(request),
+            canonical=getattr(request.app.state.config, "host_canonical_match_enabled", False)
+            is True,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("APM·SMS 연계 다시 찾기 실패: id=%s", map_id, exc_info=True)
         raise _store_failed("스냅샷 조회", exc) from None
