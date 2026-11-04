@@ -36,6 +36,8 @@ RECORD_KEYS = {
     "progress",
     "estimate",
     "api_calls",
+    "slot_wait_ms",  # 소스 자리·속도 제어 대기 합계·최대(plans/205 W3b ④)
+    "throttle_wait_ms",
     "result_meta",
     "artifact",
     "limits",

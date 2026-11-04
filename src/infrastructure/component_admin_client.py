@@ -88,7 +88,7 @@ def derive_endpoints(app_config: AppConfig) -> dict[str, str]:
     관리 라우트는 서비스와 같은 호스트·포트에 있다(G-7).
 
     - `sre_agent` ← `NOISE_INVESTIGATION_SERVICE_URL`
-    - `apm_gateway` ← `MCP_SOURCE_ENDPOINTS["apm"]` → 없으면 `NOISE_APM_MCP_URL`
+    - `apm_gateway` ← `MCP_SOURCE_ENDPOINTS["apm"]`(D-364 — 옛 `NOISE_APM_MCP_URL` 폐지)
     - `mcp_server` ← `DBHUB_SERVER_URL`
 
     `alarm_server`(관리 전용 리스너)·`fabrix_proxy`(본체가 아는 프록시 주소 없음)는 원천이 없어
@@ -98,7 +98,7 @@ def derive_endpoints(app_config: AppConfig) -> dict[str, str]:
     dbhub = app_config.dbhub
     candidates = {
         "sre_agent": noise_gate.investigation_service_url,
-        "apm_gateway": dbhub.source_endpoints.get("apm") or noise_gate.apm_mcp_url,
+        "apm_gateway": dbhub.source_endpoints.get("apm"),
         "mcp_server": dbhub.server_url,
     }
     derived: dict[str, str] = {}

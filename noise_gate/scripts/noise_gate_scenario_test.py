@@ -36,6 +36,7 @@ import time
 import uuid
 from datetime import datetime
 from pathlib import Path
+from typing import Any
 
 import httpx
 
@@ -127,26 +128,29 @@ def inject_redis(ctx: dict, payload: dict) -> None:
 
 # ─── 결정 감사 확인 ───────────────────────────────────────────────────────────
 
-def log_offset(ctx: dict) -> int:
-    path = Path(ctx["decision_log"])
-    return path.stat().st_size if path.exists() else 0
+def log_offset(ctx: dict[str, Any]) -> tuple[int, int, int]:
+    """판정 파일 끝 위치(장치·inode·크기) — 주입 뒤 붙은 줄만 보는 기준점(plans/208 M-3)."""
+    from noise_gate.infrastructure.decision_store import decision_cursor
+
+    return decision_cursor(Path(ctx["decision_log"]))
 
 
-def wait_decision(ctx: dict, alarm_id: str, offset: int, timeout: float) -> dict | None:
-    """offset 이후 append된 JSONL에서 alarm_id의 결정 레코드를 기다린다."""
+def wait_decision(
+    ctx: dict[str, Any], alarm_id: str, offset: tuple[int, int, int], timeout: float
+) -> dict[str, Any] | None:
+    """offset 이후 append된 JSONL에서 alarm_id의 결정 레코드를 기다린다(회전 조각을 가로지른다)."""
+    from noise_gate.infrastructure.decision_store import iter_decision_lines_since
+
     path = Path(ctx["decision_log"])
     deadline = time.time() + timeout
     while time.time() < deadline:
-        if path.exists():
-            with path.open(encoding="utf-8") as fh:
-                fh.seek(offset)
-                for line in fh:
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if rec.get("alarm_id") == alarm_id:
-                        return rec
+        for line in iter_decision_lines_since(path, offset):
+            try:
+                rec: dict[str, Any] = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if rec.get("alarm_id") == alarm_id:
+                return rec
         time.sleep(1.0)
     return None
 

@@ -6,7 +6,7 @@
 | 등급 | 키 | 근거 |
 |---|---|---|
 | 확정 | `confirmed` | 저장된 확정 연결과 같은 서버 |
-| 일치 | `exact` | 대소문자 무시 정확 일치(① a) |
+| 일치 | `exact` | 대소문자 무시 정확 일치(① a) · 정규형 일치(plans/211 · 플래그 on) |
 | 유력 | `likely` | FQDN 짧은 이름(b) · IP 같음(c) · 이전 확정 패턴 적용(e) |
 | 유사 | `similar` | 워크로드 이름 토큰 겹침 + 문자열 유사도(d) |
 
@@ -33,6 +33,7 @@ from datetime import datetime
 from typing import Any
 
 from src.domain.host_names import (
+    host_keys_match,
     k8s_workload_name,
     name_similarity,
     name_tokens,
@@ -58,6 +59,9 @@ _GRADE_RANK: dict[str, int] = {
     GRADE_CONFIRMED: 0, GRADE_EXACT: 1, GRADE_LIKELY: 2, GRADE_SIMILAR: 3, GRADE_MANUAL: 4,
 }
 _GRADE_SCORE: dict[str, float] = {GRADE_CONFIRMED: 1.0, GRADE_EXACT: 0.95, GRADE_LIKELY: 0.8}
+
+#: 정규형 일치 사유(plans/211 — 이름·대소문자만 다름이 아닌 「일치」).
+REASON_CANONICAL = "정규형 일치"
 
 #: 화면에 싣는 후보 수 상한.
 MAX_CANDIDATES = 5
@@ -314,6 +318,7 @@ def grade_row(
     *,
     patterns: Mapping[str, int] | None = None,
     confirmed: Mapping[str, Any] | None = None,
+    canonical: bool = False,
 ) -> dict[str, Any] | None:
     """조회 행 1건의 등급·점수·사유. 어느 근거에도 걸리지 않으면 None.
 
@@ -323,6 +328,8 @@ def grade_row(
         row: `{hostname, name, ipaddress}` 행
         patterns: 학습 패턴 건수(사유에 건수를 붙인다)
         confirmed: 이 hostname의 저장 연결(확정일 때만 확정 등급 근거)
+        canonical: 정규형 비교(plans/211). 켜면 원문과 hostname·name이 `host_keys_match`로 같을 때도
+            「일치」다(FQDN ↔ 단일 레이블 · `-`/`_` 차이 · 업무명 괄호 꼬리)
     """
     hostname = str(row.get("hostname") or "").strip()
     name = str(row.get("name") or "").strip()
@@ -347,6 +354,10 @@ def grade_row(
     if plan.raw and plan.raw in (rh, rn):
         exact_case = (plan.original or plan.raw) in (hostname, name)
         _add(GRADE_EXACT, "이름 일치" if exact_case else "대소문자만 다름")
+    elif canonical and any(
+        host_keys_match(plan.original or plan.raw, v) for v in (hostname, name)
+    ):
+        _add(GRADE_EXACT, REASON_CANONICAL)
     if plan.normalized and plan.normalized != plan.raw and plan.normalized in (rh, rn):
         _add(GRADE_LIKELY, "FQDN 짧은 이름")
     if plan.prefixes and any(
@@ -397,16 +408,20 @@ def rank_candidates(
     patterns: Mapping[str, int] | None = None,
     confirmed: Mapping[str, Any] | None = None,
     limit: int = MAX_CANDIDATES,
+    canonical: bool = False,
 ) -> list[dict[str, Any]]:
     """`(db_id, 행)` 목록 → 등급·점수 순 상위 후보(같은 서버는 한 건으로 합친다).
 
     정렬: 등급 → 점수(높은 순) → 소스 순서(입력 순) → 서버명. 결정적이다.
+    `canonical`은 `grade_row`에 그대로 넘긴다(plans/211).
     """
     order: dict[str, int] = {}
     merged: dict[tuple[str, str, str], dict[str, Any]] = {}
     for db_id, row in rows:
         order.setdefault(db_id, len(order))
-        graded = grade_row(plan, db_id, row, patterns=patterns, confirmed=confirmed)
+        graded = grade_row(
+            plan, db_id, row, patterns=patterns, confirmed=confirmed, canonical=canonical
+        )
         if graded is None:
             continue
         key = (db_id, graded["server_name"].lower(), graded["hostname"].lower())
@@ -428,9 +443,16 @@ def selection_grade(
     row: Mapping[str, Any],
     *,
     patterns: Mapping[str, int] | None = None,
+    canonical: bool = False,
 ) -> str:
-    """사용자가 고른 서버의 선택 당시 등급 키(어느 근거에도 안 걸리면 `manual`)."""
-    graded = grade_row(build_probe_plan(hostname, patterns=patterns), db_id, row, patterns=patterns)
+    """사용자가 고른 서버의 선택 당시 등급 키(어느 근거에도 안 걸리면 `manual`).
+
+    `canonical`은 `grade_row`에 그대로 넘긴다(plans/211).
+    """
+    graded = grade_row(
+        build_probe_plan(hostname, patterns=patterns), db_id, row, patterns=patterns,
+        canonical=canonical,
+    )
     return str(graded["grade_key"]) if graded else GRADE_MANUAL
 
 
@@ -599,6 +621,7 @@ __all__ = [
     "NODE_UNCHECKED",
     "PUBLIC_LINK_KEYS",
     "ProbePlan",
+    "REASON_CANONICAL",
     "STATE_CONFIRMED",
     "STATE_PENDING",
     "absent_expired",

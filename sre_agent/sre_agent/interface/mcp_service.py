@@ -53,6 +53,7 @@ from sre_agent.domain.cross_source_episode import (
     prompt_text,
 )
 from sre_agent.domain.failure_guards import ExpectedSources
+from sre_agent.domain.investigation_limits import is_apm_trigger
 from sre_agent.domain.playbook import Playbook
 from sre_agent.infrastructure.expected_sources_loader import load_expected_sources
 from sre_agent.infrastructure.known_error_loader import DEFAULT_KNOWN_ERROR_DIR, load_known_errors
@@ -172,6 +173,35 @@ def _cross_source_question(server: str, when: str | None, xs: EpisodeContext) ->
     )
 
 
+def _event_identifiers(payload: object) -> tuple[str | None, str | None, str | None]:
+    """이벤트의 (폴스타 등록명, OS 호스트명, 폴스타 source)를 라벨별로 가른다(plans/209 W2 · D-360 ③).
+
+    폴스타 알람은 `serverName`=등록명 · `hostname`=OS 호스트명 · `dbId`=폴스타 source다.
+    APM(제니퍼) 트리거는 `serverName`이 `hostname or 인스턴스명`이라 등록명이 아니고 `dbId`도 제니퍼
+    소스다 — `serverName`이 `hostname`과 다를 때만(역조회로 등록명이 승격된 값) 등록명으로 본다.
+    """
+    event = (payload.get("event") if isinstance(payload, dict) else None) or {}
+    server = str(event.get("serverName") or "").strip()
+    host = str(event.get("hostname") or "").strip()
+    source = str(event.get("dbId") or "").strip()
+    if is_apm_trigger(payload):
+        registered = server if host and server and server != host else ""
+        return registered or None, host or None, None
+    return server or None, host or None, source or None
+
+
+def _identifier_line(registered: str | None, host: str | None, source: str | None) -> str:
+    """질문 끝 식별자 라벨 문장 — 값이 없거나 등록명과 같은 호스트명은 생략한다."""
+    parts = []
+    if registered:
+        parts.append(f"폴스타 등록명 {prompt_text(registered)}")
+    if host and host != registered:
+        parts.append(f"OS 호스트명 {prompt_text(host)}")
+    if source:
+        parts.append(f"폴스타 source {prompt_text(source)}")
+    return f" 대상 서버: {' · '.join(parts)}." if parts else ""
+
+
 def _job_to_question(job, settings: AgentSettings | None = None) -> str:
     """조사 잡을 DiagnosisAgent 질의 문자열로 변환한다(pull은 question, push는 이벤트 요약).
 
@@ -181,15 +211,19 @@ def _job_to_question(job, settings: AgentSettings | None = None) -> str:
     """
     if getattr(job, "kind", None) == "diagnosis" and getattr(job, "question", None):
         return job.question
-    event = (getattr(job, "payload", None) or {}).get("event") or {}
-    server = event.get("serverName") or event.get("hostname") or "대상 서버"
+    payload = getattr(job, "payload", None) or {}
+    # 식별자 라벨(plans/209 W2 · D-360 ③): 첫머리 서버 표기는 등록명 우선, 끝에 라벨 문장
+    registered, host, source = _event_identifiers(payload)
+    event = payload.get("event") or {}
+    server = registered or host or event.get("serverName") or "대상 서버"
+    ident = _identifier_line(registered, host, source)
     # 사건 좌표계(plans/50 A′-5): 알람 시각을 질문에 싣는다 — 워커 지연·재처리 시에도 조사가
     # "지금"이 아니라 그 시각을 기준으로 이뤄지도록. 구간·도구 인자 지시는 guidance가 나른다.
     when = getattr(job, "reference_time", None)
     enabled = bool(getattr(settings, "cross_source_investigation_enabled", False))
     xs = active_episode(getattr(job, "payload", None), enabled, when)
     if xs is not None:
-        return _cross_source_question(server, when, xs)
+        return _cross_source_question(server, when, xs) + ident
     at = f"(발생 시각 {when} — 이 시각 이전 구간을 조사) " if when else ""
     # 결론 유도(수렴 가드): 트리아지 순서는 유지하되 핵심 지표 위주로 간결히 조사하고
     # 충분한 근거가 모이면 즉시 결론을 내도록 지시한다(불필요한 반복 조회가 step을 소진해
@@ -198,6 +232,7 @@ def _job_to_question(job, settings: AgentSettings | None = None) -> str:
         f"{server} 장애 원인을 {at}조사하고 트리아지하라(부하→병목→원인 격리→로그). "
         f"핵심 지표(CPU·메모리·디스크·네트워크) 위주로 **간결히** 조사하고, 충분한 근거가 "
         f"모이면 **즉시 결론**을 내라(동일 지표 반복 조회 금지). 모든 주장에 도구 출력을 인용하라."
+        f"{ident}"
     )
 
 
@@ -384,10 +419,11 @@ def _default_prefetch_fn(settings: AgentSettings):
                                    if settings.evidence_topology_neighbors_enabled else 0))
         if scope is None:
             return None
-        if scope.neighbors_max <= 0:
+        if scope.neighbors_max <= 0 and not scope.extra_targets:
             return prefetch_and_correlate(scope, call_batch).to_dict()
-        # plans/198 재검토 Major1 — 이웃 배치는 dispatcher 사전수집 타임박스(같은 계산식) 안에서만
-        # 기다린다. 여유분을 남겨 바깥 타임박스가 먼저 끊어 대표 상관까지 잃지 않게 한다.
+        # plans/198 재검토 Major1 — 이웃 배치(·plans/210 연계 추가 대상 배치)는 dispatcher 사전수집
+        # 타임박스(같은 계산식) 안에서만 기다린다. 여유분을 남겨 바깥 타임박스가 먼저 끊어 대표
+        # 상관까지 잃지 않게 한다.
         timebox = max(PREFETCH_TIMEBOX_FLOOR_SECONDS, settings.investigation_timeout_seconds / 2)
         return prefetch_and_correlate(
             scope, call_batch, neighbor_budget_s=timebox * NEIGHBOR_BUDGET_SHARE

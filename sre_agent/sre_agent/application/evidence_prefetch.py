@@ -65,6 +65,10 @@ TOOL_TOPOLOGY = "polestar_topology"   # plans/198 I-7 — 배치 맨 끝 1건(�
 INFRA_SOURCE_UNKNOWN_NOTE = "인프라 소스 미상 — 폴스타 사전수집 생략"
 #: 노드 주소 연결 힌트 근거(plans/202 · D-355 — `playbook_runner.POLESTAR_LINK_BASIS` 키와 같은 값).
 NODE_ADDRESS_BASIS = "node_address"
+#: APM↔SMS 연계 정보 DB 근거(plans/210 §3.7 — 같은 표의 키).
+APM_MAP_BASIS = "apm_map"
+#: 연결 힌트가 대상 서버 자체인 근거 — 이웃이 아니라 폴스타 축의 대상이다(plans/202·210).
+TARGET_LINK_BASES = frozenset({NODE_ADDRESS_BASIS, APM_MAP_BASIS})
 
 
 @dataclass(frozen=True)
@@ -85,6 +89,9 @@ class EvidenceScope:
     # plans/198 I-7 — 토폴로지 1홉 이웃 상한(0 = off · 비트 동일)과 확정 연결 이웃(D-348).
     neighbors_max: int = 0
     link_neighbor: Neighbor | None = None
+    # plans/210 §3.7 — 연계 대상 여럿일 때 대표(source·server_name) 밖 대상 `(source, server_name)`.
+    # 대상마다 알람 1 + 지표 4를 따로 수집해 대상별 판정을 `targets` 키로 더한다(빈 값 = 비트 동일).
+    extra_targets: tuple[tuple[str, str], ...] = ()
 
 
 def scope_from_job(
@@ -108,6 +115,9 @@ def scope_from_job(
     node_address` linked)이면 그 `db_id`·`server_name`으로 폴스타 축을 연다(`infra_db_ids` 우선 —
     현행 순서). 파드 미확정(`unresolved` + `pod`)은 열지 않는다(`skip_infra`).
 
+    plans/210 §3.7: APM↔SMS 연계(`basis: apm_map` linked)도 노드 주소 연결과 같이 대상 자체다.
+    연계 대상이 여럿(`targets`)이면 대표 밖 대상을 `extra_targets`로 싣는다(값은 받은 그대로).
+
     `neighbors_max`(plans/198 I-7 · 0 = off)면 이웃 상한과 확정 연결 이웃
     (`meta.hints.polestar_link` — 이전 확정 연결만 · 노드 주소 연결이면 함께 실린
     저장 확정 연결 `previous_link`)을 범위에 싣는다.
@@ -121,14 +131,17 @@ def scope_from_job(
     event = payload.get("event") or {}
     server = str(event.get("serverName") or payload.get("server_name") or "").strip()
     skip_infra = False
+    extra: tuple[tuple[str, str], ...] = ()
     if is_apm_trigger(payload):
         episode = episode_from_payload(payload) if cross_source else None
         source = episode.infra_db_ids[0] if episode is not None and episode.infra_db_ids else ""
         if not source:
-            # plans/202 · D-355 ⑦ — 노드 주소 연결(알람 시점 자동)이면 그 서버가 대상 자체다
+            # plans/202 · D-355 ⑦ — 노드 주소 연결(알람 시점 자동)·APM↔SMS 연계(plans/210)면
+            # 그 서버가 대상 자체다
             node = _node_link(payload)
             if node is not None:
                 source, server = node
+                extra = _extra_targets(payload, (source, server))
         skip_infra = not source
     else:
         source = str(event.get("dbId") or payload.get("db_id") or "").strip()
@@ -162,6 +175,7 @@ def scope_from_job(
         lookback_minutes=int(getattr(job, "lookback_minutes", None) or 60),
         baseline_periods=int(baseline_periods), change_overlay=bool(change_overlay), related_servers=related,
         episode_points=points, episode_notes=point_notes, neighbors_max=n_max, link_neighbor=link,
+        extra_targets=extra,
     )
 
 
@@ -172,8 +186,9 @@ def _confirmed_link(payload: dict) -> Neighbor | None:
     from sre_agent.application.playbook_runner import polestar_link, polestar_previous_link
 
     link = polestar_link(payload)
-    if link is not None and link.get("basis") == NODE_ADDRESS_BASIS:
-        # 노드 주소 연결은 이웃이 아니라 대상 자체(plans/202 §2.3) — 함께 실린 저장 확정 연결
+    if link is not None and link.get("basis") in TARGET_LINK_BASES:
+        # 노드 주소 연결·APM↔SMS 연계는 이웃이 아니라 대상 자체(plans/202 §2.3 · plans/210) —
+        # 함께 실린 저장 확정 연결
         # (`previous_link` · D-355 ③)을 이전 확정 연결 모양으로 넘겨 이웃 규칙을 그대로 쓴다
         previous = polestar_previous_link(payload)
         if previous is None:
@@ -183,14 +198,27 @@ def _confirmed_link(payload: dict) -> Neighbor | None:
 
 
 def _node_link(payload: dict) -> tuple[str, str] | None:
-    """노드 주소 연결 힌트(`basis: node_address` linked — plans/202)의 `(db_id, server_name)`.
-    형식 검증은 플레이북과 같은 해석(`playbook_runner.polestar_link`)을 쓴다. 아니면 None."""
+    """대상 연결 힌트(`basis: node_address`·`apm_map` linked — plans/202·210)의
+    `(db_id, server_name)`. 형식 검증은 플레이북과 같은 해석(`playbook_runner.polestar_link`)을
+    쓴다. 아니면 None."""
     from sre_agent.application.playbook_runner import polestar_link
 
     link = polestar_link(payload)
-    if link is None or link["status"] != "linked" or link.get("basis") != NODE_ADDRESS_BASIS:
+    if link is None or link["status"] != "linked" or link.get("basis") not in TARGET_LINK_BASES:
         return None
     return link["db_id"], link["server_name"]
+
+
+def _extra_targets(payload: dict, head: tuple[str, str]) -> tuple[tuple[str, str], ...]:
+    """연계 대상 여럿(plans/210 §3.7) 중 대표 `head` 밖 `(db_id, server_name)` — 해석은 플레이북과
+    같은 함수(`playbook_runner.polestar_link_targets` · `kind` 무시 · 상한)를 쓴다."""
+    from sre_agent.application.playbook_runner import polestar_link_targets
+
+    return tuple(
+        (t["db_id"], t["server_name"])
+        for t in polestar_link_targets(payload)
+        if (t["db_id"], t["server_name"]) != head
+    )
 
 
 def build_calls(scope: EvidenceScope) -> list[tuple[str, dict]]:
@@ -425,8 +453,21 @@ def prefetch_and_correlate(
     (그 연결의 소스로) 조회한다. `neighbor_budget_s`(이 호출 시작부터의 초)가 있으면 이웃 배치는
     그 안에서만 기다린다 — 사전수집 타임박스를 대표 수집과 나눠 쓰므로, 남은 시간을 넘기면 이웃만
     결손으로 남긴다. 이웃 알람의 선행 판정 기준점은 `neighbors` 블록과 같다(`lead_anchor=0`).
+
+    `extra_targets`(plans/210 §3.7)가 있으면 대표 수집 뒤 대상마다 알람 1 + 지표 4를 배치 1회로
+    부르고(같은 `neighbor_budget_s` 안), 대상별 판정을 `targets` 키로 더한다 — 대표 상관은 그대로다.
     """
     deadline = None if neighbor_budget_s is None else time.monotonic() + float(neighbor_budget_s)
+    result = _prefetch_primary(scope, call_batch, deadline)
+    if scope.extra_targets and not scope.skip_infra:
+        result = replace(result, targets=_target_findings(scope, call_batch, result, deadline))
+    return result
+
+
+def _prefetch_primary(
+    scope: EvidenceScope, call_batch: BatchCaller, deadline: float | None
+) -> CorrelationResult:
+    """대표 대상 수집·상관(`prefetch_and_correlate` 본체 — plans/210 전과 같은 동작)."""
     if scope.skip_infra:
         nf = (_fetch_neighbors(scope, call_batch, None, {}, deadline)
               if scope.neighbors_max > 0 and scope.link_neighbor else None)
@@ -456,19 +497,7 @@ def prefetch_and_correlate(
                     [], {}, {}, {}, 0, 1, [f"토폴로지 이웃 결손: {only}"]))
             return result
     notes: list[str] = []
-
-    alarms_data, err = _load(raws[0])
-    alarms = _alarms(alarms_data, notes) if alarms_data else []
-    if err:
-        notes.append(f"알람 축 결손: {err}")
-
-    series: list[MetricSeries] = []
-    for (kind, abs_thr), raw in zip(METRIC_KINDS, raws[1:1 + len(METRIC_KINDS)]):
-        data, err = _load(raw)
-        if data is None:
-            notes.append(f"{kind} 축 결손: {err}")
-            continue
-        series.append(_series(kind, abs_thr, data, scope, notes))
+    alarms_ok, alarms, series = _core_axes(scope, raws, notes)
 
     idx = 1 + len(METRIC_KINDS)
     changes: list[ChangePoint] | None = None
@@ -502,10 +531,82 @@ def prefetch_and_correlate(
     result = correlate(
         scope.reference_time, alarms, series, notes, changes=changes, related_alarms=related,
         episode_points=list(scope.episode_points) or None,
-        alarm_axis=alarms_data is not None,   # plans/188 C5 — 조회 실패는 「알람 0건」이 아니다
+        alarm_axis=alarms_ok,   # plans/188 C5 — 조회 실패는 「알람 0건」이 아니다
         lead_anchor=NEIGHBOR_LEAD_ANCHOR if nf is not None else None,
     )
     return _attach_neighbors(result, scope, nf) if nf is not None else result
+
+
+def _core_axes(
+    scope: EvidenceScope, raws: Sequence[str], notes: list[str]
+) -> tuple[bool, list[AlarmPoint], list[MetricSeries]]:
+    """배치 앞 1 + 4건(전 알람 · 지표 4종) 해석 — (알람 조회 성공, 알람, 계열). 결손은 `notes`."""
+    alarms_data, err = _load(raws[0])
+    alarms = _alarms(alarms_data, notes) if alarms_data else []
+    if err:
+        notes.append(f"알람 축 결손: {err}")
+    series: list[MetricSeries] = []
+    for (kind, abs_thr), raw in zip(METRIC_KINDS, raws[1:1 + len(METRIC_KINDS)]):
+        data, err = _load(raw)
+        if data is None:
+            notes.append(f"{kind} 축 결손: {err}")
+            continue
+        series.append(_series(kind, abs_thr, data, scope, notes))
+    return alarms_data is not None, alarms, series
+
+
+def _target_row(source: str, server: str, result: CorrelationResult) -> dict:
+    """대상 1대의 판정 요약(plans/210 §3.7 — 지침이 이상 노드를 짚게 하는 재료)."""
+    return {
+        "db_id": source,
+        "server_name": server,
+        "anomalies": sorted(
+            k
+            for k, f in result.metric_findings.items()
+            if isinstance(f, dict) and f.get("is_anomalous")
+        ),
+        "leading_signal": result.leading_signal,
+        "alarm_count": result.alarm_summary.get("count", 0),
+        "notes": [n for n in result.notes if "결손" in n],
+    }
+
+
+def _target_findings(
+    scope: EvidenceScope,
+    call_batch: BatchCaller,
+    primary: CorrelationResult,
+    deadline: float | None,
+) -> list[dict]:
+    """연계 대상 여럿(plans/210 §3.7)의 대상별 판정 — 첫 행은 대표(이미 계산한 상관).
+
+    대표 밖 대상은 알람 1 + 지표 4를 배치 1회로 부른다(변경·연관·이웃 없음). 결손은 호출별이라 한
+    대상 실패가 나머지를 막지 않고, 배치가 예외로 끝나거나 `deadline`을 넘기면 추가 대상 전부를
+    결손으로 남긴다(대표 결과는 보존).
+    """
+    subs = [
+        replace(scope, source=src, server_name=server, change_overlay=False, related_servers=(),
+                neighbors_max=0, link_neighbor=None, extra_targets=())
+        for src, server in scope.extra_targets
+    ]
+    plans = [(sub, build_calls(sub)) for sub in subs]
+    calls = [c for _, cs in plans for c in cs]
+    try:
+        raws = list(_call_until(call_batch, calls, deadline))
+    except (Exception, asyncio.CancelledError) as exc:  # noqa: BLE001 — 대표 상관은 보존(부분 반환)
+        reason = f"{type(exc).__name__}: {exc}" if str(exc) else type(exc).__name__
+        logger.warning("연계 대상 배치 실패 — 대표 상관은 보존: %s", reason)
+        raws = [json.dumps({"error": reason}, ensure_ascii=False)] * len(calls)
+    raws += [json.dumps({"error": "응답 누락"})] * (len(calls) - len(raws))
+    rows = [_target_row(scope.source, scope.server_name, primary)]
+    at = 0
+    for sub, cs in plans:
+        part = raws[at:at + len(cs)]
+        at += len(cs)
+        notes: list[str] = []
+        alarms_ok, alarms, series = _core_axes(sub, part, notes)
+        result = correlate(sub.reference_time, alarms, series, notes, alarm_axis=alarms_ok)
+        rows.append(_target_row(sub.source, sub.server_name, result))
+    return rows
 
 
 __all__ = ["EvidenceScope", "METRIC_KINDS", "TOOL_CHANGES", "TOOL_TOPOLOGY",

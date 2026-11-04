@@ -26,6 +26,7 @@ alarm_analyzer 다음에 위치하여, 결정적 정책 함수 `decide_notificat
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 
@@ -90,7 +91,11 @@ async def notification_gate_node(
 
     store = configurable.get("decision_store")
     if store is not None:
-        _record_decision(store, decision, event, result, state, gate_cfg, app_impact_audit)
+        _record_decision(
+            store, decision, event, result, state, gate_cfg, app_impact_audit,
+            # (plans/208 W0) 워커 구간 계측 콜백 — 계측 off면 키가 없어 None(비트 동일).
+            timing_view=configurable.get("alarm_timing"),
+        )
 
     logger.info(
         "발송 판단: alarm_id=%s tier=%s reason=%s",
@@ -236,8 +241,14 @@ def _record_decision(
     state: dict[str, Any],
     gate_cfg: Any,
     app_impact_audit: dict[str, Any],
+    timing_view: Callable[[], dict[str, float]] | None = None,
 ) -> None:
-    """감사 기록 단계 — 최종 판정을 decision_store에 남긴다(실패는 warning 후 무시)."""
+    """감사 기록 단계 — 최종 판정을 decision_store에 남긴다(실패는 warning 후 무시).
+
+    `timing_view`(plans/208 W0)는 워커 구간 계측 콜백이다 — 주어지면 기록 시점까지의 구간 소요를
+    `timing`으로 싣고, None(계측 off)이면 인자 자체를 넘기지 않는다(레코드 비트 동일).
+    콜백은 예외를 내지 않아야 한다 — 아래 try 안에서 불리므로 예외가 나면 감사 레코드 전체가 빠진다.
+    """
     try:
         stage_evidence = _stage_evidence(decision, result, state, app_impact_audit)
         # (Plan 60 E1) 재통보 시 직전 창 재발 메타를 최상위 recurrence 필드로 첨부.
@@ -275,9 +286,23 @@ def _record_decision(
                 if getattr(gate_cfg, "investigation_manual_enabled", True)
                 else {}
             ),
+            **({"timing": timing_view()} if timing_view is not None else {}),
+            # (plans/210 §3.8) 수동 재분석용 제니퍼 `apm` 블록 요지 — 연계 매핑 플래그 on이고 APM
+            # 블록이 있을 때만 키(off면 인자 자체를 넘기지 않는다 — 레코드 비트 동일).
+            **_apm_ref_kwargs(gate_cfg, event),
         )
     except Exception:  # noqa: BLE001 — 기록 실패가 발송을 막지 않는다
         logger.warning("발송 판단 감사 기록 실패(무시): alarm_id=%s", event.alarm_id)
+
+
+def _apm_ref_kwargs(gate_cfg: Any, event: Any) -> dict[str, Any]:
+    """연계 매핑 플래그가 정확히 True이고 APM 블록이 있으면 `{"apm_ref": …}`, 아니면 빈 dict."""
+    if getattr(gate_cfg, "apm_host_map_enabled", False) is not True:
+        return {}
+    from noise_gate.application.apm_host_map_lookup import apm_ref_fields
+
+    ref = apm_ref_fields(event)
+    return {"apm_ref": ref} if ref else {}
 
 
 def _manual_source_fields(event: Any) -> dict[str, str]:

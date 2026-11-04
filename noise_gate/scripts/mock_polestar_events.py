@@ -42,7 +42,7 @@ import uuid
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from pathlib import Path
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from typing import Any, Optional
 from zoneinfo import ZoneInfo
 
@@ -941,11 +941,25 @@ class Judge:
         self.path = Path(path)
         self.poll_interval = poll_interval
 
-    def current_offset(self) -> int:
-        """현재 파일 크기(바이트)를 반환한다(주입 후 append분만 조회하기 위한 기준)."""
-        return self.path.stat().st_size if self.path.exists() else 0
+    def current_offset(self) -> tuple[int, int, int]:
+        """현재 파일 끝 위치를 반환한다(주입 후 append분만 조회하기 위한 기준).
 
-    def wait_for(self, alarm_id: str, offset: int, timeout: float) -> Optional[dict]:
+        (plans/208 M-3) 바이트 크기에 파일 식별(장치·inode)을 더한 기준점이다 — 대기 중 판정 파일이
+        회전돼도 기준 파일(이제 조각)의 나머지부터 이어 읽는다.
+        """
+        from noise_gate.infrastructure.decision_store import decision_cursor
+
+        return decision_cursor(self.path)
+
+    def _lines_since(self, offset: tuple[int, int, int] | int) -> Iterator[str]:
+        """기준점 뒤 append된 줄(회전 조각을 가로지른다)."""
+        from noise_gate.infrastructure.decision_store import iter_decision_lines_since
+
+        return iter_decision_lines_since(self.path, offset)
+
+    def wait_for(
+        self, alarm_id: str, offset: tuple[int, int, int] | int, timeout: float
+    ) -> dict[str, Any] | None:
         """offset 이후 append된 JSONL에서 alarm_id 레코드를 timeout까지 대기한다.
 
         결정 레코드(tier 보유)와 재발 레코드(type=recurrence)를 모두 매칭한다
@@ -954,24 +968,21 @@ class Judge:
         """
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self.path.exists():
-                with self.path.open(encoding="utf-8") as fh:
-                    fh.seek(offset)
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            rec = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if rec.get("alarm_id") == alarm_id:
-                            return rec
+            for line in self._lines_since(offset):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec: dict[str, Any] = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("alarm_id") == alarm_id:
+                    return rec
             time.sleep(self.poll_interval)
         return None
 
     def wait_for_investigation(
-        self, alarm_id: str, offset: int, timeout: float
+        self, alarm_id: str, offset: tuple[int, int, int] | int, timeout: float
     ) -> Optional[dict]:
         """offset 이후 JSONL에서 `type="investigation"`·alarm_id 일치 레코드를 대기한다(§4.3).
 
@@ -983,19 +994,16 @@ class Judge:
         """
         deadline = time.time() + timeout
         while time.time() < deadline:
-            if self.path.exists():
-                with self.path.open(encoding="utf-8") as fh:
-                    fh.seek(offset)
-                    for line in fh:
-                        line = line.strip()
-                        if not line:
-                            continue
-                        try:
-                            rec = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if rec.get("type") == "investigation" and rec.get("alarm_id") == alarm_id:
-                            return rec
+            for line in self._lines_since(offset):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec: dict[str, Any] = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") == "investigation" and rec.get("alarm_id") == alarm_id:
+                    return rec
             time.sleep(self.poll_interval)
         return None
 
@@ -1006,23 +1014,23 @@ class Judge:
         감지하도록, 세션 시작 시 로그에 이미 존재하는 investigation_id를 '관측됨'으로 시드한다
         (investigation_id는 uuid4 hex이므로 재사용은 dispatcher/JobStore dedup의 확정 신호다).
         """
+        from noise_gate.infrastructure.decision_store import iter_decision_lines
+
         ids: set = set()
-        if not self.path.exists():
-            return ids
         try:
-            with self.path.open(encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if rec.get("type") == "investigation":
-                        inv_id = rec.get("investigation_id")
-                        if inv_id:
-                            ids.add(inv_id)
+            # (plans/208 M-3) 회전 조각이 있으면 조각부터 이어 읽는다(없으면 종전과 같다)
+            for line in iter_decision_lines(self.path):
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if rec.get("type") == "investigation":
+                    inv_id = rec.get("investigation_id")
+                    if inv_id:
+                        ids.add(inv_id)
         except OSError:
             return ids
         return ids

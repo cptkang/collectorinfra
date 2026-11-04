@@ -128,17 +128,51 @@ def _annotate_root_text_similarity(
           (provider inert/빈 텍스트) 중 하나라도 해당하면 **키를 첨부하지 않는다**(현행 비트동일).
         - 정책 모듈은 이 키를 참조하지 않는다(신규 noise_ctx 관측 필드일 뿐).
     """
+    alarm_text = _root_text_similarity_input(event, ctx, noise_cfg, embedding_provider)
+    if alarm_text is None:
+        return
+    sim = embedding_provider.similarity(alarm_text, ctx["root_resource_name"])
+    if sim is None:  # provider inert 또는 빈 텍스트 → 미첨부(하위호환)
+        return
+    ctx["root_text_similarity"] = round(sim, 4)
+
+
+def _root_text_similarity_input(
+    event: AlarmEvent,
+    ctx: dict[str, Any],
+    noise_cfg: Any,  # NoiseGateConfig
+    embedding_provider: Any,  # AlarmEmbeddingProvider | None
+) -> str | None:
+    """root_text_similarity 산출 조건을 보고 알람 텍스트를 돌려준다 — 미충족이면 None(미첨부)."""
     if embedding_provider is None:
-        return
+        return None
     if not bool(getattr(noise_cfg, "topology_text_fusion_enabled", False)):
-        return
+        return None
     # root_resource(연쇄 근본원인 ID)가 실제로 존재할 때만 — cascaded=False면 root는 None이라 skip.
     if not ctx.get("root_resource") or not ctx.get("root_resource_name"):
-        return
-    alarm_text = build_event_text(
+        return None
+    return build_event_text(
         event.alarm_name, event.resource_type, event.condition_log
     )
-    sim = embedding_provider.similarity(alarm_text, ctx["root_resource_name"])
+
+
+async def _annotate_root_text_similarity_async(
+    event: AlarmEvent,
+    ctx: dict[str, Any],
+    noise_cfg: Any,  # NoiseGateConfig
+    embedding_provider: Any,  # AlarmEmbeddingProvider | None
+) -> None:
+    """`_annotate_root_text_similarity`의 async 변형 — 유사도 계산만 스레드로 (plans/208 W4 C-6).
+
+    산출 조건 미충족(off·provider 미주입·root 부재)이면 스레드 왕복 없이 끝난다. 실제 임베딩
+    호출(`similarity`)만 `asyncio.to_thread`로 돌리고, ctx 첨부는 호출한 루프 스레드에서 한다.
+    """
+    alarm_text = _root_text_similarity_input(event, ctx, noise_cfg, embedding_provider)
+    if alarm_text is None:
+        return
+    sim = await asyncio.to_thread(
+        embedding_provider.similarity, alarm_text, ctx["root_resource_name"]
+    )
     if sim is None:  # provider inert 또는 빈 텍스트 → 미첨부(하위호환)
         return
     ctx["root_text_similarity"] = round(sim, 4)
@@ -232,7 +266,8 @@ async def enrich_noise_context(
         )
         # (B-7 L-4) root 귀속 신뢰도 설명 보강 주석 — root(연쇄 근본원인)가 산출된 다홉 경로에서만
         # 의미 있으므로 여기서 산출한다. off/provider 미주입/inert/root 부재면 미첨부(회귀 0).
-        _annotate_root_text_similarity(event, ctx, noise_cfg, embedding_provider)
+        # (plans/208 W4 C-6) 유사도 계산만 스레드로 — 조건 미충족이면 스레드 왕복 없음.
+        await _annotate_root_text_similarity_async(event, ctx, noise_cfg, embedding_provider)
 
     return ctx
 

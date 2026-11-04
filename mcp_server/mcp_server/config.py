@@ -48,6 +48,10 @@ class ServerConfig:
     # 폴스타 소스가 없는 배치에서는 False로 두어 도구 표면을 줄인다(expose_execute_sql·
     # expose_raw_promql과 동일한 게이트 패턴). env: EXPOSE_POLESTAR_TOOLS.
     expose_polestar_tools: bool = True
+    # 폴스타 앵커 해석(HolmesGPT·플레이북 hostname → OS 호스트명·IP)의 호스트 정규형 일치
+    # (plans/211 W2 · D-363). 기본 False = 현행 완전 일치(비트 동일). True면 대소문자·FQDN·
+    # `-`·`_`·괄호 업무명 꼬리를 접어 맞춘다. 기동 시 1회 해석. env: HOST_CANONICAL_MATCH_ENABLED.
+    host_canonical_match_enabled: bool = False
     # 폴스타 실시간 프로세스 API base_url (process_snapshot 도구용). 비면 도구가 오류 반환.
     process_api_base_url: str = ""
     # 소스별 프로세스 API base_url — "db_id1=http://host1,db_id2=http://host2"(본체
@@ -359,6 +363,7 @@ def _load_toml(path: Path) -> AppServerConfig:
         expose_execute_sql=server_data.get("expose_execute_sql", False),
         polestar_domain_guard=server_data.get("polestar_domain_guard", True),
         expose_polestar_tools=server_data.get("expose_polestar_tools", True),
+        host_canonical_match_enabled=server_data.get("host_canonical_match_enabled", False),
         process_api_base_url=server_data.get("process_api_base_url", ""),
         process_api_base_urls_csv=server_data.get("process_api_base_urls_csv", ""),
         bearer_token=server_data.get("bearer_token", ""),
@@ -594,9 +599,11 @@ def _apply_env_overrides(
                      config.server.expose_execute_sql)
 
     # 폴스타 게이트 2종도 불리언 — 기본 True라 "false"로 옵트아웃하는 방향으로 쓰인다.
+    # 호스트 정규형 일치(plans/211 W2)는 기본 False라 "true"로 옵트인한다.
     _polestar_flags = {
         "POLESTAR_DOMAIN_GUARD": "polestar_domain_guard",
         "EXPOSE_POLESTAR_TOOLS": "expose_polestar_tools",
+        "HOST_CANONICAL_MATCH_ENABLED": "host_canonical_match_enabled",
     }
     for env_key, attr in _polestar_flags.items():
         env_val = env.get(env_key, "")

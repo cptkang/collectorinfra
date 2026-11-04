@@ -79,9 +79,10 @@ settings:
     summary: 비SQL 관측 시스템(예 apm = 제니퍼 APM 게이트웨이)의 MCP 주소 — 시스템 코드 → SSE URL(JSON).
     behavior: >-
       코드가 있으면 그 시스템이 활성이 되어 분해 목록에 담당(apm_query)과 보기 목록이 추가된다. 없으면 비활성이고
-      분해 프롬프트·응답은 설정 전과 같다.
+      분해 프롬프트·응답은 설정 전과 같다. apm 주소는 노이즈 게이트(app_impact 승격·APM·SMS 연계 스캔·
+      재분석 역조회)와 컴포넌트 관리도 같이 쓴다 — 노이즈 게이트 쪽 토큰만 NOISE_APM_MCP_TOKEN으로 따로 둔다.
     stability: 주소가 틀리면 WAS 질의가 「사용 불가」 사유로 끝난다 — 폴스타 값으로 대신 답하지 않는다.
-    related: [MCP_SOURCE_TOKENS, MCP_SOURCE_CALL_TIMEOUT, DBHUB_SERVER_URL]
+    related: [MCP_SOURCE_TOKENS, MCP_SOURCE_CALL_TIMEOUT, DBHUB_SERVER_URL, NOISE_APM_MCP_TOKEN]
 
   MCP_SOURCE_TOKENS:
     example: >-
@@ -556,3 +557,22 @@ settings:
     performance: 값이 작을수록 분석 호출 수가 늘고 호출당 프롬프트는 작아진다.
     stability: 공급자 입력 한도(FabriX 등)를 넘지 않는 선에서 크게 잡는 편이 구조 패턴을 덜 놓친다.
     related: [SCHEMA_CACHE_ADMIN_LLM_CONCURRENCY, LLM_PROVIDER]
+
+  API_RELOAD:
+    summary: 코드가 바뀌면 API 서버를 자동으로 다시 시작할지(개발용).
+    behavior: >-
+      uvicorn 자동 재시작을 켠다. 켜면 소스 파일(.py)을 감시하다가 바뀌면 서버 프로세스를 새로 띄운다
+      (D-346 — 종전에는 켜진 채로 고정돼 있었다).
+    options:
+      - value: "false"
+        label: 기본
+        effect: 코드를 바꿔도 재시작하지 않는다. 운영 구성이다.
+      - value: "true"
+        effect: 파일 감시 프로세스가 붙고, 저장할 때마다 서버가 다시 뜬다.
+    example: >-
+      운영 서버에서 켜 두면 파일 감시가 코어 하나를 계속 쓰고, 배포 중 파일이 바뀔 때마다 서버가 재시작돼
+      진행 중인 요청이 끊긴다.
+    performance: 켜면 파일 감시가 CPU 코어 하나를 쓴다.
+    stability: 재시작 때 진행 중인 요청·SSE 연결이 끊긴다. 운영에서는 켜지 않는다.
+    recommendation: 기본 false. 로컬 개발에서만 켠다.
+    related: [API_HOST, API_PORT]

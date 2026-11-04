@@ -29,6 +29,7 @@ from src.orchestration.apm.common import (
     MAX_SELECTION_CANDIDATES,
 )
 from src.orchestration.apm.jobs_notices import _await_first_hop
+from src.orchestration.apm.node_address import NODE_ADDRESS_VIEW
 from src.orchestration.apm.selection import SOURCE_LABEL_KEY
 from src.orchestration.apm.window import WindowPlan
 from src.orchestration.entity_link import AMBIGUOUS, LINKED, NOT_QUERIED, UNLINKED, LinkEntry
@@ -192,6 +193,34 @@ def sanitize_targets(raw: Any) -> list[dict[str, str]]:
     return kept
 
 
+def lift_node_targets(views: list[str], view_args: dict[str, Any], targets: Any
+                      ) -> tuple[Any, dict[str, Any]]:
+    """노드 주소 보기 조건에 실린 `targets`를 task `targets`로 옮긴다(plans/210 W8 교정 q4).
+
+    분해가 대상을 `view_args[apm.node_address].targets`에 넣는 일이 실측됐다 — 보기 조건으로는
+    받지 않아 「버린 조건」 고지 뒤 전 도메인으로 넓어지므로, 이 보기에 한해 모양만 보고 합친다
+    (구조 판단 · 단어 매칭 0). 문자열·문자열 목록은 kind `auto`, dict는 `sanitize_targets` 규칙.
+    정제 뒤 남은 대상이 없으면 그대로 둔다(종전처럼 버린 조건으로 고지된다).
+
+    Returns:
+        (합친 task `targets`, `targets`를 뺀 view_args) — 옮길 것이 없으면 입력 그대로
+    """
+    node_args = view_args.get(NODE_ADDRESS_VIEW) if NODE_ADDRESS_VIEW in views else None
+    if not isinstance(node_args, dict) or "targets" not in node_args:
+        return targets, view_args
+    raw = node_args["targets"]
+    items = [raw] if isinstance(raw, str) else raw if isinstance(raw, (list, tuple)) else []
+    lifted = sanitize_targets([{"text": x, "kind": "auto"} if isinstance(x, str) else x
+                               for x in items])
+    if not lifted:
+        return targets, view_args
+    rest = {k: v for k, v in node_args.items() if k != "targets"}
+    args = {k: v for k, v in view_args.items() if k != NODE_ADDRESS_VIEW}
+    if rest:
+        args[NODE_ADDRESS_VIEW] = rest
+    return sanitize_targets([*sanitize_targets(targets), *lifted]), args
+
+
 def _too_long(text: str) -> bool:
     """게이트웨이 검색어 상한을 넘는 대상 텍스트인가 — 해석하지 않고 고지만 한다(V130-7)."""
     return len(text) > TARGET_TEXT_MAX
@@ -203,7 +232,10 @@ def _shown(text: str) -> str:
 
 
 def _uses_target(view: ViewSpec, args: dict[str, Any] | None) -> bool:
-    """대상으로 좁히는 보기인가 — 대상 필수 보기 · 첫 홉 목록 · 대상별로 부르는 `optional`."""
+    """대상으로 좁히는 보기인가 — 대상 필수 보기 · 첫 홉 목록 · 대상별로 부르는 `optional` ·
+    노드 주소 보기(plans/210 W8 A — `target: none`이지만 대상이 있으면 그 인스턴스로 좁힌다)."""
+    if view.id == NODE_ADDRESS_VIEW:
+        return True
     if view.target == "optional":
         return _targeted(view, args)
     return view.target == "" and bool(view.required_input or view.first_hop)
@@ -303,10 +335,12 @@ def _per_target_views(views: list[str], by_id: dict[str, ViewSpec]) -> bool:
 
     인스턴스 목록(첫 홉)·전체 보기(지표 목록)·선택 대상(`optional` — 설정·관리)·이름·참조 보기는
     아니다(`default_views`·`scoped_targets`가 직전 대상으로 좁히지 않는 보기와 같은 구분). 승계
-    재료를 쓰는 조건이자 읽는 조건이다(G-3 ③ · C-2).
+    재료를 쓰는 조건이자 읽는 조건이다(G-3 ③ · C-2). 노드 주소 보기도 대상별 보기로 센다
+    (plans/210 W8 A — 대상이 있으면 그 인스턴스만 조회한다).
     """
     return bool(views) and all(
-        by_id[v].target == "" and bool(by_id[v].required_input) for v in views)
+        v == NODE_ADDRESS_VIEW or (by_id[v].target == "" and bool(by_id[v].required_input))
+        for v in views)
 
 
 def inherited_targets(task: dict[str, Any], isolated: dict[str, Any], views: list[str],

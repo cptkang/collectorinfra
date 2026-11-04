@@ -16,10 +16,12 @@
 from __future__ import annotations
 
 import hashlib
+import re
 from types import SimpleNamespace
 from typing import Any
 
 from sre_agent.application.investigation_guidance import (
+    POLESTAR_IDENTIFIER_NOTE,
     ANCHORED_TOOLS,
     APM_ANCHORED_TOOLS,
     APM_FOCUS_NOTE_TEMPLATE,
@@ -220,6 +222,19 @@ def test_realtime_note_lists_active_detail() -> None:
 # ── 4. 렌더 고정 — on은 W7 렌더, off는 W7 이전(da3ea4f)과 바이트 동일 ──────
 
 
+def _without_identifier_note(g: str | None) -> str | None:
+    """plans/209 W2 — 이벤트에 서버 식별자가 있으면 붙는 가산 블록(폴스타 식별자 지침, 최대 1회)을 뺀다.
+
+    아래 고정 해시·동치는 이 블록이 생기기 전 렌더 기준이다 — 블록을 빼면 종전과 바이트 동일해야 한다.
+    도구 이름 필터가 블록의 줄을 지웠을 수 있어 머리줄부터 다음 빈 줄까지를 뺀다.
+    """
+    if g is None:
+        return None
+    head = POLESTAR_IDENTIFIER_NOTE.split("\n", 1)[0]
+    assert g.count(head) <= 1
+    return re.sub(r"\n\n" + re.escape(head) + r".*?(?=\n\n|\Z)", "", g, flags=re.S)
+
+
 def test_on_render_is_pinned() -> None:
     """켜짐 렌더 고정(APM 사건 · 사건창 30분 · 게이트웨이 설정).
 
@@ -228,7 +243,7 @@ def test_on_render_is_pinned() -> None:
     3,477자·33줄 → ⑥에 전 대상 비교·서비스·업무·`targets` 안내(plans/134 W3·W4 · 같은 줄 — 줄 수
     불변) 3,657자·33줄.
     """
-    g = build_guidance(_on(), _apm_job())
+    g = _without_identifier_note(build_guidance(_on(), _apm_job()))
     assert g is not None
     assert (len(g), g.count("\n") + 1) == (3657, 33)
     assert _sha(g) == "3e49e570287549724f3a56a94724ca2cca1c0e18ff3a736bcd8bfaddcb58ceca"
@@ -239,10 +254,10 @@ def test_off_render_byte_identical_to_pre_w7() -> None:
     polestar = _job(payload=_MEMORY_EVENT, reference_time=_REF, lookback_minutes=60,
                     correlation=_CORR)
     s = _settings(investigation_guidance_extra="운영자 지침", openmetrics_guidance_enabled=True)
-    assert _sha(build_guidance(s, polestar)) == (
+    assert _sha(_without_identifier_note(build_guidance(s, polestar))) == (
         "065ad23f4a6c51399adb87a922cf7831f10bfc014c4e0d181375c286b0599706"
     )
     pre_w7_apm_off = "897beb11752555514a8b573acbd41ea10ecfb7628abdd9071b8ff5a31ea19c5a"
-    assert _sha(build_guidance(_settings(), _apm_job())) == pre_w7_apm_off
+    assert _sha(_without_identifier_note(build_guidance(_settings(), _apm_job()))) == pre_w7_apm_off
     explicit_off = _settings(apm_guidance_enabled=False, apm_mcp_url="http://gw/sse")
-    assert _sha(build_guidance(explicit_off, _apm_job())) == pre_w7_apm_off
+    assert _sha(_without_identifier_note(build_guidance(explicit_off, _apm_job()))) == pre_w7_apm_off

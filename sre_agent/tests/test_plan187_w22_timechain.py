@@ -79,7 +79,7 @@ def test_mcp_client_defaults_follow_single_constant(monkeypatch: pytest.MonkeyPa
         assert inspect.signature(fn).parameters["timeout_seconds"].default == TOOL_CALL_TIMEOUT_S
     seen: list[float] = []
     monkeypatch.setattr(mcp_tool_client, "run_tool_batch",
-                        lambda url, headers, calls, *, timeout_seconds, concurrency:
+                        lambda url, headers, calls, *, timeout_seconds, concurrency, **_kw:
                         seen.append(timeout_seconds) or [])
     # 설정에 필드가 없으면(대역) 같은 상수로 폴백
     ns = SimpleNamespace(polestar_mcp_url="http://x/sse", polestar_mcp_token=None,

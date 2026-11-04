@@ -25,6 +25,11 @@ FORBIDDEN_SQL_KEYWORDS: frozenset[str] = frozenset({
     "SHUTDOWN", "KILL",
 })
 
+# 문자열 함수 REPLACE(…) — 바로 뒤가 `(`(공백·개행 허용)일 때만 금지 키워드 대조에서 뺀다
+# (D-003 부기 2026-11-04 · D-363 — 호스트 이름 정규형 SQL). 쓰기 문 `REPLACE INTO …`·
+# `REPLACE tbl …`은 뒤가 `(`가 아니라 그대로 걸린다. REPLACE는 금지 목록에 남는다.
+_REPLACE_FUNCTION = re.compile(r"\bREPLACE\s*\(")
+
 # SQL 인젝션 패턴
 INJECTION_PATTERNS: list[str] = [
     # 기존 패턴
@@ -78,8 +83,8 @@ class SQLGuard:
         # 문자열 리터럴 내부도 제거 (안전을 위해)
         sql_clean = re.sub(r"'[^']*'", "''", sql_clean)
 
-        # SQL을 토큰화하여 키워드만 추출
-        tokens = re.findall(r'\b([A-Z_]+)\b', sql_clean.upper())
+        # SQL을 토큰화하여 키워드만 추출 — 함수형 REPLACE(…)는 토큰에서 뺀다
+        tokens = re.findall(r'\b([A-Z_]+)\b', _REPLACE_FUNCTION.sub("(", sql_clean.upper()))
         return [t for t in tokens if t in forbidden]
 
     def detect_injection_patterns(

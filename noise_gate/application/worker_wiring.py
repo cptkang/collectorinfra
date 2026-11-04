@@ -247,9 +247,13 @@ def build_decision_store(config: Any) -> Any:
     try:
         from noise_gate.infrastructure.decision_store import DecisionStore
 
+        ng = config.noise_gate
         return DecisionStore(
-            config.noise_gate.decision_store_path,
-            config.noise_gate.decision_store_enabled,
+            ng.decision_store_path,
+            ng.decision_store_enabled,
+            # (plans/208 M-3) 판정 파일 회전 — 기본 0·off = 회전 없음(종전과 같다)
+            rotate_max_bytes=getattr(ng, "decision_store_rotate_max_bytes", 0),
+            rotate_daily=getattr(ng, "decision_store_rotate_daily", False),
         )
     except Exception:
         logger.exception("발송 판단 감사 저장소 생성 실패 — 감사 없이 진행")
@@ -441,16 +445,19 @@ def build_apm_gateway_client(config: Any) -> Any:
         return None
     if not getattr(ng, "app_impact_enabled", False):
         return None
-    from noise_gate.infrastructure.apm_gateway_client import build_apm_gateway_client
+    from noise_gate.infrastructure.apm_gateway_client import (
+        apm_gateway_url,
+        build_apm_gateway_client,
+    )
 
-    client = build_apm_gateway_client(ng)
+    client = build_apm_gateway_client(config)
     if client is None:
         logger.warning(
             "NOISE_APP_IMPACT_ENABLED=true지만 게이트웨이 클라이언트가 없다"
-            "(NOISE_APM_MCP_URL 비었거나 생성 실패) — app_impact 승격 없이 진행"
+            "(MCP_SOURCE_ENDPOINTS의 apm 비었거나 생성 실패) — app_impact 승격 없이 진행"
         )
     else:
-        logger.info("app_impact 승격 활성: 게이트웨이=%s", ng.apm_mcp_url)
+        logger.info("app_impact 승격 활성: 게이트웨이=%s", apm_gateway_url(config))
     return client
 
 

@@ -379,6 +379,32 @@ class AgentSettings(BaseSettings):
     # **기본 8은 D-162(기본 off) 예외** — 근거: 실효 동시 호출이 스텝 워커 4 × 배치 4 × 동시
     # 조사 수로 곱해져 조회 대상(게이트웨이·mcp_server)에 상한이 없었다.
     sre_tool_global_concurrency: int | None = Field(default=8, ge=1)
+    # 조사별 동시성 계측(plans/208 A0-a — 벤치 동시성 측정용). 기본 off = 계측 훅을 설치하지 않아
+    # 감사 JSONL·응답·로그가 비트 동일하다. 켜면 조사 1건마다 감사 `investigation_metrics` 이벤트
+    # 1건(총 소요·슬롯 대기 · LLM 호출 수·지연 합/최대 · 전역 도구 자리 대기 합(축별) ·
+    # 도구 실행 합 · 워커·하위 스레드 CPU · 프로세스 CPU 시작/끝)을 남긴다. 귀속 방식은
+    # `infrastructure/investigation_metrics.py` 머리 참조.
+    sre_investigation_metrics_enabled: bool = False
+    # HolmesGPT MCP 호출 잠금 범위(plans/208 A1 · D-359). holmes 0.36.0은 같은 MCP URL 호출을
+    # 프로세스 전역 잠금 하나로 직렬화해(`toolset_mcp.get_server_lock`) 동시 조사 K건의 HolmesGPT
+    # 도구 호출이 한 줄로 선다. `server`(기본) = 종전 그대로(훅 미설치 · 비트 동일).
+    # `investigation` = 잠금을 (서버, 조사)로 나눈다 — 조사 안 직렬화는 종전과 같고 조사끼리는
+    # 병렬. 대신 그 호출은 배치 경로와 같은 축(폴스타 MCP · APM) 전역 세마포어
+    # (`sre_tool_global_concurrency`)를 잡고 돌아 축별 동시 호출 합이 그 상한으로 묶인다(상한 곱셈
+    # 없음). 조사 밖 스레드·폴스타/APM 외 URL은 종전 서버 잠금을 쓴다.
+    sre_holmes_mcp_lock_scope: Literal["server", "investigation"] = "server"
+    # 조사 1건이 축별로 동시에 쥘 수 있는 전역 도구 자리 수(plans/208 A1 · D-359). 배치 경로와
+    # (`sre_holmes_mcp_lock_scope=investigation`일 때) HolmesGPT 경로 공통 — 한 조사가 전역 자리를
+    # 독식하지 않게 한다. 자리 대기는 전역 자리와 같은 도구 1건 상한 안에서 기다린다.
+    # None(기본) = 조사별 상한 없음(종전). `sre_tool_global_concurrency`가 None이면 쓰지 않는다.
+    sre_tool_per_investigation_share: int | None = Field(default=None, ge=1)
+    # APM 게이트웨이 호출에 조사별 owner 싣기(plans/208 A1 · §9 C1 · D-359). 기본 off = 종전
+    # (owner 없음). 켜면 배치 경로·HolmesGPT 경로 모두 apm_gateway 도구(owner 인자를 받는 것)에
+    # `owner="investigation:<investigation_id>"`를 싣는다 — LLM이 준 값은 덮는다. 작업 도구
+    # 후속 호출(`apm_job_status`·`apm_job_read`·`apm_job_cancel`)도 같은 owner라 작업 결과를
+    # 읽을 수 있다. 게이트웨이 호출자 키(plans/205 W3b)에서 조사 5건이 키 1개로 묶이지 않게 한다.
+    # 키 형식은 잠정값(205 W3b와 합의 Q-X1 남음).
+    sre_apm_owner_per_investigation_enabled: bool = False
     # 단계 소견 LLM 1건 타임아웃(초 · plans/187 W21 P5 · D-341 부기 12). 종전 20s 코드 고정에서
     # 내부망 「소견기 타임아웃 20s」가 반복됐다. 45 → 60(plans/187 W22 · D-341 부기 13):
     # 조사 전체 600s − 수집 예산 240s = 최소 360s가 남고, 소견 동시 4 × 약 3회차 × 60s = 180s

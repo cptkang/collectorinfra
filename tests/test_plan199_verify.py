@@ -90,8 +90,17 @@ def test_diagnosis_off_dom_identical_to_base_running_and_done(base_js: dict[str,
 var lsCalls = 0;
 var local = {{ getItem: function () {{ lsCalls += 1; return null; }},
     setItem: function () {{ lsCalls += 1; }} }};
+// 단계 소견 칸은 대조에서 뺀다 — 기준 SHA는 진행 중 소견 객체를 「[object Object]」로 찍던 결함이
+// 있었고(2026-11-02 교정 · tests/test_briefing_view_partial_opinion.py) 그 밖의 DOM은 같아야 한다.
+var OPINION_RE = new RegExp('<div class="bv-opinion">.*?</div>'
+    + '|<div class="bv-note">AI 소견 작성 중</div>'
+    + '|<div class="bv-note bv-note--warn">AI 소견을 싣지 않았습니다 — .*?</div>', "g");
+var NORM = true;
+function normHtml(h) {{
+    return NORM && typeof h === "string" ? h.replace(OPINION_RE, "<OPINION>") : h;
+}}
 function ser(n) {{
-    return {{ t: n.tagName, c: n.className, h: !!n.hidden, x: n._text, html: n._html,
+    return {{ t: n.tagName, c: n.className, h: !!n.hidden, x: n._text, html: normHtml(n._html),
         a: n.attrs, ty: n.type, ti: n.title, k: n.children.map(ser) }};
 }}
 async function scenario(which, opt) {{
@@ -136,7 +145,13 @@ var out = null;
         res[opt] = [cur.running === base.running, cur.done === base.done,
             JSON.stringify(cur.calls) === JSON.stringify(base.calls)];
     }}
-    out = {{ res: res, ls: lsCalls, finalHtml: base.done.indexOf("bv-pb") >= 0,
+    NORM = false;
+    var O = "[object Object]", rawBase = await scenario("base", "absent");
+    var rawNew = await scenario("new", "absent");
+    NORM = true;
+    out = {{ res: res, ls: lsCalls, objBase: rawBase.running.indexOf(O) >= 0,
+        objNew: rawNew.running.indexOf(O) >= 0 || rawNew.done.indexOf(O) >= 0,
+        finalHtml: base.done.indexOf("bv-pb") >= 0,
         partHtml: base.running.indexOf("bv-pb") >= 0 }};
     process.stdout.write(JSON.stringify(out));
 }})().catch(function (e) {{ console.error(e && e.stack || e); process.exit(1); }});
@@ -148,6 +163,8 @@ var out = null;
     assert out["res"] == {"absent": [True, True, True], "fnFalse": [True, True, True],
                           "false": [True, True, True]}
     assert out["ls"] == 0
+    # 정규화가 헛돌지 않았다 — 기준은 결함을 보였고 새 렌더는 보이지 않는다
+    assert out["objBase"] is True and out["objNew"] is False
 
 
 # ─── 2. [서술 보기] 안전 렌더 — 결정적 무작위 입력 ────────────────────────────

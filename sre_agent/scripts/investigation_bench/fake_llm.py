@@ -14,6 +14,12 @@ holmes(litellm `openai/…`)가 부르는 그대로 받아 **현재 세계의 �
   `tools` 키가 없는 마지막 턴에도 낸다 · §4.11 대본 주의), 아니면 답변으로 끝낸다.
 - 세계가 지정되지 않았으면(사전 점검의 tool-calling 왕복) 받은 첫 도구를 한 번 부르고 답한다.
 - 응답에 `usage`를 싣는다(holmes가 그대로 누적 — 토큰 칸 검증용). 바인딩은 127.0.0.1 고정.
+- 동시 모드(plans/208 A0-a): 제어 경로에 `{worlds: [{world_id, trial, arm, script}, …]}`를 주면 세계
+  여럿이 동시에 활성이다. 요청마다 대화 본문에 나온 세계 호스트(`World.host_set` — 동시 세계
+  끼리는 겹치지 않게 고른다)로 세계를 가른다. 못 가르면 세계 미지정 응답이다. 단일 지정은 동시
+  목록을 지운다.
+- `--delay-s`(명세 `llm.fake_delay_s` · 기본 0 = 지연 없음): 응답 1회마다 고정 지연 — asyncio 대기라
+  동시 요청을 서로 막지 않는다.
 
 경계(D-139): `sre_agent`·`mcp_server`·`apm_gateway` 패키지를 import하지 않는다.
 """
@@ -23,6 +29,7 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
+import re
 import threading
 import time
 from collections.abc import Mapping, Sequence
@@ -98,13 +105,17 @@ def _tool_call_message(name: str, args: Mapping[str, Any], call_id: str) -> dict
 class FakeLLM:
     """대본 재생 OpenAI 호환 서버. 현재 세계·대본은 러너가 제어 경로로 지정한다."""
 
-    def __init__(self, worlds: Mapping[str, World], log_path: Path | None = None) -> None:
+    def __init__(self, worlds: Mapping[str, World], log_path: Path | None = None,
+                 delay_s: float = 0.0) -> None:
         self.worlds = dict(worlds)
         self.log_path = Path(log_path) if log_path is not None else None
+        self.delay_s = max(0.0, float(delay_s))
         self.world_id: str | None = None
         self.trial: int | None = None
         self.arm: str | None = None
         self.script: str = DEFAULT_SCRIPT
+        # 동시 모드 활성 세계 — world_id → {trial, arm, script}(비면 단일 모드).
+        self.actives: dict[str, dict[str, Any]] = {}
         self._lock = threading.Lock()
         self._server: uvicorn.Server | None = None
         self._thread: threading.Thread | None = None
@@ -122,12 +133,43 @@ class FakeLLM:
             script_steps(self.worlds[world_id], script)
         with self._lock:
             self.world_id, self.trial, self.arm, self.script = world_id, trial, arm, script
+            self.actives = {}
+
+    def set_actives(self, entries: Sequence[Mapping[str, Any]]) -> None:
+        """동시 모드 — 세계 여럿을 함께 활성화한다(단일 지정은 해제).
+
+        모르는 세계·대본이면 KeyError.
+        """
+        actives: dict[str, dict[str, Any]] = {}
+        for e in entries:
+            wid = str(e.get("world_id"))
+            if wid not in self.worlds:
+                raise KeyError(wid)
+            script = str(e.get("script") or DEFAULT_SCRIPT)
+            script_steps(self.worlds[wid], script)
+            actives[wid] = {"trial": e.get("trial"), "arm": e.get("arm"), "script": script}
+        with self._lock:
+            self.world_id, self.trial, self.arm, self.script = None, None, None, DEFAULT_SCRIPT
+            self.actives = actives
 
     def state(self) -> dict[str, Any]:
-        """현재 지정 상태."""
+        """현재 지정 상태(동시 모드면 `worlds`를 덧붙인다)."""
         with self._lock:
-            return {"world_id": self.world_id, "trial": self.trial, "arm": self.arm,
-                    "script": self.script}
+            out: dict[str, Any] = {"world_id": self.world_id, "trial": self.trial,
+                                   "arm": self.arm, "script": self.script}
+            if self.actives:
+                out["worlds"] = [{"world_id": w, **v} for w, v in self.actives.items()]
+            return out
+
+    def route(self, messages: Sequence[Any]) -> str | None:
+        """동시 모드 — 대화 본문에 호스트가 나온 활성 세계(하나로 정해질 때만 · 아니면 None)."""
+        with self._lock:
+            candidates = list(self.actives)
+        text = json.dumps(list(messages), ensure_ascii=False, default=str).casefold()
+        hits = [wid for wid in candidates
+                if any(re.search(rf"(?<![\w.-]){re.escape(h)}(?![\w.-])", text)
+                       for h in self.worlds[wid].host_set)]
+        return hits[0] if len(hits) == 1 else None
 
     # ── 응답 ──
 
@@ -137,8 +179,24 @@ class FakeLLM:
         tools = body.get("tools") or []
         turn = sum(1 for m in messages if isinstance(m, Mapping) and m.get("role") == "assistant")
         with self._lock:
+            multi = bool(self.actives)
             world = self.worlds.get(self.world_id) if self.world_id else None
             script = self.script
+            tag = {"world_id": self.world_id, "trial": self.trial, "arm": self.arm,
+                   "script": self.script}
+        if multi:
+            wid = self.route(messages)
+            with self._lock:
+                entry = self.actives.get(wid) if wid else None
+            world = self.worlds[wid] if wid and entry is not None else None
+            script = str(entry["script"]) if entry is not None else DEFAULT_SCRIPT
+            tag = {"world_id": wid if entry is not None else None,
+                   "trial": (entry or {}).get("trial"), "arm": (entry or {}).get("arm"),
+                   "script": script}
+            if world is None:  # 못 가른 요청 — 도구 왕복 없이 기본 답변(호출 로그에 world_id 없음)
+                step = {"answer": FALLBACK_ANSWER}
+                self._log(turn, len(messages), bool(tools), step, tag)
+                return _completion(body, {"role": "assistant", "content": FALLBACK_ANSWER}, "stop")
         if world is None:
             return self._fallback(body, messages, tools, turn)
         steps = script_steps(world, script)
@@ -156,7 +214,7 @@ class FakeLLM:
         else:
             out = _completion(body, {"role": "assistant", "content": str(step.get("answer"))},
                               "stop")
-        self._log(turn, len(messages), bool(tools), step)
+        self._log(turn, len(messages), bool(tools), step, tag)
         return out
 
     def _fallback(self, body: Mapping[str, Any], messages: list[Any], tools: list[Any],
@@ -169,12 +227,13 @@ class FakeLLM:
             return _completion(body, _tool_call_message(name, {}, f"call_{turn}"), "tool_calls")
         return _completion(body, {"role": "assistant", "content": FALLBACK_ANSWER}, "stop")
 
-    def _log(self, turn: int, n_messages: int, has_tools: bool, step: Mapping[str, Any]) -> None:
+    def _log(self, turn: int, n_messages: int, has_tools: bool, step: Mapping[str, Any],
+             tag: Mapping[str, Any]) -> None:
         if self.log_path is None:
             return
         with self._lock:
-            row = {"ts": time.time(), "world_id": self.world_id, "trial": self.trial,
-                   "arm": self.arm, "script": self.script, "turn": turn,
+            row = {"ts": time.time(), "world_id": tag["world_id"], "trial": tag["trial"],
+                   "arm": tag["arm"], "script": tag["script"], "turn": turn,
                    "n_messages": n_messages, "has_tools": has_tools,
                    "emitted": "call" if "call" in step else "answer"}
             self.log_path.parent.mkdir(parents=True, exist_ok=True)
@@ -197,6 +256,8 @@ class FakeLLM:
             if body.get("stream"):
                 return JSONResponse({"error": {"message": "stream 미지원(가짜 LLM)"}},
                                     status_code=400)
+            if self.delay_s > 0:
+                await asyncio.sleep(self.delay_s)
             try:
                 return JSONResponse(self.respond(body))
             except KeyError as e:
@@ -209,8 +270,11 @@ class FakeLLM:
             if request.method == "POST":
                 body = await request.json()
                 try:
-                    self.set_active(body.get("world_id"), body.get("trial"), body.get("arm"),
-                                    body.get("script"))
+                    if isinstance(body.get("worlds"), list):
+                        self.set_actives(body["worlds"])
+                    else:
+                        self.set_active(body.get("world_id"), body.get("trial"), body.get("arm"),
+                                        body.get("script"))
                 except KeyError as e:
                     return JSONResponse({"error": f"unknown world/script: {e}"}, status_code=404)
             return JSONResponse(self.state())
@@ -253,8 +317,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     p.add_argument("--worlds", type=Path, nargs="+", required=True, help="세계 YAML 파일·디렉터리")
     p.add_argument("--port", type=int, default=19180)
     p.add_argument("--log", type=Path, default=None, help="요청 요약 JSONL(선택)")
+    p.add_argument("--delay-s", type=float, default=0.0,
+                   help="응답 1회당 고정 지연(초 · 기본 0 = 지연 없음 · plans/208 A0-a)")
     args = p.parse_args(argv)
-    fake = FakeLLM(load_worlds(args.worlds), args.log)
+    fake = FakeLLM(load_worlds(args.worlds), args.log, delay_s=args.delay_s)
     uvicorn.run(fake.build_app(), host=BIND_HOST, port=args.port, log_level="warning")
     return 0
 

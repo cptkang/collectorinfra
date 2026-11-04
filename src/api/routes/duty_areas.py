@@ -95,16 +95,8 @@ async def _assignment_summary(request: Request) -> dict[str, Any] | None:
     }
 
 
-async def _resource_type_section(request: Request) -> dict[str, Any]:
-    """매핑 점검 — 최근 7일 판정 레코드의 미매핑 `resource_type`.
-
-    결정 기록 전량 스캔은 동기 파일 I/O라 스레드에서 돈다(이벤트 루프 정지 방지). 레코드를
-    쌓지 않고 값별 건수만 센다(`DecisionStore.count_recent_values`).
-    """
-    store = _decision_store(request)
-    counts, empty = await asyncio.to_thread(
-        store.count_recent_values, MAPPING_WINDOW_DAYS * 86400, "resource_type"
-    )
+def _resource_type_section(counts: dict[str, int], empty: int) -> dict[str, Any]:
+    """매핑 점검 — 최근 7일 판정 레코드의 미매핑 `resource_type`."""
     result = unmapped_resource_types(
         duty_area_vocabulary(), counts, empty_count=empty, top_n=MAPPING_TOP_N
     )
@@ -116,16 +108,12 @@ async def _resource_type_section(request: Request) -> dict[str, Any]:
     }
 
 
-async def _apm_event_type_section(request: Request) -> dict[str, Any]:
+def _apm_event_type_section(counts: dict[str, int], empty: int) -> dict[str, Any]:
     """매핑 점검 — 최근 7일 판정 레코드의 제니퍼 이벤트 유형 중 단서 미매핑(plans/201 W3).
 
     `cause_hints.known_unmapped`(알려진 미매핑)는 `known_unmapped`로 접고 배지에서 뺀다.
     대조는 정규화 규칙(`normalize_apm_event_type`)이다. 문턱(최소 건수)은 두지 않는다.
     """
-    store = _decision_store(request)
-    counts, empty = await asyncio.to_thread(
-        store.count_recent_values, MAPPING_WINDOW_DAYS * 86400, APM_EVENT_TYPE_FIELD
-    )
     result = unmapped_apm_event_types(
         duty_area_vocabulary(), counts, empty_count=empty, top_n=MAPPING_TOP_N
     )
@@ -135,6 +123,26 @@ async def _apm_event_type_section(request: Request) -> dict[str, Any]:
         "action_hint": APM_EVENT_TYPE_ACTION_HINT,
         **result,
     }
+
+
+async def _mapping_sections(request: Request) -> list[dict[str, Any]]:
+    """매핑 점검 항목들 — 결정 기록을 **1회** 순회해 항목별 값을 함께 센다.
+
+    전량 스캔은 동기 파일 I/O라 스레드에서 돈다(이벤트 루프 정지 방지). 레코드를 쌓지 않고
+    값별 건수만 센다(`DecisionStore.count_recent_values_many`). 종전에는 항목마다 따로 스캔해
+    관리자 「사용자 관리」 탭 진입이 항목 수 배로 늦었다.
+    """
+    # (plans/201 W3) 알람 화면 담당 강조가 켜진 기동에서만 제니퍼 유형 항목을 더한다(끄면 W1 응답 동일)
+    apm = duty_alarm_focus_enabled(request)
+    fields = ["resource_type"] + ([APM_EVENT_TYPE_FIELD] if apm else [])
+    store = _decision_store(request)
+    counted = await asyncio.to_thread(
+        store.count_recent_values_many, MAPPING_WINDOW_DAYS * 86400, fields
+    )
+    sections = [_resource_type_section(*counted["resource_type"])]
+    if apm:
+        sections.append(_apm_event_type_section(*counted[APM_EVENT_TYPE_FIELD]))
+    return sections
 
 
 @router.get("/admin/duty-areas/status")
@@ -157,10 +165,7 @@ async def duty_area_status(
         "badge_count": None,
     }
     if mapping:
-        sections = [await _resource_type_section(request)]
-        # (plans/201 W3) 알람 화면 담당 강조가 켜진 기동에서만 제니퍼 유형 항목을 더한다(끄면 W1 응답 동일)
-        if duty_alarm_focus_enabled(request):
-            sections.append(await _apm_event_type_section(request))
+        sections = await _mapping_sections(request)
         body["sections"] = sections
         body["badge_count"] = sum(int(s.get("unmapped_distinct") or 0) for s in sections)
     return body

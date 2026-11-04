@@ -63,7 +63,8 @@ MAX_SELECTION_CANDIDATES = 3
 #: 봉투에서 (보기, 대상)별로 옮기는 집계 키(SPEC §7.1 · 전 대상 순위 `provisional`·이벤트
 #: `coverage` — plans/134 W3).
 _AGGREGATE_KEYS = ("summary", "hourly", "errors_by_type", "window", "sources", "partial",
-                   "artifact", "job", "hour_start", "hour_end", "provisional", "coverage")
+                   "artifact", "job", "hour_start", "hour_end", "provisional", "coverage",
+                   "node_address_sources")
 
 
 # ── 활성 · 어휘 ──────────────────────────────────────────────────────────────

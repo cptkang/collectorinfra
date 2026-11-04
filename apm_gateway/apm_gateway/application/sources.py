@@ -17,20 +17,23 @@ D-287 ①②⑦ · SPEC-apm-gateway §2.1·§3).
 - 소스 클라이언트는 메모리 임계를 넘는 응답을 스풀 `tmp/`에 받고, 호출 대기열을 우선순위·에이징으로
   판다(plans/134 W0-B N-14·N-18).
 - (소스, 도메인)마다 1호출하는 가벼운 루프는 `gather_per_source`로 겹쳐 부른다 — 소스마다 그
-  소스의 동시 요청 상한 폭, 소스끼리도 겹친다(plans/207 W2). 상한이 모두 1이면 종전 직렬이다.
+  소스의 폭 = min(`APM_FANOUT_CONCURRENCY`, 동시 요청 자리 수), 소스끼리도 겹친다(plans/207 W2 ·
+  plans/205 · D-356 ①). 폭이 모두 1이면 종전 직렬이다.
 """
 
 from __future__ import annotations
 
 import asyncio
 import time
+from collections import Counter
 from collections.abc import Awaitable, Callable, Iterator
 from dataclasses import dataclass
 from typing import Any, TypeVar
 
 from apm_gateway.adapters.jennifer.api import JenniferApi
 from apm_gateway.adapters.jennifer.client import JenniferClient
-from apm_gateway.application.parallel import gather_bounded
+from apm_gateway.adapters.parse_pool import ParsePool
+from apm_gateway.application.parallel import Stop, gather_bounded, gather_gated
 from apm_gateway.application.resolver import (
     BY_INSTANCE_NAME,
     HIGH,
@@ -64,37 +67,38 @@ class JenniferSource:
     source_id: str
     api: JenniferApi
     resolver: InstanceResolver
+    # 도구 호출 1건 안에서 이 소스로 겹쳐 부르는 폭 상한(`APM_FANOUT_CONCURRENCY` · plans/205 ·
+    # D-356 ① — 0 = 상한 없음 → 소스 자리 수)
+    fanout: int = 0
+
+    @property
+    def width(self) -> int:
+        """병렬 루프 폭 = min(도구 안 폭 상한, 소스 동시 호출 자리 수 — D-347)."""
+        cap = self.api.max_in_flight
+        return min(self.fanout, cap) if self.fanout > 0 else cap
 
 
 async def gather_per_source(
     items: list[T],
     source_of: Callable[[T], JenniferSource],
     fn: Callable[[T], Awaitable[R]],
+    *,
+    stop: Stop | None = None,
 ) -> list[R | ApmError]:
-    """`fn(item)`을 소스마다 그 소스 동시 요청 상한 폭으로 겹쳐 부르고(소스끼리도 겹친다) 입력
-    순서대로 결과(또는 `ApmError`)를 돌려준다(plans/207 W2). 소스를 나눠 묶는 것은 한 소스의
-    항목이 헬퍼 폭을 다 차지해 다른 소스가 그 뒤로 밀리지 않게 하려는 것이다. 소스가 하나이거나
-    상한이 모두 1이면 묶지 않는다 — 상한 1은 종전 직렬과 호출 순서까지 같다."""
+    """`fn(item)`을 소스마다 그 소스 폭(`JenniferSource.width`)으로 겹쳐 부르고(소스끼리도
+    겹친다) 입력 순서대로 결과(또는 `ApmError`)를 돌려준다(plans/207 W2). 항목마다 제 소스의
+    세마포어를 지나는 1단 구조라 한 소스의 항목이 다른 소스를 그 뒤로 밀지 않고, 메모 재신고·중단
+    조건(`stop` — 전 소스 공유)이 전역 입력 순서로 맞는다(plans/205 W2 교정). 소스가 하나이거나
+    폭이 모두 1이면 `gather_bounded` 그대로다 — 폭 1은 종전 직렬과 호출 순서까지 같다."""
     seq = list(items)
-    buckets: dict[str, tuple[JenniferSource, list[int]]] = {}
-    for i, item in enumerate(seq):
-        src = source_of(item)
-        buckets.setdefault(src.source_id, (src, []))[1].append(i)
-    caps = [src.api.max_in_flight for src, _ in buckets.values()]
-    if len(buckets) <= 1 or max(caps) <= 1:
-        return await gather_bounded(seq, fn, max(caps, default=1))
-
-    async def one_source(bucket: tuple[JenniferSource, list[int]]) -> list[R | ApmError]:
-        src, idx = bucket
-        return await gather_bounded([seq[i] for i in idx], fn, src.api.max_in_flight)
-
-    per_source = await gather_bounded(list(buckets.values()), one_source, len(buckets))
-    by_index: dict[int, R | ApmError] = {}
-    for (_, idx), got in zip(buckets.values(), per_source, strict=True):
-        if isinstance(got, ApmError):  # `one_source`는 ApmError를 값으로 돌려준다 — 오지 않는다
-            raise got
-        by_index.update(zip(idx, got, strict=True))
-    return [by_index[i] for i in range(len(seq))]
+    srcs = [source_of(item) for item in seq]
+    widths = {src.source_id: src.width for src in srcs}
+    if len(widths) <= 1 or max(widths.values()) <= 1:
+        return await gather_bounded(seq, fn, max(widths.values(), default=1), stop=stop)
+    gates = {sid: asyncio.Semaphore(width) for sid, width in widths.items()}
+    counts = Counter(src.source_id for src in srcs)
+    width = sum(min(w, counts[sid]) for sid, w in widths.items())  # 겹칠 수 있는 최대 호출 수
+    return await gather_gated(seq, fn, [gates[src.source_id] for src in srcs], width, stop=stop)
 
 
 def _status(inv: Inventory) -> str:
@@ -336,15 +340,20 @@ def build_source_set(
     *,
     transport: Any = None,
     clock: Callable[[], float] = time.monotonic,
+    parse_pool: ParsePool | None = None,
 ) -> SourceSet:
-    """설정의 소스마다 클라이언트·조회 함수·정합기를 만든다(토큰은 그 소스 클라이언트에만)."""
+    """설정의 소스마다 클라이언트·조회 함수·정합기를 만든다(토큰은 그 소스 클라이언트에만).
+    `parse_pool`(plans/205 W1)은 프로세스당 1개를 모든 소스 클라이언트가 공유한다(닫기는
+    만든 쪽)."""
     sources = []
+    fanout = cfg.perf.fanout_concurrency
     for api_cfg in cfg.sources:
         client = JenniferClient(
             api_cfg,
             transport=transport,
             spool_dir=cfg.jobs.spool_dir / TMP_DIR,
             aging_seconds=cfg.jobs.priority_aging_seconds,
+            parse_pool=parse_pool,
         )
         api = JenniferApi(client)
         resolver = InstanceResolver(
@@ -354,7 +363,8 @@ def build_source_set(
             domain_filter=api_cfg.domain_ids,
             cache_seconds=cfg.runtime.instance_cache_seconds,
             clock=clock,
-            max_in_flight=client.max_in_flight,
+            max_in_flight=min(fanout, client.max_in_flight),
+            canonical_match=cfg.runtime.host_canonical_match,
         )
-        sources.append(JenniferSource(api_cfg.source_id, api, resolver))
+        sources.append(JenniferSource(api_cfg.source_id, api, resolver, fanout=fanout))
     return SourceSet(sources)

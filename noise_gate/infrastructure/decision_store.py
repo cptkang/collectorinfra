@@ -14,10 +14,13 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 from collections.abc import Callable, Iterable, Iterator
+from contextlib import AbstractContextManager, contextmanager
 from datetime import UTC, datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import IO, Any, Optional
 
 from noise_gate.domain.notification_policy import (
     EVIDENCE_COLLECTION_FAILED,
@@ -39,6 +42,11 @@ from noise_gate.domain.notification_policy import (
 from noise_gate.infrastructure import jsonl_tail
 from noise_gate.infrastructure.metrics import record_decision
 
+try:  # 회전 배타 잠금(plans/208 M-3) — Windows 등 fcntl 없는 플랫폼은 회전을 끄고 읽기만 한다
+    import fcntl
+except ImportError:  # pragma: no cover - POSIX 밖
+    fcntl = None  # type: ignore[assignment]
+
 logger = logging.getLogger(__name__)
 
 # 퍼널에서 "캔슬됐다"고 세는 티어 — 운영자에게 통보되지 않은 결과다.
@@ -52,7 +60,8 @@ _TIER_KEYS: tuple[str, ...] = (TIER_PAGE, TIER_TICKET, TIER_DASHBOARD, TIER_SUPP
 _CONDITION_LOG_MAX = 200
 
 # 운영자 경로에서만 응답에 싣는 키(G-2 (c)) — 사용자 경로는 전 존 집계라 실측값까지 열지 않는다.
-_OPERATOR_ONLY_KEYS: tuple[str, ...] = ("condition_log",)
+# (plans/210 §3.8) `apm_ref`는 수동 재분석 재료(인스턴스·노드 IP)라 사용자 화면에 내보내지 않는다.
+_OPERATOR_ONLY_KEYS: tuple[str, ...] = ("condition_log", "apm_ref")
 # 운영자 경로에서만 싣는 `stage_evidence` 안의 키 — 침묵 규칙을 만든 운영자 계정. 침묵 관리
 # (`/silences`)가 운영자 전용인 것(D-245)과 같은 이유로 사용자 경로에는 내보내지 않는다(D-247).
 _OPERATOR_ONLY_EVIDENCE_KEYS: tuple[str, ...] = ("created_by",)
@@ -72,6 +81,217 @@ _PAGE_REVIEW_POINTER_KEYS: tuple[str, ...] = (
 _REVERSE_SCAN_BLOCK_BYTES = 64 * 1024
 _REVERSE_SCAN_SLACK_SECONDS = 600
 _SCAN_STOP_CHECK_EVERY = 256
+
+# (plans/208 M-3) 판정 파일 회전 조각 이름 — `<현재 파일 이름>.<회전 시각 UTC>[-<순번>]`.
+# 회전 시각은 마이크로초까지라 이름순 = 시간순이고, 같은 시각·시계 역행이면 순번을 올려
+# 순서를 지킨다.
+# 조각은 지우지 않는다(감사 기록 — 삭제·보존 기한은 범위 밖).
+_FRAGMENT_STAMP_FORMAT = "%Y%m%dT%H%M%S%fZ"
+_FRAGMENT_SUFFIX = r"\.(\d{8}T\d{12}Z)(?:-(\d+))?"
+# 조각 목록을 현재 파일 열기 앞뒤로 두 번 읽어 같을 때까지 되풀이하는 횟수(회전과 겹친 읽기 보호).
+_CHAIN_LISTING_RETRIES = 5
+
+
+def _fragment_key(path: Path, name: str) -> tuple[str, int] | None:
+    """조각 이름의 정렬 키(회전 시각, 순번) — 이 판정 파일의 조각이 아니면 None."""
+    match = re.fullmatch(re.escape(path.name) + _FRAGMENT_SUFFIX, name)
+    if match is None:
+        return None
+    return match.group(1), int(match.group(2) or 0)
+
+
+# 조각 목록을 읽지 못해 경고한 폴더 — 같은 폴더는 한 번만 경고한다(조회마다 로그가 쌓이지 않게).
+_LISTING_WARNED: set[str] = set()
+
+
+def decision_fragments(path: str | os.PathLike[str]) -> list[Path]:
+    """판정 파일의 회전 조각 목록(오래된 것 → 최신 · 없으면 빈 목록 · plans/208 M-3).
+
+    회전이 꺼져 있었으면 조각은 없다 — 이 목록이 비면 읽는 쪽은 종전과 같이 현재 파일 하나만 읽는다.
+    """
+    base = Path(path)
+    try:
+        names = os.listdir(base.parent)
+    except (FileNotFoundError, NotADirectoryError):
+        return []
+    except OSError as exc:
+        # 폴더에 읽기(r) 권한이 없는 등 — 종전처럼 현재 파일만 읽는다(off = 종전과 같다).
+        # 회전 조각이 있었다면 빠지므로 폴더마다 한 번 경고한다.
+        folder = str(base.parent)
+        if folder not in _LISTING_WARNED:
+            _LISTING_WARNED.add(folder)
+            logger.warning(
+                "판정 기록 조각 목록을 읽지 못해 현재 파일만 읽는다(%s): %s", folder, exc
+            )
+        return []
+    keyed: list[tuple[tuple[str, int], str]] = []
+    for name in names:
+        key = _fragment_key(base, name)
+        if key is not None:
+            keyed.append((key, name))
+    keyed.sort()
+    return [base.parent / name for _key, name in keyed]
+
+
+def decision_file_chain(path: str | os.PathLike[str]) -> list[Path]:
+    """판정 기록을 이루는 파일 전부 — 회전 조각(오래된 것부터) + 현재 파일(있으면 맨 끝).
+
+    스크립트·반출용이다. 회전과 겹쳐 읽어도 레코드를 잃거나 두 번 세지 않아야 하는 경로는
+    `DecisionStore`의 조각 순회(현재 파일을 연 앞뒤로 목록을 대조)를 쓴다.
+    """
+    base = Path(path)
+    chain = decision_fragments(base)
+    if base.exists():
+        chain.append(base)
+    return chain
+
+
+@contextmanager
+def open_decision_chain(
+    path: str | os.PathLike[str], *, binary: bool
+) -> Iterator[tuple[list[Path], IO[Any] | None]]:
+    """(조각 목록, 연 현재 파일 | None) — 회전과 겹쳐도 레코드를 잃거나 두 번 세지 않는 읽기 기준.
+
+    조각 목록을 읽고 → 현재 파일을 열고 → 목록을 다시 읽어 같을 때만 쓴다. 그 사이에 회전이
+    끼면 목록이 달라져 다시 한다. 같으면 연 현재 파일은 목록의 어느 조각과도 같은 파일이
+    아니고(회전이 목록을 다시 읽은 뒤라면 연 파일은 이름이 바뀌어도 끝까지 그대로 읽힌다),
+    목록의 조각은 이름이 다시 바뀌지 않는다. 조각은 호출부가 하나씩 나중에 연다(조각이 많아도
+    파일 핸들을 쌓지 않는다). 현재 파일은 `binary`면 `rb`, 아니면 UTF-8 텍스트(종전 읽기와 같은
+    universal newline)로 연다.
+    """
+    base = Path(path)
+    frags: list[Path] = []
+    active: IO[Any] | None = None
+    try:
+        for _ in range(_CHAIN_LISTING_RETRIES):
+            if active is not None:
+                active.close()
+                active = None
+            frags = decision_fragments(base)
+            try:
+                active = base.open("rb") if binary else base.open("r", encoding="utf-8")
+            except FileNotFoundError:
+                active = None
+            if decision_fragments(base) == frags:
+                break
+        yield frags, active
+    finally:
+        if active is not None:
+            active.close()
+
+
+def iter_decision_lines(path: str | os.PathLike[str]) -> Iterator[str]:
+    """판정 기록 전체를 오래된 것부터 텍스트 줄로 내준다 — 회전 조각 → 현재 파일(plans/208 M-3).
+
+    조각이 없으면 종전 `open(path, "r", encoding="utf-8")` 순회와 같다(파일이 없으면 아무것도 내지
+    않는다). 읽는 중 사라진 조각(운영자가 옮김)은 건너뛴다. 그 밖의 읽기 오류는 그대로 던진다.
+    """
+    with open_decision_chain(path, binary=False) as (frags, active):
+        for frag in frags:
+            try:
+                fh = frag.open("r", encoding="utf-8")
+            except FileNotFoundError:
+                continue
+            with fh:
+                yield from fh
+        if active is not None:
+            yield from active
+
+
+DecisionCursor = tuple[int, int, int]
+
+
+def decision_cursor(path: str | os.PathLike[str]) -> DecisionCursor:
+    """현재 판정 파일의 끝 위치 `(장치, inode, 크기)` — 기록이 하나도 없으면 `(0, 0, 0)`.
+
+    시나리오 도구가 「주입 뒤 붙은 줄」만 보려고 쓴다(`iter_decision_lines_since`). 회전 직후 현재
+    파일이 아직 없으면(다음 기록 전) 최신 조각의 끝을 기준점으로 삼는다 — 지난 기록 전부를 새 줄로
+    다시 읽지 않게 한다.
+    """
+    try:
+        st = os.stat(path)
+    except (FileNotFoundError, NotADirectoryError):
+        for frag in reversed(decision_fragments(path)):
+            try:
+                st = os.stat(frag)
+            except FileNotFoundError:
+                continue
+            return st.st_dev, st.st_ino, st.st_size
+        return 0, 0, 0
+    return st.st_dev, st.st_ino, st.st_size
+
+
+def iter_decision_lines_since(
+    path: str | os.PathLike[str], cursor: DecisionCursor | int
+) -> Iterator[str]:
+    """`cursor` 뒤에 붙은 판정 기록 줄을 오래된 것부터 내준다(plans/208 M-3).
+
+    기준 파일이 그 뒤 회전돼 조각이 됐으면 그 조각의 나머지 → 그 뒤 조각 → 현재 파일 순으로
+    잇는다. 기준 시점에 파일이 없었으면(`(0, 0, 0)`) 지금 있는 기록 전부가 새 줄이다. 기준 파일을
+    찾지 못하면(운영자가 옮김) 현재 파일만 처음부터 읽는다. 조각이 없으면 종전 「현재 파일을 열고
+    크기 위치로 `seek`」과 같다. 정수 `cursor`는 종전 호출(현재 파일의 바이트 위치)로 읽는다 —
+    회전을 따라가지 않는다.
+    """
+    if isinstance(cursor, int):
+        legacy: int | None = cursor
+        dev = ino = offset = 0
+    else:
+        legacy = None
+        dev, ino, offset = cursor
+    with open_decision_chain(path, binary=False) as (frags, active):
+        if legacy is not None:
+            if active is not None:
+                active.seek(legacy)
+                yield from active
+            return
+        files: list[tuple[Path | None, tuple[int, int]]] = []
+        for frag in frags:
+            try:
+                st = os.stat(frag)
+            except FileNotFoundError:
+                continue
+            files.append((frag, (st.st_dev, st.st_ino)))
+        if active is not None:
+            st = os.fstat(active.fileno())
+            files.append((None, (st.st_dev, st.st_ino)))
+        start = next(
+            (i for i, (_f, ident) in enumerate(files) if ident == (dev, ino)), None
+        )
+        if start is None:
+            if ino != 0:
+                files = files[-1:] if active is not None else []
+            start, offset = 0, 0
+        for index, (part, _ident) in enumerate(files[start:]):
+            skip = offset if index == 0 else 0
+            if part is None:
+                assert active is not None
+                active.seek(skip)
+                yield from active
+                continue
+            try:
+                fh = part.open("r", encoding="utf-8")
+            except FileNotFoundError:
+                continue
+            with fh:
+                fh.seek(skip)
+                yield from fh
+
+
+def _reverse_lines_of(fh: IO[bytes]) -> Iterator[bytes]:
+    """열린 파일의 줄을 끝에서부터 내준다(블록 단위 역방향 · 줄 끝 개행 제외 · UTF-8 바이트)."""
+    fh.seek(0, 2)
+    pos = fh.tell()
+    rest = b""
+    while pos > 0:
+        size = min(_REVERSE_SCAN_BLOCK_BYTES, pos)
+        pos -= size
+        fh.seek(pos)
+        chunk = fh.read(size) + rest
+        parts = chunk.split(b"\n")
+        rest = parts[0]  # 블록 경계에 걸린 줄 앞부분 — 다음(앞쪽) 블록과 이어 붙인다
+        yield from reversed(parts[1:])
+    if rest:
+        yield rest
 
 # 화면에 내보내기 전 마스킹하는 최상위 문자열 키.
 _MASKED_TEXT_KEYS: tuple[str, ...] = (
@@ -115,6 +335,10 @@ def _as_tier_set(tier: object) -> frozenset[str]:
     return frozenset()
 
 
+class DecisionScanStoppedError(Exception):
+    """전량 순회가 중단 신호로 멈췄다(plans/208 M-1 — 부분 집계를 내지 않으려고 던진다)."""
+
+
 class DecisionStore:
     """발송 판단을 JSONL로 적재하고 티어별 집계·억제율을 산출하는 경량 감사 저장소."""
 
@@ -123,7 +347,14 @@ class DecisionStore:
     scan_should_stop: Callable[[], bool] | None = None
 
     def __init__(
-        self, path: str, enabled: bool = True, max_lines: int = 20000
+        self,
+        path: str,
+        enabled: bool = True,
+        max_lines: int = 20000,
+        *,
+        recent_scan: bool = False,
+        rotate_max_bytes: int = 0,
+        rotate_daily: bool = False,
     ) -> None:
         """저장 경로·활성 여부·조회 스캔 상한을 받는다.
 
@@ -132,10 +363,42 @@ class DecisionStore:
         list_decisions/get_decision)이 파일 끝에서 되짚는 줄 수 상한이다 — 감사 파일이 무한히
         커져도 화면 응답이 무너지지 않게 한다. 기존 `aggregate`/`meta_alerts`는 종전대로
         전량 스캔한다(운영 지표의 의미가 바뀌면 안 되므로).
+
+        (plans/208 M-3 · 전부 기본 off = 종전과 같다)
+        recent_scan: 창을 준 `aggregate`·`meta_alerts`·`health_snapshot`을 파일 끝에서 거꾸로 읽다가
+            창 하한보다 `_REVERSE_SCAN_SLACK_SECONDS` 넘게 오래된 결정 레코드에서 멈춘다(창 안
+            레코드 수에 비례). 창 없는(None) 집계는 계속 전량이다.
+        rotate_max_bytes: 0보다 크면 기록 직전 현재 파일이 이 크기 이상일 때 회전한다.
+        rotate_daily: 켜면 기록 직전 현재 파일의 마지막 수정일(서버 지역 날짜)이 오늘보다 앞이면
+            회전한다.
+        회전은 현재 파일을 `<이름>.<회전 시각 UTC>`로 이름만 바꾸고 다음 기록이 새 파일을 만든다.
+        읽는 쪽은 회전 설정과 무관하게 조각이 있으면 모두 가로질러 읽는다.
+        세 값은 정확히 True·양의 정수일 때만 켠다 — 설정 대역(MagicMock 등)이 `int()`·`bool()`로
+        조용히 켜져 기록마다 회전하는 일을 막는다.
+        회전은 파일 배타 잠금(`fcntl`)이 있는 POSIX에서만 켠다. 없는 플랫폼(Windows)에서는 회전을
+        요청해도 끄고 WARNING 1줄을 남긴다 — 쓰기 주체가 여러 프로세스일 수 있어 잠금 없는 회전은
+        기록 유실 위험이 있기 때문이다. 읽기(조각 체인·역방향 집계)는 플랫폼과 무관하다.
         """
         self.path = Path(path)
         self.enabled = enabled
         self.max_lines = max(1, int(max_lines))
+        self.recent_scan = recent_scan is True
+        self.rotate_max_bytes = (
+            rotate_max_bytes
+            if isinstance(rotate_max_bytes, int)
+            and not isinstance(rotate_max_bytes, bool)
+            and rotate_max_bytes > 0
+            else 0
+        )
+        self.rotate_daily = rotate_daily is True
+        if fcntl is None and (self.rotate_max_bytes > 0 or self.rotate_daily):
+            logger.warning(
+                "판정 기록 회전 비활성: 이 플랫폼은 파일 잠금(fcntl) 미지원 — 회전 설정을 무시하고 "
+                "한 파일에 이어 쓴다 (%s)",
+                self.path,
+            )
+            self.rotate_max_bytes = 0
+            self.rotate_daily = False
 
     def record(
         self,
@@ -156,6 +419,8 @@ class DecisionStore:
         alarm_time: str = "",
         hostname: str = "",
         resource_type: str = "",
+        timing: dict[str, float] | None = None,
+        apm_ref: dict[str, Any] | None = None,
     ) -> None:
         """결정을 JSONL 한 줄로 append 한다.
 
@@ -206,6 +471,16 @@ class DecisionStore:
         호스트명·자원 유형이다. 사용자 요청 알람 분석이 자동 조사와 같은 기준 시각·대상으로 다시
         조사하는 재료다. 호출부는 `investigation_manual_enabled`일 때만 넘긴다 — 빈 값이면 키를 넣지
         않아 기존 스냅샷과 비트 동일하다.
+
+        timing(plans/208 W0): 워커 구간 계측(`ALARM_WORKER_TIMING_ENABLED`)이 켜졌을 때 기록
+        시점까지의 구간 소요(ms) `{p1_ms, p2_ms, p3_ms, p4_until_audit_ms}`를 최상위 필드로
+        싣는다. 측정 전용이며 판정과 무관하다. 호출부는 계측 on일 때만 넘긴다 — None이면 키를 넣지
+        않아 비트 동일하다.
+
+        apm_ref(plans/210 §3.8): 제니퍼 알람의 `{source_id, domain_id, domain_name, instance_name,
+        ip, host_address, host_address_status}`(값이 있는 칸만)다 — 수동 재분석이 원문 `apm` 블록을
+        되살려 연계 매핑 고속 경로를 타게 하는 재료다. 호출부는 `apm_host_map_enabled`일 때만
+        넘긴다 — 빈 dict·None이면 키를 넣지 않아 비트 동일하다.
         """
         if not self.enabled:
             return
@@ -251,15 +526,148 @@ class DecisionStore:
             record["hostname"] = hostname
         if resource_type:
             record["resource_type"] = resource_type
+        if timing is not None:
+            record["timing"] = timing
+        if apm_ref:
+            record["apm_ref"] = apm_ref
         # (plans/92 O4) Prometheus 증가 카운터 — 파일 퍼널과 병존한다(값이 다르면 파일 퍼널이 정본).
         record_decision(stage=stage, reason=str(decision.reason or ""), tier=str(decision.tier))
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False)
-            with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
+            self._append_line(line)
         except OSError as exc:  # 디스크/권한 등 — 발송을 막지 않고 경고만
             logger.warning("결정 감사 기록 실패(무시): %s", exc)
+
+    def _append_line(self, line: str) -> None:
+        """JSONL 한 줄을 현재 파일에 append 한다 — 회전 조건이면 먼저 회전한다(plans/208 M-3).
+
+        회전이 꺼져 있으면(기본) 종전과 같은 열기·쓰기 1회다. 쓰기 실패(OSError)는 호출부가 경고로
+        처리한다. 회전 실패는 여기서 경고만 남기고 현재 파일에 이어 쓴다(기록을 막지 않는다).
+        """
+        if self.rotate_max_bytes > 0 or self.rotate_daily:
+            self._rotate_if_due()
+        with self.path.open("a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+
+    def _rotation_due(self, st: os.stat_result) -> bool:
+        """현재 파일이 회전 조건(크기 상한 · 날짜 바뀜)에 걸렸는가 — 빈 파일은 회전하지 않는다."""
+        if st.st_size <= 0:
+            return False
+        if self.rotate_max_bytes > 0 and st.st_size >= self.rotate_max_bytes:
+            return True
+        if self.rotate_daily:
+            return datetime.fromtimestamp(st.st_mtime).date() < datetime.now().date()
+        return False
+
+    def _rotate_if_due(self) -> None:
+        """조건이면 현재 파일을 회전 조각 이름으로 바꾼다(지우지 않는다 · 쓰기 주체 여럿이어도 1회).
+
+        쓰기 주체가 여러 스레드·프로세스일 수 있어(워커 별도 프로세스 · plans/208 W5) 현재 파일에
+        배타 잠금(`flock`)을 건 뒤, 잠근 파일이 아직 그 경로의 파일이고 여전히 조건에 걸리는지 다시
+        본다 — 다른 주체가 먼저 회전했으면 아무것도 하지 않는다. 이름 바꾸기는 같은 디렉터리 안
+        `rename`이라 원자적이다. 회전 직후 다음 append 전까지 현재 파일이 잠깐 없을 수 있으며, 읽는
+        쪽은 이때 조각만 읽는다.
+        """
+        try:
+            if not self._rotation_due(os.stat(self.path)):
+                return
+            with open(self.path, "rb") as fh:
+                fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+                try:
+                    held = os.fstat(fh.fileno())
+                    current = os.stat(self.path)
+                    if (current.st_dev, current.st_ino) != (held.st_dev, held.st_ino):
+                        return  # 다른 쓰기 주체가 먼저 회전했다
+                    if not self._rotation_due(current):
+                        return
+                    target = self._next_fragment_path()
+                    os.rename(self.path, target)
+                finally:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        except FileNotFoundError:
+            return  # 아직 파일이 없거나 다른 주체가 막 회전했다 — 이번 append가 새 파일을 만든다
+        except OSError as exc:
+            logger.warning("판정 기록 회전 실패(무시 — 현재 파일에 이어 쓴다): %s", exc)
+            return
+        logger.info(
+            "판정 기록 회전: %s → %s (%d바이트 · 조각은 보관)",
+            self.path.name,
+            target.name,
+            current.st_size,
+        )
+
+    def _next_fragment_path(self) -> Path:
+        """새 회전 조각 경로 — 기존 조각보다 항상 뒤에 정렬된다(같은 시각·시계 역행이면 순번)."""
+        stamp = datetime.now(UTC).strftime(_FRAGMENT_STAMP_FORMAT)
+        key = (stamp, 0)
+        existing = decision_fragments(self.path)
+        if existing:
+            last = _fragment_key(self.path, existing[-1].name)
+            if last is not None and key <= last:
+                key = (last[0], last[1] + 1)
+        suffix = f"-{key[1]}" if key[1] else ""
+        return self.path.with_name(f"{self.path.name}.{key[0]}{suffix}")
+
+    def _exists(self) -> bool:
+        """판정 기록이 있는가 — 현재 파일 또는 회전 조각(회전 직후 현재 파일이 잠깐 없다)."""
+        return self.path.exists() or bool(decision_fragments(self.path))
+
+    def _chain_snapshot(
+        self, *, binary: bool
+    ) -> AbstractContextManager[tuple[list[Path], IO[Any] | None]]:
+        """(조각 목록, 연 현재 파일) — `open_decision_chain` 참조."""
+        return open_decision_chain(self.path, binary=binary)
+
+    def _iter_lines(self) -> Iterator[str]:
+        """판정 기록 전체를 오래된 것부터 텍스트 줄로 내준다(`iter_decision_lines`)."""
+        return iter_decision_lines(self.path)
+
+    def _reverse_chain_lines(self) -> Iterator[bytes]:
+        """판정 기록 전체를 최신부터 바이트 줄로 내준다(현재 파일 → 최신 조각 → … · 블록 역방향)."""
+        with self._chain_snapshot(binary=True) as (frags, active):
+            if active is not None:
+                yield from _reverse_lines_of(active)
+            for frag in reversed(frags):
+                try:
+                    fh = frag.open("rb")
+                except FileNotFoundError:
+                    continue
+                with fh:
+                    yield from _reverse_lines_of(fh)
+
+    def _iter_window_reverse(
+        self, cutoff_ts: float, should_stop: Callable[[], bool] | None
+    ) -> Iterator[dict[str, Any]]:
+        """창 안 레코드(비-decision `type` 레코드 포함)를 최신부터 내준다(plans/208 M-3).
+
+        `iter_recent_decisions`와 같은 종료 규칙이다 — 창 하한보다 `_REVERSE_SCAN_SLACK_SECONDS`
+        넘게 오래된 **결정** 레코드를 만나면 멈춘다. 창 판정은 `_within_window`(시각 없음·파싱
+        실패는 포함)이며 JSON 객체가 아닌 줄·손상 줄은 건너뛴다. `should_stop`이 참이면
+        `_SCAN_STOP_CHECK_EVERY`줄마다 확인해 `DecisionScanStoppedError`를 던진다.
+        """
+        floor_ts = cutoff_ts - _REVERSE_SCAN_SLACK_SECONDS
+        seen = 0
+        for raw in self._reverse_chain_lines():
+            seen += 1
+            if should_stop is not None and seen % _SCAN_STOP_CHECK_EVERY == 0 and should_stop():
+                raise DecisionScanStoppedError()
+            line = raw.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                continue
+            if not isinstance(rec, dict):
+                continue
+            if not self._within_window(rec, cutoff_ts):
+                if not rec.get("type"):
+                    parsed = self._parse_ts(rec.get("ts"))
+                    if parsed is not None and parsed.timestamp() < floor_ts:
+                        return
+                continue
+            yield rec
 
     def record_resolution(
         self,
@@ -292,8 +700,7 @@ class DecisionStore:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False)
-            with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
+            self._append_line(line)
         except OSError as exc:
             logger.warning("자가복구 소요시간 기록 실패(무시): %s", exc)
 
@@ -339,8 +746,7 @@ class DecisionStore:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False)
-            with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
+            self._append_line(line)
         except OSError as exc:
             logger.warning("재발생 카운트 기록 실패(무시): %s", exc)
 
@@ -386,8 +792,7 @@ class DecisionStore:
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
             line = json.dumps(record, ensure_ascii=False)
-            with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(line + "\n")
+            self._append_line(line)
         except OSError as exc:
             logger.warning("조사 트리거 감사 기록 실패(무시): %s", exc)
 
@@ -431,8 +836,7 @@ class DecisionStore:
         }
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._append_line(json.dumps(record, ensure_ascii=False))
         except OSError as exc:
             logger.warning("사후 승격 감사 기록 실패(무시): %s", exc)
 
@@ -464,27 +868,41 @@ class DecisionStore:
         }
         try:
             self.path.parent.mkdir(parents=True, exist_ok=True)
-            with self.path.open("a", encoding="utf-8") as fh:
-                fh.write(json.dumps(record, ensure_ascii=False) + "\n")
+            self._append_line(json.dumps(record, ensure_ascii=False))
         except OSError as exc:
             logger.warning("L3 상태지문 기록 실패(무시): %s", exc)
 
     def last_l3_state(self, fingerprint: str) -> Optional[dict]:
-        """같은 알람 지문의 **최근** L3 상태지문(없으면 None). 파일을 뒤에서부터 훑는다."""
-        if not self.enabled or not fingerprint or not self.path.exists():
+        """같은 알람 지문의 **최근** L3 상태지문(없으면 None). 파일을 뒤에서부터 훑는다.
+
+        (plans/208 M-3) 회전 조각이 있으면 현재 파일 → 최신 조각 → … 순으로 찾다가 처음 맞는
+        것을 쓴다.
+        """
+        if not self.enabled or not fingerprint or not self._exists():
             return None
         try:
-            lines = self.path.read_text(encoding="utf-8").splitlines()
+            for text in self._texts_newest_first():
+                for line in reversed(text.splitlines()):
+                    try:
+                        rec = json.loads(line)
+                    except ValueError:
+                        continue
+                    if rec.get("type") == "l3_state" and rec.get("fingerprint") == fingerprint:
+                        return rec.get("state_fingerprint") or {}
         except OSError:
             return None
-        for line in reversed(lines):
-            try:
-                rec = json.loads(line)
-            except ValueError:
-                continue
-            if rec.get("type") == "l3_state" and rec.get("fingerprint") == fingerprint:
-                return rec.get("state_fingerprint") or {}
         return None
+
+    def _texts_newest_first(self) -> Iterator[str]:
+        """현재 파일 → 최신 조각 → … 순으로 파일 전체 텍스트를 내준다(`last_l3_state`용)."""
+        with self._chain_snapshot(binary=False) as (frags, active):
+            if active is not None:
+                yield active.read()
+            for frag in reversed(frags):
+                try:
+                    yield frag.read_text(encoding="utf-8")
+                except FileNotFoundError:
+                    continue
 
     @staticmethod
     def _empty_aggregate() -> dict:
@@ -517,8 +935,32 @@ class DecisionStore:
         window_seconds가 주어지면 현재 시각 기준 해당 창 내 기록만 집계한다.
         파일이 없거나 비활성이면 빈 집계(전 키 포함)를 반환한다.
         """
-        if not self.enabled or not self.path.exists():
-            return self._empty_aggregate()
+        return self._aggregate_scan(window_seconds)[0]
+
+    def _aggregate_scan(
+        self,
+        window_seconds: int | None,
+        *,
+        count_failed: bool = False,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> tuple[dict[str, Any], int]:
+        """`aggregate` 본체 — 집계 dict와 (count_failed면) 창 내 수집 실패 건수를 한 순회로 센다.
+
+        (plans/208 M-1·M-2) `health_snapshot`이 `meta_alerts`의 재순회 없이 같은 값을 얻도록
+        나눴다. 수집 실패 건수는 `_collection_failed_counts`와 같은 대상(창 내 결정 레코드)이고,
+        그 분모는 집계 `total`과 같다. `should_stop`이 주어지면 `_SCAN_STOP_CHECK_EVERY`줄마다
+        확인해 참이면 `DecisionScanStoppedError`를 던진다(부분 집계를 내지 않는다). 둘 다 기본값이면
+        종전 `aggregate`와 같다.
+
+        (plans/208 M-3) `recent_scan`이 켜졌고 창이 있으면 끝에서 거꾸로 읽다가 창 밖에서 멈춘다
+        (`_iter_window_reverse`). 창 안 레코드만 쓰는 값이라 결과는 같다 — 「최근 결정 시각」도
+        창 안 최댓값이고, 같은 시각이 여럿이면 파일에서 앞선 것을 고르는 종전 규칙을 거꾸로
+        읽기에서도 지킨다. 다른 점은 멈춘 지점보다 앞에 있는 시각 없는 레코드(종전은 위치와 무관하게
+        창 안으로 셌다)와 창 하한보다 여유(10분) 넘게 앞선 레코드 앞에 놓인 창 안 레코드를 세지
+        않는 것뿐이다.
+        """
+        if not self.enabled or not self._exists():
+            return self._empty_aggregate(), 0
 
         cutoff_ts: Optional[float] = None
         if window_seconds is not None:
@@ -526,41 +968,43 @@ class DecisionStore:
 
         by_tier: dict[str, int] = {}
         total = 0
+        failed = 0
         latest_dt: Optional[datetime] = None
         latest_iso: Optional[str] = None
         resolution_durations: list[float] = []  # (D-049) self-heal 소요시간 수집
+        reverse = self.recent_scan and cutoff_ts is not None
         try:
-            with self.path.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue  # 손상된 줄은 건너뜀
-                    if cutoff_ts is not None and not self._within_window(rec, cutoff_ts):
-                        continue
-                    # (D-049 · Plan 60 E1) 비-decision 레코드(`type` 필드 보유)는
-                    # by_tier/total 집계에서 일반 제외한다(향후 레코드 타입 추가에도 안전).
-                    # resolution은 duration 수집 후, 그 외(recurrence 등)는 그냥 제외한다.
-                    rec_type = rec.get("type")
-                    if rec_type:
-                        if rec_type == "resolution":
-                            dur = rec.get("duration_seconds")
-                            if isinstance(dur, (int, float)):
-                                resolution_durations.append(float(dur))
-                        continue
-                    tier = rec.get("tier", "")
-                    by_tier[tier] = by_tier.get(tier, 0) + 1
-                    total += 1
-                    parsed = self._parse_ts(rec.get("ts"))
-                    if parsed is not None and (latest_dt is None or parsed > latest_dt):
-                        latest_dt = parsed
-                        latest_iso = str(rec.get("ts"))
+            records = (
+                self._iter_window_reverse(cutoff_ts, should_stop)
+                if reverse and cutoff_ts is not None
+                else self._iter_window_forward(cutoff_ts, should_stop)
+            )
+            for rec in records:
+                # (D-049 · Plan 60 E1) 비-decision 레코드(`type` 필드 보유)는
+                # by_tier/total 집계에서 일반 제외한다(향후 레코드 타입 추가에도 안전).
+                # resolution은 duration 수집 후, 그 외(recurrence 등)는 그냥 제외한다.
+                rec_type = rec.get("type")
+                if rec_type:
+                    if rec_type == "resolution":
+                        dur = rec.get("duration_seconds")
+                        if isinstance(dur, (int, float)):
+                            resolution_durations.append(float(dur))
+                    continue
+                tier = rec.get("tier", "")
+                by_tier[tier] = by_tier.get(tier, 0) + 1
+                total += 1
+                if count_failed and self._is_collection_failed(rec):
+                    failed += 1
+                parsed = self._parse_ts(rec.get("ts"))
+                # 같은 시각이면 파일에서 앞선 레코드 — 거꾸로 읽을 때는 뒤에 만난 쪽이 앞선 것이다
+                if parsed is not None and (
+                    latest_dt is None or parsed > latest_dt or (reverse and parsed == latest_dt)
+                ):
+                    latest_dt = parsed
+                    latest_iso = str(rec.get("ts"))
         except OSError as exc:
             logger.warning("결정 감사 집계 읽기 실패(무시): %s", exc)
-            return self._empty_aggregate()
+            return self._empty_aggregate(), 0
 
         page = by_tier.get(TIER_PAGE, 0)
         ticket = by_tier.get(TIER_TICKET, 0)
@@ -589,7 +1033,32 @@ class DecisionStore:
                 if resolution_durations
                 else None
             ),
-        }
+        }, failed
+
+    def _iter_window_forward(
+        self, cutoff_ts: float | None, should_stop: Callable[[], bool] | None
+    ) -> Iterator[dict[str, Any]]:
+        """(창이 있으면 창 안) 레코드를 오래된 것부터 내준다 — 종전 `aggregate` 전량 순회 그대로.
+
+        회전 조각이 있으면 조각부터 이어 읽는다. 손상 줄은 건너뛰고, `should_stop`이 참이면
+        `_SCAN_STOP_CHECK_EVERY`줄마다 확인해 `DecisionScanStoppedError`를 던진다.
+        """
+        seen = 0
+        for line in self._iter_lines():
+            if should_stop is not None:
+                seen += 1
+                if seen % _SCAN_STOP_CHECK_EVERY == 0 and should_stop():
+                    raise DecisionScanStoppedError()
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue  # 손상된 줄은 건너뜀
+            if cutoff_ts is not None and not self._within_window(rec, cutoff_ts):
+                continue
+            yield rec
 
     def meta_alerts(
         self,
@@ -613,6 +1082,64 @@ class DecisionStore:
         모두 OR 조건이며 동시 충족 시 모두 반환한다. 정상이면 빈 리스트.
         """
         agg = self.aggregate(window_seconds=window_seconds)
+        failed_counts: tuple[int, int] | None = None
+        if collection_failed_ratio_threshold > 0:
+            failed_counts = self._collection_failed_counts(window_seconds)
+        return self._meta_alerts_from(
+            agg,
+            failed_counts,
+            window_seconds=window_seconds,
+            suppress_ratio_threshold=suppress_ratio_threshold,
+            min_events=min_events,
+            collection_failed_ratio_threshold=collection_failed_ratio_threshold,
+        )
+
+    def health_snapshot(
+        self,
+        *,
+        window_seconds: int,
+        suppress_ratio_threshold: float,
+        min_events: int,
+        collection_failed_ratio_threshold: float = 0.0,
+        should_stop: Callable[[], bool] | None = None,
+    ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+        """`aggregate(window)`와 `meta_alerts(...)`를 **파일 한 번 순회**로 낸다(plans/208 M-2).
+
+        종전 두 호출은 같은 파일을 2~3회 전량 순회했다(`meta_alerts` 안의 `aggregate` 재호출 ·
+        수집 실패율 스캔). 값은 같다 — 창 판정 시각이 한 번이라 두 호출 사이의 미세한 시차만 없다.
+        `should_stop`(중단 신호)이 참이면 `DecisionScanStoppedError`를 던진다(라우트 상한 시간용).
+
+        Returns:
+            (`aggregate`와 같은 dict, `meta_alerts`와 같은 경보 목록).
+        """
+        count_failed = collection_failed_ratio_threshold > 0
+        agg, failed = self._aggregate_scan(
+            window_seconds, count_failed=count_failed, should_stop=should_stop
+        )
+        alerts = self._meta_alerts_from(
+            agg,
+            (failed, agg["total"]) if count_failed else None,
+            window_seconds=window_seconds,
+            suppress_ratio_threshold=suppress_ratio_threshold,
+            min_events=min_events,
+            collection_failed_ratio_threshold=collection_failed_ratio_threshold,
+        )
+        return agg, alerts
+
+    @staticmethod
+    def _meta_alerts_from(
+        agg: dict[str, Any],
+        failed_counts: tuple[int, int] | None,
+        *,
+        window_seconds: int,
+        suppress_ratio_threshold: float,
+        min_events: int,
+        collection_failed_ratio_threshold: float,
+    ) -> list[dict[str, Any]]:
+        """집계 결과와 (수집 실패, 전체) 건수로 메타경보 목록을 만든다(`meta_alerts` 판정 규칙).
+
+        `failed_counts`가 None이면 수집 실패율 경보를 평가하지 않는다(임계 0 = 끔).
+        """
         total = agg["total"]
         suppress_ratio = agg["suppress_ratio"]
 
@@ -631,8 +1158,8 @@ class DecisionStore:
                 "min_events": min_events,
                 "window_seconds": window_seconds,
             })
-        if collection_failed_ratio_threshold > 0:
-            failed, scanned = self._collection_failed_counts(window_seconds)
+        if failed_counts is not None:
+            failed, scanned = failed_counts
             ratio = (failed / scanned) if scanned else 0.0
             if scanned > 0 and ratio > collection_failed_ratio_threshold:
                 alerts.append({
@@ -666,30 +1193,38 @@ class DecisionStore:
         """창 내 결정 레코드의 (수집 실패 건수, 전체 건수)를 센다(plans/162 R4).
 
         `aggregate`와 같은 전량 스캔·창 규칙이다 — 손상된 줄과 비-decision 레코드(`type` 보유)는
-        제외한다. 파일 부재·비활성·읽기 실패면 (0, 0)이다.
+        제외한다. 파일 부재·비활성·읽기 실패면 (0, 0)이다. (plans/208 M-3) `recent_scan`이면
+        `aggregate`와 같이 끝에서 거꾸로 읽다가 창 밖에서 멈춘다.
         """
-        if not self.enabled or not self.path.exists():
+        if not self.enabled or not self._exists():
             return 0, 0
         cutoff_ts = datetime.now(UTC).timestamp() - window_seconds
         failed = 0
         total = 0
         try:
-            with self.path.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(rec, dict) or rec.get("type"):
-                        continue
-                    if not self._within_window(rec, cutoff_ts):
+            if self.recent_scan:
+                for rec in self._iter_window_reverse(cutoff_ts, None):
+                    if rec.get("type"):
                         continue
                     total += 1
                     if self._is_collection_failed(rec):
                         failed += 1
+                return failed, total
+            for line in self._iter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict) or rec.get("type"):
+                    continue
+                if not self._within_window(rec, cutoff_ts):
+                    continue
+                total += 1
+                if self._is_collection_failed(rec):
+                    failed += 1
         except OSError as exc:
             logger.warning("결정 감사 수집 실패율 읽기 실패(무시): %s", exc)
             return 0, 0
@@ -731,7 +1266,7 @@ class DecisionStore:
         Returns:
             시간순(오래된 것 → 최신) 결정 레코드 목록.
         """
-        if not self.enabled or not self.path.exists():
+        if not self.enabled or not self._exists():
             return []
 
         cutoff_ts: Optional[float] = None
@@ -742,7 +1277,7 @@ class DecisionStore:
             # (plans/194 W2) 경로 단위 증분 캐시 — 새로 붙은 바이트만 파싱한다. 레코드 dict는
             # 캐시와 공유하므로 조회 계열은 레코드를 고치지 않는다
             # (`_view`·`_with_bundled`가 사본을 만든다).
-            tail = jsonl_tail.tail_records(self.path, self.max_lines)
+            tail = self._tail_chain()
         except OSError as exc:
             logger.warning("결정 감사 조회 읽기 실패(무시): %s", exc)
             return []
@@ -755,6 +1290,34 @@ class DecisionStore:
                 continue
             records.append(rec)
         return records
+
+    def _tail_chain(self) -> list[dict[str, Any]]:
+        """현재 파일과 회전 조각을 이어 끝 `max_lines`줄의 JSON 객체 레코드를 낸다(plans/208 M-3).
+
+        현재 파일의 줄이 모자라면 최신 조각부터 모자란 줄 수만큼 거슬러 채운다 — 조각이 없으면
+        종전 `jsonl_tail.tail_records(현재 파일)`과 같다. 파일마다 경로 단위 증분 캐시를 쓰며,
+        이번에 읽지 않은 조각의 캐시는 버린다(현재 파일이 다시 차면 조각 캐시가 메모리에 남지 않게).
+        조각 목록은 현재 파일 읽기 앞뒤가 같을 때 쓴다(회전과 겹쳐도 줄을 잃거나 두 번 세지 않는다 —
+        현재 파일 캐시는 inode가 바뀌면 처음부터 다시 읽는다).
+        """
+        n = self.max_lines
+        frags: list[Path] = []
+        rows: list[dict[str, Any] | None] = []
+        for _ in range(_CHAIN_LISTING_RETRIES):
+            frags = decision_fragments(self.path)
+            rows = jsonl_tail.tail_rows(self.path, n)
+            if decision_fragments(self.path) == frags:
+                break
+        used: set[Path] = set()
+        for frag in reversed(frags):
+            if len(rows) >= n:
+                break
+            rows = jsonl_tail.tail_rows(frag, n - len(rows)) + rows
+            used.add(frag)
+        for frag in frags:
+            if frag not in used:
+                jsonl_tail.discard(frag)
+        return [rec for rec in rows if rec is not None]
 
     def recent_decisions(
         self, window_seconds: int, *, include_recurrence: bool = False
@@ -771,28 +1334,27 @@ class DecisionStore:
         같은 시간 창 규칙으로 함께 돌려준다(그 밖의 `type` 레코드는 계속 제외). 기본 False는 종전과
         같다. 주의: 재발 레코드는 `recurrence_audit_every_n` 샘플링을 따른다(N>1이면 일부만 남는다).
         """
-        if not self.enabled or not self.path.exists():
+        if not self.enabled or not self._exists():
             return []
         cutoff_ts = datetime.now(UTC).timestamp() - window_seconds
         records: list[dict[str, Any]] = []
         try:
-            with self.path.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(rec, dict):
-                        continue
-                    rec_type = rec.get("type")
-                    if rec_type and not (include_recurrence and rec_type == "recurrence"):
-                        continue
-                    if not self._within_window(rec, cutoff_ts):
-                        continue
-                    records.append(rec)
+            for line in self._iter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict):
+                    continue
+                rec_type = rec.get("type")
+                if rec_type and not (include_recurrence and rec_type == "recurrence"):
+                    continue
+                if not self._within_window(rec, cutoff_ts):
+                    continue
+                records.append(rec)
         except OSError as exc:
             logger.warning("결정 감사 복원 읽기 실패(무시): %s", exc)
             return []
@@ -809,36 +1371,50 @@ class DecisionStore:
         (plans/201 W3) `field`에 점(`.`)이 있으면 중첩 경로다(예 `stage_evidence.apm_policy.event_type_norm`)
         — 중간이 dict가 아니거나 키가 없으면 빈 값으로 센다. 점 없는 이름은 종전과 같다(최상위 필드).
         """
-        if not self.enabled or not self.path.exists():
-            return {}, 0
-        path = field.split(".") if "." in field else None
+        return self.count_recent_values_many(window_seconds, (field,))[field]
+
+    def count_recent_values_many(
+        self, window_seconds: int, fields: Iterable[str]
+    ) -> dict[str, tuple[dict[str, int], int]]:
+        """`count_recent_values`를 여러 필드에 대해 **파일 1회 순회**로 센다(필드별 `(counts, empty)`).
+
+        매핑 점검 항목마다 7일치 전량 스캔을 반복하지 않게 한다 — 규칙은 `count_recent_values`와
+        같고, 파일 부재·비활성·읽기 실패는 모든 필드가 `({}, 0)`이다.
+        """
+        names = list(dict.fromkeys(fields))
+        blank: dict[str, tuple[dict[str, int], int]] = {f: ({}, 0) for f in names}
+        if not names or not self.enabled or not self._exists():
+            return blank
+        paths = {f: (f.split(".") if "." in f else None) for f in names}
         cutoff_ts = datetime.now(UTC).timestamp() - window_seconds
-        counts: dict[str, int] = {}
-        empty = 0
+        counts: dict[str, dict[str, int]] = {f: {} for f in names}
+        empty: dict[str, int] = dict.fromkeys(names, 0)
         try:
-            with self.path.open("r", encoding="utf-8") as fh:
-                for line in fh:
-                    line = line.strip()
-                    if not line:
-                        continue
-                    try:
-                        rec = json.loads(line)
-                    except json.JSONDecodeError:
-                        continue
-                    if not isinstance(rec, dict) or rec.get("type"):
-                        continue
-                    if not self._within_window(rec, cutoff_ts):
-                        continue
+            for line in self._iter_lines():
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(rec, dict) or rec.get("type"):
+                    continue
+                if not self._within_window(rec, cutoff_ts):
+                    continue
+                for field in names:
+                    path = paths[field]
                     raw = rec.get(field) if path is None else self._nested_value(rec, path)
                     value = str(raw or "").strip()
                     if value:
-                        counts[value] = counts.get(value, 0) + 1
+                        bucket = counts[field]
+                        bucket[value] = bucket.get(value, 0) + 1
                     else:
-                        empty += 1
+                        empty[field] += 1
         except OSError as exc:
             logger.warning("결정 기록 값 집계 읽기 실패(무시): %s", exc)
-            return {}, 0
-        return counts, empty
+            return blank
+        return {f: (counts[f], empty[f]) for f in names}
 
     def iter_recent_decisions(
         self, window_seconds: int, *, should_stop: Callable[[], bool] | None = None
@@ -856,53 +1432,21 @@ class DecisionStore:
 
         중단 신호는 `should_stop`(없으면 인스턴스 `scan_should_stop`)이며, 건너뛰는 줄을 포함해
         `_SCAN_STOP_CHECK_EVERY`줄마다 확인한다 — 참이면 그 자리에서 조용히 끝난다(소비처가 중단을 안다).
+
+        (plans/208 M-3) 회전 조각이 있으면 현재 파일 → 최신 조각 → … 순으로 이어서 거꾸로 읽는다.
         """
-        if not self.enabled or not self.path.exists():
+        if not self.enabled or not self._exists():
             return
         stop = should_stop or getattr(self, "scan_should_stop", None)
         cutoff_ts = datetime.now(UTC).timestamp() - window_seconds
-        floor_ts = cutoff_ts - _REVERSE_SCAN_SLACK_SECONDS
-        seen = 0
         try:
-            for raw in self._reverse_lines():
-                seen += 1
-                if stop is not None and seen % _SCAN_STOP_CHECK_EVERY == 0 and stop():
-                    return
-                line = raw.strip()
-                if not line:
-                    continue
-                try:
-                    rec = json.loads(line)
-                except (json.JSONDecodeError, UnicodeDecodeError):
-                    continue
-                if not isinstance(rec, dict) or rec.get("type"):
-                    continue
-                if not self._within_window(rec, cutoff_ts):
-                    parsed = self._parse_ts(rec.get("ts"))
-                    if parsed is not None and parsed.timestamp() < floor_ts:
-                        return
-                    continue
-                yield rec
+            for rec in self._iter_window_reverse(cutoff_ts, stop):
+                if not rec.get("type"):
+                    yield rec
+        except DecisionScanStoppedError:
+            return
         except OSError as exc:
             logger.warning("결정 기록 순회 읽기 실패(무시): %s", exc)
-
-    def _reverse_lines(self) -> Iterator[bytes]:
-        """파일 줄을 끝에서부터 내준다(블록 단위 역방향 읽기 · 줄 끝 개행 제외 · UTF-8 바이트)."""
-        with self.path.open("rb") as fh:
-            fh.seek(0, 2)
-            pos = fh.tell()
-            rest = b""
-            while pos > 0:
-                size = min(_REVERSE_SCAN_BLOCK_BYTES, pos)
-                pos -= size
-                fh.seek(pos)
-                chunk = fh.read(size) + rest
-                parts = chunk.split(b"\n")
-                rest = parts[0]  # 블록 경계에 걸린 줄 앞부분 — 다음(앞쪽) 블록과 이어 붙인다
-                for part in reversed(parts[1:]):
-                    yield part
-            if rest:
-                yield rest
 
     @staticmethod
     def _nested_value(rec: dict[str, Any], path: list[str]) -> Any:

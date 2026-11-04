@@ -336,7 +336,7 @@ def test_review_texts_are_not_written_through_innerhtml():
 def _doc28_section_4c() -> str:
     text = _DOC28.read_text(encoding="utf-8")
     start = text.index("## 4-C.")
-    end = text.index("\n## 5.", start)
+    end = text.index("\n## ", start)  # §4-C 다음 첫 장 머리(§4-D 등)에서 끊는다
     return text[start:end]
 
 

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import ipaddress
 
+from src.domain.host_names import build_canonical_host_condition, canonical_host_key
 from src.utils.sql_dialect import row_limit_clause, sql_literal
 
 #: 리소스 마스터 테이블 — 서버 행(`resource_type`)의 등록명·호스트명·IP가 직접 컬럼에 있다.
@@ -114,7 +115,7 @@ def build_business_lookup_sql(
 
 
 def build_entity_probe_sql(
-    value: str, *, db_engine: str | None, db_schema: str | None
+    value: str, *, db_engine: str | None, db_schema: str | None, canonical: bool = False
 ) -> str:
     """서버 식별자 1개가 등록돼 있는지 확인하는 SELECT를 조립한다(1행 상한 · 읽기 전용).
 
@@ -125,6 +126,9 @@ def build_entity_probe_sql(
         value: 사용자가 적은 서버 식별자(등록명·호스트명·FQDN·IP)
         db_engine: 레지스트리 engine 값("db2"면 `FETCH FIRST`, 그 외 `LIMIT`)
         db_schema: 스키마 한정자(DB2는 대문자 스키마 — D-057). 비면 무한정
+        canonical: 정규형 비교(plans/211 · `HOST_CANONICAL_MATCH_ENABLED`). 켜면 등록명·호스트명
+            조건을 `build_canonical_host_condition`(업무명 괄호 꼬리 포함)으로 만든다. 정규형이 빈
+            값이거나 IP인 입력은 종전 조건 그대로다.
 
     Returns:
         runnable SELECT 문
@@ -133,15 +137,23 @@ def build_entity_probe_sql(
     text = str(value).strip()
     lowered = text.lower()
     is_ip = _is_ip(text)
-    # FQDN 입력은 단축명 저장값도 같은 서버다 — IP의 점은 레이블 구분자가 아니다.
-    names = [lowered] + ([lowered.split(".", 1)[0]] if "." in lowered and not is_ip else [])
-    literals = ", ".join(sql_literal(n) for n in names)
-    matches = [f"LOWER(r.name) IN ({literals})", f"LOWER(r.hostname) IN ({literals})"]
-    if is_ip:
-        matches.append(f"r.ipaddress = {sql_literal(text)}")
-    elif "." not in lowered:
-        # 단일 레이블 입력은 FQDN으로 저장된 호스트명(`x.도메인`)도 같은 서버다.
-        matches.append(f"LOWER(r.hostname) LIKE {sql_literal(lowered + '.%')}")
+    key = canonical_host_key(text) if canonical else ""
+    if key and not _is_ip(key):
+        matches = [
+            cond
+            for column in ("r.name", "r.hostname")
+            if (cond := build_canonical_host_condition(column, [text], business_suffix=True))
+        ]
+    else:
+        # FQDN 입력은 단축명 저장값도 같은 서버다 — IP의 점은 레이블 구분자가 아니다.
+        names = [lowered] + ([lowered.split(".", 1)[0]] if "." in lowered and not is_ip else [])
+        literals = ", ".join(sql_literal(n) for n in names)
+        matches = [f"LOWER(r.name) IN ({literals})", f"LOWER(r.hostname) IN ({literals})"]
+        if is_ip:
+            matches.append(f"r.ipaddress = {sql_literal(text)}")
+        elif "." not in lowered:
+            # 단일 레이블 입력은 FQDN으로 저장된 호스트명(`x.도메인`)도 같은 서버다.
+            matches.append(f"LOWER(r.hostname) LIKE {sql_literal(lowered + '.%')}")
     return (
         "SELECT 1 AS hit\n"
         f"  FROM {table} r\n"

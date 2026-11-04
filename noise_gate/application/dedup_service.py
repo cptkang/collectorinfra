@@ -13,6 +13,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from collections import deque
@@ -283,6 +284,53 @@ class DedupService:
             근접중복 후보 주석 dict `{"semantic_near_dup": {matched_fp, similarity, hint}}`
             또는 조건 미충족 시 None(임계 미만·동일 지문·후보 없음·provider 미가용).
         """
+        prep = self._prepare_semantic_dedup(event, now)
+        if prep is None:
+            return None
+        provider, current_text, scope, ttl, entries = prep
+        best = None
+        if entries:
+            best = provider.most_similar(
+                current_text, [text for _fp, text, _ts in entries]
+            )
+        return self._finish_semantic_dedup(
+            fingerprint, now, current_text, scope, ttl, entries, best
+        )
+
+    async def annotate_semantic_dedup_async(
+        self, event: AlarmEvent, fingerprint: str, now: float
+    ) -> dict[str, Any] | None:
+        """`annotate_semantic_dedup`의 async 변형 — 유사도 계산만 스레드로 (plans/208 W4 C-6).
+
+        결과(주석 값)·최근 텍스트 상태 갱신은 동기 판과 같다. 차이는 `provider.most_similar`
+        (임베딩 인코딩 — CPU 구간)를 `asyncio.to_thread`로 실행해 이벤트 루프를 막지 않는 것뿐이다.
+        provider 미가용·빈 텍스트·비교 후보 없음이면 스레드 왕복 없이 동기 판과 같은 경로로 끝난다.
+        `recent_event_texts` 읽기(후보 스냅샷)·쓰기(추가·sweep)는 모두 호출한 루프 스레드에서 한다 —
+        스레드는 스냅샷 텍스트 목록만 받는다. 순서는 워커의 P3 직렬 구간(W2)이 보장한다.
+        """
+        prep = self._prepare_semantic_dedup(event, now)
+        if prep is None:
+            return None
+        provider, current_text, scope, ttl, entries = prep
+        best = None
+        if entries:
+            best = await asyncio.to_thread(
+                provider.most_similar,
+                current_text,
+                [text for _fp, text, _ts in entries],
+            )
+        return self._finish_semantic_dedup(
+            fingerprint, now, current_text, scope, ttl, entries, best
+        )
+
+    def _prepare_semantic_dedup(
+        self, event: AlarmEvent, now: float
+    ) -> tuple[Any, str, str, float, list[tuple[str, str, float]]] | None:
+        """근접중복 주석의 사전 단계 — 가용 판정·현재 텍스트·스코프·TTL·비교 후보 스냅샷.
+
+        provider 미가용·빈 텍스트면 None(상태 무변경). 후보는 스코프 deque의 TTL 안 항목
+        스냅샷이며 없으면 빈 리스트다.
+        """
         provider = self._host.embedding_provider
         # provider 미주입(off/생성 실패) 또는 inert(모델 미가용) → 즉시 skip(비용 0, 상태 무변경).
         if provider is None or not provider.is_available():
@@ -301,36 +349,47 @@ class DedupService:
         # 근접중복 후보 의미가 없음). getattr 가드로 경량 설정(테스트)도 안전.
         ttl = float(getattr(self._host.config.noise_gate, "repeat_interval_seconds", 14400))
 
-        annotation: dict[str, Any] | None = None
+        entries: list[tuple[str, str, float]] = []
         dq = self._host.recent_event_texts.get(scope)
         if dq:
             # 만료·현재와 동일 텍스트가 아닌 후보만 비교 대상으로 스냅샷(원본 인덱스 정렬 유지).
             entries = [e for e in dq if now - e[2] < ttl]
-            if entries:
-                best = provider.most_similar(
-                    current_text, [text for _fp, text, _ts in entries]
+        return provider, current_text, scope, ttl, entries
+
+    def _finish_semantic_dedup(
+        self,
+        fingerprint: str,
+        now: float,
+        current_text: str,
+        scope: str,
+        ttl: float,
+        entries: list[tuple[str, str, float]],
+        best: tuple[int, float] | None,
+    ) -> dict[str, Any] | None:
+        """근접중복 주석의 사후 단계 — 주석 산출 · 현재 이벤트 추가 · 만료 sweep(루프 스레드)."""
+        annotation: dict[str, Any] | None = None
+        if best is not None:
+            best_idx, score = best
+            matched_fp, _matched_text, _matched_ts = entries[best_idx]
+            threshold = float(
+                getattr(
+                    self._host.config.noise_gate,
+                    "embedding_similarity_threshold",
+                    0.87,
                 )
-                if best is not None:
-                    best_idx, score = best
-                    matched_fp, _matched_text, _matched_ts = entries[best_idx]
-                    threshold = float(
-                        getattr(
-                            self._host.config.noise_gate,
-                            "embedding_similarity_threshold",
-                            0.87,
-                        )
-                    )
-                    # 임계 이상 + **다른 지문**일 때만 후보 주석(동일 지문은 결정적 dedup이 처리).
-                    if score >= threshold and matched_fp != fingerprint:
-                        annotation = {
-                            "semantic_near_dup": {
-                                "matched_fp": matched_fp,
-                                "similarity": round(score, 4),
-                                "hint": "의미적 근접중복 — 재발 count 병합 후보(검토용)",
-                            }
-                        }
+            )
+            # 임계 이상 + **다른 지문**일 때만 후보 주석(동일 지문은 결정적 dedup이 처리).
+            if score >= threshold and matched_fp != fingerprint:
+                annotation = {
+                    "semantic_near_dup": {
+                        "matched_fp": matched_fp,
+                        "similarity": round(score, 4),
+                        "hint": "의미적 근접중복 — 재발 count 병합 후보(검토용)",
+                    }
+                }
 
         # 현재 이벤트를 최근 텍스트에 추가(자기 자신과 매칭 방지를 위해 판정 후 추가).
+        dq = self._host.recent_event_texts.get(scope)
         if dq is None:
             dq = deque(maxlen=_RECENT_TEXTS_MAX_PER_SCOPE)
             self._host.recent_event_texts[scope] = dq

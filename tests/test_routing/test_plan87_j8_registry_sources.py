@@ -69,6 +69,8 @@ def test_views_are_untouched_by_sources() -> None:
         "apm.period_compare",
         # plans/164 W7-A — 인스턴스 추세(뒤에 덧붙임 · 의도된 갱신)
         "apm.instance_trend",
+        # plans/210 W2 — 노드 주소(뒤에 덧붙임 · 의도된 갱신)
+        "apm.node_address",
     ]
 
 

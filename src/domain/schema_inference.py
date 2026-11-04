@@ -575,6 +575,8 @@ def entity_keys_asset(
     entity: Mapping[str, Mapping[str, Any]],
     rows: Mapping[str, int | None],
     definitions: Mapping[str, Any] | None = None,
+    *,
+    host_compare: str = "casefold",
 ) -> dict[str, Any] | None:
     """식별 키 후보 중 호스트명을 가진(있으면 IP도 가진) 테이블 하나를 골라 `entity_keys` 자산으로.
 
@@ -584,7 +586,14 @@ def entity_keys_asset(
         definitions: 승인된 테이블 정의(`table_definitions`) — 있으면 `kind`가
             `ENTITY_KEY_EXCLUDED_KINDS`인 테이블을 후보에서 뺀다(맨 이름 비교). 남는 후보가 없거나
             None이면 종전 규칙 그대로
+        host_compare: 호스트명 키의 비교 방식 — `casefold`(기본 · 종전) · `canonical`(솔루션 사이
+            정규형 — 다른 솔루션과 표기가 어긋나는 DB만 호출부가 고른다 · plans/211 · D-363 ⑤)
+
+    Raises:
+        ValueError: `host_compare`가 `casefold`·`canonical`이 아닐 때
     """
+    if host_compare not in ("casefold", "canonical"):
+        raise ValueError(f"host_compare는 casefold|canonical입니다: {host_compare!r}")
     candidates = [t for t, kinds in entity.items() if "hostname" in kinds]
     if not candidates:
         return None
@@ -600,9 +609,9 @@ def entity_keys_asset(
     )[0]
     kinds = entity[table]
     keys: list[dict[str, Any]] = []
-    # 호스트명은 DNS처럼 대소문자를 가리지 않고 비교한다
+    # 호스트명은 DNS처럼 대소문자를 가리지 않고 비교한다(`canonical`은 그 위에 표기 차이까지 접는다)
     keys.append({"type": "hostname", "column": kinds["hostname"]["column"], "priority": 1,
-                 "compare": "casefold"})
+                 "compare": host_compare})
     if "ip" in kinds:
         ip: dict[str, Any] = {"type": "ip", "column": kinds["ip"]["column"], "priority": 2}
         if kinds["ip"]["multi_value"]:

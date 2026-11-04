@@ -945,7 +945,10 @@ async def test_e7_batch_rows_beyond_inline_are_disclosed_not_zero(small_stack) -
 
 async def test_e5_promoted_batch_is_one_accepted_job_then_recovered(small_stack) -> None:
     stack, rec = small_stack(500)
-    stack.models["b0"].delay["/api/realtime/instance"] = 0.4
+    # 대기 상한(2초)을 넘겨야 작업으로 승격된다 — plans/205(D-356) 도구 안 병렬 호출 뒤에는 호출당
+    # 0.4초로는 배치가 2초 안에 끝나 「ok」가 된다. 호출 하나가 상한을 넘게 둔다
+    # (호출 시간 초과 4초 미만).
+    stack.models["b0"].delay["/api/realtime/instance"] = 2.5
     config = _config(stack.url, call_timeout=4.0, query_timeout=5, reserve=2)
     state = await _turn(stack, "web01~web12 응답시간", _task(["apm.app_health"]),
                         hosts=tuple(_HOSTS), config=config, thread="th-v34-job")

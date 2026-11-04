@@ -12,7 +12,7 @@
 | 키 | 기본 | 뜻 |
 |---|---|---|
 | `NOISE_APP_IMPACT_ENABLED` | false | `app_impact` 승격 |
-| `NOISE_APM_MCP_URL` · `NOISE_APM_MCP_TOKEN` | 빈 값 | 게이트웨이 SSE URL · Bearer(제니퍼 토큰이 아니다) |
+| `MCP_SOURCE_ENDPOINTS`의 `apm` · `NOISE_APM_MCP_TOKEN` | 빈 값 | 게이트웨이 SSE URL(채팅과 공용 — 옛 `NOISE_APM_MCP_URL` 폐지 · D-364) · Bearer(노이즈 게이트 주체 · 제니퍼 토큰이 아니다) |
 | `NOISE_APP_IMPACT_WINDOW_MINUTES` | 10 | 사건창 |
 
 ## 3. 동작

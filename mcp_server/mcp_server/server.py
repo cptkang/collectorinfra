@@ -21,7 +21,7 @@ from mcp_server.metric_source import register_source_ladder_tools
 from mcp_server.om_exposition import install_shutdown_hooks
 from mcp_server.openmetrics_tools import register_openmetrics_tools
 from mcp_server.polestar_exporter import register_polestar_exporter
-from mcp_server.polestar_tools import register_polestar_tools
+from mcp_server.polestar_tools import register_polestar_tools, set_host_canonical_match
 from mcp_server.promql_tools import register_promql_tools
 from mcp_server.tools import register_tools
 
@@ -93,6 +93,8 @@ async def lifespan(server: FastMCP) -> AsyncIterator[dict]:
     """서버 시작 시 SQL 파일 로거·DB 풀 초기화, 종료 시 정리."""
     config = load_config()
     sql_log.init()  # 실행 SQL을 프로젝트 공용 logs/sql/에 기록 (D-140)
+    # 폴스타 앵커 호스트 정규형 일치(plans/211 W2) — 도구가 읽는 같은 config로 1회 정한다
+    set_host_canonical_match(config.server.host_canonical_match_enabled)
     pool_manager = DBPoolManager(config.sources)
     await pool_manager.initialize()
 

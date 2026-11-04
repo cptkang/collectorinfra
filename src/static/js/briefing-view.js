@@ -230,6 +230,8 @@
         openBusy: "답변이 끝난 뒤 열 수 있습니다",
         aiBadge: "AI 소견",
         opinionDropped: "AI 소견을 싣지 않았습니다 — {reason}",
+        opinionPending: "AI 소견 작성 중",
+        opinionNoReason: "소견 없음",
         narrativeDropped: "AI 서술을 싣지 않았습니다 — {reason}",
         tools: "사용 도구",
         reason: "사유",
@@ -1178,13 +1180,23 @@
     }
 
     function opinionHtml(sec) {
-        if (sec.opinion) {
-            return '<div class="bv-opinion"><span class="bv-ai">' + escapeHtml(PB_TEXT.aiBadge) + '</span> ' +
-                escapeHtml(sec.opinion) + '</div>';
+        // 종결 브리핑은 문자열(`opinion` · `opinion_dropped_reason`), 진행 중 부분 브리핑은
+        // `{status: ok|pending|none, text|reason}` 객체다 — 객체를 그대로 찍으면 「[object Object]」.
+        var op = sec.opinion, dropped = sec.opinion_dropped_reason;
+        if (isObj(op)) {
+            if (op.status === "pending") {
+                return '<div class="bv-note">' + escapeHtml(PB_TEXT.opinionPending) + '</div>';
+            }
+            dropped = op.status === "ok" ? "" : (op.reason || PB_TEXT.opinionNoReason);
+            op = op.status === "ok" ? op.text : "";
         }
-        if (sec.opinion_dropped_reason) {
+        if (op) {
+            return '<div class="bv-opinion"><span class="bv-ai">' + escapeHtml(PB_TEXT.aiBadge) + '</span> ' +
+                escapeHtml(op) + '</div>';
+        }
+        if (dropped) {
             return '<div class="bv-note bv-note--warn">' +
-                escapeHtml(fill(PB_TEXT.opinionDropped, { reason: sec.opinion_dropped_reason })) + '</div>';
+                escapeHtml(fill(PB_TEXT.opinionDropped, { reason: dropped })) + '</div>';
         }
         return "";
     }

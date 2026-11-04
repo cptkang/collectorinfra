@@ -113,16 +113,30 @@ def tail_records(path: str | os.PathLike[str], max_lines: int) -> list[dict[str,
     Raises:
         OSError: 파일은 있으나 읽지 못함(호출부가 사유를 남기고 빈 목록으로 처리한다).
     """
+    return [rec for rec in tail_rows(path, max_lines) if rec is not None]
+
+
+def tail_rows(path: str | os.PathLike[str], max_lines: int) -> list[dict[str, Any] | None]:
+    """파일 끝 `max_lines`줄을 줄 단위로 돌려준다 — JSON 객체가 아닌 줄(빈 줄·깨진 줄)은 None.
+
+    (plans/208 M-3) 회전된 조각을 가로질러 「끝 N줄」을 잇는 호출부가 줄 수를 세려고 쓴다.
+    `tail_records`는 이 결과에서 None을 뺀 것이다. 파일은 열고 난 뒤의 `fstat`으로 동일성을 본다 —
+    이름 바꾸기(회전)가 확인과 열기 사이에 끼어도 연 파일과 캐시 판단이 어긋나지 않는다.
+
+    Raises:
+        OSError: 파일은 있으나 읽지 못함.
+    """
     key = os.path.realpath(path)
     n = max(1, int(max_lines))
     with _LOCK:
         try:
-            st = os.stat(key)
+            fh = open(key, "rb")
         except (FileNotFoundError, NotADirectoryError):
             _CACHE.pop(key, None)
             return []
         entry = _CACHE.get(key)
-        with open(key, "rb") as fh:
+        with fh:
+            st = os.fstat(fh.fileno())
             if entry is None or not _reusable(entry, st, fh, n):
                 maxlen = max(n, entry.maxlen) if entry is not None else n
                 entry = _Entry(
@@ -140,7 +154,7 @@ def tail_records(path: str | os.PathLike[str], max_lines: int) -> list[dict[str,
         keep = n - len(tail)
         rows = list(islice(entry.records, max(0, len(entry.records) - keep), None)) if keep else []
     rows.extend(tail)
-    return [rec for rec in rows if rec is not None]
+    return rows
 
 
 def stats(path: str | os.PathLike[str]) -> dict[str, int] | None:
@@ -152,10 +166,16 @@ def stats(path: str | os.PathLike[str]) -> dict[str, int] | None:
         return {"offset": entry.offset, "bytes_read": entry.bytes_read, "reloads": entry.reloads}
 
 
+def discard(path: str | os.PathLike[str]) -> None:
+    """경로 1개의 캐시를 버린다(plans/208 M-3 — 더 읽지 않는 회전 조각의 메모리를 돌려준다)."""
+    with _LOCK:
+        _CACHE.pop(os.path.realpath(path), None)
+
+
 def clear() -> None:
     """캐시를 모두 비운다(테스트 격리용)."""
     with _LOCK:
         _CACHE.clear()
 
 
-__all__ = ["ANCHOR_BYTES", "clear", "stats", "tail_records"]
+__all__ = ["ANCHOR_BYTES", "clear", "discard", "stats", "tail_records", "tail_rows"]

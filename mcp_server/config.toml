@@ -15,6 +15,10 @@ polestar_domain_guard = true
 # 폴스타 고수준 도구 8종 등록 여부. 폴스타 소스가 없는 배치는 false로 도구 표면을 줄인다.
 # 값은 mcp_server/.env의 EXPOSE_POLESTAR_TOOLS로 오버라이드 가능.
 expose_polestar_tools = true
+# 폴스타 앵커 해석(HolmesGPT·플레이북 hostname → OS 호스트명·IP)의 호스트 정규형 일치(plans/211 · D-363).
+# false(기본) = 완전 일치. true = 대소문자·FQDN·-·_·괄호 업무명 꼬리를 접어 맞춘다(2건 이상이면 모호).
+# 값은 mcp_server/.env의 HOST_CANONICAL_MATCH_ENABLED로 오버라이드 가능.
+host_canonical_match_enabled = false
 # 폴스타 실시간 프로세스 API base_url (process_snapshot 도구용). 비면 도구가 오류 반환.
 # 값은 mcp_server/.env의 PROCESS_API_BASE_URL로 오버라이드 가능.
 process_api_base_url = ""

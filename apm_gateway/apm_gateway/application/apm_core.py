@@ -27,6 +27,7 @@ from apm_gateway.application.name_search import (
     search_query,
 )
 from apm_gateway.application.node_address import NodeAddressService
+from apm_gateway.application.parallel import contract_violation
 from apm_gateway.application.resolver import Resolution
 from apm_gateway.application.sources import (
     JenniferSource,
@@ -122,6 +123,9 @@ class ApmCore:
         }
         if resolution is not None:
             payload["instance_resolution"] = resolution.as_dict()
+            # 노드 주소 조회 가능 표지(plans/210 W9 B) — 조회기 없음(플래그 off)이면 키 없음
+            if self.node_address is not None:
+                payload["instance_resolution"]["node_address"] = True
         if window is not None:
             payload["window"] = window.as_dict()
         if was_signals is not None:
@@ -239,6 +243,7 @@ class ApmCore:
             items,
             lambda it: self.sources.get(it[0][0]),
             lambda it: self.api(it[0][0]).realtime(it[0][1], it[1]),
+            stop=contract_violation,
         )
         for ((sid, domain_id), _ids), got in zip(items, results, strict=True):
             if isinstance(got, ApmError):
@@ -319,6 +324,7 @@ class ApmCore:
             items,
             lambda it: self.sources.get(it[0][0]),
             lambda it: self.api(it[0][0]).application_status(it[0][1], it[1], start, end),
+            stop=contract_violation,
         )
         for ((sid, domain_id), _ids), got in zip(items, results, strict=True):
             if isinstance(got, ApmError):

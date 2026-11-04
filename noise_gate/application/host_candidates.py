@@ -20,7 +20,7 @@ import logging
 from collections.abc import Awaitable, Callable, Mapping, Sequence
 from typing import Any
 
-from src.domain.host_names import normalize_hostname
+from src.domain.host_names import canonical_host_key, host_keys_match, normalize_hostname
 
 from noise_gate.domain.host_link import (
     MAX_CANDIDATES,
@@ -39,6 +39,11 @@ logger = logging.getLogger(__name__)
 ProbeFn = Callable[[str, list[str], list[str], list[str]], Awaitable[list[dict[str, Any]]]]
 #: `(db_id, tokens) -> 행 목록` — 미지정이면 `probe_host_tokens`(① d).
 TokenProbeFn = Callable[[str, list[str]], Awaitable[list[dict[str, Any]]]]
+
+
+def _canonical_enabled(app_config: Any) -> bool:
+    """`HOST_CANONICAL_MATCH_ENABLED`(plans/211) — `is True` 비교로 MagicMock 오발동을 막는다."""
+    return getattr(app_config, "host_canonical_match_enabled", False) is True
 
 
 def _default_probes(app_config: Any) -> tuple[ProbeFn, TokenProbeFn]:
@@ -127,6 +132,71 @@ async def node_address_link(
     return {**result, "unchecked": unchecked}
 
 
+async def vm_exact_link(
+    app_config: Any,
+    *,
+    ip: str | None,
+    host_name: str | None,
+    db_ids: Sequence[str] | None = None,
+    probe: ProbeFn | None = None,
+    max_targets: int = 10,
+) -> tuple[Any, list[dict[str, str]]]:
+    """VM 인스턴스 `ip`·`host_name`을 소스 전부에서 정확 일치로 찾는다 (plans/210 §3.1-5 · D-188).
+
+    IP는 행 IP와 같아야, 이름은 정규화(소문자·FQDN 첫 레이블) 형태가 행 서버명·hostname과 같아야
+    센다(넓힘 없음 — 접두 LIKE를 쓰지 않는다). 판정은 도메인 `vm_exact_match`(서로 다른 서버 1대일
+    때만 `linked`). 소스별 개별 try — 실패 소스는 `unchecked`로 돌려준다. 캐시·저장하지 않는다.
+
+    Returns:
+        `(VmMatch, unchecked)` — 입력이 둘 다 쓸 수 없으면 `VmMatch("none")`·조회 0회.
+    """
+    import ipaddress
+
+    from noise_gate.domain.apm_host_map import VmMatch, make_target, vm_exact_match
+
+    try:
+        ip_val: str | None = str(ipaddress.ip_address(str(ip or "").strip()))
+    except ValueError:
+        ip_val = None
+    raw_name = str(host_name or "").strip().lower()
+    name = normalize_hostname(raw_name) if raw_name and valid_server_text(raw_name) else ""
+    if not ip_val and not name:
+        return VmMatch("none"), []
+    names = list(dict.fromkeys(n for n in (raw_name, name) if n)) if name else []
+    probe = probe or _default_probes(app_config)[0]
+    sources = list(db_ids) if db_ids is not None else node_lookup_db_ids(app_config)
+    ip_servers: list[dict[str, Any]] = []
+    host_servers: list[dict[str, Any]] = []
+    unchecked: list[dict[str, str]] = []
+    for db_id in sources:
+        try:
+            found = await probe(db_id, names, [], [ip_val] if ip_val else [])
+        except Exception as exc:  # noqa: BLE001 — 소스별 개별 실패(확인하지 못함)
+            logger.warning("VM 정확 일치 조회 실패 — 확인하지 못함: db_id=%s err=%s", db_id, exc)
+            unchecked.append({"db_id": db_id, "reason": _unchecked_reason(exc)})
+            continue
+        for row in found:
+            row_name = str(row.get("name") or row.get("hostname") or "").strip()
+            row_ip = str(row.get("ipaddress") or "").strip().lower()
+            target = make_target(
+                db_id=db_id, server_name=row_name, hostname=str(row.get("hostname") or ""),
+                ip=row_ip,
+            )
+            if ip_val and row_ip == ip_val.lower():
+                ip_servers.append(target)
+            if name and name in (
+                normalize_hostname(str(row.get("name") or "")),
+                normalize_hostname(str(row.get("hostname") or "")),
+            ):
+                host_servers.append(target)
+    match = vm_exact_match(ip_servers, host_servers, max_targets=max_targets)
+    logger.info(
+        "VM 정확 일치: 소스=%d ip행=%d 이름행=%d 확인못함=%d status=%s",
+        len(sources), len(ip_servers), len(host_servers), len(unchecked), match.status,
+    )
+    return match, unchecked
+
+
 def _unchecked_reason(exc: BaseException) -> str:
     """「확인하지 못함」 사유 — 예외 종류만(SQL·접속 정보는 서버 로그에만)."""
     if isinstance(exc, LookupError):
@@ -205,7 +275,10 @@ async def find_host_candidates(
             unchecked.append({"db_id": db_id, "reason": _unchecked_reason(exc)})
             continue
         rows.extend((db_id, row) for row in found)
-    candidates = rank_candidates(plan, rows, patterns=patterns, confirmed=confirmed, limit=limit)
+    candidates = rank_candidates(
+        plan, rows, patterns=patterns, confirmed=confirmed, limit=limit,
+        canonical=_canonical_enabled(app_config),
+    )
     logger.info(
         "유사 호스트 후보: host=%s 소스=%d 행=%d 후보=%d 확인못함=%d",
         hostname, len(db_ids), len(rows), len(candidates), len(unchecked),
@@ -214,16 +287,20 @@ async def find_host_candidates(
     return out
 
 
-def _row_matches(row: Mapping[str, Any], value: str) -> bool:
+def _row_matches(row: Mapping[str, Any], value: str, *, canonical: bool = False) -> bool:
     """① a~c 정확 일치 — 서버명·hostname의 정규화 형태가 같거나(a 대소문자 · b FQDN 짧은 이름 ·
-    c 짧은 이름 → FQDN) IP 입력이 행 IP와 같다."""
+    c 짧은 이름 → FQDN) IP 입력이 행 IP와 같다.
+
+    `canonical`(plans/211)이면 서버명·hostname 비교를 `host_keys_match`로 한다(정규형이 빈 입력은
+    종전 비교). IP 비교는 그대로다."""
     wanted = normalize_hostname(value)
     if not wanted:
         return False
-    if wanted in (
-        normalize_hostname(str(row.get("name") or "")),
-        normalize_hostname(str(row.get("hostname") or "")),
-    ):
+    names = (str(row.get("name") or ""), str(row.get("hostname") or ""))
+    if canonical and canonical_host_key(value):
+        if any(host_keys_match(value, n) for n in names):
+            return True
+    elif wanted in (normalize_hostname(n) for n in names):
         return True
     return wanted == str(row.get("ipaddress") or "").strip().lower()
 
@@ -264,9 +341,10 @@ async def verify_selected_server(
         prefixes.extend(p for p in plan.prefixes if p not in prefixes)
         ips.extend(i for i in plan.ips if i not in ips)
     rows = await probe(db_id, plan_names, prefixes, ips)
+    canonical = _canonical_enabled(app_config)
     picked: list[Mapping[str, Any]] = []
     for value in values:
-        picked = [r for r in rows if _row_matches(r, value)]
+        picked = [r for r in rows if _row_matches(r, value, canonical=canonical)]
         if picked:
             break
     if not picked:
@@ -363,4 +441,5 @@ __all__ = [
     "node_lookup_db_ids",
     "polestar_link_for",
     "verify_selected_server",
+    "vm_exact_link",
 ]

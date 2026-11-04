@@ -646,8 +646,8 @@ settings:
         effect: 게이트웨이를 부르지 않는다. 판정이 지금과 같다.
       - value: "true"
         effect: >-
-          WAS 장애와 겹친 저우선 알람이 즉시 통보된다. 게이트웨이 주소(NOISE_APM_MCP_URL)도
-          있어야 동작한다.
+          WAS 장애와 겹친 저우선 알람이 즉시 통보된다. 게이트웨이 주소(MCP_SOURCE_ENDPOINTS의
+          apm — 채팅과 같은 주소)도 있어야 동작한다.
     example: >-
       DB 서버 디스크 경고(심각도1·중요도 보통 → DASHBOARD)가 뜬 같은 시각에 그 서버의 WAS에서
       OUTOFMEMORY가 났다면 사용자 영향이 있는 사건이다 — 켜 두면 이 경고가 PAGE로 올라온다.
@@ -656,34 +656,19 @@ settings:
       부르지 않는다. 게이트웨이가 없으면 30초 동안 호출을 건너뛴다.
     stability: 게이트웨이 장애·타임아웃·오류 응답은 판정을 바꾸지 않는다(사유는 로그와 결정 감사).
     recommendation: 제니퍼와 APM 게이트웨이가 배포된 환경에서만 켠다.
-    related: [NOISE_APM_MCP_URL, NOISE_APM_MCP_TOKEN, NOISE_APP_IMPACT_WINDOW_MINUTES]
-
-  NOISE_APM_MCP_URL:
-    example: >-
-      게이트웨이 기본 바인드는 127.0.0.1:9096이다 — 다른 장비에 있으면 그 장비 주소로 바꾸고
-      게이트웨이 쪽 바인드도 열어야 한다. 비워 두면 스위치를 켜도 승격하지 않는다(기동 로그에 경고).
-    summary: APM 게이트웨이의 MCP 주소.
-    behavior: >-
-      별도 프로세스로 도는 APM 게이트웨이(apm_gateway)의 SSE 엔드포인트다. 제니퍼 자체 주소가
-      아니다 — 제니퍼 접속 정보는 게이트웨이 설정에만 있다.
-    options:
-      - value: ""
-        label: 기본
-        effect: 비어 있으면 app_impact 승격을 하지 않는다.
-      - value: "http://127.0.0.1:9096/sse"
-        effect: 같은 장비의 게이트웨이에 붙는다.
-    stability: 주소가 틀려도 알람 처리는 정상이다 — 승격만 빠지고 사유가 결정 감사에 남는다.
-    related: [NOISE_APP_IMPACT_ENABLED, NOISE_APM_MCP_TOKEN]
+    related: [MCP_SOURCE_ENDPOINTS, NOISE_APM_MCP_TOKEN, NOISE_APP_IMPACT_WINDOW_MINUTES]
 
   NOISE_APM_MCP_TOKEN:
     example: >-
       게이트웨이가 인증을 요구하는데 값이 비면 호출이 거부된다. 알람 판정에는 영향이 없어 '승격만 안 된다'로 나타난다.
     summary: APM 게이트웨이 인증 토큰 — 시크릿이라 이 화면에서 편집할 수 없다.
     behavior: >-
-      게이트웨이의 APM_GATEWAY_BEARER_TOKEN과 같은 값을 둔다. 제니퍼 API 토큰이 아니다.
-      값이 없으면 인증 헤더 없이 호출한다.
+      게이트웨이의 APM_GATEWAY_BEARER_TOKEN(또는 APM_GATEWAY_BEARER_TOKENS의 한 값)과 같은 값을 둔다.
+      제니퍼 API 토큰이 아니다. 값이 없으면 인증 헤더 없이 호출한다. 주소는 채팅과 같은
+      MCP_SOURCE_ENDPOINTS의 apm을 쓰지만, 토큰은 노이즈 게이트 호출 주체를 채팅과 가르려고 따로 둔다.
+      app_impact 승격과 APM·SMS 연계 스캔이 이 토큰을 쓴다.
     stability: 토큰이 틀리면 게이트웨이 호출이 실패한다 — 판정은 그대로다.
-    related: [NOISE_APM_MCP_URL]
+    related: [MCP_SOURCE_ENDPOINTS, NOISE_APP_IMPACT_ENABLED]
 
   NOISE_APP_IMPACT_WINDOW_MINUTES:
     example: >-
@@ -1192,3 +1177,106 @@ settings:
     stability: 표시 방식만 바뀐다. 끄면(false) 조사 화면이 종전과 비트 동일하다.
     recommendation: 기본 켜짐 유지.
     related: [NOISE_INVESTIGATION_TRIGGER_ENABLED, NOISE_INVESTIGATION_LIVE_VIEW_ENABLED]
+
+  NOISE_HOST_LINK_ENABLED:
+    summary: 제니퍼 알람의 서버를 폴스타 서버와 잇는 「호스트 연결」 학습을 쓸지.
+    behavior: >-
+      제니퍼 알람의 호스트와 비슷한 폴스타 서버 후보를 보여 주고, 사람이 고른 연결을 저장한다(Redis
+      `hostlink:*`). 조사 요청에는 확정된 연결만 자동으로 실린다(`meta.hints.polestar_link`) — AI가 고르지
+      않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 후보·연결 화면과 API가 없고(404) 조사 요청이 종전과 비트 동일하다.
+      - value: "true"
+        effect: 관리자 「호스트 연결」 화면이 열리고, 확정한 연결이 조사 요청에 실린다.
+    example: >-
+      제니퍼가 「was-pod-7f9c」로 알린 장애를 폴스타 서버 「webap01」과 한 번 이어 두면, 이후 같은 호스트
+      알람의 조사가 폴스타 지표까지 함께 본다.
+    performance: 후보 조회는 사람이 화면을 열 때만 돈다.
+    stability: 자동 결합은 확정 연결만이라 오진 위험이 없다. 끄면 저장된 연결은 남지만 쓰이지 않는다.
+    recommendation: 기본 false. 제니퍼 알람을 조사에 쓰는 환경에서 켠다.
+    related: [NOISE_APM_HOST_MAP_ENABLED]
+
+  NOISE_APM_HOST_MAP_ENABLED:
+    summary: 제니퍼 인스턴스와 폴스타 서버의 연계 정보(APM·SMS 연계)를 진단에 쓸지.
+    behavior: >-
+      연계가 있으면 장애 진단이 실시간 조회 없이 폴스타 대상을 정한다. 연계는 내부 PG 표(`apm_host_map`)가
+      정본이고 Redis에 읽기 사본을 둔다. 관리자 「APM·SMS 연계」 탭이 열린다. 내부 PG(auth 풀)가 있어야 하며
+      표는 기동 때 만든다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 표·사본·탭이 없고 진단 경로가 종전과 비트 동일하다.
+      - value: "true"
+        effect: 연계가 있는 인스턴스는 실시간 조회 0회로 대상을 정한다.
+    example: >-
+      파드 이름만 알려 주는 제니퍼 알람에서 꺼져 있으면 매번 노드 주소를 웹으로 조회한다. 켜고 연계를 쌓아 두면
+      같은 파드의 다음 진단은 조회 없이 바로 폴스타 서버를 본다.
+    performance: 연계 hit면 실시간 조회가 없어 진단이 빨라진다.
+    stability: auth 풀이 없으면 경고만 남기고 꺼진 것처럼 동작한다. 재시작이 필요하다.
+    recommendation: 기본 false. 제니퍼 연동 환경에서 수동 매핑부터 켠다.
+    related: [NOISE_APM_HOST_MAP_AUTO_ENABLED, NOISE_HOST_LINK_ENABLED]
+
+  NOISE_APM_HOST_MAP_AUTO_ENABLED:
+    summary: APM·SMS 연계를 자동으로 쌓을지(진단 결과 되적재·스캔).
+    behavior: >-
+      연계가 없을 때 직접 조회한 결과를 연계로 되적재하고, ITAM 생성 요청·관리자 수동 스캔·다시 찾기 적용을
+      연다. NOISE_APM_HOST_MAP_ENABLED가 켜져 있을 때만 의미가 있다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 관리자가 손으로 넣은 연계만 쓴다.
+      - value: "true"
+        effect: 진단이 찾은 연계가 자동으로 쌓인다.
+    example: >-
+      꺼져 있으면 새 파드가 생길 때마다 관리자가 연계를 넣어야 한다. 켜면 첫 진단이 직접 조회로 찾은 서버가
+      저장돼 다음부터 바로 쓰인다.
+    performance: 되적재는 API 프로세스가 Redis Stream으로 받아 처리한다 — 알람 워커를 막지 않는다.
+    stability: 직접 조회가 모호하거나 실패한 행은 재시도 간격 뒤에 다시 찾는다.
+    recommendation: 기본 false. 수동 매핑으로 결과를 확인한 뒤 켠다.
+    related: [NOISE_APM_HOST_MAP_ENABLED, NOISE_APM_HOST_MAP_RETRY_HOURS]
+
+  NOISE_APM_HOST_MAP_MAX_TARGETS:
+    summary: 연계 하나·조사 하나가 가리킬 수 있는 폴스타 서버 수 상한.
+    behavior: 연계 대상이 이보다 많으면 앞에서부터 이 개수까지만 쓴다.
+    example: >-
+      한 업무 앱이 서버 30대에 걸쳐 있어도 기본 10이면 진단은 10대만 본다. 상한을 올리면 더 넓게 보지만
+      조사 시간이 늘어난다.
+    performance: 클수록 조사 한 건의 조회가 늘어난다.
+    stability: 너무 작으면 실제 장애 서버를 빠뜨릴 수 있다.
+    recommendation: 기본 10.
+    related: [NOISE_APM_HOST_MAP_ENABLED]
+
+  NOISE_APM_HOST_MAP_LIVE_BUDGET_SECONDS:
+    summary: 연계가 없을 때 직접 조회(노드 주소·VM)에 쓰는 시간 예산(초).
+    behavior: 이 시간을 넘기면 직접 조회를 멈추고 다음 경로로 넘어간다.
+    example: >-
+      제니퍼 웹 조회가 느린 날 예산 5초를 넘기면 그 진단은 연계 없이 진행하고, 자동 연계가 켜져 있으면 나중에
+      다시 찾는다.
+    performance: 작을수록 진단이 덜 기다리지만 연계를 못 찾는 경우가 늘어난다.
+    stability: 너무 크면 장애 중 진단 첫 응답이 늦어진다.
+    recommendation: 기본 5초.
+    related: [NOISE_APM_HOST_MAP_ENABLED]
+
+  NOISE_APM_HOST_MAP_RETRY_HOURS:
+    summary: 찾지 못했거나 모호했던 연계를 다시 찾기까지의 간격(시간).
+    behavior: 실패·모호 행은 이 시간이 지나기 전에는 다시 조회하지 않는다.
+    example: >-
+      노드 주소 조회가 실패한 파드는 기본 24시간 동안 다시 조회하지 않아, 같은 실패가 진단마다 반복되지 않는다.
+    performance: 작을수록 재조회가 잦아진다.
+    stability: 너무 크면 고쳐진 환경에서도 연계가 늦게 생긴다.
+    recommendation: 기본 24.
+    related: [NOISE_APM_HOST_MAP_AUTO_ENABLED]
+
+  NOISE_APM_HOST_MAP_SCAN_PAGE_ROWS:
+    summary: 관리자 수동 스캔이 한 번에 읽는 행 수.
+    behavior: >-
+      스캔은 이 행 수씩 키셋 페이지로 나눠 읽는다. MCP 서버 max_rows(10000)보다 작아야 한 페이지가 잘리지
+      않는다(1 이상 10000 미만).
+    example: >-
+      서버 3만 대를 스캔하면 기본 1000행씩 30페이지로 읽는다. 10000 이상으로 두면 기동 때 설정 검증에서 막힌다.
+    performance: 클수록 페이지 수는 줄고 한 번의 조회는 무거워진다.
+    stability: MCP 서버 max_rows 이상이면 페이지가 잘려 서버를 빠뜨리므로 범위로 막는다.
+    recommendation: 기본 1000.
+    related: [NOISE_APM_HOST_MAP_AUTO_ENABLED]

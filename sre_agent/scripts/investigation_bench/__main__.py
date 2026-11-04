@@ -51,7 +51,7 @@ def _preflight(args: argparse.Namespace) -> int:
 def _run(args: argparse.Namespace) -> int:
     return runner.run(runner.RunOptions(
         spec_path=args.spec, cli_site=args.site, test=args.test, dry_run=args.dry_run,
-        allow_billed=args.allow_billed, out_root=args.out_root))
+        allow_billed=args.allow_billed, out_root=args.out_root, concurrency=args.concurrency))
 
 
 def _resume(args: argparse.Namespace) -> int:
@@ -135,6 +135,15 @@ _NEEDS_SPEC = ("show_env", "preflight", "run")
 _DEFAULT_WORLDS_ROOT = runner.TOP / runner.DEFAULT_WORLDS_DIR
 
 
+def _ks(text: str) -> tuple[int, ...]:
+    from investigation_bench import concurrency
+
+    try:
+        return concurrency.parse_ks(text)
+    except ValueError as e:
+        raise argparse.ArgumentTypeError(f"쉼표로 구분한 1 이상 정수(예: 1,2,5): {e}") from e
+
+
 def build_parser() -> argparse.ArgumentParser:
     """CLI 파서."""
     p = argparse.ArgumentParser(prog="inv_bench", description="sre_agent 장애 조사 품질 벤치마크")
@@ -173,6 +182,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--site", choices=("local", "closed"), default="local",
                    help="실행 위치 — 명세 run.site와 같아야 한다(기본 local)")
     p.add_argument("--dry-run", action="store_true", help="--run: 실행 계획만 출력(프로세스 0)")
+    p.add_argument("--concurrency", type=_ks, default=None, metavar="K[,K…]",
+                   help="--run: 동시 조사 측정(예: 1,2,5) — 호스트가 겹치지 않는 세계 K개를 "
+                        "한 실험군에 동시 접수 · 혼자(K=1) 대비 배율 → concurrency.{jsonl,md} · "
+                        "채점 생략(plans/208 A0-a · 미지정 = 종전 실행)")
     p.add_argument("--test", action="store_true", help="가짜 LLM(backend=fake) 허용 — 테스트 전용")
     p.add_argument("--allow-billed", metavar="APPROVAL",
                    help="과금 평면 허용 — 사용자 승인 문구를 그대로 적는다"
@@ -198,6 +211,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     name = next(k for k in _ACTIONS if getattr(args, k, False))
     if name in _NEEDS_SPEC and args.spec is None:
         parser.error(f"--{name.replace('_', '-')}에는 --spec이 필요하다")
+    if args.concurrency is not None and name != "run":
+        parser.error("--concurrency는 --run에만 쓴다")
     if args.allow_billed is not None and not args.allow_billed.strip():
         parser.error("--allow-billed에는 사용자 승인 문구가 필요하다(빈 문구 불가)")
     return _ACTIONS[name](args)

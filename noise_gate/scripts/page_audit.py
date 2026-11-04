@@ -100,6 +100,7 @@ from noise_gate.domain.page_review import (
 from noise_gate.domain.severity import coerce_severity
 from noise_gate.domain.severity_signatures import scan_signature_severity
 from noise_gate.infrastructure.apm_noise_context import DEFAULT_POLICY_PATH, load_policy
+from noise_gate.infrastructure.decision_store import decision_file_chain, iter_decision_lines
 from noise_gate.scripts import page_audit_xsource as xsource
 from noise_gate.scripts.page_audit_sanitize import (
     IDENT_ALARM_ID,
@@ -502,42 +503,44 @@ class AuditInputs:
 
 
 def read_audit(path: Path, start: datetime, end: datetime) -> AuditInputs:
-    """판정 감사 JSONL을 순차로 읽어 [start, end] 창의 레코드를 종류별로 나눈다."""
+    """판정 감사 JSONL을 순차로 읽어 [start, end] 창의 레코드를 종류별로 나눈다.
+
+    (plans/208 M-3) 회전 조각이 있으면 조각부터 현재 파일까지 이어 읽는다(없으면 종전과 같다).
+    """
     out = AuditInputs()
-    if not path.exists():
+    if not decision_file_chain(path):
         return out
-    with path.open(encoding="utf-8") as fh:
-        for line in fh:
-            if not line.strip():
-                continue
-            out.lines += 1
-            try:
-                rec = json.loads(line)
-            except json.JSONDecodeError:
-                out.bad_lines += 1
-                continue
-            if not isinstance(rec, dict):
-                out.bad_lines += 1
-                continue
-            ts = _parse_ts(rec.get("ts"))
-            if ts is None:
-                out.bad_lines += 1
-                continue
-            if out.first_ts is None or ts < out.first_ts:
-                out.first_ts = ts
-            if not start <= ts <= end:
-                continue
-            kind = rec.get("type")
-            if kind is None:
-                out.decisions.append(Decision(len(out.decisions), ts, rec))
-            elif kind == "recurrence":
-                out.recurrences.append((ts, rec))
-            elif kind == "resolution":
-                out.resolutions.append((ts, rec))
-            elif kind == "late_promotion":
-                out.late_promotions += 1
-            else:
-                out.other_types[str(kind)] += 1
+    for line in iter_decision_lines(path):
+        if not line.strip():
+            continue
+        out.lines += 1
+        try:
+            rec = json.loads(line)
+        except json.JSONDecodeError:
+            out.bad_lines += 1
+            continue
+        if not isinstance(rec, dict):
+            out.bad_lines += 1
+            continue
+        ts = _parse_ts(rec.get("ts"))
+        if ts is None:
+            out.bad_lines += 1
+            continue
+        if out.first_ts is None or ts < out.first_ts:
+            out.first_ts = ts
+        if not start <= ts <= end:
+            continue
+        kind = rec.get("type")
+        if kind is None:
+            out.decisions.append(Decision(len(out.decisions), ts, rec))
+        elif kind == "recurrence":
+            out.recurrences.append((ts, rec))
+        elif kind == "resolution":
+            out.resolutions.append((ts, rec))
+        elif kind == "late_promotion":
+            out.late_promotions += 1
+        else:
+            out.other_types[str(kind)] += 1
     out.decisions.sort(key=lambda d: d.ts)
     for i, d in enumerate(out.decisions):
         d.idx = i
@@ -2490,7 +2493,8 @@ def dry_run(
         "window_end": end.astimezone(KST).replace(microsecond=0).isoformat(),
         "long_start": long_start.astimezone(KST).replace(microsecond=0).isoformat(),
         "decisions_path": str(decisions_path),
-        "decisions_exists": decisions_path.exists(),
+        # (plans/208 M-3) 회전 직후 현재 파일이 잠깐 없어도 조각이 있으면 기록이 있다
+        "decisions_exists": bool(decision_file_chain(decisions_path)),
         "decisions": len(audit.decisions),
         "recurrences": len(audit.recurrences),
         "resolutions": len(audit.resolutions),

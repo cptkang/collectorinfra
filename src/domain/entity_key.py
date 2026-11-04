@@ -15,8 +15,12 @@ IP는 키 후보에 아예 없었다(plans/102 §1.2 실행 확인). 목록에 �
 | `fqdn` | 레이블 2개 이상 · 레이블마다 RFC 1123 · 전체 ≤253 · 영문자 1+ | casefold(RFC 4343) |
 | `hostname` | 레이블 1개 · 위 구문 · 영문자 1개 이상 · **2자 이상** | casefold |
 | `unknown` | 그 외 — 키로 쓰지 않는다 | — |
+| `canonical=True` | 업무명 꼬리 `(…)`를 뗀 부분 판정 · `_` 허용 | 꼬리 뗀 casefold |
 
 FQDN의 단축명은 첫 레이블이다(`short_name`).
+
+- **`canonical=True`(plans/211 · D-363 — 기본 off = 현행)**: 셀은 괄호 구간을 지운 뒤 분해한다.
+  정규형은 `-`·`_`를 지우지 않는다 — 접은 비교는 소비처가 `host_names.canonical_host_key`로 한다.
 
 - **영문자 1개 이상**: RFC 1123은 숫자만 있는 레이블을 허용하지만 그러면 숫자 ID 컬럼이 키로
   오인된다(D-100 `id` 오수집과 같은 계열).
@@ -70,8 +74,12 @@ _FAMILY_OF: dict[str, str] = {
 }
 
 _LABEL_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$")
+#: `canonical=True` 레이블 — `-`·`_`를 같은 자리에 허용한다(plans/211 Q2).
+_LABEL_CANON_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9_-]{0,61}[A-Za-z0-9])?$")
 _HAS_LETTER_RE = re.compile(r"[A-Za-z]")
 _CELL_SPLIT_RE = re.compile(r"[,;\s/]+")
+#: `canonical=True` 셀 분해 전에 지우는 괄호 구간(업무명 꼬리 — 닫는 괄호 누락 허용).
+_PAREN_SPAN_RE = re.compile(r"\s*\([^)]*\)?")
 _MAX_NAME_LEN = 253
 
 
@@ -79,11 +87,24 @@ _MAX_NAME_LEN = 253
 # 값 판정 · 정규화
 # ──────────────────────────────────────────────
 
-def classify_value(value: Any) -> str:
-    """값 하나(토큰)의 키 타입을 판정한다. 셀 분해는 하지 않는다(`typed_tokens` 참조)."""
+def _host_part(text: str) -> str:
+    """`호스트(업무명)`의 호스트 부분 — `host_names.split_business_suffix`의 첫 값과 같은 규칙.
+
+    이 모듈은 표준 라이브러리만 import한다(`test_module_is_pure_domain`)라 규칙을 여기 둔다.
+    """
+    return text.split("(", 1)[0].rstrip()
+
+
+def classify_value(value: Any, *, canonical: bool = False) -> str:
+    """값 하나(토큰)의 키 타입을 판정한다. 셀 분해는 하지 않는다(`typed_tokens` 참조).
+
+    `canonical=True`면 괄호 업무명 꼬리를 뗀 호스트 부분을 판정하고 레이블의 `_`를 허용한다.
+    """
     if value is None or isinstance(value, bool):
         return KEY_UNKNOWN
     text = str(value).strip()
+    if canonical:
+        text = _host_part(text)
     if not text:
         return KEY_UNKNOWN
     try:
@@ -96,7 +117,8 @@ def classify_value(value: Any) -> str:
     if not name or len(name) > _MAX_NAME_LEN or not _HAS_LETTER_RE.search(name):
         return KEY_UNKNOWN
     labels = name.split(".")
-    if not all(_LABEL_RE.match(label) for label in labels):
+    label_re = _LABEL_CANON_RE if canonical else _LABEL_RE
+    if not all(label_re.match(label) for label in labels):
         return KEY_UNKNOWN
     if len(labels) == 1:
         return KEY_HOSTNAME if len(name) >= 2 else KEY_UNKNOWN
@@ -108,10 +130,16 @@ def family_of(key_type: str) -> str | None:
     return _FAMILY_OF.get(key_type)
 
 
-def normalize_value(value: Any, key_type: str | None = None) -> str:
-    """비교용 정규형. 타입을 모르면 판정부터 한다. `unknown`이면 빈 문자열."""
-    kt = key_type or classify_value(value)
+def normalize_value(value: Any, key_type: str | None = None, *, canonical: bool = False) -> str:
+    """비교용 정규형. 타입을 모르면 판정부터 한다. `unknown`이면 빈 문자열.
+
+    `canonical=True`면 괄호 업무명 꼬리를 뗀 호스트 부분을 정규화한다. `-`·`_`는 지우지 않는다 —
+    원래 표기로 대소문자 무시 조회를 하는 소비처가 있어서다(접은 비교는 `canonical_host_key`).
+    """
+    kt = key_type or classify_value(value, canonical=canonical)
     text = str(value).strip() if value is not None else ""
+    if canonical:
+        text = _host_part(text)
     if kt in (KEY_IPV4, KEY_IPV6):
         try:
             return ipaddress.ip_address(text).compressed.lower()
@@ -151,30 +179,39 @@ class TypedKey:
         return family_of(self.key_type)
 
 
-def split_cell(value: Any) -> list[str]:
-    """다중값 셀을 토큰으로 나눈다(X-T6). 빈 토큰은 버린다."""
+def split_cell(value: Any, *, canonical: bool = False) -> list[str]:
+    """다중값 셀을 토큰으로 나눈다(X-T6). 빈 토큰은 버린다.
+
+    `canonical=True`면 괄호 구간(업무명 꼬리)을 먼저 지운다 — `webap01 (인터넷뱅킹)`이 공백으로
+    쪼개져 괄호 토큰이 셀 계열을 깨지 않게 한다.
+    """
     if value is None or isinstance(value, bool):
         return []
-    return [t for t in _CELL_SPLIT_RE.split(str(value).strip()) if t]
+    text = str(value).strip()
+    if canonical:
+        text = _PAREN_SPAN_RE.sub("", text)
+    return [t for t in _CELL_SPLIT_RE.split(text) if t]
 
 
-def typed_tokens(value: Any) -> list[TypedKey]:
+def typed_tokens(value: Any, *, canonical: bool = False) -> list[TypedKey]:
     """셀을 나눠 **키로 쓸 수 있는** 토큰만 판정·정규화해 돌려준다(`unknown` 제외)."""
     out: list[TypedKey] = []
-    for token in split_cell(value):
-        kt = classify_value(token)
+    for token in split_cell(value, canonical=canonical):
+        kt = classify_value(token, canonical=canonical)
         if kt == KEY_UNKNOWN:
             continue
-        out.append(TypedKey(key_type=kt, normalized=normalize_value(token, kt), raw=token))
+        out.append(TypedKey(
+            key_type=kt, normalized=normalize_value(token, kt, canonical=canonical), raw=token,
+        ))
     return out
 
 
-def cell_family(value: Any) -> str | None:
+def cell_family(value: Any, *, canonical: bool = False) -> str | None:
     """셀의 키 계열. 토큰이 전부 같은 계열일 때만 그 계열, 하나라도 섞이거나 판정 불가면 None."""
-    tokens = split_cell(value)
+    tokens = split_cell(value, canonical=canonical)
     if not tokens:
         return None
-    families = {family_of(classify_value(t)) for t in tokens}
+    families = {family_of(classify_value(t, canonical=canonical)) for t in tokens}
     if len(families) != 1 or None in families:
         return None
     return next(iter(families))
@@ -189,6 +226,7 @@ def classify_column(
     *,
     sample_size: int = COLUMN_SAMPLE_SIZE,
     threshold: float = COLUMN_TYPE_THRESHOLD,
+    canonical: bool = False,
 ) -> str | None:
     """비어 있지 않은 값 최대 `sample_size`개를 보고 컬럼의 키 계열을 판정한다.
 
@@ -200,7 +238,7 @@ def classify_column(
         if value is None or str(value).strip() == "":
             continue
         sampled += 1
-        fam = cell_family(value)
+        fam = cell_family(value, canonical=canonical)
         if fam:
             counts[fam] = counts.get(fam, 0) + 1
         if sampled >= sample_size:
@@ -232,6 +270,7 @@ def detect_key_columns(
     name_hint: Any | None = None,
     exclude: Iterable[str] = (),
     declared: Iterable[str] = (),
+    canonical: bool = False,
 ) -> list[KeyColumn]:
     """행 목록에서 값으로 키 컬럼을 찾아 우선순으로 돌려준다.
 
@@ -249,6 +288,7 @@ def detect_key_columns(
             도메인은 이름 규칙을 모른다(스키마 리터럴 0).
         exclude: 판정에서 뺄 컬럼(출처 태그 등)
         declared: 출처 DB 매니페스트가 선언한 키 컬럼(대소문자 무시)
+        canonical: 값 판정을 솔루션 사이 정규형 규칙으로 한다(plans/211 — 기본 off)
     """
     dict_rows = [r for r in rows if isinstance(r, Mapping)]
     if not dict_rows:
@@ -263,11 +303,12 @@ def detect_key_columns(
     found: list[tuple[int, KeyColumn]] = []
     for position, col in enumerate(columns):
         values = [row.get(col) for row in dict_rows]
-        fam = classify_column(values)
+        fam = classify_column(values, canonical=canonical)
         if fam is None:
             continue
         distinct = len({
-            tk.normalized for v in values for tk in typed_tokens(v) if tk.family == fam
+            tk.normalized for v in values for tk in typed_tokens(v, canonical=canonical)
+            if tk.family == fam
         })
         strong = bool(name_hint(col)) if callable(name_hint) else False
         found.append((
@@ -284,7 +325,7 @@ def detect_key_columns(
 
 
 def collect_family_values(
-    rows: Sequence[Mapping[str, Any]], column: str, family: str,
+    rows: Sequence[Mapping[str, Any]], column: str, family: str, *, canonical: bool = False,
 ) -> list[TypedKey]:
     """한 컬럼에서 해당 계열 토큰을 정규형 기준 중복 없이 행 순서대로 모은다."""
     seen: set[str] = set()
@@ -292,7 +333,7 @@ def collect_family_values(
     for row in rows:
         if not isinstance(row, Mapping):
             continue
-        for tk in typed_tokens(row.get(column)):
+        for tk in typed_tokens(row.get(column), canonical=canonical):
             if tk.family != family or tk.normalized in seen:
                 continue
             seen.add(tk.normalized)
@@ -320,7 +361,9 @@ class ManifestKey:
     family: str
     column: str
     priority: int
-    #: `casefold`(대소문자 무시) · `exact`. IP 계열은 정규형 비교라 이 값의 영향이 없다.
+    #: `casefold`(대소문자 무시) · `exact` · `canonical`(솔루션 사이 정규형 — 괄호 업무명 꼬리·
+    #: 대소문자·끝 점·`-`·`_`를 접는다 · plans/211 · D-363 ⑤ — `HOST_CANONICAL_MATCH_ENABLED` off면
+    #: 이 키를 가진 매니페스트는 로더가 없는 것으로 돌려준다). IP 계열은 정규형 비교라 영향이 없다.
     compare: str = "casefold"
     #: 한 칸에 값이 여러 개일 수 있는가(X-T6) — SQL은 넓게 좁히고 코드가 토큰으로 확정한다.
     multi_value: bool = False
@@ -384,9 +427,10 @@ def parse_manifest(db_id: str, data: Any, *, source: str = "") -> EntityKeyManif
         if not col:
             raise ManifestError(f"{db_id}: entity_keys.keys[{i}].column이 비었습니다")
         compare = str(raw.get("compare") or "casefold").strip()
-        if compare not in ("casefold", "exact"):
+        if compare not in ("casefold", "exact", "canonical"):
             raise ManifestError(
-                f"{db_id}: entity_keys.keys[{i}].compare는 casefold|exact입니다: {compare!r}"
+                f"{db_id}: entity_keys.keys[{i}].compare는 casefold|exact|canonical입니다: "
+                f"{compare!r}"
             )
         try:
             priority = int(raw.get("priority", i + 1))

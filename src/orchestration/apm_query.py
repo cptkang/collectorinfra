@@ -218,6 +218,7 @@ from src.orchestration.apm.targets import (  # noqa: F401
     default_views as default_views,
     explicit_targets as explicit_targets,
     inherited_targets as inherited_targets,
+    lift_node_targets,
     INSTANCE_ID_TOOLS as INSTANCE_ID_TOOLS,
     LAST_TARGETS_KEY as LAST_TARGETS_KEY,
     resolve_apm_targets as resolve_apm_targets,
@@ -248,6 +249,20 @@ from src.orchestration.apm.context import (  # noqa: F401
 from src.orchestration.apm.builders import (  # noqa: F401
     _build_calls as _build_calls,
     _CALL_BUILDERS as _CALL_BUILDERS,
+)
+from src.orchestration.apm.node_address import (
+    DOMAIN_IDS_ARG,
+    NODE_ADDRESS_DISABLED,
+    NODE_ADDRESS_VIEW,
+    NODE_ROWS_KEY,
+    NODE_TOTAL_KEY,
+    marked,
+    marked_refs,
+    node_rows_of,
+    pod_node_lines,
+    row_total,
+    target_groups,
+    targeted_args,
 )
 from src.orchestration.apm.collect import (  # noqa: F401
     _answer_lines as _answer_lines,
@@ -428,6 +443,8 @@ def _named_unresolved(calls: list[_Call], meta: dict[str, Any], source: str,
 #: 보인다(모르는 지표 후보 · 대상 불일치). 그 밖 코드(제니퍼 응답·연결·작업 실패)는 코드만.
 _GUIDANCE_CODES: frozenset[str] = frozenset({
     "invalid_argument", "instance_unresolved", "profile_ref_mismatch",
+    # 처리기가 지은 노드 주소 도구 미등록 사유(plans/210 W2 — 게이트웨이 설정 이름 안내)
+    NODE_ADDRESS_DISABLED,
 })
 
 
@@ -1212,6 +1229,10 @@ async def _select_step(ctx: _RunCtx, llm: BaseChatModel) -> dict[str, Any] | Non
             f"({interval}분 간격)로 조회했습니다", source=source))
     meta["views"] = ctx.views
     ctx.task = {**task, "view_args": view_args_given}
+    # 노드 주소 보기 조건에 실린 대상 → task `targets`(plans/210 W8 교정 q4 · 모양만 본다)
+    targets, view_args_given = lift_node_targets(ctx.views, view_args_given, task.get("targets"))
+    if targets is not task.get("targets"):
+        ctx.task = {**ctx.task, "targets": targets, "view_args": view_args_given}
     if selection.uncovered:  # 덮은 보기는 조회하고 못 덮은 영역만 되묻는다(SPEC §6.4 ②)
         ctx.notices.append(disc.make(disc.APM_UNRESOLVED_CONDITION, selection.uncovered,
                                      source=source))
@@ -1248,6 +1269,7 @@ async def _source_step(ctx: _RunCtx) -> dict[str, Any] | None:
     if inherited:
         logger.info("%s 직전 대상 승계: %d건", APM_QUERY_AGENT, len(inherited))
         ctx.task = {**ctx.task, "targets": inherited}
+        ctx.inherited_at = len(notices)
         notices.append(_inherited_notice(inherited, source))
     return None
 
@@ -1275,8 +1297,9 @@ async def _target_hosts_step(ctx: _RunCtx) -> None:
     named = bool(sanitize_targets(ctx.task.get("targets")))
     pick_targets = scoped_targets if named else resolve_apm_targets
     ctx.hostnames = await _hosts_of(ctx, pick_targets(isolated)) if "" in kinds else []
+    # 노드 주소 보기(plans/210 W8 A)도 선택 대상 보기와 같은 규칙으로 서버를 받는다
     ctx.scoped_hosts = (await _hosts_of(ctx, scoped_targets(isolated))
-                        if "optional" in kinds else [])
+                        if "optional" in kinds or NODE_ADDRESS_VIEW in views else [])
     ctx.explicit_hosts = (await _hosts_of(ctx, explicit_targets(isolated))
                           if any(by_id[v].reference == "guid" for v in views) else [])
 
@@ -1393,10 +1416,13 @@ async def _session_step(ctx: _RunCtx, endpoint: tuple[str, str | None]) -> dict[
     try:
         async with open_source_session(url, token, call_timeout=ctx.call_timeout, label=label,
                                        session_factory=_SESSION_FACTORY) as session:
+            mark = len(ctx.notices)
             if ctx.texts:
                 await _resolve_texts_step(ctx, session)
+            await _node_targets_step(ctx, session, mark)
             await _first_hop_step(ctx, session)
             calls = _build_calls(ctx)
+            built = list(calls)
             # 긴 X-View 사전 확인(plans/164 W7-C) — 답이 없는 턴만 구간이 있는 거래 원본 보기에
             # 기준을 싣는다(넘으면 게이트웨이가 데이터 호출 없이 견적만 돌려준다 · 현재값만 보는
             # 호출은 X-View를 부르지 않아 종전 인자 그대로). 「전부」와 추세 보기가 없어 바꾸지
@@ -1428,6 +1454,8 @@ async def _session_step(ctx: _RunCtx, endpoint: tuple[str, str | None]) -> dict[
                 await _run_calls(session, rest, ctx.concurrency, ctx.scope)
             await _settle_jobs(session, [c for c in wire if id(c) not in settled], ctx.scope)
             calls = _unbatched(wire, ctx.meta)
+            # 배치 복원 뒤 — 서버명 배치 대상의 봉투는 복원돼야 생긴다(plans/210 W9 B)
+            await _pod_node_step(ctx, session, built)
             calls += ctx.answers  # 게이트웨이에 다시 묻지 않는다(해석 검색이 이미 부른 행)
     except SourceMcpError as e:
         # 연결 예외 원문은 답 본문에 싣지 않는다 — 요청 번호만, 원문은 로그(plans/163 S3+)
@@ -1452,6 +1480,108 @@ async def _resolve_texts_step(ctx: _RunCtx, session: Any) -> None:
         ctx.resolved, {h.casefold() for h in [*ctx.hostnames, *ctx.scoped_hosts]})
     ctx.notices += _target_notices(ctx.resolved, ctx.source)
     ctx.meta["targets"] = _targets_meta(ctx.resolved)
+
+
+async def _host_node_targets(ctx: _RunCtx, session: Any) -> list[_TargetText]:
+    """노드 주소 보기의 서버 대상 → 인스턴스(게이트웨이 정합 `apm_instance_map(hostname=…)`).
+
+    그 서버에 인스턴스가 없으면(`instance_unresolved`) 0건(「찾지 못함」) · 그 밖 실패는 사유다.
+    """
+    view = ctx.by_id.get(INSTANCES_VIEW)
+    if view is None or not ctx.scoped_hosts:
+        return []
+    calls = [_Call(view, h, _search_args(ctx.scope, None, hostname=h)) for h in ctx.scoped_hosts]
+    await _lookup(session, calls, ctx.concurrency, ctx.scope)
+    out: list[_TargetText] = []
+    for call in calls:
+        res = _TargetText(str(call.hostname), "hostname")
+        found = _Found("서버 정합")
+        if call.error and "instance_unresolved" not in call.error:
+            found.errors.append("서버 정합 실패 — "
+                                + _public_call_error(call.error, where="노드 주소 대상 정합"))
+        else:  # 정합 오류(`instance_unresolved`)면 그 서버에 인스턴스가 없다 — 0건
+            found.answered = True
+            env = {} if call.error else call.envelope or {}
+            found.rows += [({**row, "hostname": row.get("hostname") or call.hostname},
+                            [found.searched]) for row in env.get("rows") or []
+                           if isinstance(row, dict)]
+            # 정합 봉투의 `[한계]`(노드 주소 도메인 상한 등)는 `meta.limits`로
+            # (`_gateway_search`와 같다 · W8 교정)
+            found.limits = [x for x in env.get("limits") or [] if isinstance(x, str)]
+        res.take(found)
+        out.append(res)
+    return out
+
+
+async def _node_targets_step(ctx: _RunCtx, session: Any, mark: int) -> None:
+    """노드 주소 보기의 대상 인스턴스(plans/210 W8 A · 통로 표는 `apm.node_address` 독스트링).
+
+    대상이 없으면 그대로(W2 현행 1회). 해석 행에 노드 주소 표지가 없으면(게이트웨이 플래그 off)
+    W2 현행 1회로 가고, 이 보기 때문에만 생긴 해석·승계 고지는 지운다(답 바이트 동일). 해석
+    0건이면 `ctx.node_targets = []`(호출 0 — 「찾지 못함」은 해석 고지가 싣는다 · D-290 ⑥).
+    """
+    if NODE_ADDRESS_VIEW not in ctx.live or not (ctx.texts or ctx.scoped_hosts):
+        return
+    hosts = await _host_node_targets(ctx, session)
+    rows: dict[tuple[Any, Any, Any], dict[str, Any]] = {}
+    for row in [*ctx.instances, *(r for h in hosts for r in h.instances.values())]:
+        rows.setdefault((row.get("source_id"), row.get("domain_id"), row.get("instance_id")), row)
+    found = list(rows.values())
+    if found and not marked(found):
+        others = [v for v in ctx.live if v != NODE_ADDRESS_VIEW
+                  and _uses_target(ctx.by_id[v], ctx.view_args.get(v))]
+        if not others:  # 이 보기 때문에만 해석했다 — 해석 흔적을 지우고 W2 현행 그대로
+            del ctx.notices[mark:]
+            if ctx.inherited_at is not None:
+                del ctx.notices[ctx.inherited_at]
+            ctx.resolved, ctx.instances = [], []
+            ctx.meta.pop("targets", None)
+        return
+    ctx.resolved += hosts
+    ctx.notices += _target_notices(hosts, ctx.source)
+    ctx.meta["targets"] = _targets_meta(ctx.resolved)
+    domain = (ctx.view_args.get(NODE_ADDRESS_VIEW) or {}).get(DOMAIN_IDS_ARG)
+    ctx.node_targets = [r for r in found if domain is None or r.get("domain_id") == domain]
+    if found and not ctx.node_targets:  # 보기 조건 도메인과 AND — 다 빠졌다(대신 조회 없음)
+        label = _view_label(ctx.by_id[NODE_ADDRESS_VIEW])
+        ctx.meta["failures"].append({"view": NODE_ADDRESS_VIEW, "hostname": None,
+                                     "reason": f"도메인 {domain} 안 해석 인스턴스 0건"})
+        ctx.notices.append(disc.make(
+            disc.APM_UNRESOLVED_CONDITION,
+            f"{label}: 해석한 인스턴스 {len(found)}개가 도메인 {domain}에 없어 조회하지"
+            " 않았습니다. 다른 도메인으로 대신 조회하지 않았습니다.", source=ctx.source))
+
+
+async def _pod_node_step(ctx: _RunCtx, session: Any, calls: list[_Call]) -> None:
+    """해석 인스턴스별 보기의 파드 노드 주소 부착(plans/210 W8 C · W9 B · 단어 매칭 0).
+
+    해석 행에 노드 주소 표지가 있을 때(W8 C)와 서버명 직행 호출의 봉투가 표지를 달았을 때(W9 B —
+    `instance_refs`)만 둘을 합쳐 (소스, 도메인)마다 노드 주소 도구 1회(보기 여러 개가 공유) ·
+    `pod: true`만 답 줄. 노드 주소 보기를 함께 골랐으면 그 보기가 답한다(부착 없음). 배치 대상의
+    봉투는 복원 뒤에 생기므로 `_unbatched` 뒤에 부른다(통로 표는 `apm.node_address` 독스트링).
+    """
+    view = ctx.by_id.get(NODE_ADDRESS_VIEW)
+    if view is None or NODE_ADDRESS_VIEW in ctx.live:
+        return
+    called = {(c.instance.get("source_id"), c.instance.get("domain_id"),
+               c.instance.get("instance_id")) for c in calls if c.instance}
+    rows = [r for r in ctx.instances
+            if (r.get("source_id"), r.get("domain_id"), r.get("instance_id")) in called]
+    rows = rows if marked(rows) else []
+    if ctx.first_hop is None:  # 첫 홉이 고른 서버는 사용자가 말한 서버가 아니다(W9 B)
+        rows += [ref for c in calls if c.hostname and not c.instance and c.error is None
+                 and c.view.required_input for ref in marked_refs(c.envelope)]
+    if not rows:
+        return
+    base = {"thread_id": str(ctx.scope.thread_id) if ctx.scope.thread_id else None,
+            "owner": ctx.scope.owner}
+    node_calls = [_Call(view, None, targeted_args(base, source, domain, ids))
+                  for source, domain, ids in target_groups(rows)]
+    await _lookup(session, node_calls, ctx.concurrency, ctx.scope)
+    ctx.node_lines = pod_node_lines(_view_label(view), [
+        (None if c.error is None else c.error if c.error.startswith(NODE_ADDRESS_DISABLED)
+         else "노드 주소 조회 실패 — " + _public_call_error(c.error, where="파드 노드 주소"),
+         c.envelope) for c in node_calls])
 
 
 async def _first_hop_step(ctx: _RunCtx, session: Any) -> None:
@@ -1594,7 +1724,7 @@ def _success_result(ctx: _RunCtx) -> dict[str, Any]:
         extra["disclosures"] = disclosures
     if accepted:
         extra["accepted_jobs"] = [c.job["job_id"] for c in accepted if c.job]
-    lines = _answer_lines(meta)
+    lines = _answer_lines(meta) + ctx.node_lines  # 파드 노드 주소 줄(plans/210 W8 C)
     if lines:
         extra[ANSWER_LINES_KEY] = lines
     source_rows: list[dict[str, Any]] = []
@@ -2166,6 +2296,10 @@ def _aggregate_of(call: _Call, env: dict[str, Any]) -> dict[str, Any]:
     for key in _AGGREGATE_KEYS:
         if env.get(key) not in (None, [], {}):
             agg[key] = env[key]
+    node_rows = node_rows_of(call.args, env)
+    if node_rows is not None:  # 인스턴스 대상 노드 주소(plans/210 W8 A) — 인스턴스별 답 줄 재료
+        agg[NODE_ROWS_KEY] = node_rows
+        agg[NODE_TOTAL_KEY] = row_total(env)
     windows = [
         {"instance_id": r.get("instance_id"), "instance_name": r.get("instance_name"),
          **r["window"]}
@@ -2274,7 +2408,8 @@ def _collect(calls: list[_Call], meta: dict[str, Any]) -> list[dict[str, Any]]:
                  *(("instance_name", "instance_id") if call.instance else ()),
                  # 고른 소스 · 이름 보기의 이름 목록(plans/134 M-5 — 없으면 종전 모양)
                  *((call.view.target_arg,) if call.view.target_arg else ()),
-                 "source_ids", "targets"}
+                 # 노드 주소 인스턴스 대상(plans/210 W8 A — 없으면 종전 모양)
+                 "source_ids", "targets", "instance_ids"}
         used = {k: v for k, v in call.args.items() if k in names and v is not None}
         if used:
             entry["args"] = used
