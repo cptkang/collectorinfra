@@ -241,12 +241,23 @@ def _parse_json_result(raw_result: Any) -> dict:
     return parsed
 
 
-def build_apm_gateway_client(gate_cfg) -> ApmGatewayClient | None:  # noqa: ANN001
-    """NoiseGateConfig(덕 타이핑)로 클라이언트를 만든다 — URL이 비거나 생성 실패면 None."""
-    url = str(getattr(gate_cfg, "apm_mcp_url", "") or "").strip()
+def apm_gateway_url(app_config: Any) -> str:
+    """게이트웨이 SSE 주소 — 채팅과 같은 `MCP_SOURCE_ENDPOINTS["apm"]`(D-364 · 빈 값 = 미설정)."""
+    endpoints = getattr(getattr(app_config, "dbhub", None), "source_endpoints", None)
+    if not isinstance(endpoints, dict):
+        return ""
+    return str(endpoints.get("apm") or "").strip()
+
+
+def build_apm_gateway_client(app_config: Any) -> ApmGatewayClient | None:
+    """AppConfig(덕 타이핑)로 클라이언트를 만든다 — URL이 비거나 생성 실패면 None.
+
+    주소는 `MCP_SOURCE_ENDPOINTS["apm"]`, 토큰은 `NOISE_APM_MCP_TOKEN`(주체 분리 · D-364).
+    """
+    url = apm_gateway_url(app_config)
     if not url:
         return None
-    token = getattr(gate_cfg, "apm_mcp_token", None)
+    token = getattr(getattr(app_config, "noise_gate", None), "apm_mcp_token", None)
     # SecretStr(.get_secret_value) 또는 평문 문자열(테스트 SimpleNamespace) 모두 수용.
     token_val = token.get_secret_value() if hasattr(token, "get_secret_value") else (token or "")
     try:
@@ -261,5 +272,6 @@ __all__ = [
     "APM_INSTANCE_MAP_TOOL",
     "ApmGatewayClient",
     "ApmGatewayClientError",
+    "apm_gateway_url",
     "build_apm_gateway_client",
 ]

@@ -445,16 +445,19 @@ def build_apm_gateway_client(config: Any) -> Any:
         return None
     if not getattr(ng, "app_impact_enabled", False):
         return None
-    from noise_gate.infrastructure.apm_gateway_client import build_apm_gateway_client
+    from noise_gate.infrastructure.apm_gateway_client import (
+        apm_gateway_url,
+        build_apm_gateway_client,
+    )
 
-    client = build_apm_gateway_client(ng)
+    client = build_apm_gateway_client(config)
     if client is None:
         logger.warning(
             "NOISE_APP_IMPACT_ENABLED=true지만 게이트웨이 클라이언트가 없다"
-            "(NOISE_APM_MCP_URL 비었거나 생성 실패) — app_impact 승격 없이 진행"
+            "(MCP_SOURCE_ENDPOINTS의 apm 비었거나 생성 실패) — app_impact 승격 없이 진행"
         )
     else:
-        logger.info("app_impact 승격 활성: 게이트웨이=%s", ng.apm_mcp_url)
+        logger.info("app_impact 승격 활성: 게이트웨이=%s", apm_gateway_url(config))
     return client
 
 

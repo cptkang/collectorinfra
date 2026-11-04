@@ -2799,7 +2799,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - **입력·출력**: 입력은 알람 이벤트·분석 결과·노이즈 컨텍스트·탐지기 값·침묵 규칙·주석이다. 출력은 티어(PAGE·TICKET·DASHBOARD·SUPPRESS)·사유·우선순위·신호 스냅샷·결정 단계·단계 근거다.
 - **판단 주체**: 결정적 규칙(`noise_gate/domain/notification_policy.py`)이다. 앱 영향 승격을 켜면 매트릭스 결과가 DASHBOARD·TICKET인 폴스타 알람에 한해 APM 게이트웨이의 `apm_events`를 한 번 불러 판정 재료로 쓴다([A-60](#a-60)).
 - **실패하면**: 분석이 실패해도 분석 노드가 원문 알람으로 만든 결과로 판단하고, 결정 기록의 단계 근거에 `analysis`(「AI 분석 실패 — 원문 알람으로 판단」)를 남긴다. 게이트웨이 조회가 실패하면 판정을 그대로 두고 단계 근거에 `app_impact_error`(사유)를 남긴다.
-- **설정 키**: `NOISE_ENABLE_NOISE_GATE`(false) · `NOISE_SUPPRESS_MAX_SEVERITY`(2) · `NOISE_NON_ALARM_FILTER_ENABLED`(false) · `NOISE_APP_IMPACT_ENABLED`(false) · `NOISE_APM_MCP_URL`(빈 값) · `NOISE_APP_IMPACT_WINDOW_MINUTES`(10).
+- **설정 키**: `NOISE_ENABLE_NOISE_GATE`(false) · `NOISE_SUPPRESS_MAX_SEVERITY`(2) · `NOISE_NON_ALARM_FILTER_ENABLED`(false) · `NOISE_APP_IMPACT_ENABLED`(false) · `MCP_SOURCE_ENDPOINTS`의 `apm`(빈 값 · 채팅과 같은 게이트웨이 주소) · `NOISE_APP_IMPACT_WINDOW_MINUTES`(10).
 
 ##### 24. 결정 기록
 - **하는 일**: 발송 판단이 끝날 때마다 결정 기록 파일에 JSON 한 줄을 덧붙인다.
@@ -3040,7 +3040,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 | 강등 | LLM `is_routine=true`(일상 반복) | 실효 심각도 ≤ `NOISE_SUPPRESS_MAX_SEVERITY`(2) |
 | 강등 | LLM 액션가능성 `noise` | 위 조건 + `NOISE_ENABLE_LLM_ACTIONABILITY` |
 
-**9.5 앱 영향 승격 (matrix 안)** — `NOISE_APP_IMPACT_ENABLED`(false)와 `NOISE_APM_MCP_URL`이 있을 때만. 보조 조정까지 끝난 결과가 [[DASHBOARD|티어 DASHBOARD — 화면에만]]·[[TICKET|티어 TICKET — 요약 큐 + 화면]]인 폴스타 알람이면 APM 게이트웨이에 같은 hostname의 사건창(`NOISE_APP_IMPACT_WINDOW_MINUTES` 10분) 안 fatal 이벤트를 묻고, 한 건이라도 있으면 [[PAGE|티어 PAGE — 즉시 통보]]로 올린다. 이때 알람과 같은 존의 제니퍼 소스에만 묻는다. 올리기만 한다 — SUPPRESS(강등 결과 포함)는 되살리지 않고, 억제 단계와 심각도3 단락은 이 지점에 오지 않는다. 사유에 「앱 영향 승격: APM fatal N건」이 붙는다.
+**9.5 앱 영향 승격 (matrix 안)** — `NOISE_APP_IMPACT_ENABLED`(false)가 켜지고 게이트웨이 주소(`MCP_SOURCE_ENDPOINTS`의 `apm`)가 있을 때만. 보조 조정까지 끝난 결과가 [[DASHBOARD|티어 DASHBOARD — 화면에만]]·[[TICKET|티어 TICKET — 요약 큐 + 화면]]인 폴스타 알람이면 APM 게이트웨이에 같은 hostname의 사건창(`NOISE_APP_IMPACT_WINDOW_MINUTES` 10분) 안 fatal 이벤트를 묻고, 한 건이라도 있으면 [[PAGE|티어 PAGE — 즉시 통보]]로 올린다. 이때 알람과 같은 존의 제니퍼 소스에만 묻는다. 올리기만 한다 — SUPPRESS(강등 결과 포함)는 되살리지 않고, 억제 단계와 심각도3 단락은 이 지점에 오지 않는다. 사유에 「앱 영향 승격: APM fatal N건」이 붙는다.
 :::
 ::: how
 1. 결정 추적의 **판단 경로**에서 결과를 정한 단계를 찾고, 이 표의 같은 표시명 행에서 조건과 설정을 확인한다.
@@ -3203,7 +3203,7 @@ API로만 쓴다. 켜기 전에 이 탭에서 실제 검색·답변이 되는지
 - **주의**: 통보 대상이 지정된 알람은 통보 정책 신호 하나로 매번 한 단계 오른다. 분석 LLM `is_routine=false`는 승격 근거가 아니다(D-318 — 프롬프트가 이력 통계가 없으면 false를 내도록 지시해 사실상 상시 참이었고, 운영 24시간 매트릭스 PAGE 66건 전부가 이 승격이었다).
 
 ##### 9.5 앱 영향 승격 (`matrix` 안)
-- **켜는 키**: `NOISE_APP_IMPACT_ENABLED`(false) + `NOISE_APM_MCP_URL`(APM 게이트웨이 SSE 주소 · 인증 `NOISE_APM_MCP_TOKEN`). 켰는데 주소가 비면 워커 기동 로그에 경고가 남고 승격하지 않는다.
+- **켜는 키**: `NOISE_APP_IMPACT_ENABLED`(false) + `MCP_SOURCE_ENDPOINTS`의 `apm`(APM 게이트웨이 SSE 주소 — 채팅과 같은 값 · 인증 `NOISE_APM_MCP_TOKEN`). 옛 `NOISE_APM_MCP_URL`은 폐지돼 읽지 않는다 — 남아 있으면 기동 로그에 경고가 남는다. 켰는데 주소가 비면 워커 기동 로그에 경고가 남고 승격하지 않는다.
 - **보는 것**: 보조 조정 결과가 DASHBOARD·TICKET인 폴스타 알람만 게이트웨이 `apm_events`(hostname · 기준 시각 = 알람 발생 시각 · 창 `NOISE_APP_IMPACT_WINDOW_MINUTES` 10분 · 레벨 fatal)를 부른다. PAGE·SUPPRESS·억제 단계·심각도3·제니퍼 이벤트 자신은 부르지 않는다.
 - **묻는 소스**: 알람 DB의 존에 대응하는 제니퍼 소스만 묻는다(`config/db_registry.yaml` `solutions[apm].sources[]` — 은행존 알람은 은행 제니퍼, 공동존 알람은 공동존 운영·개발/스테이징 제니퍼 둘 다). 다른 존에 같은 hostname이 있어도 그 이벤트로는 올리지 않는다. 존에 대응하는 소스가 없으면 모든 소스에 묻는다.
 - **결과**: fatal 이벤트가 한 건 이상이면 PAGE. 사유에 「앱 영향 승격: APM fatal N건」이 붙고, 노이즈 컨텍스트의 `app_impact`가 채워진다.
@@ -4465,6 +4465,7 @@ Redis에는 스키마 캐시·유사어·알람 스트림·세션이 있다. 서
 | `NOISE_APM_HOST_MAP_SCAN_PAGE_ROWS` | 1000 | 스캔이 한 번에 읽는 행 수(1 이상 10000 미만 — MCP 서버 행 상한보다 작아야 한 페이지가 잘리지 않는다) |
 | `JENNIFER_NODE_ADDRESS_ENABLED`(게이트웨이) | false | 노드 주소 조회. 켜야 사전 스캔의 노드 주소와 채팅 노드 주소 질의(도구 `apm_node_addresses`)가 동작한다. 끄면 스캔의 「APM 노드 주소」가 「꺼짐」이다 |
 | `JENNIFER_<ID>_WEB_USER` · `JENNIFER_<ID>_WEB_PASSWORD`(게이트웨이) | (비움) | 소스별 웹 조회 계정. 비우면 그 소스의 노드 주소는 `disabled` — [A-88](#a-88) |
+| `MCP_SOURCE_ENDPOINTS`의 `apm` · `NOISE_APM_MCP_TOKEN` | (비움) | 스캔이 부르는 게이트웨이 주소와 토큰. 주소는 채팅이 쓰는 값을 그대로 쓴다 — 따로 적지 않는다. 토큰은 게이트웨이의 `APM_GATEWAY_BEARER_TOKEN`(또는 `APM_GATEWAY_BEARER_TOKENS`의 한 값)과 같아야 한다. 주소가 비면 스캐너 사유가 `gateway_not_configured`, 연결·인증이 실패하면 `gateway_unreachable`이다 |
 
 `NOISE_` 키는 본체 `.env`(워커를 따로 띄우면 같은 `.env`), `JENNIFER_` 키는 `apm_gateway/.env`에 둔다. 모두 기동 때 한 번 읽는다.
 :::

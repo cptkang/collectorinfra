@@ -310,7 +310,7 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.dry_run:
         out = dry_run_plan(zones=zones, itam_cfg=itam_cfg, page_rows=page_rows)
     else:
-        client = build_apm_gateway_client(ng)
+        client = build_apm_gateway_client(cfg)
         out = asyncio.run(run_probe(
             gateway=GatewayToolCaller(client) if client is not None else None,
             execute=registry_executor(cfg), zones=zones, itam_cfg=itam_cfg,
