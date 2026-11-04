@@ -451,12 +451,13 @@ def _rate_retry_local(request: Request, sub: str) -> int | None:
 
 # ── 다시 찾기 제안 ──────────────────────────────────────────────────────
 async def _proposal_for(
-    repo: Any, row: Mapping[str, Any], *, max_targets: int
+    repo: Any, row: Mapping[str, Any], *, max_targets: int, canonical: bool = False
 ) -> tuple[Any, str | None]:
     """행의 키로 현재 스냅샷 기준 자동 제안 → `(AutoProposal | None, 사유)`.
 
     instance·workload = 노드 주소·VM 일치(`plan_scan_proposals` · ITAM 제외) · domain = ITAM
-    사슬. 사유:
+    사슬. `canonical`(`HOST_CANONICAL_MATCH_ENABLED` · plans/211 W7)은 스캔과 같이 정규형 색인 ·
+    이름 후보를 쓴다. 사유:
     `apm_map_no_inventory`(스냅샷 없음) · `not_in_inventory`(인벤토리에 그 인스턴스·도메인 없음) ·
     `no_match`(현재 스냅샷으로 잇지 못함) · `itam_config_invalid`.
     """
@@ -497,7 +498,9 @@ async def _proposal_for(
             return None, "not_in_inventory"
     elif not domain_rows:
         return None, "not_in_inventory"
-    by_ip, by_host = build_sms_index(await repo.snapshot_rows("sms_inventory"))
+    by_ip, by_host = build_sms_index(
+        await repo.snapshot_rows("sms_inventory"), canonical=canonical
+    )
     if scope == SCOPE_DOMAIN:
         from noise_gate.infrastructure.apm_host_map_sql_scanners import (
             ScanSqlError,
@@ -530,6 +533,7 @@ async def _proposal_for(
             generic_terms=itam_cfg.generic_terms,
             max_servers=itam_cfg.max_servers,
             max_targets=max_targets,
+            canonical=canonical,
         )
         return itam_proposal(
             domain_id=domain_id,
@@ -546,6 +550,7 @@ async def _proposal_for(
         itam=None,
         max_targets=max_targets,
         evidence={"trigger": "admin_resolve"},
+        canonical=canonical,
     )
     for proposal in plan.get(source_id, []):
         if proposal.scope == scope and proposal.match_key == match_key:
@@ -580,7 +585,7 @@ async def list_maps(
     source_id: str | None = Query(None, max_length=64),
     state: Literal["active", "ambiguous", "failed", "disabled"] | None = None,
     origin: Literal["auto", "manual"] | None = None,
-    basis: Literal["node_address", "vm_exact", "itam", "manual"] | None = None,
+    basis: Literal["node_address", "vm_exact", "itam", "manual", "name_candidate"] | None = None,
     q: str | None = Query(None, max_length=200),
     review: bool = False,
     limit: int = Query(50, ge=1, le=500),
@@ -945,7 +950,13 @@ async def _resolve(
         )
     before = await _get_or_404(repo, map_id)
     try:
-        proposal, reason = await _proposal_for(repo, before, max_targets=_max_targets(request))
+        proposal, reason = await _proposal_for(
+            repo,
+            before,
+            max_targets=_max_targets(request),
+            canonical=getattr(request.app.state.config, "host_canonical_match_enabled", False)
+            is True,
+        )
     except Exception as exc:  # noqa: BLE001
         logger.warning("APM·SMS 연계 다시 찾기 실패: id=%s", map_id, exc_info=True)
         raise _store_failed("스냅샷 조회", exc) from None
@@ -1237,32 +1248,43 @@ async def get_scan_run(
 
 
 # ── 인벤토리 ────────────────────────────────────────────────────────────
+def _apm_first_mapping(maps: Sequence[Mapping[str, Any]]) -> Any:
+    """APM 인벤토리 행 → 그 인스턴스의 첫 매핑 행(없으면 None) 함수.
+
+    키를 instance → workload → domain(`SCOPES` 순서)으로 보고 처음 있는 매핑 1건 — 표시용이며
+    진단 조회 순서(D-362 ①)를 흉내 내지 않는다. 「매핑 없음만」 판정도 이 결과로 한다."""
+    from noise_gate.domain.apm_host_map import SCOPES, match_key_for
+
+    index: dict[tuple[str, str, str, str], Mapping[str, Any]] = {}
+    for m in maps:
+        key = (
+            str(m.get("source_id") or ""),
+            str(m.get("domain_id") or ""),
+            str(m.get("scope") or ""),
+            str(m.get("match_key") or ""),
+        )
+        index.setdefault(key, m)
+
+    def _first(row: Mapping[str, Any]) -> Mapping[str, Any] | None:
+        base = (str(row.get("source_id") or ""), str(row.get("domain_id") or ""))
+        for scope in SCOPES:
+            key = match_key_for(scope, row.get("instance_name"))
+            if key is not None and (*base, scope, key) in index:
+                return index[(*base, scope, key)]
+        return None
+
+    return _first
+
+
 def _unmapped_filter(kind: str, maps: Sequence[Mapping[str, Any]]) -> Any:
     """「매핑 없음만」 판정 함수 — apm: 그 인스턴스의 instance·workload·domain 키가 모두 없음 ·
     sms: 어느 매핑의 대상도 아님 · itam: hostname이 어느 매핑 대상의 서버명·hostname도 아님."""
-    from noise_gate.domain.apm_host_map import SCOPES, match_key_for, target_identity
+    from noise_gate.domain.apm_host_map import target_identity
     from src.domain.host_names import normalize_hostname
 
     if kind == "apm":
-        keys = {
-            (
-                str(m.get("source_id") or ""),
-                str(m.get("domain_id") or ""),
-                str(m.get("scope") or ""),
-                str(m.get("match_key") or ""),
-            )
-            for m in maps
-        }
-
-        def _apm(row: Mapping[str, Any]) -> bool:
-            base = (str(row.get("source_id") or ""), str(row.get("domain_id") or ""))
-            for scope in SCOPES:
-                key = match_key_for(scope, row.get("instance_name"))
-                if key is not None and (*base, scope, key) in keys:
-                    return False
-            return True
-
-        return _apm
+        first = _apm_first_mapping(maps)
+        return lambda row: first(row) is None
     targets = [t for m in maps for t in (m.get("targets") or []) if isinstance(t, Mapping)]
     if kind == "sms":
         idents = {target_identity(t) for t in targets}
@@ -1300,18 +1322,21 @@ async def inventory(
 ) -> dict[str, Any]:
     """`{kind, run_id, rows[], has_more, limit, offset}`.
 
-    스냅샷이 없으면 `run_id: null` · 빈 목록.
+    스냅샷이 없으면 `run_id: null` · 빈 목록. apm 행에는 `mapping`(그 인스턴스의 첫 매핑 ·
+    없으면 null — `_apm_first_mapping`)을 붙인다.
     """
     _assert_admin(request, admin)
     repo = _repo(request)
     table = _INVENTORY_TABLES[kind]
     try:
         run_id = await repo.current_snapshot_run(table)
+        maps: list[dict[str, Any]] | None = None
         if run_id is None:
             rows: list[dict[str, Any]] = []
             has_more = False
         elif unmapped:
-            keep = _unmapped_filter(kind, await repo.all_rows())
+            maps = await repo.all_rows()
+            keep = _unmapped_filter(kind, maps)
             matched = [r for r in await repo.snapshot_rows(table, query=q) if keep(r)]
             rows = matched[offset : offset + limit]
             has_more = len(matched) > offset + limit
@@ -1319,6 +1344,11 @@ async def inventory(
             fetched = await repo.snapshot_rows(table, query=q, limit=limit + 1, offset=offset)
             rows = fetched[:limit]
             has_more = len(fetched) > limit
+        if kind == "apm" and run_id is not None:
+            first = _apm_first_mapping(maps if maps is not None else await repo.all_rows())
+            rows = [
+                {**r, "mapping": _view(m) if (m := first(r)) is not None else None} for r in rows
+            ]
     except Exception as exc:  # noqa: BLE001
         logger.warning("APM·SMS 연계 인벤토리 조회 실패: %s", kind, exc_info=True)
         raise _store_failed("조회", exc) from None

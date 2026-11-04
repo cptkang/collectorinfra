@@ -3,7 +3,7 @@
  *
  * ① 매핑 목록·필터·편집(대상·상태·메모 · 확인 · 확인 취소 · 다시 찾기 미리보기/적용 · 삭제) · 수동 추가
  * ② 사전 스캔(「지금 스캔」 · 진행 폴링 · 스캐너별 결과 · 노드 주소 소스별 상태 · DPM 「미연동」 · 이력)
- * ③ 인벤토리(마지막 스캔 스냅샷 검색 · 「매핑 없음만」 · 수동 추가 선택)
+ * ③ 인벤토리(마지막 스캔 스냅샷 검색 · 「매핑 없음만」 · 수동 추가 선택 · APM 행의 현재 연계 표시)
  *
  * 라우터는 `NOISE_APM_HOST_MAP_ENABLED`가 켜진 채 기동했을 때만 있다 — 첫 조회가 404면 탭을 숨긴 채 둔다
  * (플래그 off 화면 그대로). 토큰은 운영자(admin_token)·일반 로그인(user_token) 둘 다 읽는다.
@@ -19,11 +19,13 @@
     var OFF_TEXT = "APM·SMS 연계 기능이 꺼져 있습니다 — NOISE_APM_HOST_MAP_ENABLED를 켜고 본체를 재기동해야 이 탭이 동작합니다.";
     var CHANGED_TEXT = "목록을 본 뒤 다른 변경이 먼저 저장됐습니다 — 새로 고친 뒤 다시 확인하세요";
     var SCAN_OFF_TEXT = "자동 생성(NOISE_APM_HOST_MAP_AUTO_ENABLED)이 꺼져 있어 스캔할 수 없습니다 — 수동 매핑만 관리합니다.";
+    var INV_LINK_TITLE = "인스턴스 → 워크로드 → 도메인 기본값 순으로 처음 있는 연계(표시용 — 진단 순서와 다를 수 있음)";
+    var INV_EDIT_TITLE = "이 인스턴스의 연계 수정 — 매핑 목록의 [수정]과 같은 편집 칸";
 
     var L = {
         state: { active: "사용", ambiguous: "모호", failed: "실패", disabled: "연계 없음" },
         origin: { auto: "자동", manual: "관리자" },
-        basis: { node_address: "노드 주소", vm_exact: "VM 일치", itam: "ITAM 업무 추정", manual: "관리자 지정" },
+        basis: { node_address: "노드 주소", vm_exact: "VM 일치", itam: "ITAM 업무 추정", manual: "관리자 지정", name_candidate: "이름 후보" },
         scope: { instance: "인스턴스", workload: "워크로드", domain: "도메인 기본값" },
         review: { ambiguous: "모호", failed: "실패", changed: "변경됨", scan_suggests: "스캔 제안 있음", target_gone: "대상 사라짐" },
         run: { running: "실행 중", ok: "정상", partial: "일부 실패", failed: "실패", aborted: "중단" },
@@ -268,6 +270,7 @@
             closeEditor();
             closePreview();
             loadMaps(done);
+            if (st.opened) loadInv();  // 인벤토리 연계 칸·버튼도 새로 — 같은 인스턴스 재추가(409 exists) 방지
         }).catch(function (err) {
             btn.disabled = false;
             if (err.status === 409 && err.code === "version_conflict") { loadMaps(CHANGED_TEXT, "warn"); return; }
@@ -522,7 +525,7 @@
 
     // ── ③ 인벤토리 ──
     var INV_COLS = {
-        apm: ["제니퍼 소스 · 도메인", "인스턴스", "IP · 호스트", "노드 주소", ""],
+        apm: ["제니퍼 소스 · 도메인", "인스턴스", "IP · 호스트", "노드 주소", "연계", ""],
         sms: ["폴스타 소스", "서버명", "hostname", "IP", ""],
         itam: ["업무", "hostname", "IP", "사용", ""],
     };
@@ -536,6 +539,22 @@
         head.appendChild(tr);
     }
 
+    // APM 행의 「연계」 칸 — 서버가 붙인 `mapping`(instance → workload → domain 첫 행 · 없으면 null)
+    function invLinkNode(m) {
+        if (!m) return node("span", "없음", "ahm-sub");
+        var box = document.createElement("div");
+        box.title = INV_LINK_TITLE;
+        box.appendChild(tag(L.scope[m.scope] || String(m.scope || "-")));
+        box.appendChild(tag(L.state[m.state] || String(m.state || "-"), m.state === "active" ? null : "warn"));
+        box.appendChild(tag(L.basis[m.basis] || String(m.basis || "-")));
+        var targets = Array.isArray(m.targets) ? m.targets : [];
+        var t = targets[0];
+        box.appendChild(node("div", t
+            ? [t.db_id, t.server_name || t.hostname].filter(Boolean).join(" / ") + (targets.length > 1 ? " 외 " + (targets.length - 1) + "대" : "")
+            : "대상 없음", "ahm-sub"));
+        return box;
+    }
+
     function invRow(kind, r) {
         var tr = document.createElement("tr");
         if (kind === "apm") {
@@ -543,9 +562,18 @@
             cell(tr, r.instance_name || "-");
             cell(tr, [r.ip, r.host_name].filter(Boolean).join(" · ") || "-");
             cell(tr, [r.host_address, r.host_address_status].filter(Boolean).join(" · ") || "-");
-            cell(tr, button("이 인스턴스 연계 추가", function () {
-                openEditor(null, { source_id: r.source_id, domain_id: r.domain_id, domain_name: r.domain_name, scope: "instance", instance_name: r.instance_name });
-            }));
+            var m = r.mapping || null;
+            cell(tr, invLinkNode(m));
+            if (m && m.scope === "instance") {
+                var edit = button("수정", function () { openEditor(m); });
+                edit.title = INV_EDIT_TITLE;
+                cell(tr, edit);
+            } else {
+                // instance 매핑이 없을 때만 — workload·domain 연계는 칸에 표시만 하고 instance 행 추가는 허용
+                cell(tr, button("이 인스턴스 연계 추가", function () {
+                    openEditor(null, { source_id: r.source_id, domain_id: r.domain_id, domain_name: r.domain_name, scope: "instance", instance_name: r.instance_name });
+                }));
+            }
         } else if (kind === "sms") {
             cell(tr, r.db_id || "-");
             cell(tr, r.server_name || "-");
@@ -578,7 +606,7 @@
             if (!tbody) return;
             tbody.textContent = "";
             var rows = Array.isArray(body.rows) ? body.rows : [];
-            if (!rows.length) emptyRow(tbody, 5, "행이 없습니다.");
+            if (!rows.length) emptyRow(tbody, INV_COLS[kind].length, "행이 없습니다.");
             rows.forEach(function (r) { tbody.appendChild(invRow(kind, r)); });
             var info = el("apmInvPageInfo");
             if (info) info.textContent = rows.length ? (st.invOffset + 1) + "–" + (st.invOffset + rows.length) + "건" : "";

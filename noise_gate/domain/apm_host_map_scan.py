@@ -12,6 +12,12 @@ plans/210 §3.5 · D-362.
   2대 이상 → instance 행(ambiguous · 후보만 · 진단에 쓰지 않음).
 - itam: 이번 스캔에서 인스턴스가 하나도 잇지 못한 도메인만 → domain 행(`apm_host_map_itam`).
 
+`canonical`(plans/211 W7 · `HOST_CANONICAL_MATCH_ENABLED`)이 켜지면 SMS hostname 색인이
+정규형(L0)이다(`build_sms_index(canonical=True)` — 같은 색인을 itam 사슬도 쓴다). 그래도
+잇지 못한 인스턴스는 이름 후보(L3 · D-348 후보 등급 `rank_candidates`)를 메모리에서 매겨
+instance 행을 **`ambiguous` · `name_candidate`로만** 남긴다(진단 연결에 쓰지 않음 · DB 조회
+추가 0 · 파드 제외 · 도메인의 itam 판정에서는 잇지 못한 인스턴스로 센다). 꺼지면 현행과 같다.
+
 계층: domain — stdlib + 같은 패키지 + `src.domain.host_names`(stdlib 순수)만.
 스키마 리터럴 없음(D-088).
 """
@@ -19,13 +25,15 @@ plans/210 §3.5 · D-362.
 from __future__ import annotations
 
 import ipaddress
+from bisect import bisect_left
 from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.domain.host_names import normalize_hostname
+from src.domain.host_names import canonical_host_key, name_tokens
 
 from noise_gate.domain.apm_host_map import (
+    BASIS_NAME_CANDIDATE,
     BASIS_NODE_ADDRESS,
     BASIS_VM_EXACT,
     DEFAULT_MAX_TARGETS,
@@ -44,7 +52,9 @@ from noise_gate.domain.apm_host_map import (
     WRITE_UPDATE,
     AutoProposal,
     instance_match_key,
+    make_target,
     normalize_targets,
+    sms_host_lookup,
     target_identity,
     vm_exact_match,
     workload_match_key,
@@ -56,6 +66,7 @@ from noise_gate.domain.apm_host_map_itam import (
     itam_proposal,
     resolve_itam_chain,
 )
+from noise_gate.domain.host_link import build_probe_plan, rank_candidates
 
 #: 스캐너 이름(실행 기록 `scanners` 키 · 실행 순서).
 SCANNER_APM_INVENTORY = "apm_inventory"
@@ -83,6 +94,10 @@ RULE_ITAM = "itam"
 
 #: 노드 주소 행 상태 중 「노드 주소를 안다」.
 NODE_STATUS_OK = "ok"
+
+#: 이름 후보(L3) 좁힘 키 하나에 걸리는 SMS 색인 항목 상한 — 넘는 키(전 서버가 공유하는 흔한 토큰 ·
+#: 짧은 접두)는 좁힘에 쓰지 않는다. 너무 흔해 후보 의미가 없고, 인스턴스 × SMS 전수 대조를 막는다.
+NAME_CANDIDATE_BUCKET_CAP = 50
 
 
 @dataclass
@@ -140,6 +155,104 @@ def _ip(value: Any) -> str | None:
         return None
 
 
+def _first_label(value: Any) -> str:
+    key = canonical_host_key(value)
+    return "" if not key or _ip(key) else key.split(".", 1)[0]
+
+
+class _NameCandidateIndex:
+    """이름 후보(L3) 좁힘 색인 — SMS 대상마다 정규화 토큰(`name_tokens`)·정규형 첫 레이블을 정렬해
+    둔다(스캔 1회 · 메모리). 질의 키로 시작하는 항목(접두 범위)만 꺼내 `rank_candidates`에
+    넘긴다."""
+
+    def __init__(self, by_host: Mapping[str, Sequence[Mapping[str, Any]]]) -> None:
+        targets: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+        for bucket in by_host.values():
+            for target in bucket:
+                targets.setdefault(target_identity(target), target)
+        self._targets = list(targets.values())
+        entries: list[tuple[str, int]] = []
+        for i, target in enumerate(self._targets):
+            keys: set[str] = set()
+            for value in (target.get("hostname"), target.get("server_name")):
+                keys.update(name_tokens(value))
+                first = _first_label(value)
+                if first:
+                    keys.add(first)
+            entries.extend((k, i) for k in keys)
+        entries.sort()
+        self._keys = [k for k, _ in entries]
+        self._rows = [i for _, i in entries]
+
+    def rank(
+        self, name: str, ip: str, *, limit: int
+    ) -> list[tuple[dict[str, Any], dict[str, Any]]]:
+        """질의 이름(+IP) → `[(후보 등급, 대상)…]`(등급·점수 순 · `limit`건)."""
+        plan = build_probe_plan(name, ip=ip or None)
+        probes = {*plan.tokens, _first_label(name)} - {""}
+        picked: set[int] = set()
+        for probe in probes:
+            lo = bisect_left(self._keys, probe)
+            hi = bisect_left(self._keys, probe + "\U0010ffff", lo)
+            if hi - lo <= NAME_CANDIDATE_BUCKET_CAP:
+                picked.update(self._rows[lo:hi])
+        if not picked:
+            return []
+        by_key: dict[tuple[str, str, str], Mapping[str, Any]] = {}
+        rows: list[tuple[str, Mapping[str, Any]]] = []
+        for i in sorted(picked):
+            t = self._targets[i]
+            db_id, server, host = (_text(t.get(k)) for k in ("db_id", "server_name", "hostname"))
+            by_key[(db_id, server.lower(), host.lower())] = t
+            rows.append(
+                (db_id, {"hostname": host, "name": server, "ipaddress": _text(t.get("ip"))})
+            )
+        out: list[tuple[dict[str, Any], dict[str, Any]]] = []
+        for cand in rank_candidates(plan, rows, canonical=True, limit=limit):
+            t = by_key[(cand["db_id"], cand["server_name"].lower(), cand["hostname"].lower())]
+            out.append((cand, make_target(
+                db_id=_text(t.get("db_id")), server_name=_text(t.get("server_name")),
+                hostname=_text(t.get("hostname")), ip=_text(t.get("ip")),
+                resource_id=_text(t.get("resource_id")),
+            )))
+        return out
+
+
+def _name_candidate_proposal(
+    index: _NameCandidateIndex,
+    row: Mapping[str, Any],
+    *,
+    domain: str,
+    domain_name: str,
+    key: str,
+    name: str,
+    cap: int,
+    base: Mapping[str, Any],
+) -> AutoProposal | None:
+    """L0까지 못 이은 인스턴스 1건 → 이름 후보 행(`ambiguous` · `name_candidate`) 또는 None."""
+    host_name = _text(row.get("host_name"))
+    query = host_name or (name if canonical_host_key(name) else "")
+    if not query:
+        return None
+    ip = _ip(row.get("ip")) or ""
+    ranked = index.rank(query, ip, limit=cap)
+    if not ranked:
+        return None
+    return AutoProposal(
+        domain_id=domain, scope=SCOPE_INSTANCE, match_key=key,
+        basis=BASIS_NAME_CANDIDATE, state=STATE_AMBIGUOUS,
+        targets=tuple(normalize_targets([t for _c, t in ranked], cap)),
+        evidence={**base, "source": "scan", "host_name": host_name, "query": query, "ip": ip,
+                  "candidates": [
+                      {"db_id": c["db_id"], "server_name": c["server_name"],
+                       "grade_key": c["grade_key"], "score": c["score"],
+                       "reasons": list(c["reasons"])}
+                      for c, _t in ranked
+                  ]},
+        domain_name=domain_name, instance_example=name,
+    )
+
+
 @dataclass(frozen=True)
 class ItamSnapshot:
     """ITAM 사슬 입력 — 업무·서버 스냅샷과 일반어·서버 상한."""
@@ -159,15 +272,18 @@ def plan_scan_proposals(
     itam: ItamSnapshot | None,
     max_targets: int = DEFAULT_MAX_TARGETS,
     evidence: Mapping[str, Any] | None = None,
+    canonical: bool = False,
 ) -> dict[str, list[AutoProposal]]:
     """APM 인벤토리 스냅샷 행 → `{source_id: [제안…]}`(모듈 머리 규칙).
 
     인벤토리 행: `{source_id, domain_id, domain_name, domain_description, instance_name, ip,
     host_name, host_address, host_address_status}`. `use_node_address`가 거짓(노드 주소 스캐너 실패·
     꺼짐)이면 node_address 규칙을, `itam`이 None(ITAM 스캐너 실패)이면 itam 규칙을 건너뛴다.
+    `canonical`은 `by_host`가 `build_sms_index(canonical=True)`일 때 켠다 — L0 조회 + L3 이름 후보.
     """
     cap = max(1, int(max_targets))
     base = dict(evidence or {})
+    names: _NameCandidateIndex | None = None
     domains: dict[tuple[str, str], list[Mapping[str, Any]]] = {}
     for row in inventory:
         source, domain = _text(row.get("source_id")), _text(row.get("domain_id"))
@@ -201,21 +317,32 @@ def plan_scan_proposals(
                         slot[1].extend(match.targets)
             if proposal is None:
                 ip = _ip(row.get("ip"))
+                host_hits = sms_host_lookup(by_host, row.get("host_name"), canonical=canonical)
                 match = vm_exact_match(
                     by_ip.get(ip) if ip else None,
-                    by_host.get(normalize_hostname(row.get("host_name"))),
+                    host_hits,
                     max_targets=cap,
                 )
                 if match.state is not None:
+                    vm_evidence = {**base, "source": "scan", "ip": ip or "",
+                                   "host_name": _text(row.get("host_name")),
+                                   "candidates": len(match.targets)}
+                    if canonical and host_hits:
+                        vm_evidence["match"] = "canonical"
                     proposal = AutoProposal(
                         domain_id=domain, scope=SCOPE_INSTANCE, match_key=key,
                         basis=BASIS_VM_EXACT, state=match.state,
                         targets=tuple(normalize_targets(list(match.targets), cap)),
-                        evidence={**base, "source": "scan", "ip": ip or "",
-                                  "host_name": _text(row.get("host_name")),
-                                  "candidates": len(match.targets)},
+                        evidence=vm_evidence,
                         domain_name=domain_name, instance_example=name,
                     )
+            if proposal is None and canonical and workload_match_key(name) is None:
+                # 파드는 이름 후보를 만들지 않는다(D-355 ④ — 서버 선택을 유도하지 않음)
+                names = names or _NameCandidateIndex(by_host)
+                proposal = _name_candidate_proposal(
+                    names, row, domain=domain, domain_name=domain_name, key=key, name=name,
+                    cap=cap, base=base,
+                )
             if proposal is not None:
                 proposals.append(proposal)
                 linked_any = linked_any or proposal.state == STATE_ACTIVE
@@ -237,7 +364,7 @@ def plan_scan_proposals(
                 domain_name=domain_name, domain_description=description,
                 apps=itam.apps, servers=itam.servers, by_ip=by_ip, by_host=by_host,
                 generic_terms=itam.generic_terms, max_servers=itam.max_servers,
-                max_targets=cap,
+                max_targets=cap, canonical=canonical,
             )
             proposals.append(itam_proposal(
                 domain_id=domain, domain_name=domain_name, result=result,
@@ -289,6 +416,7 @@ def add_write_results(
 
 
 __all__ = [
+    "NAME_CANDIDATE_BUCKET_CAP",
     "NODE_STATUS_OK",
     "RULE_ITAM",
     "RULE_NODE_ADDRESS",

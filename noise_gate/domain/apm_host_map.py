@@ -16,6 +16,8 @@
 2. 자동 instance 행.
 4. 자동 workload → domain 행(`MapDecision.deferred` — 호출부가 노드 주소 직접 조회 뒤에 쓴다).
 `ambiguous`·`failed` 행은 쓰지 않고 사유만 남긴다. `target_gone`·`kind != "sms"` 대상은 뺀다.
+이름 후보(`name_candidate` · plans/211 W7) 행은 늘 `ambiguous`라 진단 연결에 쓰지 않는다 — 사유만
+`apm_map_name_candidate`로 구분한다.
 
 쓰기 규칙(§3.4): 자동 결과는 `origin=auto AND verified=false AND state<>'disabled'` 행만 갱신한다.
 관리자 행(manual·verified)은 결과가 달라도 `evidence.scan_suggests`만 남긴다.
@@ -33,7 +35,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from src.domain.host_names import k8s_workload_name, normalize_hostname
+from src.domain.host_names import (
+    canonical_host_key,
+    host_keys_match,
+    k8s_workload_name,
+    normalize_hostname,
+)
 
 # ── 상수 ────────────────────────────────────────────────────────────────
 SCOPE_INSTANCE = "instance"
@@ -50,7 +57,12 @@ BASIS_NODE_ADDRESS = "node_address"
 BASIS_VM_EXACT = "vm_exact"
 BASIS_ITAM = "itam"
 BASIS_MANUAL = "manual"
-BASES: tuple[str, ...] = (BASIS_NODE_ADDRESS, BASIS_VM_EXACT, BASIS_ITAM, BASIS_MANUAL)
+#: 이름 후보(plans/211 W7 · `HOST_CANONICAL_MATCH_ENABLED` on 스캔만) — 늘 `ambiguous`.
+#: 진단 연결에 쓰지 않는다.
+BASIS_NAME_CANDIDATE = "name_candidate"
+BASES: tuple[str, ...] = (
+    BASIS_NODE_ADDRESS, BASIS_VM_EXACT, BASIS_ITAM, BASIS_MANUAL, BASIS_NAME_CANDIDATE,
+)
 
 STATE_ACTIVE = "active"
 STATE_AMBIGUOUS = "ambiguous"
@@ -63,6 +75,8 @@ REASON_PENDING = "apm_map_pending"
 REASON_FAILED = "apm_map_failed"
 REASON_NO_INVENTORY = "apm_map_no_inventory"
 REASON_AMBIGUOUS = "apm_map_ambiguous"
+#: 쓰지 못한 행이 이름 후보(`name_candidate` · ambiguous)일 때(plans/211 W7 — 연결 동작은 같다).
+REASON_NAME_CANDIDATE = "apm_map_name_candidate"
 
 #: 대상 종류 — `dpm`은 자리만(§3.9 · 소비자는 `sms`만 쓴다).
 KIND_SMS = "sms"
@@ -121,6 +135,7 @@ _BASIS_LABELS: dict[str, str] = {
     BASIS_VM_EXACT: "VM 인스턴스 IP·호스트명 정확 일치",
     BASIS_ITAM: "ITAM 업무 추정",
     BASIS_MANUAL: "관리자 지정",
+    BASIS_NAME_CANDIDATE: "이름이 비슷한 후보 — 관리자 확인 필요",
 }
 
 
@@ -358,8 +373,10 @@ class MapDecision:
     reason: str | None = None
 
 
-def _state_reason(state: Any) -> str:
-    return REASON_AMBIGUOUS if state == STATE_AMBIGUOUS else REASON_FAILED
+def _state_reason(state: Any, basis: Any = None) -> str:
+    if state != STATE_AMBIGUOUS:
+        return REASON_FAILED
+    return REASON_NAME_CANDIDATE if basis == BASIS_NAME_CANDIDATE else REASON_AMBIGUOUS
 
 
 def decide_from_map(
@@ -376,7 +393,7 @@ def decide_from_map(
         if not isinstance(rec, Mapping):
             return None
         if rec.get("state") != STATE_ACTIVE:
-            reason = reason or _state_reason(rec.get("state"))
+            reason = reason or _state_reason(rec.get("state"), rec.get("basis"))
             return None
         targets = usable_targets(rec.get("targets"), max_targets)
         if not targets:
@@ -466,6 +483,7 @@ def plan_auto_write(
     | disabled | `skip` |
     | manual·verified · 결과 동일 / 다름 | `skip` / `suggest`(evidence.scan_suggests만) |
     | auto·미확인 · 결과 동일 / 다름 | `same`(updated_at만) / `update`(+previous_targets · 변경됨) |
+    | active(관리자·자동) × 이름 후보 제안 | `skip`(쓰는 연결을 덮지 않는다 · plans/211 W7) |
 
     「결과」는 state와 대상 동일성 집합이다.
     """
@@ -480,6 +498,10 @@ def plan_auto_write(
     old_basis = str(existing.get("basis") or "")
     old_evidence = _evidence(existing)
     if old_state == STATE_DISABLED:
+        return MapWrite(WRITE_SKIP, old_targets, old_state, old_basis, old_evidence)
+    if proposal.basis == BASIS_NAME_CANDIDATE and old_state == STATE_ACTIVE:
+        # 이름 후보(W7)는 잇지 못한 키만 채운다 — 쓰는 연결(관리자·되적재·이전 스캔)을 덮거나
+        # 스캔마다 scan_suggests로 다시 표시하지 않는다
         return MapWrite(WRITE_SKIP, old_targets, old_state, old_basis, old_evidence)
     if is_admin_record(existing):
         if _same_result(existing, proposal):
@@ -634,13 +656,53 @@ def _valid_ip(value: Any) -> str | None:
         return None
 
 
+def sms_host_key(value: Any, *, canonical: bool = False) -> str:
+    """SMS hostname 색인 키 — 색인을 만드는 쪽과 찾는 쪽이 같이 쓴다.
+
+    off = `normalize_hostname`(현행). on(plans/211 W7) = 정규형(`canonical_host_key`)의 첫 레이블
+    (IP면 정규형 그대로) — 버킷일 뿐이고 일치 판정은 `sms_host_lookup`이 `host_keys_match`로 한다.
+    """
+    if not canonical:
+        return normalize_hostname(value)
+    key = canonical_host_key(value)
+    if not key or _valid_ip(key):
+        return key
+    return key.split(".", 1)[0]
+
+
+def sms_host_lookup(
+    by_host: Mapping[str, Sequence[Mapping[str, Any]]],
+    value: Any,
+    *,
+    canonical: bool = False,
+) -> Sequence[Mapping[str, Any]] | None:
+    """hostname 색인 조회. off는 `by_host.get(normalize_hostname(value))`와 같다.
+
+    on이면 같은 키 함수로 버킷을 꺼낸 뒤 질의와 대상 hostname·서버명 중 하나가 `host_keys_match`로
+    같은 서버만 남긴다(FQDN 도메인이 서로 다르면 같은 버킷이어도 뺀다).
+    """
+    if not canonical:
+        return by_host.get(normalize_hostname(value))
+    key = sms_host_key(value, canonical=True)
+    bucket = by_host.get(key) if key else None
+    if not bucket:
+        return None
+    return [
+        t for t in bucket
+        if host_keys_match(value, t.get("hostname")) or host_keys_match(value, t.get("server_name"))
+    ]
+
+
 def build_sms_index(
     rows: Iterable[Mapping[str, Any]],
+    *,
+    canonical: bool = False,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
     """SMS 스냅샷 행 → `(ip 색인, hostname 색인)` — 값은 서버 목록(같은 키의 2대 이상도 싣는다).
 
     행: `{db_id, server_name, hostname, ip, nic_ips, resource_id}`. IP 키는 대표 IP + NIC IP(형식
-    검증 통과분), hostname 키는 정규화 hostname·서버명이다.
+    검증 통과분), hostname 키는 hostname·서버명의 `sms_host_key`(`canonical` off = 정규화 이름 ·
+    on = 정규형 첫 레이블 — 조회는 `sms_host_lookup`)다. 진단 고속 경로 Redis 색인은 늘 off다.
     """
     by_ip: dict[str, list[dict[str, Any]]] = {}
     by_host: dict[str, list[dict[str, Any]]] = {}
@@ -665,7 +727,7 @@ def build_sms_index(
             if ip:
                 _add(by_ip, ip, target)
         for raw_name in (row.get("hostname"), row.get("server_name")):
-            name = normalize_hostname(raw_name)
+            name = sms_host_key(raw_name, canonical=canonical)
             if name:
                 _add(by_host, name, target)
     return by_ip, by_host
@@ -1057,6 +1119,7 @@ __all__ = [
     "BASES",
     "BASIS_ITAM",
     "BASIS_MANUAL",
+    "BASIS_NAME_CANDIDATE",
     "BASIS_NODE_ADDRESS",
     "BASIS_VM_EXACT",
     "DEFAULT_MAX_TARGETS",
@@ -1075,6 +1138,7 @@ __all__ = [
     "PURGE_UNSEEN",
     "REASON_AMBIGUOUS",
     "REASON_FAILED",
+    "REASON_NAME_CANDIDATE",
     "REASON_NO_INVENTORY",
     "REASON_PENDING",
     "SCAN_ABORTED",
@@ -1134,6 +1198,8 @@ __all__ = [
     "plan_auto_write",
     "purge_reason",
     "same_targets",
+    "sms_host_key",
+    "sms_host_lookup",
     "target_identity",
     "touch_message",
     "unresolved_hint",

@@ -181,8 +181,13 @@ class ApmHostMapScanService:
         lock_ttl_seconds: int = LOCK_TTL_SECONDS,
         heartbeat_seconds: float = HEARTBEAT_SECONDS,
         clock: Callable[[], datetime] | None = None,
+        canonical_match: bool = False,
     ) -> None:
-        """의존성과 설정(`NOISE_APM_HOST_MAP_*` 해석값)을 받는다."""
+        """의존성과 설정(`NOISE_APM_HOST_MAP_*` 해석값)을 받는다.
+
+        `canonical_match`(`HOST_CANONICAL_MATCH_ENABLED` · plans/211 W7)면 일괄 생성의 SMS hostname
+        색인을 정규형으로 만들고 이름 후보 행을 남긴다. Redis SMS 색인 재구성은 늘 현행 키다.
+        """
         self._repo = repo
         self._cache = cache
         self._lock = lock
@@ -195,6 +200,7 @@ class ApmHostMapScanService:
         self._lock_ttl = int(lock_ttl_seconds)
         self._heartbeat = float(heartbeat_seconds)
         self._clock = clock or (lambda: datetime.now(UTC))
+        self._canonical = canonical_match is True
         self._tasks: set[asyncio.Task[Any]] = set()
 
     # ── 시작 ───────────────────────────────────────────────────────────
@@ -399,10 +405,11 @@ class ApmHostMapScanService:
                 summary["skipped"].append(RULE_NODE_ADDRESS)
             if itam is None:
                 summary["skipped"].append(RULE_ITAM)
-            by_ip, by_host = build_sms_index(sms_rows)
+            by_ip, by_host = build_sms_index(sms_rows, canonical=self._canonical)
             plan = plan_scan_proposals(
                 inventory, by_ip, by_host, use_node_address=use_node, itam=itam,
                 max_targets=self._max_targets, evidence={"run_id": run_id},
+                canonical=self._canonical,
             )
             now = self._clock()
             for source_id, proposals in plan.items():
@@ -620,6 +627,7 @@ def build_scan_service(
         retry_hours=int(getattr(ng, "apm_host_map_retry_hours", 24)),
         generic_terms=itam_cfg.generic_terms if itam_cfg is not None else (),
         itam_max_servers=itam_cfg.max_servers if itam_cfg is not None else DEFAULT_MAX_SERVERS,
+        canonical_match=getattr(app_config, "host_canonical_match_enabled", False) is True,
     )
 
 
