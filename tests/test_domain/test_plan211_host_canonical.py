@@ -104,11 +104,11 @@ def test_condition_single_label_with_suffix() -> None:
 def test_condition_fqdn() -> None:
     assert build_canonical_host_condition(
         "t.c", ["WEB_AP01.corp.local"], business_suffix=False,
-    ) == f"({N} = 'webap01.corp.local' OR {N} = 'webap01')"
+    ) == f"({N} IN ('webap01.corp.local', 'webap01.corp.local.', 'webap01', 'webap01.'))"
     assert build_canonical_host_condition(
         "t.c", ["WEB_AP01.corp.local"], business_suffix=True,
     ) == (
-        f"({N} = 'webap01.corp.local' OR {N} = 'webap01'"
+        f"({N} IN ('webap01.corp.local', 'webap01.corp.local.', 'webap01', 'webap01.')"
         f" OR {N} LIKE 'webap01(%' OR {N} LIKE 'webap01 (%')"
     )
 
@@ -214,3 +214,20 @@ def test_detect_and_collect_on_off() -> None:
     assert [t.normalized for t in ek.collect_family_values(
         _ROWS, "name", ek.FAMILY_HOSTNAME,
     )] == ["dbsvr01", "batch01"]  # off는 공백 분해로 `dbsvr01`만 건진다
+
+
+def test_condition_matches_trailing_dot_rows() -> None:
+    """DB에 끝 점이 붙어 저장된 값(`web.corp.local.`·`web.`)도 정규형 조건에 걸린다(sqlite 평가)."""
+    import sqlite3
+
+    rows = ["WEB-01.corp.local.", "web_01.", "web01.other.", "web01", "web011"]
+    con = sqlite3.connect(":memory:")
+    con.execute("CREATE TABLE t (c TEXT)")
+    con.executemany("INSERT INTO t VALUES (?)", [(r,) for r in rows])
+    for value, expected in [
+        ("web01.corp.local", {"WEB-01.corp.local.", "web_01.", "web01"}),
+        ("web01", {"WEB-01.corp.local.", "web_01.", "web01.other.", "web01"}),
+    ]:
+        cond = build_canonical_host_condition("t.c", [value], business_suffix=False)
+        got = {r for (r,) in con.execute(f"SELECT c FROM t WHERE {cond}")}
+        assert got == expected, (value, got)

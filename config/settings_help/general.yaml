@@ -560,3 +560,26 @@ settings:
     stability: 영향 없다(소비되지 않음).
     recommendation: 건드릴 필요가 없다.
     related: [CONVERSATION_MAX_TURNS]
+
+  HOST_CANONICAL_MATCH_ENABLED:
+    summary: 솔루션(폴스타·제니퍼·자산관리)마다 조금씩 다른 서버 이름을 같은 서버로 맞출지.
+    behavior: >-
+      호스트 이름을 비교할 때 괄호 업무명 꼬리(「webap01(인터넷뱅킹)」)·대소문자·끝 점·`-`·`_`를 접은
+      정규형으로 맞춘다. 둘 다 도메인까지 있는 이름이면 도메인까지 같아야 같은 서버로 본다. 정규형이
+      정확히 한 서버에만 맞을 때만 자동으로 잇고, 여러 서버에 맞으면 후보로만 보여 준다(LIKE 비슷한 이름은
+      후보 전용). 교차 시스템 키 브리지·식별자 소재 확인·알람 호스트 후보에 쓰인다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 종전 비교(소문자 전체 같음 또는 짧은 이름 같음)와 비트 동일하다.
+      - value: "true"
+        effect: >-
+          「web-ap01」·「WEB_AP01」·「webap01(인터넷뱅킹)」이 같은 서버로 맞는다. 도메인만 다른 두 FQDN은
+          더 이상 같은 서버로 보지 않는다.
+    example: >-
+      폴스타에는 「webap01(인터넷뱅킹)」, 자산관리에는 「WEB-AP01」로 등록된 서버는 꺼져 있으면 서로 다른
+      서버라 교차 질의가 빈 결과로 끝난다. 켜면 같은 서버로 이어 자산 정보와 사용률을 함께 답한다.
+    performance: 비교 조건이 컬럼에 함수를 씌우므로 큰 표에서는 인덱스를 못 탄다 — 폴스타 자원 표 행 수를 먼저 확인한다.
+    stability: mcp_server(같은 이름 키)와 APM 게이트웨이(APM_HOST_CANONICAL_MATCH_ENABLED)는 각자 따로 켠다. 재시작이 필요하다.
+    recommendation: 기본 false. 폐쇄망에서 정규형 충돌(서로 다른 서버가 같은 키) 건수를 확인한 뒤 켠다.
+    related: [CROSS_SYSTEM_KEY_BRIDGE_ENABLED, CROSS_SYSTEM_PROBE_ENABLED]

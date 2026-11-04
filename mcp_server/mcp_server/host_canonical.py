@@ -93,7 +93,7 @@ def build_canonical_host_condition(
     `N = REPLACE(REPLACE(LOWER(TRIM(col)), '-', ''), '_', '')`, `n` = 입력 정규형, `s` = 첫 레이블.
 
     - 단일 레이블: `(N = 's' OR N LIKE 's.%')`
-    - FQDN: `(N = 'n' OR N = 's')`
+    - FQDN: `(N IN ('n', 'n.', 's', 's.'))` — 끝 점이 붙어 저장된 값(`web.corp.`)도 맞춘다
     - `business_suffix=True`면 둘 다 `OR N LIKE 's(%' OR N LIKE 's (%'`를 덧붙인다
       (괄호 업무명 꼬리를 저장하는 쪽만 — D-363 부기 1).
 
@@ -110,7 +110,8 @@ def build_canonical_host_condition(
         seen.add(n)
         s = n.split(".", 1)[0]
         if "." in n:
-            parts = [f"{norm} = {_sql_literal(n)}", f"{norm} = {_sql_literal(s)}"]
+            keys = ", ".join(_sql_literal(k) for k in (n, n + ".", s, s + "."))
+            parts = [f"{norm} IN ({keys})"]
         else:
             parts = [f"{norm} = {_sql_literal(s)}", f"{norm} LIKE {_sql_literal(s + '.%')}"]
         if business_suffix:

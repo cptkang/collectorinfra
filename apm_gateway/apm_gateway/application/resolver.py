@@ -30,12 +30,16 @@
 `override`·`host_name`·`regex`·`exact` 규칙의 호스트 비교를 정규형 비교(`host_keys_match` — `-`·`_`
 무시 · 「호스트(업무명)」 꼬리 무시 · 둘 다 FQDN이면 도메인까지 비교)로 바꾼다. 끄면 종전 비교
 (소문자 전체 같음 또는 짧은 이름 같음)와 비트 동일하다. `prefix`·`reverse`·신뢰도는 그대로다.
+단 `exact`는 **인스턴스 이름**을 호스트와 대조하므로 **숫자와 숫자 사이**의 `-`·`_`는 지우지 않는다
+— 지우면 인스턴스 번호가 붙은 `webap01-1`이 호스트 `webap011`과 HIGH로 이어진다. 그 밖 자리의
+`-`·`_`는 다른 규칙처럼 무시한다(`web_ap01` = `webap01`).
 """
 
 from __future__ import annotations
 
 import asyncio
 import contextvars
+import ipaddress
 import logging
 import re
 import time
@@ -47,7 +51,7 @@ from apm_gateway.adapters.jennifer.api import JenniferApi
 from apm_gateway.application.parallel import gather_bounded
 from apm_gateway.domain.call_context import SharedLoadScope, current_scope, set_scope
 from apm_gateway.domain.errors import SOURCE_UNAVAILABLE, ApmError
-from apm_gateway.domain.host_canonical import host_keys_match
+from apm_gateway.domain.host_canonical import host_keys_match, split_business_suffix
 from apm_gateway.domain.sources import DEFAULT_SOURCE_ID
 
 logger = logging.getLogger(__name__)
@@ -145,6 +149,36 @@ def _host_equal(a: str, b: str) -> bool:
     if not na or not nb:
         return False
     return na == nb or short_host(na) == short_host(nb)
+
+
+_DIGIT_SEPARATOR = re.compile(r"(?<=\d)[-_]+(?=\d)")
+
+
+def _separator_form(value: str) -> str:
+    """업무명 꼬리·대소문자·끝 점을 접고 숫자 사이 구분자만 `~`로 남긴다(나머지 `-`·`_`는 지움)."""
+    host, _ = split_business_suffix(value)
+    host = _DIGIT_SEPARATOR.sub("~", host.lower().rstrip("."))
+    return host.replace("-", "").replace("_", "")
+
+
+def _is_ip(value: str) -> bool:
+    try:
+        ipaddress.ip_address(split_business_suffix(value)[0].rstrip("."))
+    except ValueError:
+        return False
+    return True
+
+
+def _instance_name_matches(instance_name: str, hostname: str) -> bool:
+    """`exact` 규칙(정규형 on) — 정규형 일치에 더해 숫자 사이 구분자까지 같아야 한다."""
+    if not host_keys_match(instance_name, hostname):
+        return False
+    if _is_ip(instance_name) or _is_ip(hostname):
+        return True
+    a, b = _separator_form(instance_name), _separator_form(hostname)
+    if "." in a and "." in b:
+        return a == b
+    return a.split(".", 1)[0] == b.split(".", 1)[0]
 
 
 class InstanceResolver:
@@ -344,7 +378,9 @@ class InstanceResolver:
             return [i for i in instances if self._host_equal(i["host_name"], hostname)]
         if kind == "exact":
             if self._canonical_match:
-                return [i for i in instances if host_keys_match(i["instance_name"], hostname)]
+                return [
+                    i for i in instances if _instance_name_matches(i["instance_name"], hostname)
+                ]
             return [i for i in instances if i["instance_name"].strip().lower() in (host, short)]
         if kind == "prefix":
             return [

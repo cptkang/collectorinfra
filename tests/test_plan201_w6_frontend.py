@@ -135,8 +135,8 @@ def _node(body: str, *, me: dict[str, Any], summary: Any = None, app: Path | Non
         "(async function () {",
         "await flush();",
         body,
-        "process.stdout.write(JSON.stringify(out));",
-        "process.exit(0);",
+        # 파이프 쓰기는 비동기 — 바로 exit하면 64KB에서 잘린다(쓰기 완료 콜백에서 종료)
+        "process.stdout.write(JSON.stringify(out), function () { process.exit(0); });",
         "})().catch(function (e) { process.stderr.write(String(e && e.stack || e)); process.exit(1); });",
     ])
     env = {**os.environ, "TZ": "UTC"}

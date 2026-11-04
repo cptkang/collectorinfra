@@ -179,6 +179,8 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_CORRELATION_FIELD_WEIGHTS_CSV": "호스트 간 상관 분석",
     "NOISE_CORRELATION_TOPOLOGY_WEIGHT_ENABLED": "호스트 간 상관 분석",
     "NOISE_CORRELATION_TOPOLOGY_WEIGHT": "호스트 간 상관 분석",
+    # (plans/197 W3) 제니퍼 상관 도메인 스코프 — 정의 순서상 위상 가중 직후(구획 연속)
+    "NOISE_APM_CORRELATION_DOMAIN_SCOPE_ENABLED": "호스트 간 상관 분석",
     "NOISE_RECURRENCE_AUDIT_EVERY_N": "재발 감사",
     "NOISE_DYNAMIC_BASELINE_ENABLED": "동적 기준선 이상탐지",
     "NOISE_ANOMALY_Z_HIGH": "동적 기준선 이상탐지",
@@ -288,6 +290,8 @@ SECTION_BY_KEY: dict[str, str] = {
     "NOISE_COLLECTION_FAILED_PAGE_SEV3_ONLY": "PAGE 재판정",
     # (plans/162 W5 · D-336) 제니퍼 심각도3 유형 정책 — 정의 순서상 수집 실패 범위 직후(구획 연속)
     "NOISE_APM_SEV3_POLICY_ENABLED": "PAGE 재판정",
+    # (plans/196) 제니퍼 알람 → 폴스타 서버 연결 학습 — 정의 순서상 조사 질의 직전(구획 연속)
+    "NOISE_HOST_LINK_ENABLED": "자동 장애 조사",
     # (plans/210 · D-362) APM·SMS 연계 정보 DB — 진단 고속 경로·사전 스캔 · 정의 순서상 끝
     "NOISE_APM_HOST_MAP_ENABLED": "APM·SMS 연계",
     "NOISE_APM_HOST_MAP_AUTO_ENABLED": "APM·SMS 연계",

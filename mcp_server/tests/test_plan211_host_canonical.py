@@ -100,7 +100,7 @@ def test_condition_fqdn_without_suffix() -> None:
     cond = hc.build_canonical_host_condition(
         "CR.NAME", ["webap01.corp.local"], business_suffix=False
     )
-    assert cond == f"({_N} = 'webap01.corp.local' OR {_N} = 'webap01')"
+    assert cond == f"({_N} IN ('webap01.corp.local', 'webap01.corp.local.', 'webap01', 'webap01.'))"
 
 
 def test_condition_multi_values_dedup_and_skip() -> None:
@@ -173,8 +173,10 @@ def test_anchor_sql_on_uses_l0_on_both_columns(is_db2: bool) -> None:
 def test_anchor_sql_on_fqdn_input() -> None:
     sql = pt.build_anchor_lookup_sql(False, "webap01.corp.local", canonical=True)
     n_host = "REPLACE(REPLACE(LOWER(TRIM(CR.HOSTNAME)), '-', ''), '_', '')"
-    assert f"{_N} = 'webap01.corp.local' OR {_N} = 'webap01'" in sql
-    assert f"{n_host} = 'webap01.corp.local' OR {n_host} = 'webap01'" in sql
+    assert f"{_N} IN ('webap01.corp.local', 'webap01.corp.local.', 'webap01', 'webap01.')" in sql
+    assert (
+        f"{n_host} IN ('webap01.corp.local', 'webap01.corp.local.', 'webap01', 'webap01.')" in sql
+    )
 
 
 @needs_mcp

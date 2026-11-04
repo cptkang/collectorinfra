@@ -691,9 +691,11 @@ def test_router_registered_only_when_enabled(enabled) -> None:
     from src.config import AppConfig, DutyAreaConfig
 
     app = create_app(AppConfig(duty_area=DutyAreaConfig(enabled=enabled)))
-    paths = {getattr(r, "path", "") for r in app.routes}
-    assert ("/api/v1/admin/duty-areas/status" in paths) is enabled
-    assert ("/api/v1/auth/duty-areas" in paths) is enabled
+    # 등록 여부는 실제 요청으로 본다 — FastAPI 0.14x는 `app.routes`에 포함 라우터를 펼치지 않는다
+    # (`_IncludedRouter`). 등록돼 있으면 인증·처리 결과(401·200 등), 없으면 404다.
+    client = TestClient(app, raise_server_exceptions=False)
+    for path in ("/api/v1/admin/duty-areas/status", "/api/v1/auth/duty-areas"):
+        assert (client.get(path).status_code != 404) is enabled, path
     assert app.state.duty_area_enabled is enabled
 
 

@@ -22,6 +22,7 @@ import logging
 from collections.abc import AsyncIterator, Callable
 from contextlib import AbstractAsyncContextManager, asynccontextmanager
 from typing import Any, Protocol
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -119,11 +120,19 @@ async def open_source_session(
         inner = next((x for x in leaves if isinstance(x, SourceMcpError)), None)
         if inner is not None:
             raise inner from e
-        logger.warning(
-            "%s 연결·호출 실패 (%s): %s", label, url,
-            "; ".join(f"{type(x).__name__}: {x}" for x in leaves)[:500],
-        )
+        detail = "; ".join(f"{type(x).__name__}: {x}" for x in leaves)
+        logger.warning("%s 연결·호출 실패: %s", label, _redact(detail, url, token)[:500])
         raise SourceMcpError(f"{label} 연결·호출 실패: {type(leaves[0]).__name__}") from e
+
+
+def _redact(text: str, url: str, token: str | None) -> str:
+    """로그 원문에서 접속 토큰·주소·호스트를 가린다 — 예외 메시지가 그대로 싣는 경우가 있다
+    (plans/147 W4 — 로그에 토큰·게이트웨이 호스트 금지). 상태 코드·예외 종류는 남긴다."""
+    host = urlsplit(url).hostname or ""
+    for secret, mask in ((token or "", "***"), (url, "<url>"), (host, "<host>")):
+        if secret:
+            text = text.replace(secret, mask)
+    return text
 
 
 def _leaf_exceptions(e: BaseException) -> list[BaseException]:

@@ -148,12 +148,22 @@ def test_exact_rule_on_off() -> None:
     assert _resolver(EXACT_RULES, on=True).match("webap01.b.local", fqdn)[0] == []
 
 
-def test_exact_rule_known_risk_hyphen_collapse() -> None:
-    """알려진 위험(현상 고정): `-` 제거로 인스턴스명 `webap01-1`과 호스트 `webap011`이 같아진다."""
+def test_exact_rule_keeps_separator_positions() -> None:
+    """`exact`는 인스턴스 이름의 숫자 사이 `-`·`_`를 지우지 않는다 — `webap01-1`(인스턴스 번호)과
+    호스트 `webap011`은 on에서도 잇지 않고, 그 밖 자리의 `-`·`_`만 다른 이름은 잇는다."""
     instances = [_inst("webap01-1", "")]
     assert _resolver(EXACT_RULES, on=False).match("webap011", instances)[0] == []
-    found, conf, _ = _resolver(EXACT_RULES, on=True).match("webap011", instances)
+    assert _resolver(EXACT_RULES, on=True).match("webap011", instances)[0] == []
+    assert _resolver(EXACT_RULES, on=True).match("webap01", instances)[0] == []
+    same = [_inst("web_ap01", "")]
+    found, conf, _ = _resolver(EXACT_RULES, on=True).match("WEB-AP01(인터넷뱅킹)", same)
     assert len(found) == 1 and conf == HIGH
+    assert len(_resolver(EXACT_RULES, on=True).match("webap01", same)[0]) == 1
+    numbered = [_inst("web01_2", "")]
+    assert len(_resolver(EXACT_RULES, on=True).match("web01-2", numbered)[0]) == 1
+    assert _resolver(EXACT_RULES, on=True).match("web012", numbered)[0] == []
+    ip = [_inst("10.0.0.1", "")]
+    assert len(_resolver(EXACT_RULES, on=True).match("10.0.0.1", ip)[0]) == 1
 
 
 def test_override_on_off() -> None:
