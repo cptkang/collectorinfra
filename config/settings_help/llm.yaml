@@ -454,3 +454,167 @@ settings:
         effect: 답하기 전에 추론 토큰을 먼저 만든다. 응답이 느려지고 앱은 그 추론 텍스트를 읽지 않는다.
     recommendation: false를 유지한다(D-042 no-think 방침과 같다).
     related: [LLM_VLLM_MODEL, ORCHESTRATOR_ENABLE_THINKING]
+
+  # ── 용도별 LLM 평면 (plans/212) — 비운 항목은 현재 워커 값을 항목 단위로 승계한다 ──
+
+  LLM_ROUTER_PROVIDER:
+    summary: 시맨틱 라우팅(3단 semantic_router의 DB·소스 분류)에 쓸 LLM 공급자. 비우면 현재 워커 값(LLM_PROVIDER)을 쓴다.
+    behavior: >-
+      비워 두면 워커와 같은 공급자를 쓴다. 다른 공급자를 고르면 주소·모델·키·타임아웃은
+      그 공급자의 워커 설정(예: vllm이면 LLM_VLLM_*)에서 가져오고, LLM_ROUTER_* 에 적은 항목만
+      그 위에 덮어쓴다. 역할 항목을 전부 비우면 워커와 같은 인스턴스를 그대로 쓴다.
+    example: >-
+      워커가 fabrix인데 이 값만 vllm으로 두고 LLM_VLLM_BASE_URL·LLM_VLLM_MODEL도 비어 있으면
+      주소·모델을 정할 수 없어 그래프 조립(기동·리로드)이 실패한다 — 워커로 몰래 바꾸지 않는다.
+      LLM_ROUTER_BASE_URL·LLM_ROUTER_MODEL을 함께 적으면 그 vLLM으로 간다.
+    stability: 공급자를 바꾸면 같은 프롬프트라도 출력 형태가 달라진다. 바꾼 뒤 대표 질의로 확인한다.
+    related: [LLM_PROVIDER, LLM_ROUTER_BASE_URL, LLM_ROUTER_MODEL]
+
+  LLM_ROUTER_BASE_URL:
+    summary: 시맨틱 라우팅(3단 semantic_router의 DB·소스 분류) 역할이 호출할 엔드포인트. 비우면 현재 워커 값을 쓴다.
+    behavior: >-
+      비우면 해석된 공급자의 워커 주소(LLM_OLLAMA_BASE_URL·LLM_FABRIX_BASE_URL·LLM_MLX_BASE_URL·
+      LLM_VLLM_BASE_URL)를 그대로 쓴다. gemini는 주소를 쓰지 않으므로 적어도 무시하고 경고를 남긴다.
+    example: >-
+      워커와 같은 FabriX를 쓰되 다른 게이트웨이로 보내고 싶으면 이 값만 적는다 — 공급자·모델·키는
+      워커 값 그대로다.
+    related: [LLM_ROUTER_PROVIDER, LLM_ROUTER_MODEL]
+
+  LLM_ROUTER_MODEL:
+    summary: 시맨틱 라우팅(3단 semantic_router의 DB·소스 분류) 역할에 쓸 모델. 비우면 현재 워커 값을 쓴다.
+    behavior: >-
+      비우면 해석된 공급자의 워커 모델(LLM_MODEL·LLM_FABRIX_CHAT_MODEL·LLM_MLX_MODEL·
+      LLM_VLLM_MODEL·LLM_GEMINI_MODEL)을 쓴다. vllm은 모델이 비면 그래프 조립이 실패한다.
+    example: >-
+      워커와 같은 엔드포인트에서 이 역할만 더 작은 모델로 돌리고 싶으면 이 값만 적는다 —
+      주소·키는 워커 값 그대로다.
+    related: [LLM_ROUTER_PROVIDER, LLM_ROUTER_BASE_URL]
+
+  LLM_ROUTER_API_KEY:
+    summary: 시맨틱 라우팅(3단 semantic_router의 DB·소스 분류) 역할 인증 키 — .encenv에서 관리한다. 비우면 현재 워커 키를 쓴다.
+    behavior: >-
+      비우면 해석된 공급자의 워커 키(LLM_OLLAMA_API_KEY·LLM_FABRIX_API_KEY·LLM_VLLM_API_KEY·
+      LLM_GEMINI_API_KEY)를 쓴다. mlx는 키를 쓰지 않아 적어도 무시한다. 시크릿이라 이 화면에서
+      편집할 수 없고, 로그에는 어떤 형태로도 남지 않는다.
+    example: >-
+      역할만 다른 인증 vLLM으로 보내면서 이 값을 비워 두면 워커 vLLM 키(LLM_VLLM_API_KEY)가 실린다 —
+      키가 다르면 첫 호출이 401로 실패한다.
+    related: [LLM_ROUTER_PROVIDER, LLM_VLLM_API_KEY]
+
+  LLM_ROUTER_TIMEOUT:
+    summary: 시맨틱 라우팅(3단 semantic_router의 DB·소스 분류) 역할 요청 1건 대기 상한(초). 0이면 현재 워커 값을 쓴다.
+    behavior: >-
+      0(기본)이면 해석된 공급자의 워커 타임아웃(LLM_OLLAMA_TIMEOUT·LLM_FABRIX_TOTAL_TIMEOUT·
+      LLM_MLX_TIMEOUT·LLM_VLLM_TIMEOUT)을 쓴다. gemini는 타임아웃 설정이 없어 적어도 무시한다.
+    example: >-
+      라우팅처럼 짧은 호출만 하는 역할에 60을 두면 붐비는 서버에서 오래 매달리지 않고 실패한다 —
+      대신 정상 처리 중이던 긴 프롬프트도 끊길 수 있다.
+    related: [LLM_ROUTER_PROVIDER, LLM_VLLM_TIMEOUT]
+
+  LLM_PLANNER_PROVIDER:
+    summary: 의도 계획(2단 intent_planner·replanner의 계획 수립)에 쓸 LLM 공급자. 비우면 현재 워커 값(LLM_PROVIDER)을 쓴다.
+    behavior: >-
+      비워 두면 워커와 같은 공급자를 쓴다. 다른 공급자를 고르면 주소·모델·키·타임아웃은
+      그 공급자의 워커 설정(예: vllm이면 LLM_VLLM_*)에서 가져오고, LLM_PLANNER_* 에 적은 항목만
+      그 위에 덮어쓴다. 역할 항목을 전부 비우면 워커와 같은 인스턴스를 그대로 쓴다.
+    example: >-
+      워커가 fabrix인데 이 값만 vllm으로 두고 LLM_VLLM_BASE_URL·LLM_VLLM_MODEL도 비어 있으면
+      주소·모델을 정할 수 없어 그래프 조립(기동·리로드)이 실패한다 — 워커로 몰래 바꾸지 않는다.
+      LLM_PLANNER_BASE_URL·LLM_PLANNER_MODEL을 함께 적으면 그 vLLM으로 간다.
+    stability: 공급자를 바꾸면 같은 프롬프트라도 출력 형태가 달라진다. 바꾼 뒤 대표 질의로 확인한다.
+    related: [LLM_PROVIDER, LLM_PLANNER_BASE_URL, LLM_PLANNER_MODEL]
+
+  LLM_PLANNER_BASE_URL:
+    summary: 의도 계획(2단 intent_planner·replanner의 계획 수립) 역할이 호출할 엔드포인트. 비우면 현재 워커 값을 쓴다.
+    behavior: >-
+      비우면 해석된 공급자의 워커 주소(LLM_OLLAMA_BASE_URL·LLM_FABRIX_BASE_URL·LLM_MLX_BASE_URL·
+      LLM_VLLM_BASE_URL)를 그대로 쓴다. gemini는 주소를 쓰지 않으므로 적어도 무시하고 경고를 남긴다.
+    example: >-
+      워커와 같은 FabriX를 쓰되 다른 게이트웨이로 보내고 싶으면 이 값만 적는다 — 공급자·모델·키는
+      워커 값 그대로다.
+    related: [LLM_PLANNER_PROVIDER, LLM_PLANNER_MODEL]
+
+  LLM_PLANNER_MODEL:
+    summary: 의도 계획(2단 intent_planner·replanner의 계획 수립) 역할에 쓸 모델. 비우면 현재 워커 값을 쓴다.
+    behavior: >-
+      비우면 해석된 공급자의 워커 모델(LLM_MODEL·LLM_FABRIX_CHAT_MODEL·LLM_MLX_MODEL·
+      LLM_VLLM_MODEL·LLM_GEMINI_MODEL)을 쓴다. vllm은 모델이 비면 그래프 조립이 실패한다.
+    example: >-
+      워커와 같은 엔드포인트에서 이 역할만 더 작은 모델로 돌리고 싶으면 이 값만 적는다 —
+      주소·키는 워커 값 그대로다.
+    related: [LLM_PLANNER_PROVIDER, LLM_PLANNER_BASE_URL]
+
+  LLM_PLANNER_API_KEY:
+    summary: 의도 계획(2단 intent_planner·replanner의 계획 수립) 역할 인증 키 — .encenv에서 관리한다. 비우면 현재 워커 키를 쓴다.
+    behavior: >-
+      비우면 해석된 공급자의 워커 키(LLM_OLLAMA_API_KEY·LLM_FABRIX_API_KEY·LLM_VLLM_API_KEY·
+      LLM_GEMINI_API_KEY)를 쓴다. mlx는 키를 쓰지 않아 적어도 무시한다. 시크릿이라 이 화면에서
+      편집할 수 없고, 로그에는 어떤 형태로도 남지 않는다.
+    example: >-
+      역할만 다른 인증 vLLM으로 보내면서 이 값을 비워 두면 워커 vLLM 키(LLM_VLLM_API_KEY)가 실린다 —
+      키가 다르면 첫 호출이 401로 실패한다.
+    related: [LLM_PLANNER_PROVIDER, LLM_VLLM_API_KEY]
+
+  LLM_PLANNER_TIMEOUT:
+    summary: 의도 계획(2단 intent_planner·replanner의 계획 수립) 역할 요청 1건 대기 상한(초). 0이면 현재 워커 값을 쓴다.
+    behavior: >-
+      0(기본)이면 해석된 공급자의 워커 타임아웃(LLM_OLLAMA_TIMEOUT·LLM_FABRIX_TOTAL_TIMEOUT·
+      LLM_MLX_TIMEOUT·LLM_VLLM_TIMEOUT)을 쓴다. gemini는 타임아웃 설정이 없어 적어도 무시한다.
+    example: >-
+      라우팅처럼 짧은 호출만 하는 역할에 60을 두면 붐비는 서버에서 오래 매달리지 않고 실패한다 —
+      대신 정상 처리 중이던 긴 프롬프트도 끊길 수 있다.
+    related: [LLM_PLANNER_PROVIDER, LLM_VLLM_TIMEOUT]
+
+  LLM_ANSWER_PROVIDER:
+    summary: 최종 응답 합성(사용자에게 보이는 답변 작성)에 쓸 LLM 공급자. 비우면 현재 워커 값(LLM_PROVIDER)을 쓴다.
+    behavior: >-
+      비워 두면 워커와 같은 공급자를 쓴다. 다른 공급자를 고르면 주소·모델·키·타임아웃은
+      그 공급자의 워커 설정(예: vllm이면 LLM_VLLM_*)에서 가져오고, LLM_ANSWER_* 에 적은 항목만
+      그 위에 덮어쓴다. 역할 항목을 전부 비우면 워커와 같은 인스턴스를 그대로 쓴다.
+    example: >-
+      워커가 fabrix인데 이 값만 vllm으로 두고 LLM_VLLM_BASE_URL·LLM_VLLM_MODEL도 비어 있으면
+      주소·모델을 정할 수 없어 그래프 조립(기동·리로드)이 실패한다 — 워커로 몰래 바꾸지 않는다.
+      LLM_ANSWER_BASE_URL·LLM_ANSWER_MODEL을 함께 적으면 그 vLLM으로 간다.
+    stability: 공급자를 바꾸면 같은 프롬프트라도 출력 형태가 달라진다. 바꾼 뒤 대표 질의로 확인한다.
+    related: [LLM_PROVIDER, LLM_ANSWER_BASE_URL, LLM_ANSWER_MODEL]
+
+  LLM_ANSWER_BASE_URL:
+    summary: 최종 응답 합성(사용자에게 보이는 답변 작성) 역할이 호출할 엔드포인트. 비우면 현재 워커 값을 쓴다.
+    behavior: >-
+      비우면 해석된 공급자의 워커 주소(LLM_OLLAMA_BASE_URL·LLM_FABRIX_BASE_URL·LLM_MLX_BASE_URL·
+      LLM_VLLM_BASE_URL)를 그대로 쓴다. gemini는 주소를 쓰지 않으므로 적어도 무시하고 경고를 남긴다.
+    example: >-
+      워커와 같은 FabriX를 쓰되 다른 게이트웨이로 보내고 싶으면 이 값만 적는다 — 공급자·모델·키는
+      워커 값 그대로다.
+    related: [LLM_ANSWER_PROVIDER, LLM_ANSWER_MODEL]
+
+  LLM_ANSWER_MODEL:
+    summary: 최종 응답 합성(사용자에게 보이는 답변 작성) 역할에 쓸 모델. 비우면 현재 워커 값을 쓴다.
+    behavior: >-
+      비우면 해석된 공급자의 워커 모델(LLM_MODEL·LLM_FABRIX_CHAT_MODEL·LLM_MLX_MODEL·
+      LLM_VLLM_MODEL·LLM_GEMINI_MODEL)을 쓴다. vllm은 모델이 비면 그래프 조립이 실패한다.
+    example: >-
+      워커와 같은 엔드포인트에서 이 역할만 더 작은 모델로 돌리고 싶으면 이 값만 적는다 —
+      주소·키는 워커 값 그대로다.
+    related: [LLM_ANSWER_PROVIDER, LLM_ANSWER_BASE_URL]
+
+  LLM_ANSWER_API_KEY:
+    summary: 최종 응답 합성(사용자에게 보이는 답변 작성) 역할 인증 키 — .encenv에서 관리한다. 비우면 현재 워커 키를 쓴다.
+    behavior: >-
+      비우면 해석된 공급자의 워커 키(LLM_OLLAMA_API_KEY·LLM_FABRIX_API_KEY·LLM_VLLM_API_KEY·
+      LLM_GEMINI_API_KEY)를 쓴다. mlx는 키를 쓰지 않아 적어도 무시한다. 시크릿이라 이 화면에서
+      편집할 수 없고, 로그에는 어떤 형태로도 남지 않는다.
+    example: >-
+      역할만 다른 인증 vLLM으로 보내면서 이 값을 비워 두면 워커 vLLM 키(LLM_VLLM_API_KEY)가 실린다 —
+      키가 다르면 첫 호출이 401로 실패한다.
+    related: [LLM_ANSWER_PROVIDER, LLM_VLLM_API_KEY]
+
+  LLM_ANSWER_TIMEOUT:
+    summary: 최종 응답 합성(사용자에게 보이는 답변 작성) 역할 요청 1건 대기 상한(초). 0이면 현재 워커 값을 쓴다.
+    behavior: >-
+      0(기본)이면 해석된 공급자의 워커 타임아웃(LLM_OLLAMA_TIMEOUT·LLM_FABRIX_TOTAL_TIMEOUT·
+      LLM_MLX_TIMEOUT·LLM_VLLM_TIMEOUT)을 쓴다. gemini는 타임아웃 설정이 없어 적어도 무시한다.
+    example: >-
+      라우팅처럼 짧은 호출만 하는 역할에 60을 두면 붐비는 서버에서 오래 매달리지 않고 실패한다 —
+      대신 정상 처리 중이던 긴 프롬프트도 끊길 수 있다.
+    related: [LLM_ANSWER_PROVIDER, LLM_VLLM_TIMEOUT]

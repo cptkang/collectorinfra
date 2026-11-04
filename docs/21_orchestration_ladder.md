@@ -184,6 +184,20 @@ WARN  기준 경로(intent_orchestration)가 아닌 <단> 단으로 확정됐습
 확정 결과는 실패 트레이스 헤더의 `ladder` 필드에도 실린다(`logs/trace/<날짜>/<request_id>.jsonl`).
 단이 다르면 노드 구성 자체가 다르므로, 이 값 없이는 `node_path`를 해석할 기준이 없다.
 
+**LLM 평면 1줄 (plans/212 · D-365):** 그래프 조립 때 `INFO LLM 평면: worker=… router=… planner=… answer=… orchestrator=…`
+1줄이 함께 남는다. 각 평면은 `provider(모델@호스트:포트)`이고, `워커 승계`는 그 역할에 적은 항목이 없어
+워커와 같은 객체를 쓴다는 뜻이다(URL은 호스트만 · 키는 싣지 않는다). 역할이 실제로 쓰이는지는 확정된 단이 정한다.
+
+| 단 | 쓰는 역할 |
+|---|---|
+| 1 `deep_agent` | 없음(워커·오케스트레이터) |
+| 2 `intent_orchestration` | `planner`(intent_planner·replanner) · `answer`(result_aggregator) |
+| 3 `semantic_router` | `router`(semantic_router) · `planner`(계획 루프 plan·replan) · `answer`(general_inference·finalize·output_generator) |
+| 4 `legacy` | `answer`(output_generator) |
+
+2단으로 확정됐는데 `router=`가 지정돼 있으면 그 평면은 만들어지지만 쓰이지 않는다. 키·승계 규칙은
+`docs/03_setup_guide.md` §7.6.
+
 ## 6. tri-state 플래그 주의
 
 `enable_semantic_routing` · `enable_intent_orchestration`은 `bool | None`이다

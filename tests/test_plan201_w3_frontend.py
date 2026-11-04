@@ -199,7 +199,7 @@ def test_cache_versions() -> None:
     index = (_ROOT / "src/static/index.html").read_text(encoding="utf-8")
     assert 'src="/static/js/app.js?v=53"' in index
     dashboard = (_ROOT / "src/static/admin/dashboard.html").read_text(encoding="utf-8")
-    assert 'src="/static/js/admin.js?v=17"' in dashboard
+    assert 'src="/static/js/admin.js?v=18"' in dashboard
 
 
 def test_admin_known_unmapped_text_only() -> None:

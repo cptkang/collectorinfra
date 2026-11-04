@@ -597,7 +597,7 @@ def make_mlx_llm(cfg: Any = None) -> Any:
         ReplayBlockedError: 과금 평면이 있거나 `mlx`가 아니거나 루프백이 아니거나 MLX 점검 중단
             항목이 있을 때
     """
-    from scripts.scenario.preflight import external_planes, mlx_run_blockers
+    from scripts.scenario.preflight import external_planes, mlx_run_blockers, role_providers
 
     if cfg is None:
         from src.config import load_config
@@ -606,7 +606,9 @@ def make_mlx_llm(cfg: Any = None) -> Any:
     worker = str(getattr(getattr(cfg, "llm", None), "provider", "") or "").strip().lower()
     orchestrator = str(getattr(getattr(cfg, "orchestrator", None), "provider", "")
                        or "").strip().lower()
-    external = external_planes(worker, orchestrator)
+    # 재현은 워커 LLM 하나만 만들지만, 설정에 과금 역할 평면(plans/212)이 있으면
+    # 열지 않는다(닫힌 쪽).
+    external = external_planes(worker, orchestrator, roles=role_providers(cfg))
     if external:
         raise ReplayBlockedError(f"과금 평면이 있어 재현하지 않는다: {external}")
     if worker != "mlx" or orchestrator != "mlx":

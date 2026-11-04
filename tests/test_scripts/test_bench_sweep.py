@@ -780,7 +780,10 @@ def gate(monkeypatch):
 
     monkeypatch.setattr(cli.probe, "echo_config", fake_echo)
     monkeypatch.setattr(cli, "_providers_of", lambda echo: ("fabrix", "vllm"))
-    monkeypatch.setattr(cli, "approval_policy", lambda worker, orchestrator: (False, "내부망"))
+    # 역할 평면(plans/212)도 같은 가짜 에코에서 읽는다 — 미설정(워커 승계)으로 고정한다
+    monkeypatch.setattr(cli, "_role_providers_of", lambda echo: {})
+    monkeypatch.setattr(cli, "approval_policy",
+                        lambda worker, orchestrator, **_: (False, "내부망"))
     monkeypatch.setattr(sweep, "run_arms", fake_run)
     return cli, seen
 

@@ -34,6 +34,14 @@ ORCHESTRATOR_API_KEY=
 # 워커 vLLM(LLM_PROVIDER=vllm) API 키 (선택 — vLLM을 --api-key로 띄웠을 때만, D-340)
 LLM_VLLM_API_KEY=
 
+# 용도별 LLM 평면 키 (선택 — plans/212). 비우면 해석된 provider의 워커 키를 쓴다
+# 시맨틱 라우팅 역할 API 키
+LLM_ROUTER_API_KEY=
+# 의도 계획 역할 API 키
+LLM_PLANNER_API_KEY=
+# 최종 응답 합성 역할 API 키
+LLM_ANSWER_API_KEY=
+
 # Redis 비밀번호
 REDIS_PASSWORD=
 

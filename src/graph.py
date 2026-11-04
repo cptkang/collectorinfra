@@ -21,7 +21,7 @@ from langgraph.graph import END, START, StateGraph
 from src.config import AppConfig
 from src.db_adapters import log_adapter_ownership_startup
 from src.domain.query_time import QueryTime
-from src.llm import create_llm
+from src.llm import create_llm, create_role_llm, describe_llm_planes
 from src.nodes.approval_gate import approval_gate
 from src.nodes.cache_management import cache_management
 from src.nodes.context_resolver import context_resolver
@@ -575,15 +575,24 @@ def _wire_tier1(graph: TracedGraph, config: AppConfig, llm: BaseChatModel) -> No
     graph.add_edge("deep_agent", END)
 
 
-def _wire_tier2(graph: TracedGraph, config: AppConfig, llm: BaseChatModel) -> None:
+def _wire_tier2(
+    graph: TracedGraph,
+    config: AppConfig,
+    llm: BaseChatModel,
+    *,
+    planner_llm: BaseChatModel,
+    answer_llm: BaseChatModel,
+) -> None:
     """2단(기준 경로 · D-251) 의도 분해 오케스트레이션을 배선한다.
 
     field_mapper → intent_planner → agent_orchestrator → [replanner 루프] →
     result_aggregator → END (Plan 48/49).
+    plans/212: intent_planner·replanner는 planner 평면, result_aggregator는 answer 평면이다
+    (역할 미설정이면 둘 다 워커와 같은 객체).
     """
     graph.add_node(
         "intent_planner",
-        partial(intent_planner, llm=llm, app_config=config),
+        partial(intent_planner, llm=planner_llm, app_config=config),
     )
     graph.add_node(
         "agent_orchestrator",
@@ -597,14 +606,14 @@ def _wire_tier2(graph: TracedGraph, config: AppConfig, llm: BaseChatModel) -> No
     graph.add_node(
         "result_aggregator",
         partial(
-            result_aggregator, llm=llm, app_config=config, synthesize=True,
+            result_aggregator, llm=answer_llm, app_config=config, synthesize=True,
             composite_answer="steps",
         ),
     )
     # Plan 49: 결과 기반 동적 재계획 노드 (orchestrator↔replanner 루프)
     graph.add_node(
         "replanner",
-        partial(replanner, llm=llm, app_config=config),
+        partial(replanner, llm=planner_llm, app_config=config),
     )
 
     # plans/187 W12: 채팅 증상 조사 — 장애 진단·채팅 조사 두 플래그가 모두 on일 때만 노드·분기를
@@ -657,6 +666,9 @@ def _wire_tier3(
     config: AppConfig,
     llm: BaseChatModel,
     *,
+    router_llm: BaseChatModel,
+    planner_llm: BaseChatModel,
+    answer_llm: BaseChatModel,
     plan_loop_tier: bool,
     sequential_tier: bool,
 ) -> None:
@@ -664,6 +676,8 @@ def _wire_tier3(
 
     단일 DB 꼬리(schema_analyzer …)는 `_wire_single_db_tail`이 이어서 배선한다.
     3단 안의 옵트인 분기(fault_diagnosis·계획 루프·순차 러너·식별자 프로브)는 각 플래그대로 둔다.
+    plans/212: semantic_router는 router 평면, 계획 루프 plan·replan은 planner 평면,
+    general_inference·finalize는 answer 평면이다(역할 미설정이면 워커와 같은 객체).
     """
     # (Plan 64 CW-B) 장애 진단 pull 위임 옵트인. 시멘틱 라우팅 경로에서만·플래그 on일 때만
     # fault_diagnosis 노드를 배선한다. off면 노드·엣지 미배선 → 라우팅 비트동일(회귀 0).
@@ -677,7 +691,7 @@ def _wire_tier3(
         "semantic_router",
         partial(
             authorized_router,
-            inner=partial(semantic_router, llm=llm, app_config=config),
+            inner=partial(semantic_router, llm=router_llm, app_config=config),
         ),
     )
     graph.add_node(
@@ -700,7 +714,7 @@ def _wire_tier3(
     # 일반 추론 노드 (DB 접근 없이 LLM 직접 응답)
     graph.add_node(
         "general_inference",
-        partial(general_inference_node, llm=llm, app_config=config),
+        partial(general_inference_node, llm=answer_llm, app_config=config),
     )
     # (Plan 64 CW-B · D-004 대칭 2/3) 장애 진단 pull 위임 노드 (옵트인 on일 때만).
     if fault_dx_enabled:
@@ -713,7 +727,7 @@ def _wire_tier3(
     # off면 노드·엣지·분기 함수·라우터 프롬프트가 현행과 같다.
     if plan_loop_tier:
         trace_on = bool(config.observability.trace_enabled)
-        graph.add_node("plan", partial(plan_node, llm=llm, app_config=config))
+        graph.add_node("plan", partial(plan_node, llm=planner_llm, app_config=config))
         graph.add_node("normalize", partial(plan_normalize, app_config=config))
         graph.add_node("dispatch", partial(plan_dispatch, app_config=config))
         graph.add_node(
@@ -724,12 +738,12 @@ def _wire_tier3(
             ),
         )
         graph.add_node("join", partial(plan_join, app_config=config), defer=True)
-        graph.add_node("replan", partial(plan_replan, llm=llm, app_config=config))
+        graph.add_node("replan", partial(plan_replan, llm=planner_llm, app_config=config))
         # 합성은 2단과 같은 노드 함수(D-062 · 1태스크면 output_generator 통과 ·
         # 2개 이상이면 LLM 1회 합성)
         graph.add_node(
             "finalize",
-            partial(result_aggregator, llm=llm, app_config=config, synthesize=True),
+            partial(result_aggregator, llm=answer_llm, app_config=config, synthesize=True),
         )
 
     # D-203 (plans/88 §4.7): 순차 2-pass 노드 — 계획 루프가 등록되면 같은 질의를 루프가 맡으므로
@@ -845,11 +859,18 @@ def _wire_legacy(
         graph.add_edge("field_mapper", "schema_analyzer")
 
 
-def _wire_single_db_tail(graph: TracedGraph, config: AppConfig, llm: BaseChatModel) -> None:
+def _wire_single_db_tail(
+    graph: TracedGraph,
+    config: AppConfig,
+    llm: BaseChatModel,
+    *,
+    answer_llm: BaseChatModel,
+) -> None:
     """3·4단 공용 단일 DB 꼬리(schema_analyzer … output_generator·error_response)를 배선한다.
 
     1단은 도구 루프, 2단은 서브에이전트가 노드 함수를 직접 호출하므로 그래프 노드로는
     닿지 않는다 — 3·4단 빌드에서만 호출한다(plans/163 D1 · docs/21 §2 배타성은 빌드 타임).
+    plans/212: output_generator는 answer 평면이다(역할 미설정이면 워커와 같은 객체).
     """
     graph.add_node(
         "schema_analyzer",
@@ -878,7 +899,7 @@ def _wire_single_db_tail(graph: TracedGraph, config: AppConfig, llm: BaseChatMod
     )
     graph.add_node(
         "output_generator",
-        partial(output_generator, llm=llm, app_config=config),
+        partial(output_generator, llm=answer_llm, app_config=config),
     )
     graph.add_node("error_response", _error_response_node)
 
@@ -972,6 +993,21 @@ def build_graph(config: AppConfig, checkpointer: Any = None) -> Any:
             "워커 provider override 활성(테스트): %s (운영 기본=%s)",
             config.worker_provider_override, config.llm.provider,
         )
+    # plans/212 §4.3: 용도별 LLM 평면. 역할 항목이 하나도 없으면 워커 객체 그대로(`is`)라 현행과
+    # 비트 동일하다. 해석 뒤 필수값이 비면 ValueError로 조립 실패(워커로 폴백하지 않는다).
+    # 리로드는 build_graph를 다시 부르므로 미설정 역할 항목은 바뀐 워커를 따라간다.
+    router_llm = create_role_llm(
+        config, "router", llm, provider_override=config.worker_provider_override,
+    )
+    planner_llm = create_role_llm(
+        config, "planner", llm, provider_override=config.worker_provider_override,
+    )
+    answer_llm = create_role_llm(
+        config, "answer", llm, provider_override=config.worker_provider_override,
+    )
+    logger.info(
+        "%s", describe_llm_planes(config, provider_override=config.worker_provider_override),
+    )
 
     # Plan 49 / D-037 트랙 B: deepagents 실제 패키지(vLLM 오케스트레이터 + FabriX 워커) 백엔드 선택.
     # enable_deepagents_package=on + 오케스트레이터 가용 시 "deep_agent", 그 외 "semantic_router"
@@ -1029,15 +1065,17 @@ def build_graph(config: AppConfig, checkpointer: Any = None) -> Any:
     if _tier is LadderTier.DEEP_AGENT:
         _wire_tier1(graph, config, llm)
     elif _tier is LadderTier.INTENT_ORCHESTRATION:
-        _wire_tier2(graph, config, llm)
+        _wire_tier2(graph, config, llm, planner_llm=planner_llm, answer_llm=answer_llm)
     elif _tier is LadderTier.SEMANTIC_ROUTER:
         _wire_tier3(
-            graph, config, llm, plan_loop_tier=plan_loop_tier, sequential_tier=sequential_tier,
+            graph, config, llm,
+            router_llm=router_llm, planner_llm=planner_llm, answer_llm=answer_llm,
+            plan_loop_tier=plan_loop_tier, sequential_tier=sequential_tier,
         )
     else:
         _wire_legacy(graph, config, llm, sequential_tier=sequential_tier)
     if single_db_tail:
-        _wire_single_db_tail(graph, config, llm)
+        _wire_single_db_tail(graph, config, llm, answer_llm=answer_llm)
 
     # --- 체크포인트 ---
     if checkpointer is None:

@@ -875,6 +875,62 @@ LLM_VLLM_MODEL=Qwen3.5-9B
 - 클라이언트는 `ChatOpenAI` 그대로라 구조화 출력(`STRUCTURED_OUTPUT_BACKEND=instructor`)이 네이티브 tool-calling 모드로 간다. 강제 함수 지정(named `tool_choice`)이라 vLLM 기본 기동으로도 동작한다. 컬럼 파생 루프처럼 `tool_choice=auto`를 쓰는 경로는 서버를 `--enable-auto-tool-choice --tool-call-parser <모델 계열>`로 띄워야 한다.
 - **과금 경로가 아니다.** 워커 `vllm`은 비과금 집합에 들어 있어 시나리오·벤치 하네스가 승인 없이 실행한다(D-340). 오케스트레이터가 `gemini`면 종전대로 승인 대상이다.
 
+### 7.6 용도별 LLM 평면(역할) — plans/212 · D-365
+
+시맨틱 라우팅·의도 계획·최종 응답 합성에 워커와 다른 모델이나 엔드포인트를 쓸 수 있다. 역할은 셋이고, **아무것도 적지 않으면 지금 워커(`LLM_*`)를 그대로 쓴다**(현행과 같다).
+
+| 역할 | 쓰는 노드 |
+|---|---|
+| `router` | 3단 `semantic_router` |
+| `planner` | 2단 `intent_planner`·`replanner` · 3단 계획 루프 `plan`·`replan` |
+| `answer` | 응답 합성 — 2단 `result_aggregator` · 3단 `general_inference`·`finalize` · 3·4단 `output_generator` |
+
+1단 `deep_agent`는 역할을 쓰지 않는다(워커와 `ORCHESTRATOR_*`). 오케스트레이터는 승계 대상이 아니다.
+
+역할마다 같은 5개 키를 둔다(`<ROLE>` = `ROUTER`·`PLANNER`·`ANSWER`). 기본값은 모두 빈 값(타임아웃은 0)이다.
+
+| 키 | 비었을 때 가져오는 현재 워커 값(해석된 provider 기준) |
+|---|---|
+| `LLM_<ROLE>_PROVIDER` | `LLM_PROVIDER` |
+| `LLM_<ROLE>_BASE_URL` | 그 provider의 엔드포인트(`LLM_OLLAMA_BASE_URL`·`LLM_FABRIX_BASE_URL`·`LLM_MLX_BASE_URL`·`LLM_VLLM_BASE_URL` · gemini는 없음) |
+| `LLM_<ROLE>_MODEL` | 그 provider의 모델(`LLM_MODEL`(ollama)·`LLM_FABRIX_CHAT_MODEL`·`LLM_MLX_MODEL`·`LLM_VLLM_MODEL`·`LLM_GEMINI_MODEL`) |
+| `LLM_<ROLE>_API_KEY` | 그 provider의 키(`.encenv` · mlx는 없음) |
+| `LLM_<ROLE>_TIMEOUT` | 그 provider의 타임아웃(`LLM_OLLAMA_TIMEOUT`·`LLM_FABRIX_TOTAL_TIMEOUT`·`LLM_MLX_TIMEOUT`·`LLM_VLLM_TIMEOUT`) |
+
+**승계는 항목 단위다.** 적은 항목만 바뀌고, 적지 않은 항목은 하나하나 현재 워커 값을 쓴다. provider 고유 설정(FabriX `client_key`·`llm_config`, vLLM `verify_ssl`·`enable_thinking`, MLX `max_tokens` 등)은 항상 워커 값이다. 승계는 그래프를 조립할 때마다 다시 해석하므로, 워커를 바꾸고 리로드하면 따로 적지 않은 역할 항목도 바뀐 워커를 따라간다.
+
+예시 — 현재 워커가 `LLM_PROVIDER=fabrix` · `LLM_FABRIX_BASE_URL=A` · `LLM_FABRIX_CHAT_MODEL=M1`이고 `LLM_VLLM_*`는 비어 있을 때:
+
+| 역할 설정 | 해석 결과 | 비고 |
+|---|---|---|
+| (없음) | 워커 그대로 — fabrix · A · M1 | 워커와 같은 객체 |
+| `LLM_ROUTER_MODEL=M2` | fabrix · A · **M2** | 엔드포인트·키는 같고 모델만 다르다 |
+| `LLM_ROUTER_BASE_URL=B` | fabrix · **B** · M1 | provider·모델은 같고 엔드포인트만 다르다 |
+| `LLM_ROUTER_PROVIDER=vllm` · `…_BASE_URL=V` · `…_MODEL=Q` | **vllm · V · Q** | provider를 바꾸면 엔드포인트·모델도 적는다 |
+| `LLM_ROUTER_PROVIDER=vllm`만 | vllm · (빈 값) · (빈 값) → **기동 실패** | 워커 값은 fabrix용이라 vllm에 쓰지 않는다. `LLM_VLLM_*`가 채워져 있으면 그 값을 쓴다 |
+
+```dotenv
+# 예: 라우팅·계획은 사내 vLLM, 응답 합성은 워커(FabriX) 그대로
+LLM_ROUTER_PROVIDER=vllm
+LLM_ROUTER_BASE_URL=http://vllm-host:8000/v1
+LLM_ROUTER_MODEL=Qwen3.5-9B
+LLM_PLANNER_PROVIDER=vllm
+LLM_PLANNER_BASE_URL=http://vllm-host:8000/v1
+LLM_PLANNER_MODEL=Qwen3.5-9B
+```
+
+- **필수값이 비면 기동이 실패한다.** 해석 뒤 엔드포인트(gemini는 키)가 비거나, vllm·fabrix의 모델이 비면 그래프 조립이 `ValueError`로 멈춘다. 워커로 몰래 바꾸지 않는다. 오류 메시지에는 채울 키 이름이 나온다. 확정된 단에서 쓰지 않는 역할(예: 2단의 `router`)도 설정이 잘못됐으면 기동이 실패한다 — 사다리 단을 바꿨을 때 숨은 설정 오류가 드러나지 않게 하려는 것이다. 기동 로그의 평면 1줄도 단과 무관하게 세 역할을 모두 적으므로, 어느 역할이 실제로 쓰이는지는 `docs/21_orchestration_ladder.md` §5의 단↔역할 표로 읽는다.
+- **반영 시점** — `PROVIDER`·`BASE_URL`·`MODEL`·`TIMEOUT`은 저장 뒤 관리자 화면의 **[설정 리로드]**로 반영된다(그래프를 다시 조립한다). `LLM_<ROLE>_API_KEY`는 시크릿이라 `.encenv`에 두고 **서버를 재시작해야** 반영된다.
+- **설정 화면** — 비어 있는 역할 항목 옆에 「현재 워커 값 사용 — <provider> · <값>」이 회색으로 보인다. 엔드포인트는 호스트(:포트)만, 키는 「설정됨/미설정」만 보인다. provider 목록의 빈 선택지는 「(워커 승계)」다.
+- **과금 판정은 역할 평면도 본다.** 시나리오·벤치 하네스는 워커·오케스트레이터에 더해 역할 평면이 과금 provider(`gemini`)로 해석되는지도 보고, 하나라도 그렇다면 승인 대상으로 판정한다. 워커가 `mlx`여도 `LLM_ROUTER_PROVIDER=gemini`면 승인 없이 돌지 않는다(D-127).
+- **기동 로그** — 그래프 조립 때 평면 1줄이 남는다. URL은 호스트(:포트)만, 키는 싣지 않는다.
+
+```
+INFO  LLM 평면: worker=fabrix(M1@fabrix-gw.internal) router=vllm(Qwen3.5-9B@vllm-host:8000 · provider·base_url·model 지정) planner=fabrix(M2@fabrix-gw.internal · model 지정) answer=워커 승계 orchestrator=미설정
+```
+
+`워커 승계`는 그 역할에 적은 항목이 없다는 뜻이고, `… 지정`은 직접 적은 항목이다. provider에 대응 필드가 없는 항목(예: gemini의 `BASE_URL`)을 적으면 `… 무시`로 표시되고 경고 1줄이 남는다.
+
 ---
 
 ## 8. 애플리케이션 실행

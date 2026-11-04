@@ -20,9 +20,11 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import os
+import re
 import shutil
 from dataclasses import dataclass, field
 from pathlib import Path
+from collections.abc import Callable, Mapping
 from typing import Any, Optional
 from urllib.parse import urlparse
 
@@ -46,18 +48,103 @@ WORKER_INTERNAL_PROVIDERS = frozenset({"fabrix", "ollama", "mlx", "vllm"})
 ORCHESTRATOR_INTERNAL_PROVIDERS = frozenset({"vllm", "mlx"})
 
 
-def external_planes(worker: str, orchestrator: str) -> list[str]:
+def external_planes(worker: str, orchestrator: str, *,
+                    roles: Mapping[str, str] | None = None) -> list[str]:
     """비과금 집합 밖인 평면을 `"LLM_PROVIDER=gemini"` 꼴로 돌려준다. 비었으면 승인 불요다.
 
     **판정의 유일한 정의다.** 설정을 못 읽은 값(`unknown(...)`)은 어느 집합에도 없으므로
     외부로 판정된다 - 과금 게이트를 열지 않는 쪽이 기본이다.
+
+    `roles` 는 역할 이름 -> 명시된 역할 provider(`role_providers`)다(plans/212 · D-365). 역할 평면은
+    워커와 같은 팩토리로 만들어지므로 **워커 비과금 집합**으로 판정하고, 집합 밖이면
+    `"LLM_ROUTER_PROVIDER=gemini"` 꼴로 더한다. 빈 값은 「적지 않음」(= 워커 승계)이라 워커
+    판정이 이미 덮는다. cfg 를 가진 소비처가 역할을 넘기지 않으면 그 자리가 D-127 우회 경로다.
+    워커 교체(`WORKER_OVERRIDE` 키)도 같은 집합으로 판정해 `"WORKER_PROVIDER_OVERRIDE=gemini"`
+    꼴로 더한다.
     """
     planes = []
     if worker not in WORKER_INTERNAL_PROVIDERS:
         planes.append(f"LLM_PROVIDER={worker}")
     if orchestrator not in ORCHESTRATOR_INTERNAL_PROVIDERS:
         planes.append(f"ORCHESTRATOR_PROVIDER={orchestrator}")
+    for role, provider in (roles or {}).items():
+        if provider and provider not in WORKER_INTERNAL_PROVIDERS:
+            planes.append(f"{role_provider_key(role)}={provider}")
     return planes
+
+
+# --- 용도별 LLM 평면 (plans/212 · D-365) -------------------------------------
+
+#: 역할 설정을 읽지 못했을 때 `role_providers_from` 이 싣는 역할 이름. 값이 `unknown(...)` 이라
+#: `external_planes` 가 외부로 판정한다.
+ROLES_UNREADABLE = "roles"
+
+#: 테스트 전용 워커 교체(`AppConfig.worker_provider_override` · `WORKER_PROVIDER_OVERRIDE`). 그래프
+#: 워커가 `create_llm(provider_override=...)` 로 이 값을 쓰고, provider 를 적지 않은 역할도 이 값을
+#: 승계한다(plans/212 §4.1). 역할 매핑(`role_providers`)에 이 키로 실어 워커 비과금 집합으로
+#: 판정한다 - 소비처는 이미 `roles=role_providers(cfg)` 를 넘기므로 따로 고칠 곳이 없다.
+WORKER_OVERRIDE = "worker_provider_override"
+
+
+def llm_roles() -> tuple[str, ...]:
+    """역할 이름 정본(`src.llm.LLM_ROLES`). 임포트 실패는 올린다(호출부가 닫힌 쪽으로 판정)."""
+    from src.llm import LLM_ROLES
+
+    return tuple(LLM_ROLES)
+
+
+def role_provider_key(role: str) -> str:
+    """역할 provider 의 env 키(`LLM_ROUTER_PROVIDER` 등 · 워커 교체 `WORKER_PROVIDER_OVERRIDE`)."""
+    if role == WORKER_OVERRIDE:
+        return "WORKER_PROVIDER_OVERRIDE"
+    return f"LLM_{role.upper()}_PROVIDER"
+
+
+def plane_label(role: str) -> str:
+    """역할 매핑 키의 표시 이름(`역할 router` · `워커 교체`)."""
+    return "워커 교체" if role == WORKER_OVERRIDE else f"역할 {role}"
+
+
+def role_providers_from(read: Callable[[str], object], *,
+                        override: object = None) -> dict[str, str]:
+    """`read(역할)` 이 주는 역할 provider 원값에서 **명시된 역할만** {역할: provider} 로 모은다.
+
+    빈 값은 「적지 않음」(= 워커 승계)이라 싣지 않는다. `override`(워커 교체 원값)가 비어 있지
+    않으면 `WORKER_OVERRIDE` 키로 함께 싣는다. 역할 이름이나 값을 읽지 못하면
+    `{ROLES_UNREADABLE: "unknown(...)"}` 을 돌려 외부로 판정되게 한다(과금 게이트를 열지 않는다).
+    """
+    try:
+        found: dict[str, str] = {}
+        for role in llm_roles():
+            provider = str(read(role) or "").strip().lower()
+            if provider:
+                found[role] = provider
+        replaced = str(override or "").strip().lower()
+        if replaced:
+            found[WORKER_OVERRIDE] = replaced
+        return found
+    except Exception as exc:
+        return {ROLES_UNREADABLE: f"unknown({type(exc).__name__})"}
+
+
+def role_providers(cfg: Any) -> dict[str, str]:
+    """설정(`AppConfig`)에서 명시된 역할 provider 와 워커 교체를 {키: provider} 로 뽑는다.
+
+    역할 필드가 없는 설정(역할 도입 전 형태 · 테스트 대역)은 역할 평면이 없으므로 빈 dict 다.
+    """
+    llm = getattr(cfg, "llm", None)
+    return role_providers_from(lambda role: getattr(llm, f"{role}_provider", ""),
+                               override=getattr(cfg, "worker_provider_override", None))
+
+
+def role_rows(explicit: Mapping[str, str]) -> list[tuple[str, str]]:
+    """표시용 (역할, 명시 provider 또는 "") - 미설정 역할(「워커 승계」)도 싣고 워커 교체는 뺀다."""
+    try:
+        names: tuple[str, ...] = llm_roles()
+    except Exception:
+        names = ()
+    keys = [*names, *(key for key in explicit if key != WORKER_OVERRIDE)]
+    return [(role, explicit.get(role, "")) for role in dict.fromkeys(keys)]
 
 
 #: E-3 이 쓰는 디스크 하한(GB). 지난 run 이 체크포인트 1.49GB + 산출물이었고
@@ -109,6 +196,7 @@ _ENV_KEY = {
     "ACTIVE_DB_IDS": "ACTIVE_DB_IDS",
     "AUTH_ENABLED": "AUTH_ENABLED",
     "DB_BACKEND": "DB_BACKEND",
+    "WORKER_PROVIDER_OVERRIDE": "WORKER_PROVIDER_OVERRIDE",
 }
 
 
@@ -119,15 +207,22 @@ def _source_of(key: str) -> str:
     파일을 이긴다. `.env` 로딩은 `os.environ` 에 주입되지 않으므로(Known Mistakes
     2026-06-10) 여기 있다는 것은 **셸에서 왔다**는 뜻이다.
     """
-    env_key = _ENV_KEY.get(key)
+    env_key = _env_key_of(key)
     return "os" if env_key and env_key in os.environ else ""
+
+
+def _env_key_of(key: str) -> str | None:
+    """점검 항목의 env 키. 역할 provider 행(`LLM_ROUTER_PROVIDER` 등)은 항목 이름이 곧 env 키다."""
+    if key in _ENV_KEY:
+        return _ENV_KEY[key]
+    return key if re.fullmatch(r"LLM_[A-Z]+_PROVIDER", key) else None
 
 
 def _shell_override_note(key: str) -> str:
     """셸이 덮고 있으면 조치 문구에 덧붙일 한 줄. 아니면 빈 문자열."""
     if _source_of(key) != "os":
         return ""
-    env_key = _ENV_KEY[key]
+    env_key = _env_key_of(key)
     return (f" **이 값은 셸 환경변수 {env_key} 에서 왔다 - .env 를 고쳐도 먹지 않는다.** "
             f"먼저 셸에서 지운다(POSIX `unset {env_key}` / PowerShell "
             f"`Remove-Item Env:{env_key}`).")
@@ -140,7 +235,7 @@ def _plane_provider(plane_cfg: Any) -> str:
 
 
 def _check_provider(cfg: Any, report: Report) -> None:
-    """두 평면을 각각 판정한다. 하나라도 집합 밖이면 그 평면이 중단이다(D-222)."""
+    """두 평면과 역할 평면을 각각 판정한다. 하나라도 집합 밖이면 그 평면이 중단이다(D-222)."""
     provider = _plane_provider(getattr(cfg, "llm", None))
     if provider in WORKER_INTERNAL_PROVIDERS:
         report.add("LLM_PROVIDER", provider, VERDICT_OK,
@@ -163,6 +258,36 @@ def _check_provider(cfg: Any, report: Report) -> None:
                    "ENABLE_DEEPAGENTS_PACKAGE 와 무관하게 승인 대상이다(D-222). 과금 없이 돌리려면 "
                    "vllm(서빙 중) 또는 mlx(로컬)로 바꾼다. 의도한 것이면 RUN_E2E=1 + 건별 사용자 승인을 "
                    "먼저 받는다(D-127).")
+
+    # 역할 평면(plans/212) - 워커와 같은 팩토리라 워커 비과금 집합으로 판정한다
+    # (external_planes 와 같은 규칙).
+    explicit_roles = role_providers(cfg)
+    for role, explicit in role_rows(explicit_roles):
+        key = role_provider_key(role)
+        if not explicit:
+            report.add(key, "워커 승계", VERDICT_OK,
+                       "미설정이라 워커 평면(LLM_PROVIDER)을 그대로 쓴다. 판정도 워커 행을 따른다.")
+        elif explicit in WORKER_INTERNAL_PROVIDERS:
+            report.add(key, explicit, VERDICT_OK,
+                       "그대로 진행한다. 승인/RUN_E2E 불필요(D-216).")
+        else:
+            report.add(key, explicit, VERDICT_STOP,
+                       f"역할 {role} 평면이 외부 과금 경로다. 워커/오케스트레이터가 내부망이어도 "
+                       "승인 대상이다. 폐쇄망이면 환경을 잘못 잡은 것이다(다른 PC/다른 .env). "
+                       "의도한 것이면 RUN_E2E=1 + 건별 사용자 승인을 먼저 받는다(D-127).")
+
+    # 워커 교체(테스트 전용) - 있을 때만 1행. 그래프 워커와 provider 를 적지 않은 역할이
+    # 이 값을 쓴다.
+    replaced = explicit_roles.get(WORKER_OVERRIDE)
+    if replaced in WORKER_INTERNAL_PROVIDERS:
+        report.add("WORKER_PROVIDER_OVERRIDE", replaced, VERDICT_OK,
+                   "테스트 전용 워커 교체다(그래프 워커와 provider 미설정 역할이 이 값을 쓴다). "
+                   "승인/RUN_E2E 불필요(D-216).")
+    elif replaced:
+        report.add("WORKER_PROVIDER_OVERRIDE", replaced, VERDICT_STOP,
+                   "LLM_PROVIDER 가 내부망이어도 그래프 워커와 provider 미설정 역할이 이 값으로 "
+                   "바뀌는 외부 과금 경로다. 의도하지 않았으면 .env 에서 지운다. "
+                   "의도한 것이면 RUN_E2E=1 + 건별 사용자 승인을 먼저 받는다(D-127).")
 
 
 # --- MLX 로컬 서버 (plans/100 CU-5) -------------------------------------------
@@ -187,7 +312,31 @@ def _mlx_planes(cfg: Any) -> list[tuple[str, str, str]]:
     if _plane_provider(orchestrator) == "mlx":
         planes.append(("오케스트레이터", str(getattr(orchestrator, "base_url", "") or ""),
                        str(getattr(orchestrator, "model", "") or "")))
+    for role, role_llm in _role_llm_configs(cfg):
+        if _plane_provider(role_llm) == "mlx":
+            planes.append((f"역할 {role}", str(getattr(role_llm, "mlx_base_url", "") or ""),
+                           str(getattr(role_llm, "mlx_model", "") or "") or MLX_DEFAULT_MODEL))
     return planes
+
+
+def _role_llm_configs(cfg: Any) -> list[tuple[str, Any]]:
+    """항목을 하나라도 적은 역할의 (역할, 해석된 `LLMConfig` 사본) - 팩토리의 `resolve_role_config`.
+
+    미설정 역할은 워커와 같은 평면이라 싣지 않는다. 역할 필드가 없는 설정(역할 도입 전 형태 ·
+    테스트 대역)도 역할 평면이 없다.
+    """
+    llm = getattr(cfg, "llm", None)
+    roles = llm_roles()
+    if not all(hasattr(llm, f"{role}_provider") for role in roles):
+        return []
+    from src.llm import resolve_role_config
+
+    resolved = []
+    for role in roles:
+        role_cfg = resolve_role_config(cfg, role)
+        if role_cfg is not None:
+            resolved.append((role, role_cfg.llm))
+    return resolved
 
 
 def _fetch_mlx_models(base_url: str, timeout: float = 3.0) -> tuple[Optional[list[str]], str]:
@@ -317,13 +466,27 @@ def _check_mlx(cfg: Any, report: Report) -> None:
 
     # 같은 서버에 서로 다른 모델 ID 를 보내면 요청마다 가중치를 교대 재적재한다(J-1 6: 3.6~5.3초).
     # `default_model` 은 서버 --model 로 매핑돼 실제 ID 를 알 수 없으므로 비교하지 않는다.
-    if len(planes) == 2:
-        (_, worker_url, worker_model), (_, orch_url, orch_model) = planes
-        explicit = MLX_DEFAULT_MODEL not in (worker_model, orch_model)
-        if worker_url and worker_url.rstrip("/") == orch_url.rstrip("/") and explicit and worker_model != orch_model:
-            report.add("MLX 재적재", f"{worker_model} / {orch_model}", VERDICT_WARN,
-                       "워커와 오케스트레이터가 같은 서버에 다른 모델을 보낸다 - 요청마다 3.6~5.3초 재적재가 붙는다. "
-                       "LLM_MLX_MODEL 과 ORCHESTRATOR_MODEL 을 한 모델로 맞추거나 서버 포트를 나눈다.")
+    # 평면이 몇 개든(역할 평면 포함 - plans/212) base_url 마다 명시 모델이 둘 이상이면 1건이다.
+    by_url: dict[str, list[tuple[str, str]]] = {}
+    for plane, base_url, model in planes:
+        if base_url and model != MLX_DEFAULT_MODEL:
+            by_url.setdefault(base_url.rstrip("/"), []).append((plane, model))
+    for entries in by_url.values():
+        models = list(dict.fromkeys(model for _, model in entries))
+        if len(models) < 2:
+            continue
+        names = [plane for plane, _ in entries]
+        if names == ["워커", "오케스트레이터"]:
+            action = ("워커와 오케스트레이터가 같은 서버에 다른 모델을 보낸다 - "
+                      "요청마다 3.6~5.3초 재적재가 붙는다. "
+                      "LLM_MLX_MODEL 과 ORCHESTRATOR_MODEL 을 한 모델로 맞추거나 "
+                      "서버 포트를 나눈다.")
+        else:
+            action = (f"{', '.join(names)} 평면이 같은 서버에 다른 모델을 보낸다 - "
+                      "요청마다 3.6~5.3초 재적재가 붙는다. 모델을 하나로 맞추거나"
+                      "(LLM_MLX_MODEL / ORCHESTRATOR_MODEL / LLM_<역할>_MODEL) "
+                      "역할 평면을 다른 포트의 서버로 나눈다(LLM_<역할>_BASE_URL).")
+        report.add("MLX 재적재", " / ".join(models), VERDICT_WARN, action)
 
 
 def _active_db_ids(cfg: Any) -> list[str]:
