@@ -184,6 +184,19 @@ class AgentSettings(BaseSettings):
     # 해석 실패면 원본을 그대로 둬 W4 방어(미결 종결)가 작동한다.
     # **만료일 2027-04-19**(D-161 C1) — vLLM 파서 교정·모델 교체 시 유지/삭제를 그때 판정한다.
     tool_call_markup_parse_enabled: bool = True
+    # ── Harmony 파싱 오류 재시도 (plans/213 W3 · D-366 ①) — **기본 on(명시적 예외)** ──
+    # gpt-oss(Harmony 형식) vLLM이 `… expecting start token 200006` 400을 돌려주면 holmes 0.36.0은
+    # 재시도 없이 조사를 실패시킨다(폐쇄망 실측 2026-11-04 — 같은 요청 재전송은 정상 반환).
+    # 가드는 표지가 있는 litellm BadRequestError·InternalServerError만 **같은 인자 그대로** 재시도한다
+    # (temperature 등 요청 불변). 값 = 재시도 상한 · 0이면 off(가드 미설치).
+    # **기본 off가 아닌 이유**(plans/80 §5.4-③ 예외 · D-213·D-343 선례): 표지 오류일 때만 동작하고
+    # 그 밖의 예외·정상 응답은 그대로 통과라 비트 동일하며, off는 곧 "일시 400 한 번에 조사 실패"다.
+    # **만료일 2027-05-04**(D-161) — 엔드포인트 vLLM·openai-harmony 교정 시 유지/삭제를 그때 판정한다.
+    # 설치는 holmes 클래스 경계 교체라 **프로세스 전역·1회**다(처음 설치한 에이전트의 값으로 고정).
+    llm_harmony_retry_max: int = Field(default=1, ge=0)
+    # 첫 시도 시작부터 경과가 이 초를 넘으면 재시도하지 않는다 — 단계 소견·종합은 바깥 타이머
+    # (60·90초)가 끝나면 결과가 버려지고, 조사 루프도 전체 상한(600초)을 아낀다.
+    llm_harmony_retry_skip_after_s: float = Field(default=45.0, ge=0)
     # ── bash 쓰기 형태 거부 가드 (D-235) — **기본 on(명시적 예외)** ──
     # holmes bash 허용목록은 prefix 매칭이라 `uptime`이 허용이면 `uptime > /tmp/x`도 통과한다(실측).
     # 설정으로 막을 수 없어(`allow`·`deny`·`builtin_allowlist`뿐 · deny도 prefix) 검증 경계에서 거부한다.

@@ -7550,6 +7550,37 @@
         return el;
     }
 
+    // 4티어 배지 이름 — 노이즈 관제(noise.js tierBadge)와 같은 이름·색(--tier-*). 모르는 티어는 ""
+    function pastTierName(tier) {
+        var names = { page: "PAGE", ticket: "TICKET", dashboard: "DASHBOARD", suppress: "SUPPRESS" };
+        return Object.prototype.hasOwnProperty.call(names, tier) ? names[tier] : "";
+    }
+
+    function pad2Past(n) { return (n < 10 ? "0" : "") + n; }
+
+    // 한 줄에 들어가는 짧은 시각(MM-DD HH:mm:ss) — 전체 일시는 title로
+    function pastTime(iso) {
+        var d = iso ? new Date(iso) : null;
+        if (!d || isNaN(d.getTime())) return { short: iso ? String(iso) : "", full: "" };
+        return {
+            short: pad2Past(d.getMonth() + 1) + "-" + pad2Past(d.getDate()) + " "
+                + pad2Past(d.getHours()) + ":" + pad2Past(d.getMinutes()) + ":" + pad2Past(d.getSeconds()),
+            full: d.toLocaleString("ko-KR", { hour12: false }),
+        };
+    }
+
+    // 알람 출처(D-351) — 결정 조회가 db_id를 레지스트리로 푼 솔루션·존 위치. 못 풀면 db_id 원문.
+    // 행에는 솔루션 라벨의 괄호 설명을 뗀 짧은 이름(「폴스타」)을, title에는 전체를 싣는다.
+    function pastSource(item) {
+        var where = item.location_label || item.db_id;
+        var solution = item.solution_label ? String(item.solution_label) : "";
+        var shortName = solution.replace(/\s*\(.*\)\s*$/, "") || solution;
+        return {
+            short: [shortName, where].filter(Boolean).join(" · "),
+            full: [solution, where].filter(Boolean).join(" · "),
+        };
+    }
+
     function renderPastAlarmRow(item) {
         var li = document.createElement("li");
         li.className = "alarm-past-item";
@@ -7557,10 +7588,20 @@
         row.type = "button";
         row.className = "alarm-past-row";
         row.setAttribute("aria-expanded", "false");
-        row.appendChild(pastText("span", "alarm-past-time", item.ts ? new Date(item.ts).toLocaleString("ko-KR", { hour12: false }) : ""));
+        var t = pastTime(item.ts);
+        var timeEl = pastText("span", "alarm-past-time", t.short);
+        if (t.full) timeEl.title = t.full;
+        row.appendChild(timeEl);
+        var tierName = pastTierName(item.tier);
+        row.appendChild(pastText("span", "alarm-past-tier" + (tierName ? " t-" + item.tier : ""),
+            tierName || String(item.tier || "-").toUpperCase()));
+        var source = pastSource(item);
+        var sourceEl = pastText("span", "alarm-past-source", source.short || "-");
+        if (source.full) sourceEl.title = "알람 출처: " + source.full;
+        row.appendChild(sourceEl);
         row.appendChild(pastText("span", "alarm-past-server", item.server_name || "-"));
         row.appendChild(pastText("span", "alarm-past-name", item.alarm_name || "-"));
-        row.appendChild(pastText("span", "alarm-past-stage", item.stage_label || item.tier || ""));
+        row.appendChild(pastText("span", "alarm-past-stage", item.stage_label || ""));
         var card = document.createElement("div");
         card.className = "alarm-past-card";
         card.hidden = true;

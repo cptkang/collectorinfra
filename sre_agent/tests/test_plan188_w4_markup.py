@@ -42,6 +42,9 @@ _CAUSE = "판단 불가(조사 LLM 응답 형식 불일치)"
 _LIMIT = ("조사 LLM 응답에 도구 호출 원문이 섞임 — "
           "vLLM --enable-auto-tool-choice·--tool-call-parser를 모델에 맞게 확인(docs/26 §5.6.3)")
 _OOM = "kernel: Out of memory: Killed process 4242 (java)"
+#: 도구가 처리된 뒤 마크업으로 끝난 답의 한계(plans/213 W1 — 도구 0건만 `_LIMIT` 그대로).
+_LIMIT_AFTER = ("도구 {n}건은 처리됐으나 마지막 답이 서술이 아니라 도구 호출 꼴(마크업 리터럴)로 끝남 — "
+                "파서보다 모델 응답 문제 · 다시 분석 또는 모델 교체 검토")
 
 
 # ── 감지 단위 ─────────────────────────────────────────────────────
@@ -188,7 +191,7 @@ def test_dispatcher_malformed_answer_closes_unresolved_without_raw(tmp_path, cap
     assert b["summary"] == _SUMMARY
     assert b["cause"] == _CAUSE
     assert b["hypotheses"] == [] and b["citations_verified"] is False
-    assert b["limitations"] == [_LIMIT]
+    assert b["limitations"] == [_LIMIT_AFTER.format(n=1)]
     _assert_no_raw(b)
     assert rec["answer_malformed"] == "tool_call_markup"
     assert "tools_unavailable" not in rec
@@ -211,7 +214,8 @@ def test_failed_call_line_kept_and_apm_limits_dropped(tmp_path):
     job, _, _ = _run(_result(SCREEN_RAW, failed=True), tmp_path,
                      apm_guidance_enabled=True, apm_mcp_url="")
     b = job.briefing
-    assert b["limitations"] == ["도구 호출 실패 1건: polestar_metric_trend", _LIMIT]
+    assert b["limitations"] == ["도구 호출 실패 1건: polestar_metric_trend",
+                                _LIMIT_AFTER.format(n=2)]
     _assert_no_raw(b)
 
 

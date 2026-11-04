@@ -1916,6 +1916,42 @@ def _assert_investigation_access(
 _FOLLOWUP_ENTRY_POINT = "investigation_chat"
 #: 같은 (부모, 초점) 재접수를 새로 받는 종결 상태 — 실패한 것은 다시 요청할 수 있다.
 _FOLLOWUP_RETRYABLE: frozenset[str] = frozenset({"failed", "timeout", "rejected", "not_found"})
+#: (plans/213 W2 · D-366 ②) 저장 브리핑의 심층 섹션 키 경로 `briefing["deep_dive"]["status"]` —
+#: sre_agent `build_playbook_briefing`이 싣는 이름과 같다(본체는 sre_agent를 import하지 않는다 ·
+#: D-139 · 짝 테스트 `sre_agent/tests/test_plan213_w2_briefing_shape.py`).
+_DEEP_DIVE_KEY = "deep_dive"
+_DEEP_DIVE_STATUS_KEY = "status"
+#: 조사 상태가 `done`이어도 다시 요청할 수 있는 심층 섹션 상태(D-341 ㉔ 「실패는 다시 요청 가능」).
+#: `incomplete`(step 상한 미완주)는 별도 불리언이고 상태는 `done`이라 여기 들지 않는다(종전대로 합류).
+_DEEP_DIVE_RETRYABLE: frozenset[str] = frozenset({"failed", "timeout"})
+_DEEP_DIVE_RETRYABLE_SKIP_KEY = "retryable"
+
+
+def _deep_dive_retryable(rec: dict[str, Any]) -> bool:
+    """저장 레코드의 심층 섹션이 실패·타임아웃이면 True(합류하지 않고 새로 접수한다).
+
+    생략(`skipped`)은 sre_agent가 `retryable: true`를 실은 경우(시간 예산 부족 · 형식 불일치)만
+    True다(plans/213 W4 · D-366 부기 1). 모드 off·트리거 미충족·고정 알려진 오류·재조회 생략은
+    다시 돌려도 같으므로 종전대로 합류한다. 표지 없는 옛 레코드도 합류(보수적).
+
+    다시 분석(`_manual_join_target`)과 추가 조사 재접수가 함께 쓴다. 브리핑이 없거나 심층 키가
+    없거나(플레이북 모드 아님 · 저장 상한 절단으로 빠짐) 모양이 다르면 판정할 수 없어 False —
+    종전대로 합류한다(보수적).
+    """
+    briefing = rec.get("briefing")
+    if not isinstance(briefing, dict):
+        return False
+    deep = briefing.get(_DEEP_DIVE_KEY)
+    status = deep.get(_DEEP_DIVE_STATUS_KEY) if isinstance(deep, dict) else None
+    if not isinstance(status, str):
+        if "playbook" in briefing:
+            logger.debug(
+                "심층 섹션 상태 판정 불가 — 종전대로 합류: inv=%s", rec.get("investigation_id")
+            )
+        return False
+    if status == "skipped":
+        return isinstance(deep, dict) and deep.get(_DEEP_DIVE_RETRYABLE_SKIP_KEY) is True
+    return status in _DEEP_DIVE_RETRYABLE
 
 
 class InvestigationFollowupRequest(BaseModel):
@@ -2416,6 +2452,7 @@ async def request_investigation_followup(
             rec.get("parent_investigation_id") == investigation_id
             and rec.get("focus") == focus.id
             and rec.get("status") not in _FOLLOWUP_RETRYABLE
+            and not _deep_dive_retryable(rec)
         ):
             return {
                 "investigation_id": rec.get("investigation_id"),
@@ -2722,7 +2759,8 @@ async def _manual_join_target(
 ) -> dict[str, Any] | None:
     """합류할 사용자 요청 조사 — 같은 알람에 진행 중이거나 합류 창 안에 접수된 것.
 
-    실패·거부·타임아웃으로 끝난 것에는 합류하지 않는다(다시 요청할 수 있다).
+    실패·거부·타임아웃으로 끝난 것에는 합류하지 않는다(다시 요청할 수 있다). (plans/213 W2)
+    상태가 `done`이어도 저장 브리핑의 심층 섹션이 실패·타임아웃·생략이면 합류하지 않는다.
     """
     from noise_gate.infrastructure.investigation_store import ACTIVE_STATUSES, KIND_MANUAL
 
@@ -2742,6 +2780,7 @@ async def _manual_join_target(
             at is not None
             and now - at < window
             and current.get("status") not in _FOLLOWUP_RETRYABLE
+            and not _deep_dive_retryable(current)
         ):
             return current
     return None
