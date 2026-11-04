@@ -247,6 +247,35 @@ def instance_key(row: Mapping[str, Any]) -> tuple[str, str, str]:
             _text(row.get("instance_id")))
 
 
+NodeAddresses = dict[tuple[str, str, str], tuple[str, str]]
+
+
+def parse_node_addresses(rows: Sequence[Mapping[str, Any]]) -> NodeAddresses:
+    """`apm_node_addresses` 행 → `{instance_key: (host_address, status)}`."""
+    return {
+        instance_key(row): (_text(row.get("host_address")), _text(row.get("status")))
+        for row in rows
+    }
+
+
+def merge_node_addresses(
+    rows: Sequence[dict[str, Any]], found: Mapping[tuple[str, str, str], tuple[str, str]]
+) -> int:
+    """노드 주소 결과를 인벤토리 행에 `instance_key`로 합친다(제자리) → 합친 행 수.
+
+    주소가 빈 결과는 행의 기존 주소를 남기고 상태만 바꾼다(스캔 적재 · 연계 요청 공용 —
+    plans/211 §9.3 A).
+    """
+    merged = 0
+    for row in rows:
+        hit = found.get(instance_key(row))
+        if hit is not None:
+            row["host_address"] = hit[0] or row.get("host_address") or ""
+            row["host_address_status"] = hit[1]
+            merged += 1
+    return merged
+
+
 async def scan_apm_inventory(
     caller: GatewayCaller | None,
     *,
@@ -323,9 +352,7 @@ async def scan_node_addresses(
             return ScannerResult(SCANNER_DISABLED, seconds=seconds, error_kind=e.kind)
         logger.warning("APM·SMS 연계 스캔 — 노드 주소 실패: %s", e.kind)
         return failed_result(e.kind, seconds=seconds)
-    found: dict[tuple[str, str, str], tuple[str, str]] = {}
-    for row in rows:
-        found[instance_key(row)] = (_text(row.get("host_address")), _text(row.get("status")))
+    found = parse_node_addresses(rows)
     entries = [
         {"source_id": _text(s.get("source_id")), "status": _text(s.get("status")),
          "reason": _text(s.get("reason"))[:200]}
@@ -359,8 +386,11 @@ __all__ = [
     "GatewayCaller",
     "GatewayReadError",
     "GatewayToolCaller",
+    "NodeAddresses",
     "instance_key",
     "inventory_row",
+    "merge_node_addresses",
+    "parse_node_addresses",
     "read_all_rows",
     "scan_apm_inventory",
     "scan_dpm",

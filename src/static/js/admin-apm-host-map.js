@@ -38,6 +38,11 @@
         },
         summary: [["new", "신규"], ["changed", "변경"], ["ambiguous", "모호"], ["failed", "실패"], ["gone", "사라짐"],
             ["kept_manual", "관리자 행 유지"], ["errors", "오류"]],
+        // 노드 주소 사유 카운터(plans/211 §9.3 C) — 0이 아닐 때만 보인다
+        nodeSummary: [["node_ok", "노드 주소 확보"], ["node_ip_unmatched", "노드 IP 폴스타 미일치"],
+            ["node_ip_ambiguous", "노드 IP 여러 대 일치"], ["node_not_ok", "노드 주소 없음"]],
+        // 다시 찾기 단계별 결과(tried) 순서·이름
+        tried: [["instances", "인스턴스"], ["node_address", "노드 주소"], ["vm_exact", "VM 일치"], ["itam", "ITAM"]],
     };
     var SCANNER_ORDER = ["apm_inventory", "node_address", "sms", "itam", "dpm"];
 
@@ -376,6 +381,20 @@
             var why = p.evidence && (p.evidence.reason || p.evidence.stage);
             if (why) body.appendChild(node("div", "근거 " + String(why), "ahm-sub"));
         }
+        var tried = triedText(res && res.tried);
+        if (tried) body.appendChild(node("div", "단계별 결과: " + tried, "ahm-sub"));
+        var all = (res && Array.isArray(res.proposals)) ? res.proposals : [];
+        if (all.length >= 2) {
+            body.appendChild(node("div", "적용하면 쓰는 제안 " + all.length + "건"));
+            var list = node("ul", null, "ahm-targets");
+            all.forEach(function (q) {
+                var names = (q.targets || []).map(function (t) { return String(t.server_name || t.hostname || "-"); }).join(", ") || "-";
+                list.appendChild(node("li", [(L.scope[q.scope] || q.scope) + (q.match_key ? " " + q.match_key : ""),
+                    (L.basis[q.basis] || q.basis) + " · " + (L.state[q.state] || q.state), names,
+                    L.action[q.action] || q.action || "-"].join(" — ")));
+            });
+            body.appendChild(list);
+        }
         var canApply = !!p && !res.preview_only && st.autoEnabled;
         if (res && res.preview_only) body.appendChild(node("div", "관리자 행(관리자 등록·확인·연계 없음)은 미리보기만 합니다 — 바꾸려면 [수정]하세요.", "ahm-sub"));
         else if (p && !st.autoEnabled) body.appendChild(node("div", "자동 생성(NOISE_APM_HOST_MAP_AUTO_ENABLED)이 꺼져 있어 적용할 수 없습니다.", "ahm-sub"));
@@ -402,7 +421,15 @@
         if (!sum || typeof sum !== "object") return "";
         var parts = L.summary.filter(function (p) { return sum[p[0]] !== undefined; }).map(function (p) { return p[1] + " " + sum[p[0]]; });
         if (Array.isArray(sum.skipped) && sum.skipped.length) parts.push("건너뛴 규칙 " + sum.skipped.map(function (s) { return L.basis[s] || s; }).join(", "));
+        L.nodeSummary.forEach(function (p) { if (Number(sum[p[0]]) > 0) parts.push(p[1] + " " + sum[p[0]]); });
         return parts.join(" · ");
+    }
+
+    function triedText(tried) {
+        if (!tried || typeof tried !== "object") return "";
+        var keys = L.tried.map(function (p) { return p[0]; });
+        var order = L.tried.concat(Object.keys(tried).filter(function (k) { return keys.indexOf(k) < 0; }).map(function (k) { return [k, k]; }));
+        return order.filter(function (p) { return tried[p[0]]; }).map(function (p) { return p[1] + " " + String(tried[p[0]]); }).join(" · ");
     }
 
     function renderRun(run) {

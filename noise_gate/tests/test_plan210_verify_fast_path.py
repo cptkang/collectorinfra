@@ -226,8 +226,12 @@ async def test_itam_request_respects_next_retry_at() -> None:
     gateway = FakeGateway({"apm_instance_map": lambda args: {"rows": [
         apm_row("s1", "30", "b1", "settle-batch", domain_name="결제정산")]}})
     msg = itam_request_message(source_id="s1", domain_id="30", domain_name="결제정산")
-    await handle_itam_request(msg, repo=repo, cache=cache, gateway_client=gateway, now=NOW)
-    assert gateway.calls == []
+    out = await handle_itam_request(msg, repo=repo, cache=cache, gateway_client=gateway, now=NOW)
+    # plans/211 W6 — `next_retry_at`은 ITAM 단계만 막는다(노드 주소 N1은 묻는다)
+    assert [name for name, _ in gateway.calls] == ["apm_instance_map", "apm_node_addresses"]
+    assert out["status"] == "retry_wait" and out["tried"]["itam"] == "skipped:retry_wait"
+    row = repo.row("s1", "30", "domain", "")
+    assert cache.put_rows == [] and row is not None and row["state"] == "failed"
 
 
 def test_next_retry_at_has_reader() -> None:

@@ -12,20 +12,23 @@ auth 풀이 있을 때만 둔다 — 없으면 503 `apm_host_map_unavailable`.
   싣는다(침묵 금지).
 - 쓰기 뒤 Redis 사본을 행 단위로 맞춘다(`put`·`remove` — 실패는 주기 대조가 메운다).
 - 수동 추가·대상 변경은 대상마다 `locate_selected_server`로 폴스타 실재를 확인한다(시스템 전 존).
-- 다시 찾기(`/{id}/preview`·`/{id}/resolve`)는 현재 스냅샷으로 자동 제안을 만들어 보여 주고,
-  `apply`일 때만 자동 반영 규칙(`apply_auto`)으로 저장한다 — 관리자 행(manual·verified·
-  disabled)은 미리보기만 · 자동 생성 플래그 off면 적용 거부. 관리자별 분당 10회(Redis 고정
-  창 · 오류 시 프로세스 내 폴백).
+- 다시 찾기(`/{id}/preview`·`/{id}/resolve`)는 비동기 생성과 같은 순서(노드 주소 → VM 일치 →
+  ITAM · plans/211 §9.2)로 자동 제안을 만들어 단계별 결과(`tried`)와 함께 보여 주고, `apply`일
+  때만 자동 반영 규칙으로 저장한다(domain 행은 `apply_domain_link` · 그 밖은 `apply_auto`) —
+  관리자 행(manual·verified·disabled)은 미리보기만 · 자동 생성 플래그 off면 적용 거부. 관리자별
+  분당 10회(Redis 고정 창 · 오류 시 프로세스 내 폴백).
 - 모든 SQL은 저장소의 파라미터 바인딩 고정 SQL뿐이다(관측 DB 조회는 실재 확인의 기존 readonly 경로).
 """
 
 from __future__ import annotations
 
+import ipaddress
 import logging
 import math
 import time
 from collections import deque
 from collections.abc import Mapping, Sequence
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Literal
 
@@ -263,13 +266,16 @@ def _version_conflict(current: int) -> HTTPException:
 def _review_reasons(row: Mapping[str, Any]) -> list[str]:
     """「검토 필요」 사유 — ambiguous·failed · 변경됨 · scan_suggests · target_gone.
 
-    저장소의 `review_only` 조건과 같다.
+    저장소의 `review_only` 조건과 같다 — 「대체됨」 표지(`evidence.superseded` · plans/211 §9.3 E —
+    노드 주소·VM 일치로 이은 도메인의 남은 domain 행)가 있으면 사유 없음.
     """
     out: list[str] = []
-    if row.get("state") in ("ambiguous", "failed"):
-        out.append(str(row.get("state")))
     raw = row.get("evidence")
     evidence: Mapping[str, Any] = raw if isinstance(raw, Mapping) else {}
+    if evidence.get("superseded"):
+        return out
+    if row.get("state") in ("ambiguous", "failed"):
+        out.append(str(row.get("state")))
     if evidence.get("changed"):
         out.append("changed")
     if evidence.get("scan_suggests"):
@@ -450,13 +456,280 @@ def _rate_retry_local(request: Request, sub: str) -> int | None:
 
 
 # ── 다시 찾기 제안 ──────────────────────────────────────────────────────
+#: 단계별 결과(`tried`) 중 domain 행 인스턴스 출처 — `gateway` · `snapshot:<사유>`.
+_TRIED_INSTANCES = "instances"
+#: ITAM 조회 설정 오류 — I 단계를 건너뛴 사유이자 제안이 없을 때의 사유.
+_ITAM_CONFIG_INVALID = "itam_config_invalid"
+#: 다시 찾기의 게이트웨이 읽기 상한(`read_all_rows` 인자) — 관리자가 기다리는 동기 요청이라
+#: 비동기 생성(대기 10초·호출 15초·마감 60초)보다 좁힌다. 읽기 2회(인스턴스·노드 주소)를 합쳐도
+#: 30초 남짓을 넘지 않게 작업 마감 15초·호출 10초·도구 안 대기 5초. 넘으면 `job_timeout`·
+#: `gateway_unreachable` 사유를 `tried`에 남기고 다음 단계(스냅샷·V·I)로 간다.
+_RESOLVE_READ: dict[str, float] = {
+    "wait_seconds": 5.0,
+    "call_timeout": 10.0,
+    "deadline_seconds": 15.0,
+}
+
+
+@dataclass
+class _Found:
+    """다시 찾기 제안 묶음.
+
+    `proposal`은 화면 호환용 대표 1건, `proposals`는 적용 때 쓰는 제안 전부다. `actions`는
+    `proposals`와 같은 순서의 미리 판정(`plan_auto_write`)이고 `action`은 대표의 판정이다.
+    `plan`은 domain 행일 때만 둔다(`apply_domain_link`에 넘긴다).
+    """
+
+    proposal: Any = None
+    reason: str | None = None
+    action: str | None = None
+    proposals: list[Any] = field(default_factory=list)
+    actions: list[str] = field(default_factory=list)
+    tried: dict[str, str] = field(default_factory=dict)
+    plan: Any = None
+
+
+class _NoCache:
+    """사본이 없을 때 `apply_domain_link`에 넘기는 빈 사본(주기 대조가 메운다)."""
+
+    async def put(self, row: Mapping[str, Any]) -> None:
+        return None
+
+
+def _live_budget(request: Request) -> float:
+    """`NOISE_APM_HOST_MAP_LIVE_BUDGET_SECONDS`(음수·형식 밖이면 기본값 — 비동기 생성과 같다)."""
+    from noise_gate.application.apm_host_map_scan import DEFAULT_LIVE_BUDGET_SECONDS
+
+    value = getattr(_ng(request), "apm_host_map_live_budget_seconds", None)
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or value < 0:
+        return DEFAULT_LIVE_BUDGET_SECONDS
+    return float(value)
+
+
+def _gateway_caller(config: Any) -> Any:
+    """게이트웨이 호출기(MCP 경계 · D-274) — 주소(`MCP_SOURCE_ENDPOINTS["apm"]`)가 없으면 None."""
+    from noise_gate.infrastructure.apm_gateway_client import build_apm_gateway_client
+    from noise_gate.infrastructure.apm_host_map_scanners import GatewayToolCaller
+
+    client = build_apm_gateway_client(config)
+    return GatewayToolCaller(client) if client is not None else None
+
+
+def _live_links(config: Any, max_targets: int) -> tuple[Any, Any]:
+    """N3·V 직접 조회 — 전 존 정확 일치(알람 3'·5순 · 비동기 생성 배선과 같은 함수)."""
+    from noise_gate.application.host_candidates import node_address_link, vm_exact_link
+
+    async def _node(ip: str) -> Mapping[str, Any]:
+        return await node_address_link(config, host_address=ip)
+
+    async def _vm(ip: str, host_name: str) -> Any:
+        return await vm_exact_link(
+            config, ip=ip or None, host_name=host_name or None, max_targets=max_targets
+        )
+
+    return _node, _vm
+
+
+async def _snapshot_domain(
+    repo: Any, source_id: str, domain_id: str
+) -> list[dict[str, Any]] | None:
+    """스냅샷 `apm_inventory`의 그 소스·도메인 행(스냅샷이 없으면 None)."""
+    from noise_gate.application.apm_host_map_scan import TABLE_APM
+
+    if await repo.current_snapshot_run(TABLE_APM) is None:
+        return None
+    return [
+        r
+        for r in await repo.snapshot_rows(TABLE_APM, query=domain_id)
+        if str(r.get("source_id") or "") == source_id and str(r.get("domain_id") or "") == domain_id
+    ]
+
+
+async def _domain_instances(
+    repo: Any, caller: Any, source_id: str, domain_id: str
+) -> tuple[list[dict[str, Any]] | None, str]:
+    """domain 행의 인스턴스 → `(행 | None, 출처)`.
+
+    게이트웨이 `apm_instance_map`으로 읽는다(출처 `gateway`). 게이트웨이가 없거나 읽지 못했거나
+    0행이면 스냅샷 행으로 가고 출처에 `snapshot:<사유>`를 남긴다(침묵 폴백 금지). 스냅샷도 없으면
+    행은 None.
+    """
+    from noise_gate.application.apm_host_map_scan import read_domain_instances
+    from noise_gate.infrastructure.apm_host_map_scanners import (
+        ERROR_NOT_CONFIGURED,
+        GatewayReadError,
+    )
+
+    kind = ERROR_NOT_CONFIGURED
+    if caller is not None:
+        try:
+            rows = await read_domain_instances(
+                caller, source_id, domain_id, read_kwargs=_RESOLVE_READ
+            )
+        except GatewayReadError as e:
+            kind = e.kind
+        except Exception as exc:  # noqa: BLE001 — 읽기 실패는 스냅샷으로(사유는 tried · 로그)
+            logger.warning(
+                "APM·SMS 연계 다시 찾기 — 도메인 읽기 예외: source=%s domain=%s",
+                source_id,
+                domain_id,
+                exc_info=True,
+            )
+            kind = type(exc).__name__
+        else:
+            if rows:
+                return rows, "gateway"
+            kind = "no_domain"
+    logger.info(
+        "APM·SMS 연계 다시 찾기 — 도메인 인스턴스를 스냅샷으로 읽음: source=%s domain=%s 사유=%s",
+        source_id,
+        domain_id,
+        kind,
+    )
+    return await _snapshot_domain(repo, source_id, domain_id), f"snapshot:{kind}"
+
+
+def _node_unknown(row: Mapping[str, Any]) -> bool:
+    """스냅샷 노드 주소가 `ok`가 아니다(상태가 `ok`가 아니거나 주소가 IP가 아님 — N1 조건)."""
+    from noise_gate.domain.apm_host_map_scan import NODE_STATUS_OK
+
+    if str(row.get("host_address_status") or "") != NODE_STATUS_OK:
+        return True
+    try:
+        ipaddress.ip_address(str(row.get("host_address") or "").strip())
+    except ValueError:
+        return True
+    return False
+
+
 async def _proposal_for(
+    request: Request, repo: Any, row: Mapping[str, Any], *, max_targets: int
+) -> _Found:
+    """행의 키로 다시 찾기 제안 — 비동기 생성과 같은 순서(노드 주소 → VM 일치 → ITAM · §9.2).
+
+    - domain 행: 도메인 인스턴스(게이트웨이 · 실패하면 스냅샷)로 `plan_domain_link`(N1 → N2 → N3 →
+      V → I). 관리자 요청이라 ITAM 재시도 대기는 보지 않는다. 제안 = 노드 주소·VM 일치 instance·
+      workload 제안 + ITAM domain 제안(I를 돌렸을 때).
+    - instance·workload 행: 스냅샷의 그 범위 인스턴스로 `plan_domain_link`(ITAM 제외) — 스냅샷 노드
+      주소가 `ok`가 아닌 인스턴스만 `instance_ids`로 N1. 제안 = 그 행의 키와 같은 제안.
+    - SMS 스냅샷이 없으면 빈 색인으로 직접 조회(N3·V)에 맡기고, ITAM·SMS 스냅샷이 없으면 I만
+      건너뛴다.
+    쓰기 0(plans/211 §9.3 B). 사유: `apm_map_no_inventory`(인스턴스를 읽을 곳이 없음) ·
+    `not_in_inventory`(그 인스턴스·도메인 없음) · `no_match`(잇지 못함) · `itam_config_invalid`.
+    """
+    from noise_gate.application.apm_host_map_scan import (
+        TRIED_ITAM,
+        load_sms_index,
+        plan_domain_link,
+        repo_itam_source,
+    )
+    from noise_gate.domain.apm_host_map import (
+        REASON_NO_INVENTORY,
+        SCOPE_DOMAIN,
+        STATE_ACTIVE,
+        match_key_for,
+        plan_auto_write,
+    )
+    from noise_gate.infrastructure.apm_host_map_sql_scanners import (
+        ScanSqlError,
+        load_itam_lookup,
+    )
+
+    config = request.app.state.config
+    canonical = getattr(config, "host_canonical_match_enabled", False) is True
+    source_id = str(row.get("source_id") or "")
+    domain_id = str(row.get("domain_id") or "")
+    scope = str(row.get("scope") or "")
+    match_key = str(row.get("match_key") or "")
+    found = _Found()
+    caller = _gateway_caller(config)
+    itam_source: Any = None
+    itam_skip: str | None = None
+    instance_ids: list[str] | None = None
+    if scope == SCOPE_DOMAIN:
+        instances, origin = await _domain_instances(repo, caller, source_id, domain_id)
+        found.tried[_TRIED_INSTANCES] = origin
+        if instances is None:
+            found.reason = REASON_NO_INVENTORY
+            return found
+        try:
+            itam_cfg = load_itam_lookup()
+        except ScanSqlError:
+            itam_skip = _ITAM_CONFIG_INVALID
+        else:
+            itam_source = repo_itam_source(
+                repo, generic_terms=itam_cfg.generic_terms, max_servers=itam_cfg.max_servers
+            )
+    else:
+        snapshot = await _snapshot_domain(repo, source_id, domain_id)
+        if snapshot is None:
+            found.reason = REASON_NO_INVENTORY
+            return found
+        instances = [
+            r for r in snapshot if match_key_for(scope, r.get("instance_name")) == match_key
+        ]
+        instance_ids = [str(r.get("instance_id") or "") for r in instances if _node_unknown(r)]
+    if not instances:
+        found.reason = "not_in_inventory"
+        return found
+    by_ip, by_host = await load_sms_index(repo, canonical=canonical)
+    node_link, vm_link = _live_links(config, max_targets)
+    plan = await plan_domain_link(
+        caller,
+        source_id,
+        domain_id,
+        instances,
+        by_ip=by_ip,
+        by_host=by_host,
+        itam_source=itam_source,
+        itam_skip=itam_skip,
+        node_link=node_link,
+        vm_link=vm_link,
+        live_budget_seconds=_live_budget(request),
+        max_targets=max_targets,
+        canonical=canonical,
+        instance_ids=instance_ids or None,
+        read_kwargs=_RESOLVE_READ,
+        evidence={"trigger": "admin_resolve"},
+        domain_name=str(row.get("domain_name") or ""),
+    )
+    found.tried.update(plan.tried)
+    if scope == SCOPE_DOMAIN:
+        found.plan = plan
+        found.proposals = [*plan.proposals, *([plan.itam] if plan.itam is not None else [])]
+    else:
+        found.tried.pop(TRIED_ITAM, None)
+        found.proposals = [
+            p for p in plan.proposals if p.scope == scope and p.match_key == match_key
+        ]
+    if not found.proposals:
+        found.reason = _ITAM_CONFIG_INVALID if itam_skip else "no_match"
+        return found
+    same = [p for p in found.proposals if (p.scope, p.match_key) == (scope, match_key)]
+    active = [p for p in found.proposals if p.state == STATE_ACTIVE]
+    found.proposal = (same or active or found.proposals)[0]
+    now_iso = datetime.now(UTC).isoformat()
+    for p in found.proposals:
+        existing = (
+            row
+            if (p.scope, p.match_key) == (scope, match_key)
+            else await repo.get_by_key(source_id, p.domain_id, p.scope, p.match_key)
+        )
+        action = plan_auto_write(existing, p, now_iso=now_iso).action
+        found.actions.append(action)
+        if p is found.proposal:
+            found.action = action
+    return found
+
+
+async def _legacy_proposal_for(
     repo: Any, row: Mapping[str, Any], *, max_targets: int
 ) -> tuple[Any, str | None]:
-    """행의 키로 현재 스냅샷 기준 자동 제안 → `(AutoProposal | None, 사유)`.
+    """자동 생성 플래그 off의 다시 찾기 — 종전(plans/210) 스냅샷 경로 → `(제안 | None, 사유)`.
 
-    instance·workload = 노드 주소·VM 일치(`plan_scan_proposals` · ITAM 제외) · domain = ITAM
-    사슬. 사유:
+    §9.3 「플래그」: B는 `NOISE_APM_HOST_MAP_AUTO_ENABLED` 안의 교정이라 off = 현행 비트 동일 —
+    게이트웨이·폴스타 직접 조회를 부르지 않는다. instance·workload = 노드 주소·VM 일치
+    (`plan_scan_proposals` · ITAM 제외) · domain = ITAM 사슬. 사유:
     `apm_map_no_inventory`(스냅샷 없음) · `not_in_inventory`(인벤토리에 그 인스턴스·도메인 없음) ·
     `no_match`(현재 스냅샷으로 잇지 못함) · `itam_config_invalid`.
     """
@@ -551,6 +824,18 @@ async def _proposal_for(
         if proposal.scope == scope and proposal.match_key == match_key:
             return proposal, None
     return None, "no_match"
+
+
+def _written_view(proposal: Any, action: str, row: Mapping[str, Any] | None) -> dict[str, Any]:
+    """감사·응답용 쓰기 결과 1건 — `apply_domain_link`의 `rows` 항목과 같은 꼴."""
+    return {
+        "scope": proposal.scope,
+        "match_key": proposal.match_key,
+        "basis": proposal.basis,
+        "state": proposal.state,
+        "action": action,
+        "map_id": int((row or {}).get("id") or 0),
+    }
 
 
 def _proposal_view(proposal: Any) -> dict[str, Any] | None:
@@ -860,7 +1145,12 @@ async def verify_map(
 async def _resolve(
     map_id: int, body: ResolveBody, request: Request, admin: dict[str, Any]
 ) -> dict[str, Any]:
-    """다시 찾기 본체(미리보기·적용 공용)."""
+    """다시 찾기 본체(미리보기·적용 공용).
+
+    응답 가산 키(plans/211 §9.3 B): `proposals`(적용 때 쓰는 제안 전부 — 항목마다 대상 키 기존 행
+    기준 `action`) · `tried`(단계별 결과). `proposal`·`action`은 화면 호환용 대표 1건이다.
+    자동 생성 플래그 off면 종전 스냅샷 경로(`_legacy_proposal_for`)이고 가산 키도 싣지 않는다.
+    """
     from noise_gate.domain.apm_host_map import is_admin_record, plan_auto_write
 
     _assert_admin(request, admin)
@@ -874,22 +1164,37 @@ async def _resolve(
             retry_after_seconds=retry,
         )
     before = await _get_or_404(repo, map_id)
+    auto = _auto_enabled(request)
     try:
-        proposal, reason = await _proposal_for(repo, before, max_targets=_max_targets(request))
+        if auto:
+            found = await _proposal_for(request, repo, before, max_targets=_max_targets(request))
+        else:
+            legacy, legacy_reason = await _legacy_proposal_for(
+                repo, before, max_targets=_max_targets(request)
+            )
+            found = _Found(proposal=legacy, reason=legacy_reason)
+            if legacy is not None:
+                now_iso = datetime.now(UTC).isoformat()
+                found.action = plan_auto_write(before, legacy, now_iso=now_iso).action
     except Exception as exc:  # noqa: BLE001
         logger.warning("APM·SMS 연계 다시 찾기 실패: id=%s", map_id, exc_info=True)
         raise _store_failed("스냅샷 조회", exc) from None
-    now_iso = datetime.now(UTC).isoformat()
-    action = plan_auto_write(before, proposal, now_iso=now_iso).action if proposal else None
+    proposal, reason = found.proposal, found.reason
     preview_only = is_admin_record(before)
     out: dict[str, Any] = {
         "map": _view(before),
         "proposal": _proposal_view(proposal),
         "reason": reason,
-        "action": action,
+        "action": found.action,
         "preview_only": preview_only,
         "applied": False,
     }
+    if auto:
+        out["proposals"] = [
+            {**(_proposal_view(p) or {}), "action": a}
+            for p, a in zip(found.proposals, found.actions, strict=True)
+        ]
+        out["tried"] = dict(found.tried)
     if not body.apply:
         return out
     if body.version is None or int(before.get("version") or 0) != body.version:
@@ -909,12 +1214,17 @@ async def _resolve(
         )
     if proposal is None:
         raise _error(409, "no_proposal", f"적용할 제안이 없습니다({reason}).")
+    source_id = str(before.get("source_id") or "")
     try:
-        written, row = await repo.apply_auto(
-            str(before.get("source_id") or ""),
-            proposal,
-            retry_hours=_retry_hours(request),
-        )
+        if found.plan is not None:
+            written, row, rows = await _apply_domain(request, repo, map_id, found)
+        else:
+            written, row = await repo.apply_auto(
+                source_id,
+                proposal,
+                retry_hours=_retry_hours(request),
+            )
+            rows = [_written_view(proposal, written, row)]
     except Exception as exc:  # noqa: BLE001
         logger.warning("APM·SMS 연계 다시 찾기 적용 실패: id=%s", map_id, exc_info=True)
         await _audit(
@@ -926,7 +1236,9 @@ async def _resolve(
             reason=type(exc).__name__,
         )
         raise _store_failed("저장", exc) from None
-    await _cache_put(request, row)
+    if found.plan is None:
+        await _cache_put(request, row)
+        await _settle_instance(request, repo, source_id, found, written, row)
     out["audit_logged"] = await _audit(
         request,
         admin,
@@ -935,23 +1247,77 @@ async def _resolve(
         before=_audit_view(before),
         after=_audit_view(row),
         write=written,
+        rows=rows,
     )
+    done = {(r["scope"], r["match_key"]): r["action"] for r in rows}
+    for item in out["proposals"]:
+        item["action"] = done.get((item["scope"], item["match_key"]), item["action"])
     out.update(map=_view(row) if row else out["map"], action=written, applied=True)
     return out
+
+
+async def _apply_domain(
+    request: Request, repo: Any, map_id: int, found: _Found
+) -> tuple[str, dict[str, Any] | None, list[dict[str, Any]]]:
+    """domain 행 적용 — `apply_domain_link`(instance·workload 묶음 · ITAM domain 행 · 사본 · 대체됨
+    표지) → `(대표 제안의 쓰기, 다시 읽은 이 행, 쓴 행 목록)`."""
+    from noise_gate.application.apm_host_map_scan import apply_domain_link
+
+    plan = found.plan
+    cache: Any = _cache(request) or _NoCache()
+    result = await apply_domain_link(plan, repo, cache, retry_hours=_retry_hours(request))
+    rows: list[dict[str, Any]] = [dict(r) for r in result.get("rows") or []]
+    if plan.itam is not None:
+        rows.append(
+            _written_view(plan.itam, str(result.get("action") or ""), {"id": result.get("map_id")})
+        )
+    key = (found.proposal.scope, found.proposal.match_key)
+    written = next((str(r["action"]) for r in rows if (r["scope"], r["match_key"]) == key), "")
+    try:
+        row = await repo.get(map_id)
+    except Exception:  # noqa: BLE001 — 쓰기는 끝났다 — 응답 행만 이전 값(사유는 로그)
+        logger.warning(
+            "APM·SMS 연계 다시 찾기 적용 뒤 행 재조회 실패: id=%s", map_id, exc_info=True
+        )
+        row = None
+    return written, row, rows
+
+
+async def _settle_instance(
+    request: Request,
+    repo: Any,
+    source_id: str,
+    found: _Found,
+    written: str,
+    row: Mapping[str, Any] | None,
+) -> None:
+    """instance·workload 행 적용 뒤 그 도메인의 domain 행 「대체됨」 표지 정리(plans/211 §9.3 E)."""
+    from noise_gate.application.apm_host_map_scan import settle_superseded
+
+    changed = await settle_superseded(
+        repo,
+        source_id,
+        [(found.proposal, (written, dict(row) if row else None))],
+        at=datetime.now(UTC),
+        extra={"tried": dict(found.tried)},
+    )
+    for item in changed:
+        await _cache_put(request, item)
 
 
 @router.post(
     "/{map_id}/preview",
     summary="APM·SMS 연계 다시 찾기 미리보기(관리자)",
     description=(
-        "현재 스냅샷으로 자동 제안을 만들어 보여 줍니다(저장하지 않음 · 관리자별 분당 10회)."
+        "노드 주소 → VM 일치 → ITAM 순으로 자동 제안을 만들어 단계별 결과와 함께 보여 줍니다"
+        "(저장하지 않음 · 관리자별 분당 10회)."
     ),
     tags=["admin"],
 )
 async def preview_map(
     map_id: int, request: Request, admin: dict[str, Any] = Depends(require_admin_user)
 ) -> dict[str, Any]:
-    """`{map, proposal, reason, action, preview_only, applied:false}`."""
+    """`{map, proposal, reason, action, preview_only, applied:false, proposals, tried}`."""
     return await _resolve(map_id, ResolveBody(apply=False, version=None), request, admin)
 
 
@@ -971,7 +1337,8 @@ async def resolve_map(
     request: Request,
     admin: dict[str, Any] = Depends(require_admin_user),
 ) -> dict[str, Any]:
-    """`{map, proposal, reason, action, preview_only, applied[, audit_logged]}`."""
+    """`{map, proposal, reason, action, preview_only, applied, proposals, tried
+    [, audit_logged]}`."""
     return await _resolve(map_id, body, request, admin)
 
 

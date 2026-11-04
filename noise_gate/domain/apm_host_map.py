@@ -33,7 +33,12 @@ from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from typing import Any
 
-from src.domain.host_names import k8s_workload_name, normalize_hostname
+from src.domain.host_names import (
+    canonical_host_key,
+    host_keys_match,
+    k8s_workload_name,
+    normalize_hostname,
+)
 
 # ── 상수 ────────────────────────────────────────────────────────────────
 SCOPE_INSTANCE = "instance"
@@ -70,6 +75,12 @@ KIND_DPM = "dpm"
 
 #: 힌트 `basis` 값(매핑 hit).
 HINT_BASIS = "apm_map"
+#: 「대체됨」 표지 — 같은 도메인을 노드 주소·VM 일치로 이은 뒤 남은 자동·미확인 domain 행
+#: (failed·ambiguous)의 evidence 키(plans/211 §9.3 E). 표지가 있으면 「검토 필요」·7순 사유에서
+#: 빠진다. 사본 값에는 이 키가 있을 때만 `superseded: true`를 싣는다.
+EVIDENCE_SUPERSEDED = "superseded"
+#: 표지를 달 수 있는 domain 행 state.
+SUPERSEDABLE_STATES: tuple[str, ...] = (STATE_FAILED, STATE_AMBIGUOUS)
 #: 한 매핑·한 조사의 대상 상한 기본값(`NOISE_APM_HOST_MAP_MAX_TARGETS`).
 DEFAULT_MAX_TARGETS = 10
 
@@ -349,7 +360,8 @@ class MapDecision:
     - `deferred`: 4순 후보(자동 workload → domain) — `STAGE_MISS`일 때만. 호출부는 3·3'순(노드
       주소) 직접 조회가 불성립할 때 쓴다
     - `reason`: 쓰지 못한 행이 있었으면 첫 사유(`REASON_AMBIGUOUS`·`REASON_FAILED` — 대상이 전부
-      사라진 활성 행도 `REASON_FAILED`). 없으면 None
+      사라진 활성 행도 `REASON_FAILED`). 없으면 None. 「대체됨」 표지(사본 값 `superseded`)가 있는
+      행은 사유를 남기지 않는다(plans/211 §9.3 E)
     """
 
     stage: str
@@ -376,7 +388,8 @@ def decide_from_map(
         if not isinstance(rec, Mapping):
             return None
         if rec.get("state") != STATE_ACTIVE:
-            reason = reason or _state_reason(rec.get("state"))
+            if rec.get(EVIDENCE_SUPERSEDED) is not True:  # 대체된 행은 사유로 남기지 않는다
+                reason = reason or _state_reason(rec.get("state"))
             return None
         targets = usable_targets(rec.get("targets"), max_targets)
         if not targets:
@@ -447,6 +460,21 @@ def _same_result(existing: Mapping[str, Any], proposal: AutoProposal) -> bool:
     )
 
 
+def _same_suggestion(evidence: Mapping[str, Any], proposal: AutoProposal) -> bool:
+    """관리자 행에 이미 같은 제안(basis·state·대상 동일성 집합)이 있는가.
+
+    같으면 다시 쓰지 않는다 — 연계 요청·스캔마다 `at`만 바꿔 `version`을 올리면 관리자 수정이
+    `version_conflict`로 반복 거절된다(D-362 ③ · plans/211 W6).
+    """
+    prior = evidence.get("scan_suggests")
+    return (
+        isinstance(prior, Mapping)
+        and prior.get("basis") == proposal.basis
+        and prior.get("state") == proposal.state
+        and same_targets(prior.get("targets"), proposal.targets)
+    )
+
+
 def _evidence(existing: Mapping[str, Any]) -> dict[str, Any]:
     raw = existing.get("evidence")
     return dict(raw) if isinstance(raw, Mapping) else {}
@@ -467,7 +495,7 @@ def plan_auto_write(
     | manual·verified · 결과 동일 / 다름 | `skip` / `suggest`(evidence.scan_suggests만) |
     | auto·미확인 · 결과 동일 / 다름 | `same`(updated_at만) / `update`(+previous_targets · 변경됨) |
 
-    「결과」는 state와 대상 동일성 집합이다.
+    「결과」는 state와 대상 동일성 집합이다. 관리자 행에 같은 제안이 이미 있으면 `skip`이다.
     """
     proposed_targets = tuple(proposal.targets)
     if existing is None:
@@ -482,7 +510,7 @@ def plan_auto_write(
     if old_state == STATE_DISABLED:
         return MapWrite(WRITE_SKIP, old_targets, old_state, old_basis, old_evidence)
     if is_admin_record(existing):
-        if _same_result(existing, proposal):
+        if _same_result(existing, proposal) or _same_suggestion(old_evidence, proposal):
             return MapWrite(WRITE_SKIP, old_targets, old_state, old_basis, old_evidence)
         suggested = {
             **old_evidence,
@@ -634,13 +662,53 @@ def _valid_ip(value: Any) -> str | None:
         return None
 
 
+def sms_host_key(value: Any, *, canonical: bool = False) -> str:
+    """SMS hostname 색인 키.
+
+    `canonical` 거짓(현행)이면 `normalize_hostname`, 참(`HOST_CANONICAL_MATCH_ENABLED` · plans/211
+    §9.3 F)이면 `canonical_host_key`의 첫 레이블(업무명 꼬리·`-`·`_` 제거 · IP면 정규형 전체)이다.
+    빈 문자열이면 키가 아니다.
+    """
+    if not canonical:
+        return normalize_hostname(value)
+    key = canonical_host_key(_text(value))
+    if not key or _valid_ip(key):
+        return key
+    return key.split(".", 1)[0]
+
+
+def sms_host_servers(
+    by_host: Mapping[str, Sequence[Mapping[str, Any]]],
+    hostname: Any,
+    *,
+    canonical: bool = False,
+) -> list[Mapping[str, Any]]:
+    """hostname 색인 조회 → 서버 목록(없으면 빈 목록).
+
+    `canonical` 참이면 같은 첫 레이블 버킷에서 `host_keys_match(질의, 서버 hostname 또는 서버명)`인
+    서버만 남긴다(§3.2 — 양쪽 모두 FQDN이면 전체 일치).
+    """
+    key = sms_host_key(hostname, canonical=canonical)
+    bucket = list(by_host.get(key) or ()) if key else []
+    if not canonical:
+        return bucket
+    query = _text(hostname)
+    return [
+        s for s in bucket
+        if host_keys_match(query, s.get("hostname")) or host_keys_match(query, s.get("server_name"))
+    ]
+
+
 def build_sms_index(
     rows: Iterable[Mapping[str, Any]],
+    *,
+    canonical: bool = False,
 ) -> tuple[dict[str, list[dict[str, Any]]], dict[str, list[dict[str, Any]]]]:
     """SMS 스냅샷 행 → `(ip 색인, hostname 색인)` — 값은 서버 목록(같은 키의 2대 이상도 싣는다).
 
     행: `{db_id, server_name, hostname, ip, nic_ips, resource_id}`. IP 키는 대표 IP + NIC IP(형식
-    검증 통과분), hostname 키는 정규화 hostname·서버명이다.
+    검증 통과분), hostname 키는 hostname·서버명의 `sms_host_key`(`canonical` 참이면 정규형 첫
+    레이블 — 조회는 `sms_host_servers`)다.
     """
     by_ip: dict[str, list[dict[str, Any]]] = {}
     by_host: dict[str, list[dict[str, Any]]] = {}
@@ -665,7 +733,7 @@ def build_sms_index(
             if ip:
                 _add(by_ip, ip, target)
         for raw_name in (row.get("hostname"), row.get("server_name")):
-            name = normalize_hostname(raw_name)
+            name = sms_host_key(raw_name, canonical=canonical)
             if name:
                 _add(by_host, name, target)
     return by_ip, by_host
@@ -685,12 +753,13 @@ def evidence_text(origin: str, basis: str, *, verified: bool = False) -> str:
 def cache_value(row: Mapping[str, Any]) -> dict[str, Any]:
     """PG 행 → Redis 사본 값.
 
-    `{id, origin, basis, state, verified, targets, evidence_text, version}`.
+    `{id, origin, basis, state, verified, targets, evidence_text, version}` + evidence에 「대체됨」
+    표지가 있을 때만 `superseded: true`(plans/211 §9.3 E — 표지 없는 행은 현행 값 그대로).
     """
     origin = str(row.get("origin") or "")
     basis = str(row.get("basis") or "")
     verified = row.get("verified") is True
-    return {
+    value: dict[str, Any] = {
         "id": int(row.get("id") or 0),
         "origin": origin,
         "basis": basis,
@@ -700,6 +769,15 @@ def cache_value(row: Mapping[str, Any]) -> dict[str, Any]:
         "evidence_text": evidence_text(origin, basis, verified=verified),
         "version": int(row.get("version") or 0),
     }
+    if is_superseded(row):
+        value[EVIDENCE_SUPERSEDED] = True
+    return value
+
+
+def is_superseded(row: Mapping[str, Any] | None) -> bool:
+    """PG 행의 evidence에 「대체됨」 표지가 있는가."""
+    raw = (row or {}).get("evidence")
+    return isinstance(raw, Mapping) and bool(raw.get(EVIDENCE_SUPERSEDED))
 
 
 def linked_hint(pick: MapPick, *, at: str) -> dict[str, Any]:
@@ -932,6 +1010,15 @@ class ApmHostMapRepository(ABC):
         """여러 건 — 행별 개별 트랜잭션 · 실패 행은 `("error", None)`."""
 
     @abstractmethod
+    async def set_domain_superseded(
+        self, source_id: str, domain_id: str, marker: Mapping[str, Any] | None
+    ) -> dict[str, Any] | None:
+        """도메인 기본값 행의 「대체됨」 표지를 단다(`marker`)·뗀다(None) → 바뀐 행 또는 None.
+
+        자동·미확인이고 state가 `SUPERSEDABLE_STATES`인 domain 행만 바꾼다(관리자 행 불변).
+        """
+
+    @abstractmethod
     async def touch(self, map_ids: Sequence[int], *, at: datetime | None = None) -> int:
         """`last_used_at` 묶음 갱신 → 갱신 행 수."""
 
@@ -1050,6 +1137,7 @@ __all__ = [
     "BASIS_NODE_ADDRESS",
     "BASIS_VM_EXACT",
     "DEFAULT_MAX_TARGETS",
+    "EVIDENCE_SUPERSEDED",
     "FIELD_SEP",
     "HINT_BASIS",
     "KIND_DPM",
@@ -1087,6 +1175,7 @@ __all__ = [
     "STATE_AMBIGUOUS",
     "STATE_DISABLED",
     "STATE_FAILED",
+    "SUPERSEDABLE_STATES",
     "WRITE_INSERT",
     "WRITE_SAME",
     "WRITE_SKIP",
@@ -1111,6 +1200,7 @@ __all__ = [
     "evidence_text",
     "instance_match_key",
     "is_admin_record",
+    "is_superseded",
     "itam_request_message",
     "learn_message",
     "learn_proposals",
@@ -1124,6 +1214,8 @@ __all__ = [
     "plan_auto_write",
     "purge_reason",
     "same_targets",
+    "sms_host_key",
+    "sms_host_servers",
     "target_identity",
     "touch_message",
     "unresolved_hint",

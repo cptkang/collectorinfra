@@ -5,6 +5,9 @@
   `{id, origin, basis, state, verified, targets, evidence_text, version}`(도메인 `cache_value`).
 - `apmhostmap:smsip` 해시 — `ip` → JSON 서버 목록 · `apmhostmap:smshost` — 정규화 hostname → 목록.
   스캔 스냅샷에서 만든다(도메인 `build_sms_index`). 판정은 「1대일 때만 성립」(호출부).
+  `canonical`(`HOST_CANONICAL_MATCH_ENABLED` · plans/211 §9.3 F)이면 hostname 키는 정규형 첫
+  레이블이고 조회는 그 버킷을 `host_keys_match`로 거른다 — 키 공간이 바뀌므로 기동 시 1회 정한다
+  (기동 재구성 `sync_from_repo`가 같은 값으로 다시 만든다).
 - `apmhostmap:req` 스트림 — 워커가 `{type: learn|touch|itam_request, data: JSON}`을 XADD하고
   API 소비자(W3)가 PG에 반영한다.
 - `apmhostmap:inflight:{source_id}:{domain_id}` — ITAM 생성 요청 중복 억제(`SET NX EX 600`).
@@ -24,8 +27,6 @@ import logging
 from collections.abc import Iterable, Mapping, Sequence
 from typing import Any
 
-from src.domain.host_names import normalize_hostname
-
 from noise_gate.domain.apm_host_map import (
     MESSAGE_TYPES,
     RESERVED_SOURCE_IDS,
@@ -37,6 +38,8 @@ from noise_gate.domain.apm_host_map import (
     cache_field,
     cache_value,
     lookup_fields,
+    sms_host_key,
+    sms_host_servers,
 )
 
 logger = logging.getLogger(__name__)
@@ -112,9 +115,10 @@ def _servers(raw: Any) -> tuple[dict[str, Any], ...]:
 class RedisApmHostMapCache(ApmHostMapCache):
     """연계 매핑 Redis 사본·SMS 색인."""
 
-    def __init__(self, redis: Any) -> None:  # redis.asyncio.Redis (덕 타이핑)
-        """Redis 클라이언트를 받는다."""
+    def __init__(self, redis: Any, *, canonical: bool = False) -> None:  # redis.asyncio.Redis
+        """Redis 클라이언트와 hostname 색인 키 공간(`canonical` — 기본 현행)을 받는다."""
         self._redis = redis
+        self._canonical = canonical is True
 
     @property
     def redis(self) -> Any:
@@ -170,11 +174,16 @@ class RedisApmHostMapCache(ApmHostMapCache):
         return await self._index_get(SMS_IP_KEY, member)
 
     async def sms_by_host(self, hostname: str) -> IndexLookup:
-        """SMS hostname 색인 HGET 1회(정규화 hostname)."""
-        member = normalize_hostname(hostname)
+        """SMS hostname 색인 HGET 1회(`sms_host_key` · `canonical`이면 버킷을 `host_keys_match`로
+        거른다)."""
+        member = sms_host_key(hostname, canonical=self._canonical)
         if not member:
             return IndexLookup(error=ERROR_INVALID_KEY)
-        return await self._index_get(SMS_HOST_KEY, member)
+        found = await self._index_get(SMS_HOST_KEY, member)
+        if not self._canonical or found.error:
+            return found
+        servers = sms_host_servers({member: found.servers}, hostname, canonical=True)
+        return IndexLookup(servers=tuple(dict(s) for s in servers))
 
     # ── 쓰기(API 프로세스) ────────────────────────────────────────────
     @staticmethod
@@ -259,7 +268,8 @@ class RedisApmHostMapCache(ApmHostMapCache):
     async def sync_from_repo(self, repo: ApmHostMapRepository) -> dict[str, int]:
         """PG 정본 → 사본·SMS 색인 전체 재구성(기동 · 10분 주기 대조 · 스캔 뒤)."""
         fields = await self.rebuild(await repo.all_rows())
-        by_ip, by_host = build_sms_index(await repo.snapshot_rows("sms_inventory"))
+        by_ip, by_host = build_sms_index(await repo.snapshot_rows("sms_inventory"),
+                                         canonical=self._canonical)
         keys = await self.rebuild_sms_index(by_ip, by_host)
         return {"map_fields": fields, "index_keys": keys}
 
