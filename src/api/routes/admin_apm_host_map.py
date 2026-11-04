@@ -771,9 +771,7 @@ async def _legacy_proposal_for(
             return None, "not_in_inventory"
     elif not domain_rows:
         return None, "not_in_inventory"
-    by_ip, by_host = build_sms_index(
-        await repo.snapshot_rows("sms_inventory"), canonical=canonical
-    )
+    by_ip, by_host = build_sms_index(await repo.snapshot_rows("sms_inventory"))
     if scope == SCOPE_DOMAIN:
         from noise_gate.infrastructure.apm_host_map_sql_scanners import (
             ScanSqlError,
@@ -806,7 +804,6 @@ async def _legacy_proposal_for(
             generic_terms=itam_cfg.generic_terms,
             max_servers=itam_cfg.max_servers,
             max_targets=max_targets,
-            canonical=canonical,
         )
         return itam_proposal(
             domain_id=domain_id,
@@ -823,7 +820,6 @@ async def _legacy_proposal_for(
         itam=None,
         max_targets=max_targets,
         evidence={"trigger": "admin_resolve"},
-        canonical=canonical,
     )
     for proposal in plan.get(source_id, []):
         if proposal.scope == scope and proposal.match_key == match_key:
