@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-11-02 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-11-04 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -250,6 +250,7 @@
 | 205 | [`205-TODO-apm-gateway-parallel-calls-multicore-parse.md`](./205-TODO-apm-gateway-parallel-calls-multicore-parse.md) | 205. APM 게이트웨이 조회 가속 — 도구 안 독립 호출 동시 실행 · 큰 응답 파싱·자격증명 검사 멀티코어 | **TODO** · 코드 0 · D-356(기본 on) · W1 프로세스 풀 · W2 도구 안 동시 · W3 배치 항목 동시 · W3b 다중 사용자 공정 동시성 · W4 기록·측정 | 2026-11-02 |
 | 206 | [`206-WIP-mcp-server-concurrency-multicore-review.md`](./206-WIP-mcp-server-concurrency-multicore-review.md) | 206. MCP 서버 동시성 — 멀티코어 전환 검토 결과 · DB2 연결 풀 · 측정 판정 · 소스별 프로세스 분리 | **WIP** · W1 DB2 연결 풀 구현(기본 on · 크기=동시 상한 4 · 지연 생성 · autocommit 확인 · off 비트 동일) · W0 스크립트 2종 · 잔여: 폐쇄망 `db2_probe.py`(배포 전)·W0 측정 → W2 판정 · W3 보류 · D-357 | 2026-11-02 |
 | 207 | [`207-WIP-apm-untargeted-latency.md`](./207-WIP-apm-untargeted-latency.md) | 207. 서버 미지정 APM 조회 지연 교정 — 끝나기 어려운 작업 조기 접수(B) · 도메인 단위 병렬 호출(C) | **WIP** · W0~W4 구현 · 잔여 폐쇄망 재측정·§7 후속 · D-358(원 192·D-346 → 197·D-348 → 2026-11-02 재부여) · 동시 상한은 D-347 `JENNIFER_MAX_INFLIGHT_PER_SOURCE`로 통일 · `poll_job` 조기 접수 | 2026-10-27 |
+| 212 | [`212-TODO-llm-plane-per-role.md`](./212-TODO-llm-plane-per-role.md) | 212. 용도별 LLM 평면 분리 — 질의 응답·시맨틱 라우팅·의도 계획·최종 응답·딥 에이전트의 모델·엔드포인트 | **TODO** · 코드 0 · D-365 예약 · 역할 `router`·`planner`·`answer`(미설정 = 워커 승계·비트 동일) · 과금 판정 확장 · §7 Q1~Q7 사용자 확인 대기 · D-174 부기 예정 | 2026-11-04 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |
