@@ -7,6 +7,7 @@
 |---|---|---|
 | 1 | 매핑 manual·verified(instance → workload → domain) · disabled = `absent` | hit |
 | 2 | 매핑 auto · instance | hit |
+| 3'' | (auto) 파드 · 페이로드 노드 주소 비`ok` → `apm_node_addresses` 1회(`ok`면 3·3') | — |
 | 3 | 페이로드 `apm.host_address`(`NODE_ADDRESS_LINK_STATUSES`) → SMS IP 색인(1대일 때만) | index |
 | 3' | 색인 miss → `node_address_link`(전 존 프로브) | live |
 | 4 | 매핑 auto · workload → domain(`MapDecision.deferred` · 대상 ≤ 상한 전부) | hit |
@@ -14,9 +15,14 @@
 | 6 | D-348 저장 확정 연결(`host_link_enabled`일 때) | hit |
 | 7 | 미확정 `unresolved_hint` + ITAM 생성 요청(auto · inflight 선점 시) | miss |
 
-1·2·4는 사본 HMGET 1회로 판정한다. 3'·5 직접 조회 합계는 `apm_host_map_live_budget_seconds`
-안이다(넘거나 예외면 사유 로그 후 다음 순 — 3'이 예외면 힌트 `node_address_status`에
+1·2·4는 사본 HMGET 1회로 판정한다. 3''·3'·5 직접 조회 합계는 `apm_host_map_live_budget_seconds`
+안이다(넘거나 예외면 사유 로그 후 다음 순 — 3''·3'이 예외면 힌트 `node_address_status`에
 `node_unchecked`를 싣는다). 판정마다 로그 1줄 `apm_map_lookup …`을 남긴다.
+
+3''순(plans/211 §9.3 D)은 auto on · 파드(`apm.pod is True` 또는 워크로드 키 성립) · 정수
+`apm.instance_id` · 페이로드 노드 주소가 `ok`가 아닐 때만 부른다(그 밖 = 호출 0 · 현행 비트 동일).
+도구 미등록(`Unknown tool`)·행 상태 비`ok`·작업 핸들·예산 초과는 사유 로그 후 다음 순이다. 3''에서
+얻은 주소로 이으면 되적재 evidence에 `node_address_from=3''`를 싣는다.
 
 되적재(`apm_host_map_auto_enabled`일 때만): 3·3'·5 결과는 `learn`, 1·2·4 hit는 `touch`를
 `apmhostmap:req`에 발행한다 — 워커는 PG에 연결하지 않는다(D-049 · API 소비자가 반영한다).
@@ -50,6 +56,17 @@ NODE_ADDRESS_REASON_STATUSES: frozenset[str] = frozenset(
     {"disabled", "login_failed", "login_blocked", "error"}
 )
 NODE_ADDRESS_MISSING = "missing"
+#: 3''순 단계 이름(예산 로그 `step` · 되적재 evidence `node_address_from`).
+NODE_LOOKUP_STEP = "3''"
+#: 게이트웨이 도구 미등록 오류 머리(FastMCP — `JENNIFER_NODE_ADDRESS_ENABLED` off).
+_UNKNOWN_TOOL = "Unknown tool"
+#: 3''순 사유 — 도구 미등록(§9.2 어휘).
+REASON_NODE_ADDRESS_DISABLED = "node_address_disabled"
+#: 3''순 `wait_seconds` 여유(초) — 남은 예산 중 SSE 연결·initialize·응답 전송 몫. 게이트웨이가
+#: `wait_seconds` 안에 못 끝내면 작업을 승격해 뒤에서 끝까지 돌리므로(캐시에 남음) 우리 쪽
+#: `wait_for` 취소가 진행 중 웹 조회를 끊고 소스 전체 실패 간격을 남기는 일을 피한다
+#: (docs/18 2026-11-03 W9 · D-362 부기 3 ⑲).
+NODE_LOOKUP_CONNECT_MARGIN = 1.0
 
 RESULT_HIT = "hit"
 RESULT_INDEX = "index"
@@ -134,6 +151,10 @@ class _LiveBudget:
         #: 예외로 끝난 단계(`step`) — 호출부가 힌트 사유로 옮긴다(침묵 폴백 금지).
         self.failed: set[str] = set()
 
+    def remaining(self) -> float:
+        """남은 예산(초 · 하한 0)."""
+        return max(0.0, self._deadline - self._clock())
+
     async def run(self, label: str, alarm_id: Any, factory: Callable[[], Awaitable[Any]]) -> Any:
         """예산 안에 끝나면 결과, 남은 예산이 없거나 넘거나 예외면 None(사유 로그).
 
@@ -202,6 +223,135 @@ def _vm_hint(target: Mapping[str, Any], at: str) -> dict[str, Any]:
     return hm.linked_hint(hm.MapPick(hm.SCOPE_INSTANCE, record, (dict(target),)), at=at)
 
 
+# ── 3''순: 게이트웨이 노드 주소 직접 조회 ──────────────────────────────
+def _instance_id(value: Any) -> int | None:
+    """페이로드 `apm.instance_id` → 음이 아닌 정수(bool·비숫자·음수는 None)."""
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value if value >= 0 else None
+    text = _text(value)
+    return int(text) if text.isascii() and text.isdigit() else None
+
+
+def _is_ipv4(text: str) -> bool:
+    try:
+        ipaddress.IPv4Address(text)
+    except ValueError:
+        return False
+    return True
+
+
+def _needs_node_lookup(apm: Mapping[str, Any], instance_name: str) -> bool:
+    """3''순 대상인가 — 페이로드 노드 주소가 `ok`가 아니고(없음 포함) 파드인 인스턴스."""
+    if (_text(apm.get("host_address_status")) in NODE_ADDRESS_LINK_STATUSES
+            and _text(apm.get("host_address"))):
+        return False
+    return apm.get("pod") is True or hm.workload_match_key(instance_name) is not None
+
+
+def _node_row(result: Any, *, source_id: str, instance_id: int) -> tuple[str, str]:
+    """게이트웨이 반환 → (노드 주소, 사유). 쓸 수 있는 `ok`·IPv4 행 1건이면 사유는 빈 값."""
+    if not isinstance(result, dict):
+        return "", "invalid_response"
+    err = result.get("error")
+    if err:
+        code = err.get("code") if isinstance(err, Mapping) else err
+        return "", f"gateway_error:{_text(code)[:40] or 'unknown'}"
+    if result.get("job"):
+        # 대상 지정 1건은 보통 인라인이다 — 작업 핸들은 기다리지 않는다(예산 안 응답만 쓴다)
+        return "", "job_handle"
+    rows = [
+        r for r in result.get("rows") or [] if isinstance(r, dict)
+        and _text(r.get("source_id")) == source_id
+        and _text(r.get("instance_id")) == str(instance_id)
+    ]
+    if len(rows) != 1:
+        return "", "no_row" if not rows else "multiple_rows"
+    status = _text(rows[0].get("status"))
+    if status not in NODE_ADDRESS_LINK_STATUSES:
+        return "", f"status:{status or '-'}"
+    address = _text(rows[0].get("host_address"))
+    if not _is_ipv4(address):  # 프로브 리터럴 이중 방어(D-355)
+        return "", "invalid_address"
+    return address, ""
+
+
+async def _fetch_node_address(
+    client: Any, *, source_id: str, domain_id: str, instance_id: int, wait_seconds: float
+) -> tuple[str, str]:
+    """`apm_node_addresses` 1회 → (노드 주소, 사유). 도구 미등록만 사유로 바꾸고 그 밖은 올린다.
+
+    `wait_seconds` 안에 못 끝내면 게이트웨이가 작업 핸들을 준다 — 읽지 않고(`apm_job_status` 0)
+    `job_handle` 사유로 넘긴다(작업은 뒤에서 끝나 캐시에 남아 다음 알람이 쓴다).
+    """
+    from noise_gate.infrastructure.apm_gateway_client import ApmGatewayClientError
+
+    try:
+        result = await client.apm_node_addresses(
+            instance_ids=[instance_id], source_ids=[source_id],
+            domain_ids=[int(domain_id)] if domain_id.isascii() and domain_id.isdigit() else None,
+            wait_seconds=wait_seconds,
+        )
+    except ApmGatewayClientError as exc:
+        if _UNKNOWN_TOOL in str(exc):
+            return "", REASON_NODE_ADDRESS_DISABLED
+        raise
+    return _node_row(result, source_id=source_id, instance_id=instance_id)
+
+
+async def _gateway_node_address(
+    cfg: Any,
+    client: Any,
+    budget: _LiveBudget,
+    *,
+    alarm_id: Any,
+    source_id: str,
+    domain_id: str,
+    instance_id: int,
+) -> str:
+    """3''순 — 그 인스턴스의 노드 주소를 게이트웨이에 1회 묻는다(3'·5와 같은 `budget`).
+
+    쓸 수 있는 `ok`·IPv4 주소면 그 값, 아니면 사유 로그 후 빈 값(예외는 `budget`이 흡수 ·
+    `budget.failed`에 단계가 남는다).
+    """
+    address, reason = "", ""
+    if not source_id:
+        reason = "no_source"
+    else:
+        if client is None:
+            from noise_gate.infrastructure.apm_gateway_client import build_apm_gateway_client
+
+            client = build_apm_gateway_client(cfg)
+        if client is None:
+            reason = "gateway_not_configured"
+        else:
+            # 클라이언트 호출 상한이 승격보다 먼저 오면 승격 전 작업이 취소된다(W9 재발)
+            # — 남은 예산과 호출 상한 중 작은 값
+            limit = budget.remaining()
+            cap = getattr(client, "call_timeout", None)
+            if isinstance(cap, (int, float)) and not isinstance(cap, bool) and cap > 0:
+                limit = min(limit, float(cap))
+            wait = max(0.0, limit - NODE_LOOKUP_CONNECT_MARGIN)
+            out = await budget.run(NODE_LOOKUP_STEP, alarm_id, lambda: _fetch_node_address(
+                client, source_id=source_id, domain_id=domain_id, instance_id=instance_id,
+                wait_seconds=wait,
+            ))
+            if isinstance(out, tuple):
+                address, reason = out
+            else:  # 예산 소진·초과·예외 — 상세는 `_LiveBudget.run` 로그
+                reason = "failed" if NODE_LOOKUP_STEP in budget.failed else "budget"
+    if address:
+        logger.info("apm_map 노드 주소 게이트웨이 조회(3'') ok: alarm_id=%s instance_id=%s",
+                    alarm_id, instance_id)
+        return address
+    logger.info(
+        "apm_map 노드 주소 게이트웨이 조회(3'') 불성립 — 다음 순으로: alarm_id=%s instance_id=%s"
+        " reason=%s", alarm_id, instance_id, reason,
+    )
+    return ""
+
+
 # ── 조회 순서 ───────────────────────────────────────────────────────────
 async def resolve_map_link(
     cfg: Any,  # AppConfig (덕 타이핑)
@@ -212,6 +362,7 @@ async def resolve_map_link(
     redis: Any = None,  # redis.asyncio 클라이언트 | None — 되적재·inflight
     stored_link: StoredLinkFn | None = None,
     clock: Callable[[], float] = time.monotonic,
+    gateway_client: Any = None,  # ApmGatewayClient | None — 3''순(None이면 필요할 때만 만든다)
 ) -> dict[str, Any]:
     """§3.1 조회 순서로 `polestar_link` 힌트를 정한다(첫 성립에서 멈춤 · 늘 dict를 돌려준다).
 
@@ -220,6 +371,8 @@ async def resolve_map_link(
         redis: 되적재·ITAM 요청 발행 연결(없으면 발행 생략 · 로그)
         stored_link: 6순 D-348 저장 연결 조회(호출부가 `host_link_enabled`일 때만 준다)
         clock: 단조 시계(테스트 주입점 · 예산·측정 로그)
+        gateway_client: 3''순 게이트웨이 클라이언트(테스트 주입점 · None이면 3''순 대상일 때만
+            `build_apm_gateway_client(cfg)` — 주소 미설정이면 사유 로그 후 건너뜀)
 
     7순 사유:
         - 사본의 쓰지 못한 행이 `failed` → `apm_map_failed`, `ambiguous` → `apm_map_ambiguous`
@@ -287,9 +440,23 @@ async def resolve_map_link(
     if decision.stage == hm.STAGE_AUTO_INSTANCE and decision.pick is not None:
         return await _hit(decision.pick, "2")
 
-    # ── 3·3': 페이로드 노드 주소 ─────────────────────────────────────
+    # ── 3'': 게이트웨이 노드 주소(auto · 파드 · 페이로드 주소 비`ok`) ─
     host_address = _text(apm.get("host_address"))
     status = _text(apm.get("host_address_status"))
+    node_via = ""
+    instance_id = _instance_id(apm.get("instance_id"))
+    if auto and instance_id is not None and _needs_node_lookup(apm, instance_name):
+        address = await _gateway_node_address(
+            cfg, gateway_client, budget, alarm_id=alarm_id, source_id=source_id,
+            domain_id=domain_id, instance_id=instance_id,
+        )
+        if address:
+            host_address, status, node_via = address, "ok", NODE_LOOKUP_STEP
+            nas = None  # 노드 주소를 지금 확인했다 — 페이로드 사유(`missing` 등)를 싣지 않는다
+        elif NODE_LOOKUP_STEP in budget.failed and nas is None:
+            nas = NODE_UNCHECKED  # 3'과 같은 어휘(D-362 부기 1 ⑫)
+
+    # ── 3·3': 노드 주소(페이로드 또는 3'') ───────────────────────────
     node_ok = False
     if status in NODE_ADDRESS_LINK_STATUSES and host_address:
         try:
@@ -304,7 +471,8 @@ async def resolve_map_link(
             servers = hm.normalize_targets(list(idx.servers), None)
             if len(servers) == 1:
                 target = {**servers[0], "ip": host_address}
-                await _learn([target], hm.BASIS_NODE_ADDRESS, "3", host_address=host_address)
+                await _learn([target], hm.BASIS_NODE_ADDRESS, "3", host_address=host_address,
+                             node_address_from=node_via)
                 return _done(_node_hint(target, host_address, at), "3", RESULT_INDEX)
             if len(servers) > 1:
                 index_miss = False
@@ -323,7 +491,8 @@ async def resolve_map_link(
                 ]
                 if unchecked:
                     hint["unchecked_db_ids"] = ",".join(unchecked)
-                await _learn([target], hm.BASIS_NODE_ADDRESS, "3'", host_address=host_address)
+                await _learn([target], hm.BASIS_NODE_ADDRESS, "3'", host_address=host_address,
+                             node_address_from=node_via)
                 return _done(hint, "3'", RESULT_LIVE)
             if isinstance(found, dict):
                 logger.info("apm_map 노드 주소 직접 조회 미확정: alarm_id=%s reason=%s",
@@ -459,6 +628,8 @@ __all__ = [
     "NODE_ADDRESS_LINK_STATUSES",
     "NODE_ADDRESS_MISSING",
     "NODE_ADDRESS_REASON_STATUSES",
+    "NODE_LOOKUP_STEP",
+    "REASON_NODE_ADDRESS_DISABLED",
     "RESULT_HIT",
     "RESULT_INDEX",
     "RESULT_LIVE",

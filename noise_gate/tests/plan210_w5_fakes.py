@@ -86,6 +86,28 @@ class FakeRepo:
                 out.append(("error", None))
         return out
 
+    async def set_domain_superseded(self, source_id: str, domain_id: str,
+                                    marker: Mapping[str, Any] | None) -> dict[str, Any] | None:
+        """plans/211 W6 — 실 저장소와 같은 조건(자동·미확인 domain 행 · failed·ambiguous)."""
+        calls = self.__dict__.setdefault("superseded_calls", [])  # 기존 생성자 불변(W6 추가분)
+        calls.append((source_id, domain_id, marker))
+        row = self.rows.get((source_id, domain_id, "domain", ""))
+        if (row is None or row.get("origin") != ORIGIN_AUTO or row.get("verified") is True
+                or row.get("state") not in ("failed", "ambiguous")):
+            return None
+        evidence = dict(row.get("evidence") or {})
+        if marker is None:
+            if "superseded" not in evidence:
+                return None
+            evidence.pop("superseded")
+        else:
+            if "superseded" in evidence:
+                return None
+            evidence["superseded"] = dict(marker)
+        row["evidence"] = evidence
+        row["version"] = int(row.get("version") or 0) + 1
+        return dict(row)
+
     async def set_targets_gone(self, present: Any, scanned_db_ids: Any) -> int:
         self.gone_calls.append((set(present), list(scanned_db_ids)))
         changed = 0

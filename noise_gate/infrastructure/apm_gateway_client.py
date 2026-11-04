@@ -26,6 +26,8 @@ logger = logging.getLogger(__name__)
 APM_EVENTS_TOOL = "apm_events"
 #: (plans/210 §3.8) 수동 재분석 옛 기록 역조회.
 APM_INSTANCE_MAP_TOOL = "apm_instance_map"
+#: (plans/211 §9.3 D) 알람 3''순 — 인스턴스 대상 지정 노드 주소 조회.
+APM_NODE_ADDRESSES_TOOL = "apm_node_addresses"
 
 
 class ApmGatewayClientError(RuntimeError):
@@ -52,6 +54,11 @@ class ApmGatewayClient:
         self._call_timeout = call_timeout
         self._unreachable_until: float = 0.0
         self._unreachable_reason: str | None = None
+
+    @property
+    def call_timeout(self) -> float:
+        """호출 상한(초 — 연결+초기화+도구 호출 전체)."""
+        return self._call_timeout
 
     async def unreachable_reason(self) -> str | None:
         """게이트웨이 포트에 TCP 연결만 시도해 도달 가능 여부를 본다(D-243 전례).
@@ -173,6 +180,56 @@ class ApmGatewayClient:
                 f"게이트웨이 호출 실패({APM_INSTANCE_MAP_TOOL}): {_failure_detail(e)}"
             ) from e
 
+    async def apm_node_addresses(
+        self,
+        *,
+        instance_ids: list[int],
+        source_ids: list[str] | None = None,
+        domain_ids: list[int] | None = None,
+        wait_seconds: float | None = None,
+    ) -> dict[str, Any]:
+        """게이트웨이 `apm_node_addresses(instance_ids=…)` — 인스턴스 노드 주소(plans/211 §9.3 D).
+
+        대상 지정 호출이라 게이트웨이 호출 시간 예산 안에서만 웹 조회한다(D-362 부기 3 ⑲).
+        `source_ids`·`domain_ids`는 값이 있을 때만 싣는다. `apm_instance_map`과 같은 시간 초과·오류
+        규약이다(반환 dict는 가공 없이 — 작업 핸들 `job`·오류 봉투 `error`도 그대로).
+        `wait_seconds`(None = 싣지 않음 · 끝날 때까지 기다림)를 주면 게이트웨이가 그 안에 못 끝낸
+        호출을 작업으로 승격해 뒤에서 끝까지 돌린다(연결이 끊겨도 조회를 취소하지 않음). 도구 미등록
+        (게이트웨이 `JENNIFER_NODE_ADDRESS_ENABLED` off)은 `Unknown tool`을 담은 오류로 올린다.
+
+        Raises:
+            ApmGatewayClientError: 연결·호출 타임아웃·도구 오류(isError)·파싱 실패.
+        """
+        arguments: dict[str, Any] = {"instance_ids": [int(i) for i in instance_ids]}
+        if source_ids:
+            arguments["source_ids"] = list(source_ids)
+        if domain_ids:
+            arguments["domain_ids"] = [int(d) for d in domain_ids]
+        if wait_seconds is not None:
+            arguments["wait_seconds"] = max(0.0, float(wait_seconds))
+        try:
+            return await asyncio.wait_for(
+                self._call(APM_NODE_ADDRESSES_TOOL, arguments), timeout=self._call_timeout
+            )
+        except ApmGatewayClientError:
+            raise
+        except TimeoutError as e:
+            raise ApmGatewayClientError(
+                f"게이트웨이 호출 타임아웃({APM_NODE_ADDRESSES_TOOL},"
+                f" {self._call_timeout:g}초 초과)"
+            ) from e
+        except asyncio.CancelledError as e:
+            task = asyncio.current_task()
+            if task is not None and task.cancelling():
+                raise
+            raise ApmGatewayClientError(f"게이트웨이 세션 중단({APM_NODE_ADDRESSES_TOOL})") from e
+        except ImportError as e:
+            raise ApmGatewayClientError(f"MCP SDK 미설치로 게이트웨이 호출 불가: {e}") from e
+        except Exception as e:  # noqa: BLE001 — 통신 실패를 명확히 노출(침묵 금지)
+            raise ApmGatewayClientError(
+                f"게이트웨이 호출 실패({APM_NODE_ADDRESSES_TOOL}): {_failure_detail(e)}"
+            ) from e
+
     def _auth_headers(self) -> dict[str, str] | None:
         if not self._bearer_token:
             return None
@@ -270,6 +327,7 @@ def build_apm_gateway_client(app_config: Any) -> ApmGatewayClient | None:
 __all__ = [
     "APM_EVENTS_TOOL",
     "APM_INSTANCE_MAP_TOOL",
+    "APM_NODE_ADDRESSES_TOOL",
     "ApmGatewayClient",
     "ApmGatewayClientError",
     "apm_gateway_url",

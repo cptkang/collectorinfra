@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-11-03 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-11-04 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -253,7 +253,7 @@
 | 208 | [`208-WIP-multi-user-concurrency.md`](./208-WIP-multi-user-concurrency.md) | 208. 다중 사용자 동시성 개선 — 장애 조사 동시 5건(1순위) · 관제 집계 루프 막힘 · 알람 워커 동시 처리 | **WIP** · D-359 · A: 측정·MCP 잠금 조사 범위·마스킹 공유 완료(K=5 ×1.04) · A4(상한 2→5) 폐쇄망 실측 뒤 · C: 집계 루프 밖·공유 캐시·버스 상한·최근 구간 읽기+회전 완료 · B: W0~W6(동시 처리 N=4 ×3.98·드레인·워커 분리·잠금·문서) 완료 · B·C 계획 끝 회귀 신규 실패 0 |
 | 209 | [`209-polestar-identifier-resolution-s4-missing.md`](./209-polestar-identifier-resolution-s4-missing.md) | 209. 폴스타 서버 식별자 해소(등록명↔호스트명) · S4 지표 0건 결손 판정 | **구현 완료**(2026-11-03 · D-360 부기 1) · W1 0건 재해소·hint · W2 식별자 라벨·스코프 유지 · W3 판정 3상태·S4 결손/보류 · 모듈 회귀 신규 실패 0 · 폐쇄망 검증 대기 |
 | 210 | [`210-WIP-apm-sms-host-map-itam.md`](./210-WIP-apm-sms-host-map-itam.md) | 210. APM·SMS·DPM 연계 정보 DB — 장애 진단 고속 경로(매핑 있으면 DB · 없으면 직접 조회 후 저장) · 사전 스캔(수동) · 관리자 관리 | **WIP**(2026-11-03 · D-362) · W1~W9 구현·검증·교정 완료(커밋 없음 · 플래그 기본 off · W8 노드 주소 결정성 · W9 호출당 5초 예산·서버명 경로 부착) · 회귀 원래 실패만 · 잔여 = W0 폐쇄망 실측(§7) · ITAM 표 추정 · 매뉴얼 캡처 미실행
-| 211 | [`211-WIP-cross-solution-hostname-matching.md`](./211-WIP-cross-solution-hostname-matching.md) | 211. 솔루션 간 호스트 이름 매칭 — 정규형 일치(L0) 공용화 · `hostname(업무명)` 꼬리 처리 · LIKE는 후보 전용 | **WIP** · D-363 · W1~W5 구현(플래그 기본 off) · 잔여: W0 폐쇄망 확인(칸·정규형 충돌·행 수) · ITAM 빌더 재실행 · 원 209 재부여 | 2026-11-04 |
+| 211 | [`211-WIP-cross-solution-hostname-matching.md`](./211-WIP-cross-solution-hostname-matching.md) | 211. 솔루션 간 호스트 이름 매칭 — 정규형 일치(L0) 공용화 · `hostname(업무명)` 꼬리 처리 · LIKE는 후보 전용 | **WIP** · D-363 · W1~W6 구현(플래그 기본 off) · W6 = APM↔SMS 연계 노드 주소 우선·ITAM 마지막·알람 3″순(D-362 부기 4 · 모듈 회귀 귀속 0) · 잔여: W0 · 게이트웨이 작업 승격 실측 · ITAM 빌더 재실행 | 2026-11-04 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |

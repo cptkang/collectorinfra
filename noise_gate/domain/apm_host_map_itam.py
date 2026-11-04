@@ -30,8 +30,6 @@ from collections.abc import Collection, Iterable, Mapping, Sequence
 from dataclasses import dataclass, field
 from typing import Any
 
-from src.domain.host_names import normalize_hostname
-
 from noise_gate.domain.apm_host_map import (
     BASIS_ITAM,
     DEFAULT_MAX_TARGETS,
@@ -41,6 +39,7 @@ from noise_gate.domain.apm_host_map import (
     STATE_FAILED,
     AutoProposal,
     normalize_targets,
+    sms_host_servers,
     vm_exact_match,
 )
 
@@ -229,10 +228,12 @@ def _sms_servers(
     server: ItamServer,
     by_ip: Mapping[str, Sequence[Mapping[str, Any]]],
     by_host: Mapping[str, Sequence[Mapping[str, Any]]],
+    *,
+    canonical: bool = False,
 ) -> list[Mapping[str, Any]] | None:
     """ITAM 서버 1대 → SMS 서버(정확히 1대면 `[서버]` · 0대 `[]` · 2대 이상 None)."""
     ip_hits = [s for ip in server.ips for s in by_ip.get(ip, ())]
-    host_hits = list(by_host.get(normalize_hostname(server.hostname), ()))
+    host_hits = sms_host_servers(by_host, server.hostname, canonical=canonical)
     match = vm_exact_match(ip_hits, host_hits)
     if match.status == "linked":
         return [match.targets[0]]
@@ -263,8 +264,12 @@ def resolve_itam_chain(
     generic_terms: Collection[str] = (),
     max_servers: int = DEFAULT_MAX_SERVERS,
     max_targets: int = DEFAULT_MAX_TARGETS,
+    canonical: bool = False,
 ) -> ItamChainResult:
-    """APM 도메인 하나의 ITAM 사슬 판정(§3.4 itam — 모듈 머리 1~6)."""
+    """APM 도메인 하나의 ITAM 사슬 판정(§3.4 itam — 모듈 머리 1~6).
+
+    `canonical`은 SMS hostname 색인 키 공간(`build_sms_index`와 같은 값 · plans/211 §9.3 F)이다.
+    """
     tokens = domain_tokens((domain_name, domain_description), generic_terms)
     evidence: dict[str, Any] = {"source": "itam", "tokens": tokens[:_EVIDENCE_SAMPLE]}
     if not tokens:
@@ -307,7 +312,7 @@ def resolve_itam_chain(
     found_targets: list[Mapping[str, Any]] = []
     unmatched = ambiguous = 0
     for server in picked:
-        hits = _sms_servers(server, by_ip, by_host)
+        hits = _sms_servers(server, by_ip, by_host, canonical=canonical)
         if hits is None:
             ambiguous += 1
         elif not hits:
