@@ -1,7 +1,7 @@
 /**
  * 관리자 「APM·SMS 연계」 탭 (plans/210 §3.10 · D-362).
  *
- * ① 매핑 목록·필터·편집(대상·상태·메모 · 확인 · 다시 찾기 미리보기/적용 · 삭제) · 수동 추가
+ * ① 매핑 목록·필터·편집(대상·상태·메모 · 확인 · 확인 취소 · 다시 찾기 미리보기/적용 · 삭제) · 수동 추가
  * ② 사전 스캔(「지금 스캔」 · 진행 폴링 · 스캐너별 결과 · 노드 주소 소스별 상태 · DPM 「미연동」 · 이력)
  * ③ 인벤토리(마지막 스캔 스냅샷 검색 · 「매핑 없음만」 · 수동 추가 선택)
  *
@@ -241,6 +241,12 @@
             actions.appendChild(button("수정", function () { openEditor(row); }));
             if (row.origin === "auto" && !row.verified) {
                 actions.appendChild(button("확인", function (b) { act(b, "POST", "/" + row.id + "/verify", { version: row.version }, "확인했습니다 — 이후 자동 결과가 덮지 않습니다."); }));
+            }
+            if (row.origin === "auto" && row.verified) {
+                actions.appendChild(button("확인 취소", function (b) {
+                    if (!window.confirm("관리자 확인을 취소할까요? 이후 자동 결과가 다시 갱신하고 오래 안 쓰면 정리됩니다(대상은 그대로).")) return;
+                    act(b, "POST", "/" + row.id + "/unverify", { version: row.version }, "확인을 취소했습니다 — 다시 자동 · 추정 행입니다.");
+                }));
             }
             actions.appendChild(button("다시 찾기", function (b) { preview(row, b); }));
             actions.appendChild(button("삭제", function (b) {

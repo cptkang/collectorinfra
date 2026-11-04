@@ -1051,6 +1051,7 @@ def test_create_app_registers_routes_only_when_enabled(enabled: bool) -> None:
         BASE,
         f"{BASE}/{{map_id}}",
         f"{BASE}/{{map_id}}/verify",
+        f"{BASE}/{{map_id}}/unverify",
         f"{BASE}/{{map_id}}/preview",
         f"{BASE}/{{map_id}}/resolve",
         f"{BASE}/scan",

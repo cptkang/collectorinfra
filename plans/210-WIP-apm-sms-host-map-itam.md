@@ -209,6 +209,7 @@
 | POST | `/` | 수동 추가 — 대상마다 `locate_selected_server`로 폴스타 실재 확인 |
 | PUT | `/{id}` | 수정 `{targets, state(active·disabled), note, version}` — 자동 행 수정 시 `origin=manual` · 409 |
 | POST | `/{id}/verify` | 자동 결과 확인 |
+| POST | `/{id}/unverify` | 확인 취소 — 확인된 자동 행만 · `verified=false`만(§6.4) |
 | POST | `/{id}/resolve` · `/preview` | 다시 찾기 미리보기(`apply=true`일 때만 저장 · manual·verified는 미리보기만) · 관리자별 분당 10회 |
 | DELETE | `/{id}` | `{version}` |
 | POST | `/scan` · GET `/scan/runs[/{run_id}]` | 수동 스캔 · 이력·진행 |
@@ -283,6 +284,7 @@
 | W7 | 매뉴얼(관리자 새 탭 · 사용자 근거 문장·채팅 노드 주소 질의 · D-255) · `.env.example`(noise_gate·apm_gateway) · D-362 본문 · D-348 ②·D-355·D-300·D-341 부기 · INDEX | 문서 | 소 |
 | W8 | **채팅 노드 주소 결정성**(2026-11-03 추가 · §6.2) — A 노드 주소 보기 인스턴스 대상 · B `apm_instance_map` 대상 지정 호출 웹 조회 상한 3→50 · C 파드 대상 보기에 노드 주소 결정적 부착 | `apm_gateway` · `config/db_registry.yaml` · `src/orchestration` · 매뉴얼 | 중 |
 | W9 | **노드 주소 조회 지연 상한 · 서버명 경로 부착**(2026-11-03 추가 · §6.3) — A 대상 지정 호출 전체 시간 예산 · 소스 간 병렬(소스 안 직렬 유지) · 예산 초과 `[한계]`·partial·행 상태 `budget_exceeded` · B 서버명 직행 보기(`_host_calls`)에 파드 노드 주소 부착(게이트웨이 `instance_resolution.node_address` 표지) | `apm_gateway` · `src/orchestration` · 매뉴얼 | 중 |
+| W10 | **관리자 「확인 취소」**(2026-11-04 후속 · §6.4) — `POST /{id}/unverify` · 확인된 자동 행에만 버튼 · 취소 뒤 자동 규칙 복귀 | `noise_gate` · `src/api` · `src/static` · 매뉴얼 | 소 |
 
 W3·W4가 목적(속도)의 본체이므로 W5(스캔) 전에 둔다 — 스캔 전에도 되적재로 매핑이 쌓여 두 번째 알람부터 hit다. 단 SMS 색인(§3.1-3)은 스캔이 채우므로 W5 전에는 3'(직접 조회)로 동작한다.
 
@@ -356,6 +358,17 @@ W3·W4가 목적(속도)의 본체이므로 W5(스캔) 전에 둔다 — 스캔 
 - **테스트**: 게이트웨이 `test_plan210_w9_budget.py` 19 + verifier `test_plan210_w9_verify.py` 14 · 본체 `test_plan210_w9_host_node.py` 17 + verifier 6 · 스냅샷 `tests/snapshots/plan210_w9/before_answers.json`(변경 전 트리 캡처 5시나리오) · 회귀 `regress.py --base 171bf832 --files <W9 18개>` rc=0 · 원래 실패 4건만 · 교정 파일 재회귀 rc=0(apm_gateway 2,034 통과) · `범위: 모듈 단위 — 전체 미실행`.
 - **매뉴얼**: U-85 「web01 응답시간」 행 · 시간 한계·`budget_exceeded` · A-88 키 행·상태 행 · 빌드 · `tests/test_manual` 통과.
 - **잔여**: 부착 경로의 노드 주소 봉투 `[한계]`는 `meta.limits`로 오르지 않음(W8 C 현행 — 행 상태·사유 줄로만) · 차가운 인벤토리+느린 Open API면 본체 10초 상한 초과 가능(W9 전부터) · 첫 홉 서버는 부착 안 함(조건 1줄로 바꿀 수 있음) · W0 폐쇄망 실지연 실측.
+
+### 6.4 W10 — 관리자 「확인 취소」 (2026-11-04 추가)
+
+사용자 지시(2026-11-04): *"확인 취소 기능 추가하라."* — 「확인」(verified)은 되돌릴 방법이 수정(→ manual)·삭제뿐이었다.
+
+- **API** `POST /{id}/unverify` `{version}` — `/verify`의 거울(인가·version 409·감사 `apm_host_map_unverify` before/after·사본 `put`). 대상 `origin=auto AND verified=true`만 · 그 밖 400 `unverify_verified_auto_only`(거부도 감사 — D-362 ⑯). 저장소 `unverify`는 `verified = FALSE`·`updated_by`·`updated_at`·`version + 1`만 바꾸는 바인딩 고정 UPDATE — 대상·상태·basis·note·evidence(`scan_suggests`·`previous_targets`) 유지. 포트 `ApmHostMapRepository.unverify` 추가.
+- **효과** — 취소한 행은 §3.4 쓰기 규칙의 자동·미확인 행: 스캔·되적재가 `update`/`same`으로 덮고 `cleanup`(instance 30일 미사용 · 180일 미관측) 대상이 된다. 근거 문장 「자동 · 관리자 확인(…)」 → 「자동 · 추정(…)」.
+- **화면** — 확인된 자동 행에만 「확인 취소」(확인 창 → 호출 → 목록 갱신 · 실패 = 오류 코드 문구 · 409는 기존 「다른 변경」 안내) · 스크립트 캐시 키 `?v=3`.
+- **테스트** — `tests/test_api/test_plan210_unverify.py`(API 성공·400·409·404·403/401·503 · 취소 뒤 `plan_auto_write`·`purge_reason` · UI 버튼 노출·확인 창·실패 문구) · `noise_gate/tests/test_plan210_w1_repository.py`(SQL·version) · W6 라우트 집합 단언 갱신.
+- **매뉴얼** — A-90 「확인 취소」 · `features.yaml` 앵커 2 · 캡처는 기존 불가 사유 유지.
+- **잔여** — 취소 뒤에도 `scan_suggests`가 남아 「스캔 제안 있음」이 다음 자동 `update`까지 보인다(evidence 유지 지시 그대로).
 
 ---
 

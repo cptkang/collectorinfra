@@ -258,6 +258,30 @@ async def test_verify_and_delete_check_version() -> None:
     assert (await repo.delete(1, version=4)) is not None
 
 
+async def test_unverify_only_clears_verified_and_checks_version() -> None:
+    """확인 취소 — verified=false · version+1만(대상·상태·evidence·origin 유지) · 고정 SQL."""
+    repo, conn = _repo()
+    conn.fetchrow_q.append(_row(verified=False, version=3))
+    row = await repo.unverify(1, version=2, by="admin")
+    assert row is not None and row["verified"] is False
+    sql = _sql(conn)[0]
+    assert sql.startswith("UPDATE apm_host_map SET verified = FALSE,")
+    assert "updated_by = $3, updated_at = NOW(), version = version + 1" in sql
+    assert "WHERE id = $1 AND version = $2 RETURNING *" in sql
+    for kept in ("targets", "state", "evidence", "origin", "basis", "previous_targets"):
+        assert kept not in sql.split("WHERE")[0], kept
+    assert conn.calls[0][2] == (1, 2, "admin")
+    # version 불일치 → 전용 예외 · 없는 행 → None
+    conn.fetchrow_q.append(None)
+    conn.fetchval_q.append(7)
+    with pytest.raises(m.ApmHostMapVersionError) as e:
+        await repo.unverify(1, version=2)
+    assert e.value.current_version == 7
+    conn.fetchrow_q.append(None)
+    conn.fetchval_q.append(None)
+    assert await repo.unverify(99, version=1) is None
+
+
 async def test_list_maps_filters_are_bound_parameters() -> None:
     repo, conn = _repo()
     conn.fetchval_q.append(2)

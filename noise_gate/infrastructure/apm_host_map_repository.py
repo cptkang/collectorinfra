@@ -7,7 +7,8 @@
 - 기록자는 API 프로세스뿐이다(D-049) — 워커는 Redis Stream `apmhostmap:req`로 넘긴다.
 - 자동 반영은 도메인 쓰기 규칙(`plan_auto_write`)을 **행 잠금(FOR UPDATE) 트랜잭션 안에서** 적용한다
   — 관리자 행(manual·verified)·disabled를 자동이 덮지 않는다. 행별 개별 트랜잭션이다.
-- 관리 동작(추가·수정·확인·삭제)은 `version` 낙관적 동시성 — 불일치는 `ApmHostMapVersionError`.
+- 관리 동작(추가·수정·확인·확인 취소·삭제)은 `version` 낙관적 동시성
+  — 불일치는 `ApmHostMapVersionError`.
 - SQL 값은 전부 파라미터 바인딩이다. 식별자(스냅샷 표·칼럼)는 이 모듈의 고정 목록에서만 고른다.
 - 관리 동작의 DB 오류는 삼키지 않고 올린다(호출부가 응답에 사유를 싣는다).
 """
@@ -317,6 +318,26 @@ class PostgresApmHostMapRepository(ApmHostMapRepository):
                 """
                 UPDATE apm_host_map SET
                     verified = TRUE, evidence = evidence - 'changed',
+                    updated_by = $3, updated_at = NOW(), version = version + 1
+                WHERE id = $1 AND version = $2
+                RETURNING *
+                """,
+                int(map_id), int(version), by,
+            )
+            if row is None:
+                await self._version_miss(conn, int(map_id))
+                return None
+        return _row(row)
+
+    async def unverify(
+        self, map_id: int, *, version: int, by: str = ""
+    ) -> dict[str, Any] | None:
+        """확인 취소(verified=false만 — 대상·상태·evidence는 그대로)."""
+        async with self._pool.acquire() as conn:
+            row = await conn.fetchrow(
+                """
+                UPDATE apm_host_map SET
+                    verified = FALSE,
                     updated_by = $3, updated_at = NOW(), version = version + 1
                 WHERE id = $1 AND version = $2
                 RETURNING *

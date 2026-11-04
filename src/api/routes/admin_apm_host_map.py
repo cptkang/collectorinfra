@@ -1,5 +1,5 @@
-"""관리자 「APM·SMS 연계」 API — 매핑 목록·수동 추가·수정·확인·다시 찾기·삭제 · 사전 스캔 · 인벤토리
-(plans/210 §3.10 · D-362).
+"""관리자 「APM·SMS 연계」 API — 매핑 목록·수동 추가·수정·확인·확인 취소·다시 찾기·삭제 ·
+사전 스캔 · 인벤토리 (plans/210 §3.10 · D-362).
 
 `NOISE_APM_HOST_MAP_ENABLED`가 켜진 채 기동했을 때만 등록한다(꺼져 있으면 라우트가 없어 404 — 현행과
 같다). 저장소(`app.state.apm_host_map_repo`)·사본(`app.state.apm_host_map_cache`)은 기동 단계가
@@ -7,7 +7,7 @@ auth 풀이 있을 때만 둔다 — 없으면 503 `apm_host_map_unavailable`.
 
 - 인가: `require_admin_user` 뒤에서 role 클레임을 한 번 더 명시 검증한다(`admin_host_links` 관례 ·
   서명 검증만으로 끝내지 않는다). 일반 사용자는 장애 진단 화면에서 근거만 본다(I-5).
-- 감사: 전 동작(추가·수정·확인·다시 찾기 적용·삭제·스캔 시작)을 `log_admin_event`로
+- 감사: 전 동작(추가·수정·확인·확인 취소·다시 찾기 적용·삭제·스캔 시작)을 `log_admin_event`로
   before/after와 함께 남긴다(거부·실패도 outcome과 함께). 응답에 `audit_logged`를
   싣는다(침묵 금지).
 - 쓰기 뒤 Redis 사본을 행 단위로 맞춘다(`put`·`remove` — 실패는 주기 대조가 메운다).
@@ -850,6 +850,76 @@ async def verify_map(
         request,
         admin,
         "apm_host_map_verify",
+        "ok",
+        before=_audit_view(before),
+        after=_audit_view(row),
+    )
+    return {"map": _view(row), "audit_logged": logged}
+
+
+@router.post(
+    "/{map_id}/unverify",
+    summary="APM·SMS 연계 확인 취소(관리자)",
+    description=(
+        "관리자 확인(verified)한 자동 행을 미확인 자동 행으로 되돌립니다 — 이후 자동 결과가 "
+        "다시 갱신하고 정리 대상이 됩니다. 대상·상태·근거 기록은 그대로입니다. "
+        "확인한 자동 행이 아니면 400 `unverify_verified_auto_only`."
+    ),
+    tags=["admin"],
+)
+async def unverify_map(
+    map_id: int,
+    body: VersionBody,
+    request: Request,
+    admin: dict[str, Any] = Depends(require_admin_user),
+) -> dict[str, Any]:
+    """`{map, audit_logged}`."""
+    from noise_gate.domain.apm_host_map import ORIGIN_AUTO, ApmHostMapVersionError
+
+    _assert_admin(request, admin)
+    repo = _repo(request)
+    before = await _get_or_404(repo, map_id)
+    if before.get("origin") != ORIGIN_AUTO or before.get("verified") is not True:
+        exc = _error(
+            400,
+            "unverify_verified_auto_only",
+            "확인 취소는 관리자 확인한 자동 행에만 씁니다"
+            "(관리자 등록 행은 수정·삭제로, 미확인 자동 행은 그대로 둡니다).",
+        )
+        await _audit_rejected(
+            request, admin, "apm_host_map_unverify", exc, before=_audit_view(before)
+        )
+        raise exc
+    try:
+        row = await repo.unverify(map_id, version=body.version, by=str(admin.get("sub") or ""))
+    except ApmHostMapVersionError as e:
+        await _audit(
+            request,
+            admin,
+            "apm_host_map_unverify",
+            "denied",
+            before=_audit_view(before),
+            reason="version_conflict",
+        )
+        raise _version_conflict(e.current_version) from None
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("APM·SMS 연계 확인 취소 실패: id=%s", map_id, exc_info=True)
+        await _audit(
+            request,
+            admin,
+            "apm_host_map_unverify",
+            "failed",
+            before=_audit_view(before),
+            reason=type(exc).__name__,
+        )
+        raise _store_failed("저장", exc) from None
+    if row is None:
+        raise _error(404, "not_found", "연계 매핑을 찾지 못했습니다.")
+    await _cache_put(request, row)
+    logged = await _audit(
+        request,
+        admin,
+        "apm_host_map_unverify",
         "ok",
         before=_audit_view(before),
         after=_audit_view(row),

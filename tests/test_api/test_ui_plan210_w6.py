@@ -182,7 +182,7 @@ def test_dashboard_tab_hidden_by_default_and_wired() -> None:
     assert re.search(
         r'<button class="tab" data-tab="apmhostmap" hidden>APM·SMS 연계</button>', dash
     )
-    assert 'id="tab-apmhostmap"' in dash and "admin-apm-host-map.js?v=2" in dash
+    assert 'id="tab-apmhostmap"' in dash and "admin-apm-host-map.js?v=3" in dash
     for el_id in (
         "apmMapBody",
         "apmMapEditor",

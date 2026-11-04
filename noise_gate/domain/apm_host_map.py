@@ -902,6 +902,16 @@ class ApmHostMapRepository(ABC):
         """
 
     @abstractmethod
+    async def unverify(
+        self, map_id: int, *, version: int, by: str = ""
+    ) -> dict[str, Any] | None:
+        """확인 취소(verified=false만 · 대상·상태·근거 기록 유지 → 다시 자동 행). 없으면 None.
+
+        Raises:
+            ApmHostMapVersionError: version 불일치
+        """
+
+    @abstractmethod
     async def delete(self, map_id: int, *, version: int) -> dict[str, Any] | None:
         """삭제 → 지운 행(없으면 None).
 
