@@ -349,7 +349,7 @@ def test_decorate_fills_duty_and_app_sets_meta() -> None:
 def test_cache_versions_bumped() -> None:
     index = (_STATIC / "index.html").read_text(encoding="utf-8")
     assert 'src="/static/js/briefing-view.js?v=13"' in index
-    assert 'src="/static/js/app.js?v=53"' in index
+    assert 'src="/static/js/app.js?v=54"' in index
     for page in ("noise.html", "admin/noise.html"):
         assert 'briefing-view.js?v=13' in (_STATIC / page).read_text(encoding="utf-8")
 

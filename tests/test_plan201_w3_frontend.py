@@ -197,7 +197,7 @@ def test_auth_me_fetched_once_shared() -> None:
 
 def test_cache_versions() -> None:
     index = (_ROOT / "src/static/index.html").read_text(encoding="utf-8")
-    assert 'src="/static/js/app.js?v=53"' in index
+    assert 'src="/static/js/app.js?v=54"' in index
     dashboard = (_ROOT / "src/static/admin/dashboard.html").read_text(encoding="utf-8")
     assert 'src="/static/js/admin.js?v=18"' in dashboard
 
