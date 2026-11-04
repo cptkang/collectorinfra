@@ -2061,9 +2061,16 @@ class InvestigationDispatcher:
 
     def _deep_section(self, mode: str, status: str, reason: str | None, result: Any,
                       verdict: ImportanceVerdict, gate_tier: str | None,
-                      investigation_id: str | None = None) -> dict:
-        """브리핑 `deep_dive` 키 — 상태 · 모드 · 사유 · (완료 시) 6요소(중요도 제외)."""
+                      investigation_id: str | None = None,
+                      retryable_skip: bool = False) -> dict:
+        """브리핑 `deep_dive` 키 — 상태 · 모드 · 사유 · (완료 시) 6요소(중요도 제외).
+
+        `retryable`(plans/213 W4 · D-366 부기 1): 다시 돌리면 결과가 달라질 수 있는 생략(시간 예산
+        부족 · 형식 불일치)에만 True를 싣는다 — 본체 재분석 합류 예외가 읽는다. 그 밖에는 키 없음.
+        """
         out: dict = {"status": status, "mode": mode, "reason": reason, "label": DEEP_DIVE_LABEL}
+        if status == "skipped" and retryable_skip:
+            out["retryable"] = True
         if status != "done" or result is None:
             return out
         skipped = _deep_skip_reason(result)
@@ -2077,6 +2084,8 @@ class InvestigationDispatcher:
                                investigation_id, kind, _tools_run(result),
                                markup_log_excerpt(str(getattr(result, "answer", "") or "")))
             out.update({"status": "skipped", "reason": skipped})
+            if kind is not None:
+                out["retryable"] = True  # 형식 불일치는 일시 오류일 수 있다(툴셋 연결 실패는 제외)
             return out
         incomplete = bool(getattr(result, "incomplete", False))
         basis: DiagnosisLike = _AnswerOnly(result.answer) if incomplete else result
@@ -2197,6 +2206,7 @@ class InvestigationDispatcher:
 
         # 심층 조사 — 모드별 결정
         status, reason = deep_state["status"], degrade
+        retryable_skip = False  # 시간 예산 생략만 True(plans/213 W4)
         if deep is None:
             missing = sum(1 for s in run.sections if s.status == "missing")
             synth = run.synthesis or {}
@@ -2216,6 +2226,7 @@ class InvestigationDispatcher:
                 status = "skipped"
                 reason = DEEP_SKIP_TIME.format(remaining=max(0.0, deadline - self._clock()),
                                                floor=DEEP_MIN_REMAINING_S)
+                retryable_skip = True
             else:
                 deep = self._start_deep(
                     job, self._deep_job(job, pb, self._prior_findings(run, block), cache,
@@ -2265,14 +2276,15 @@ class InvestigationDispatcher:
         result = deep.result if (deep is not None and status == "done") else None
         self._finish_playbook(job, started, run, block, pb, mode, status, reason,
                               degrade, result, pb_outputs, cache, gate_severity, gate_tier,
-                              walls=walls)
+                              walls=walls, retryable_skip=retryable_skip)
 
     def _finish_playbook(self, job: JobLike, started: float, run: PlaybookRun, block: dict,
                          pb: Playbook, mode: str, status: str, reason: str | None,
                          degrade: str | None, result: Any, pb_outputs: list[_ToolText],
                          cache: ToolResultCache, gate_severity: int,
                          gate_tier: str | None,
-                         walls: Mapping[str, float | None] | None = None) -> None:
+                         walls: Mapping[str, float | None] | None = None,
+                         retryable_skip: bool = False) -> None:
         """판정(두 엔진 도구 출력 합집합 · G-25) → 플레이북 브리핑 → 잡 종결 · 감사.
 
         계측에는 `PLAYBOOK_TIMING_KEYS`(plans/200 I-0)를 가산한다 — `stage_wall_s`는 실행기
@@ -2287,7 +2299,8 @@ class InvestigationDispatcher:
             gate_severity, _AnswerOnly("", tool_outputs=[*pb_outputs, *deep_outputs])
         )
         deep_dive = self._deep_section(mode, status, reason, result, verdict, gate_tier,
-                                       investigation_id=job.investigation_id)
+                                       investigation_id=job.investigation_id,
+                                       retryable_skip=retryable_skip)
         signals, cited = self._deep_evidence(result)
         agreement = compare_engines(
             block["readings"], signals, cited,

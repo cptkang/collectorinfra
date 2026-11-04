@@ -46,11 +46,19 @@ def _deep(status: str, **extra: Any) -> dict[str, Any]:
     }
     out: dict[str, Any] = {"status": status, "mode": "parallel",
                            "reason": reasons.get(status), "label": _LABEL}
+    if status == "skipped":
+        out["retryable"] = True  # 형식 불일치 생략(plans/213 W4 — 다시 돌릴 가치가 있는 생략)
     if status == "done":
         out.update({"summary": "심층 요약", "cause": "SQL 지연", "narrative": "심층 서술",
                     "tool_calls": ["apm_resource_pool 풀 조회"], "incomplete": False})
     out.update(extra)
     return out
+
+
+def _deep_mode_off() -> dict[str, Any]:
+    """다시 돌려도 같은 생략(모드 off) — `retryable` 키 없음."""
+    return {"status": "skipped", "mode": "off", "reason": "심층 모드 off — 플레이북만 실행",
+            "label": _LABEL}
 
 
 def _briefing(deep: dict[str, Any] | None, **over: Any) -> dict[str, Any]:
@@ -95,6 +103,8 @@ def _seed_manual(tmp_path, briefing: dict | None, *, status: str = "done",  # no
     (_deep("failed"), True),
     (_deep("timeout"), True),
     (_deep("skipped"), True),
+    (_deep_mode_off(), False),
+    (_deep("skipped", retryable="true"), False),
     (_deep("done"), False),
     (_deep("done", incomplete=True), False),
     (None, False),
@@ -166,7 +176,8 @@ def test_manual_done_with_failed_deep_submits_new(tmp_path, monkeypatch, audits,
     _briefing(None),
     {"summary": "주 경로 브리핑"},
     clip_briefing(_briefing(_deep("failed"), summary="요약 " * MAX_BRIEFING_BYTES)),
-], ids=["done", "incomplete", "no_deep_key", "main_path", "clipped_out"])
+    _briefing(_deep_mode_off()),
+], ids=["done", "incomplete", "no_deep_key", "main_path", "clipped_out", "skipped_mode_off"])
 def test_manual_done_joins_when_deep_ok_or_unknown(tmp_path, monkeypatch, audits, briefing):  # noqa: ANN001, F811
     _seed_alarm(tmp_path)
     _seed_manual(tmp_path, briefing)
@@ -218,7 +229,8 @@ def test_followup_done_with_failed_deep_submits_new(tmp_path, monkeypatch, audit
     _briefing(_deep("done", incomplete=True)),
     _briefing(None),
     None,
-], ids=["done", "incomplete", "no_deep_key", "no_briefing"])
+    _briefing(_deep_mode_off()),
+], ids=["done", "incomplete", "no_deep_key", "no_briefing", "skipped_mode_off"])
 def test_followup_done_reuses_when_deep_ok_or_unknown(tmp_path, monkeypatch, audits, briefing):  # noqa: ANN001, F811
     _seed_parent(tmp_path)
     _seed_diag(tmp_path, briefing)

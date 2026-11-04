@@ -23,7 +23,8 @@ from tests.test_api.test_plan187_w11_manual import (  # noqa: F401 — autouse·
     _store,
     audits,
 )
-from tests.test_plan213_w2_join_exception import _briefing, _deep
+from noise_gate.infrastructure.investigation_store import _dict_candidates
+from tests.test_plan213_w2_join_exception import _briefing, _deep, _deep_mode_off
 
 
 def _big(deep: dict[str, Any]) -> dict[str, Any]:
@@ -103,31 +104,36 @@ def test_running_with_partial_deep_running_joins(tmp_path, monkeypatch, audits):
     assert fake.submit_calls == []
 
 
-# ── mode off 반복(쟁점) — 상한이 실제로 막는가 ───────────────────────────
-def test_mode_off_repeat_bounded_by_user_hourly_limit(tmp_path, monkeypatch, audits):  # noqa: ANN001, F811
-    """심층 mode off(늘 skipped)면 같은 사용자의 반복 클릭이 매번 새 접수 → 시간당 3건에서 429."""
+# ── mode off 반복(plans/213 W4 · D-366 부기 1) — 다시 돌려도 같은 생략은 합류 ─────
+def test_mode_off_repeat_joins_after_done(tmp_path, monkeypatch, audits):  # noqa: ANN001, F811
+    """심층 mode off(늘 skipped · retryable 없음)면 끝난 조사에 합류 — 반복 클릭이 새 접수를 만들지 않는다."""
     _seed_alarm(tmp_path)
-    fake = _FakeClient(poll=_done_poll(_deep("skipped", mode="off")))
+    fake = _FakeClient(poll=_done_poll(_deep_mode_off()))
     _inject(monkeypatch, fake)
     client = _client(_config(tmp_path), ADMIN)
-    ids = [_post(client).json().get("investigation_id") for _ in range(3)]
-    assert ids == ["man-1", "man-2", "man-3"]
-    fourth = _post(client)
-    assert fourth.status_code == 429
-    assert len(fake.submit_calls) == 3
+    ids = [_post(client).json().get("investigation_id") for _ in range(4)]
+    assert ids == ["man-1"] * 4
+    assert len(fake.submit_calls) == 1
 
 
-def test_mode_off_other_users_each_get_own_quota(tmp_path, monkeypatch, audits):  # noqa: ANN001, F811
-    """알람 단위 상한은 없다 — 다른 사용자는 같은 알람에 다시 새 접수(사용자 수 × 3건/시간)."""
+def test_mode_off_other_users_join_done(tmp_path, monkeypatch, audits):  # noqa: ANN001, F811
+    """다른 사용자도 끝난 mode off 조사에 합류한다(알람 단위 1건)."""
     _seed_alarm(tmp_path)
-    fake = _FakeClient(poll=_done_poll(_deep("skipped", mode="off")))
+    fake = _FakeClient(poll=_done_poll(_deep_mode_off()))
     _inject(monkeypatch, fake)
     cfg = _config(tmp_path)
-    for _ in range(3):
-        _post(_client(cfg, ADMIN))
-    other = {**ADMIN, "sub": "admin2"}
-    body = _post(_client(cfg, other)).json()
-    assert body["joined"] is False and body["investigation_id"] == "man-4"
+    _post(_client(cfg, ADMIN))
+    body = _post(_client(cfg, {**ADMIN, "sub": "admin2"})).json()
+    assert body["joined"] is True and body["investigation_id"] == "man-1"
+    assert len(fake.submit_calls) == 1
+
+
+def test_retryable_survives_deepest_clip_level():
+    """저장 상한 축소의 마지막 후보(상태만)에도 `retryable`이 남는다."""
+    deep = _deep("skipped", narrative="서" * 9000, summary="요약", cause="원인")
+    last = _dict_candidates("deep_dive", deep)[-1]
+    assert last["status"] == "skipped" and last["retryable"] is True
+    assert alarm_routes._deep_dive_retryable({"briefing": {"deep_dive": last}}) is True
 
 
 def test_mode_off_inflight_still_joins_across_users(tmp_path, monkeypatch, audits):  # noqa: ANN001, F811

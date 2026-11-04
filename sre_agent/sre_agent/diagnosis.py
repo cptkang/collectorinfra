@@ -37,7 +37,10 @@ from sre_agent.domain.answer_markup import has_tool_call_markup
 from sre_agent.domain.failure_guards import StallTracker
 from sre_agent.infrastructure.activity_masking import mask_activity_text
 from sre_agent.infrastructure.bash_write_guard import install_bash_write_guard
-from sre_agent.infrastructure.harmony_retry_guard import install_harmony_retry_guard
+from sre_agent.infrastructure.harmony_retry_guard import (
+    harmony_cancel_scope,
+    install_harmony_retry_guard,
+)
 from sre_agent.infrastructure.llm_message_guard import install_system_message_guard
 from sre_agent.infrastructure.tool_call_markup_guard import install_tool_call_markup_guard
 from sre_agent.infrastructure.tool_result_cache import CacheClosedError, ToolResultCache
@@ -424,7 +427,15 @@ class _StreamDrain:
                            label=f"HolmesGPT {self._judge_round}회차 메모", note=content)
 
     def run(self, messages: list[dict]) -> LLMResult:
-        """`call(messages)`와 같은 결과를 돌려준다. 예외는 그대로 전파한다."""
+        """`call(messages)`와 같은 결과를 돌려준다. 예외는 그대로 전파한다.
+
+        취소 신호가 있으면 이 스레드의 Harmony 재시도가 재시도 직전에 확인한다(plans/213 W4 ·
+        D-366 부기 1). 없으면 범위를 걸지 않는다(종전 그대로).
+        """
+        with harmony_cancel_scope(self._cancel):
+            return self._run_stream(messages)
+
+    def _run_stream(self, messages: list[dict]) -> LLMResult:
         tool_decisions = None
         tool_number_offset = 0
         cancel: dict[str, Any] = {"cancel_event": self._cancel} if self._cancel is not None else {}

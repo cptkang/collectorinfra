@@ -1923,11 +1923,16 @@ _DEEP_DIVE_KEY = "deep_dive"
 _DEEP_DIVE_STATUS_KEY = "status"
 #: 조사 상태가 `done`이어도 다시 요청할 수 있는 심층 섹션 상태(D-341 ㉔ 「실패는 다시 요청 가능」).
 #: `incomplete`(step 상한 미완주)는 별도 불리언이고 상태는 `done`이라 여기 들지 않는다(종전대로 합류).
-_DEEP_DIVE_RETRYABLE: frozenset[str] = frozenset({"failed", "timeout", "skipped"})
+_DEEP_DIVE_RETRYABLE: frozenset[str] = frozenset({"failed", "timeout"})
+_DEEP_DIVE_RETRYABLE_SKIP_KEY = "retryable"
 
 
 def _deep_dive_retryable(rec: dict[str, Any]) -> bool:
-    """저장 레코드의 심층 섹션이 실패·타임아웃·생략이면 True(합류하지 않고 새로 접수한다).
+    """저장 레코드의 심층 섹션이 실패·타임아웃이면 True(합류하지 않고 새로 접수한다).
+
+    생략(`skipped`)은 sre_agent가 `retryable: true`를 실은 경우(시간 예산 부족 · 형식 불일치)만
+    True다(plans/213 W4 · D-366 부기 1). 모드 off·트리거 미충족·고정 알려진 오류·재조회 생략은
+    다시 돌려도 같으므로 종전대로 합류한다. 표지 없는 옛 레코드도 합류(보수적).
 
     다시 분석(`_manual_join_target`)과 추가 조사 재접수가 함께 쓴다. 브리핑이 없거나 심층 키가
     없거나(플레이북 모드 아님 · 저장 상한 절단으로 빠짐) 모양이 다르면 판정할 수 없어 False —
@@ -1944,6 +1949,8 @@ def _deep_dive_retryable(rec: dict[str, Any]) -> bool:
                 "심층 섹션 상태 판정 불가 — 종전대로 합류: inv=%s", rec.get("investigation_id")
             )
         return False
+    if status == "skipped":
+        return isinstance(deep, dict) and deep.get(_DEEP_DIVE_RETRYABLE_SKIP_KEY) is True
     return status in _DEEP_DIVE_RETRYABLE
 
 

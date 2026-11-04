@@ -1,7 +1,7 @@
 # plans/213 — 심층 조사 회복력: Harmony 파싱 오류 재시도 · 재분석 합류 예외 · 생략 경로 진단
 
-**상태**: 완료(2026-11-04 · W1~W3 구현·검증 · 원 211 → 212 재부여 · 원 D-363 → D-366) · 결정 D-366 · 잔여는 폐쇄망 검증(§6)뿐 · 후속 검토 후보: W2 `skipped` 범위(심층 mode off·트리거 미충족·고정 알려진 오류도 합류 제외 — §8) · W3 재시도 직전 취소 확인(D-347)
-**브랜치**: `sre_improvement`(8608c8ee에서 분기)
+**상태**: 완료(2026-11-04 · W1~W3 구현·검증 · 원 211 → 212 → 213 재부여 · 원 D-363 → D-365 → D-366) · 결정 D-366 · 잔여는 폐쇄망 검증(§6)뿐 · W4 교정(D-366 부기 1): `skipped`는 `retryable` 표지(시간 부족·형식 불일치)만 새 접수 · Harmony 재시도 직전 취소 확인
+**브랜치**: `sre_improvement`(8608c8ee에서 분기 → a86aa4e5로 재기준 · 원격이 D-365·`plans/212`를 용도별 LLM 평면에 먼저 사용)
 **계획 시작 SHA**: `c4716d9e`
 **회귀 대상 파일**: docs/26_sre_agent_guide.md · scripts/manual/content/admin.md · scripts/manual/content/user.md · src/api/routes/alarm.py · src/static/manual/admin.html · src/static/manual/help_index.json · src/static/manual/user.html · sre_agent/.env.example · sre_agent/sre_agent/application/investigation_dispatcher.py · sre_agent/sre_agent/diagnosis.py · sre_agent/sre_agent/domain/answer_markup.py · sre_agent/sre_agent/settings.py · sre_agent/sre_agent/infrastructure/harmony_retry_guard.py(신규) · sre_agent/tests/test_plan188_w4_markup.py · sre_agent/tests/test_plan188_w5_tool_call_parse.py · sre_agent/tests/test_plan213_w1_deep_skip_diag.py · sre_agent/tests/test_plan213_w1_verify.py · sre_agent/tests/test_plan213_w2_briefing_shape.py · sre_agent/tests/test_plan213_w3_harmony_retry.py · sre_agent/tests/test_plan213_w3_verify.py · tests/test_plan213_w2_join_exception.py · tests/test_plan213_w2_verify.py
 **관련 결정**: D-366(본 계획) · D-342(W4 — 형식 불일치 미결 종결) · D-343(C8 마크업 변환 가드 · 부기 1 맨 JSON) · D-213(같은 LLM 경계 가드 · 기본 on 예외 선례) · D-341 ㉔(G-31 같은 알람 10분 합류) · D-347(수동 전용 · 부하 상한) · D-339(로그 비밀값 가림) · D-161(플래그·만료일) · D-255(매뉴얼 동반)
@@ -66,6 +66,11 @@
 6. **플래그**: 기본 on 예외(D-213·D-343 선례 — 표지 오류가 날 때만 동작, 그 밖은 비트 동일) · 만료일 2027-05-04(D-161). `.env.example` 갱신(전체 키 · 코드 기본값).
 7. **테스트**: 가짜 `DefaultLLM` — 표지 오류 1회 후 정상 → 응답 반환 · 2회 연속 → 예외 · 비표지 400 → 즉시 예외(재시도 0) · 경과 초과 → 재시도 0 · 플래그 0 → 재시도 0 · C8·D-213 가드와 함께 설치 시 순서·멱등.
 
+### W4 — 교정 2건 (D-366 부기 1 · 2026-11-04 사용자 승인)
+1. **`skipped` 세분**: sre_agent `_deep_section`이 다시 돌리면 달라질 수 있는 생략(시간 예산 부족 · 형식 불일치)에만 `retryable: true`를 싣고, 본체 `_deep_dive_retryable`은 `skipped`일 때 이 표지가 있어야 True. 모드 off·재조회·고정 알려진 오류·트리거 미충족·툴셋 연결 실패는 종전 합류. `noise_gate` `_DEEP_DIVE_KEEP_KEYS`에 `retryable` 추가(축소돼도 판정 유지).
+2. **재시도 직전 취소 확인**: `harmony_retry_guard.harmony_cancel_scope(event)`(스레드 지역) — `diagnosis._StreamDrain.run`이 자기 `cancel_event`로 범위를 걸고, 가드는 재시도 직전 신호가 서 있으면 원 예외를 그대로 올린다(info 1줄 「조사 취소 신호」).
+3. 테스트 `sre_agent/tests/test_plan213_w4_retryable_cancel.py` · 본체 W2 테스트의 mode off 단언을 「합류」로 교정.
+
 ## 5. Wave · 위임
 
 | Wave | 범위 | 담당 |
@@ -80,7 +85,7 @@
 ## 6. 폐쇄망 검증 항목
 
 1. W1: 생략 발생 시 `journalctl -u sre-agent | grep "심층 조사 답변에 도구 호출 형식"`으로 종류·앞부분 판독 · 감사 `deep_dive_display`.
-2. W2: 심층 실패 직후 「다시 분석」 → 새 조사 접수(`joined=false`).
+2. W2·W4: 심층 실패·시간 부족·형식 불일치 생략 직후 「다시 분석」 → 새 조사 접수(`joined=false`) · 모드 off·트리거 미충족 생략은 합류(`joined=true`).
 3. W3: `grep "Harmony 파싱 오류 재시도"` 건수와 통과율 — 재실패가 잦으면 재시도 무용 판정 후 근본 조치(엔드포인트 vLLM·openai-harmony 버전)를 운영자에게 요청.
 
 ## 7. 반입 파일 · 확인 grep
@@ -88,12 +93,13 @@
 | 파일 | 확인 grep 심볼 |
 |---|---|
 | `sre_agent/sre_agent/domain/answer_markup.py` | `classify_tool_call_markup` · `malformed_limitation` · `MALFORMED_AFTER_TOOLS_LIMITATION` |
-| `sre_agent/sre_agent/application/investigation_dispatcher.py` | `심층 조사 답변에 도구 호출 형식` · `deep_dive_malformed` · `answer_malformed_kind` |
-| `sre_agent/sre_agent/infrastructure/harmony_retry_guard.py`(신규) | `HARMONY_PARSE_ERROR_MARKER` · `install_harmony_retry_guard` |
-| `sre_agent/sre_agent/diagnosis.py` | `install_harmony_retry_guard(` |
+| `sre_agent/sre_agent/application/investigation_dispatcher.py` | `심층 조사 답변에 도구 호출 형식` · `deep_dive_malformed` · `answer_malformed_kind` · `retryable_skip=retryable_skip` |
+| `noise_gate/infrastructure/investigation_store.py` | `("status", "retryable", "mode"` |
+| `sre_agent/sre_agent/infrastructure/harmony_retry_guard.py`(신규) | `HARMONY_PARSE_ERROR_MARKER` · `install_harmony_retry_guard` · `def harmony_cancel_scope` |
+| `sre_agent/sre_agent/diagnosis.py` | `install_harmony_retry_guard(` · `harmony_cancel_scope(self._cancel)` |
 | `sre_agent/sre_agent/settings.py` | `llm_harmony_retry_max` · `llm_harmony_retry_skip_after_s` |
-| `src/api/routes/alarm.py` | `_deep_dive_retryable(` · `_DEEP_DIVE_RETRYABLE` · `not _deep_dive_retryable(current)` |
-| `src/static/manual/user.html` · `admin.html` · `help_index.json` | user: 「심층 조사(HolmesGPT) 칸이 실패·타임아웃·생략」 · admin: 「도구 N건은 처리됐으나」 |
+| `src/api/routes/alarm.py` | `_deep_dive_retryable(` · `_DEEP_DIVE_RETRYABLE_SKIP_KEY` · `not _deep_dive_retryable(current)` |
+| `src/static/manual/user.html` · `admin.html` · `help_index.json` | user: 「다시 돌리면 달라질 수 있는 사유」 · admin: 「도구 N건은 처리됐으나」 |
 
 - `sre_agent/.env.example`은 참고용(신규 2키 `LLM_HARMONY_RETRY_MAX=1`·`LLM_HARMONY_RETRY_SKIP_AFTER_S=45.0` — 운영 `.env`는 기본값으로 동작하므로 추가 불필요 · config 정본 덮어쓰기 금지).
 - 테스트·`docs/26`·`scripts/manual/` 원천은 반입 불필요.
@@ -102,5 +108,5 @@
 
 - **W1**: 분류기는 `has_tool_call_markup`의 부분 판정을 같은 순서로 재사용(None ⇔ 섞임 False 단언). 종류 한국어 이름 「마크업 리터럴」·「call:이름{…} 구문」·「본문 JSON」(계획서에 값 없어 정함). `_deep_section`에 선택 인자 `investigation_id` 추가. 감사 가산 키는 `_finish_playbook`의 `status=="done"`·`deep_dive.status=="skipped"`일 때만. 결과 표는 실제 표가 있는 `docs/26` §5.6.6에 반영(§5.6.3 아님). 기존 `test_plan188_w4_markup.py` 픽스처가 도구 1건이라 기대 문구가 3번째 문구로 바뀜(설계대로).
 - **W2**: 실 shape — `briefing["deep_dive"]["status"]`(sre_agent `briefing_builder.py` → `job.summary()["briefing"]` → 본체 `investigation_poll.persist_terminal` → `investigation_store.record`가 `clip_briefing` 후 dict 저장). 축소 후보는 모두 `status` 보존, 최소 후보도 넘치면 `deep_dive` 키 자체가 빠짐 → 판정 불가 = 종전 합류. 최종 값 집합 `skipped`·`failed`·`timeout`·`done`(`incomplete`는 `done` 아래 불리언). `partial_briefing`(running)은 저장되지 않음. 추가 조사는 kind `diagnosis`라 플레이북 브리핑이 없어 현 런타임에선 판정이 늘 False(대칭 배선만 · 해 없음).
-  - **후속 검토 후보**: `skipped`에는 W1 서술 생략·시간 부족 외에 심층 mode off·고정 알려진 오류·트리거 미충족도 들어간다. mode off(또는 conditional 미충족) 배치에서는 끝난 플레이북 조사에 10분 합류 창이 사실상 사라진다(진행 중 합류·사용자별 시간당 상한은 유지 — 한 알람 총부하 = 사용자 수 × 상한). 사용자 확정안대로 구현했고, 사유별 세분은 별도 결정 사항.
-- **W3**: 사슬 C8 → D-213 → Harmony → 원본(조사 계측 훅이 먼저 설치되면 Harmony 안쪽). `LLM_HARMONY_RETRY_MAX=0`이면 미설치. 경과는 첫 시도 시작부터 누적(N=1이면 같음). 생략 시 info 1줄 추가. 로컬 holmes 0.45.0 실 `DefaultLLM.completion`+litellm을 127.0.0.1 가짜 서버로 종단 확인 — 재시도 본문 바이트 동일(temperature 1e-08 포함). 0.36.0 동일성은 추정. 재시도 직전 취소(D-347 `cancel_event`) 확인 없음 — 후속 후보. 매뉴얼 대상 아님(내부 가드).
+  - **후속 검토 후보**: `skipped`에는 W1 서술 생략·시간 부족 외에 심층 mode off·고정 알려진 오류·트리거 미충족도 들어간다. mode off(또는 conditional 미충족) 배치에서는 끝난 플레이북 조사에 10분 합류 창이 사실상 사라진다(진행 중 합류·사용자별 시간당 상한은 유지 — 한 알람 총부하 = 사용자 수 × 상한). 사용자 확정안대로 구현했고, 사유별 세분은 W4에서 해소(D-366 부기 1).
+- **W3**: 사슬 C8 → D-213 → Harmony → 원본(조사 계측 훅이 먼저 설치되면 Harmony 안쪽). `LLM_HARMONY_RETRY_MAX=0`이면 미설치. 경과는 첫 시도 시작부터 누적(N=1이면 같음). 생략 시 info 1줄 추가. 로컬 holmes 0.45.0 실 `DefaultLLM.completion`+litellm을 127.0.0.1 가짜 서버로 종단 확인 — 재시도 본문 바이트 동일(temperature 1e-08 포함). 0.36.0 동일성은 추정. 재시도 직전 취소(D-347 `cancel_event`) 확인 없음 — W4에서 해소. 매뉴얼 대상 아님(내부 가드).

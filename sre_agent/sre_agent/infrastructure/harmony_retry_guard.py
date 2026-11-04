@@ -11,7 +11,8 @@ gpt-oss 계열(Harmony 응답 형식)을 서빙하는 vLLM이 모델 출력을 H
 temperature 등 요청은 바꾸지 않는다(사용자 결정 — 같은 서버 재요청 정상 반환 실측). 재시도도
 실패하면 마지막 예외를 그대로 올린다(종전 실패 경로). 첫 시도 시작부터 경과가 `skip_after_s`를
 넘으면 재시도하지 않는다 — 단계 소견·종합은 바깥 타이머(60·90초)가 끝나면 결과가 버려지고,
-조사 루프도 조사 전체 상한(600초)을 아낀다.
+조사 루프도 조사 전체 상한(600초)을 아낀다. 조사 루프 스레드에 취소 신호(D-347)가 걸려 있고
+서 있으면 재시도하지 않는다(`harmony_cancel_scope` · plans/213 W4).
 
 **안전성**: 표지가 없는 예외(컨텍스트 초과·인증·403 등)는 즉시 그대로 올리고, 정상 응답은 입력
 객체 그대로 돌려준다 — 그 밖의 경로는 비트 동일.
@@ -34,8 +35,10 @@ from __future__ import annotations
 
 import functools
 import logging
+import threading
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
+from contextlib import contextmanager
 from typing import Any
 
 from sre_agent.infrastructure.tool_call_markup_guard import _sends_tools
@@ -54,6 +57,32 @@ _RETRYABLE_NAMES = frozenset({"BadRequestError", "InternalServerError"})
 
 #: 로그에 남기는 오류 원문 길이 상한.
 _EXCERPT_LIMIT = 200
+
+#: 스레드별 조사 취소 신호(D-347) — `harmony_cancel_scope`가 건다.
+_TLS = threading.local()
+
+
+@contextmanager
+def harmony_cancel_scope(cancel_event: threading.Event | None) -> Iterator[None]:
+    """이 스레드의 LLM 호출이 재시도 직전에 확인할 취소 신호를 건다(plans/213 W4 · D-366 부기 1).
+
+    holmes `call_stream`은 생성기라 `completion`이 소비 스레드에서 불린다 — 조사 루프를 도는
+    스레드에 걸면 된다. None이면 아무것도 걸지 않는다(종전 그대로). 중첩되면 바깥 신호를 되돌린다.
+    """
+    if cancel_event is None:
+        yield
+        return
+    prev = getattr(_TLS, "cancel", None)
+    _TLS.cancel = cancel_event
+    try:
+        yield
+    finally:
+        _TLS.cancel = prev
+
+
+def _cancelled() -> bool:
+    event = getattr(_TLS, "cancel", None)
+    return isinstance(event, threading.Event) and event.is_set()
 
 
 def _retryable_classes() -> tuple[type[BaseException], ...] | None:
@@ -158,6 +187,9 @@ def install_harmony_retry_guard(
                         elapsed,
                         skip_after_s,
                     )
+                    raise
+                if _cancelled():
+                    logger.info("Harmony 파싱 오류 재시도 생략 — 조사 취소 신호(D-347)")
                     raise
                 attempt += 1
                 logger.warning(
