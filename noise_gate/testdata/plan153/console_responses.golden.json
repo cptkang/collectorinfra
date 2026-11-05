@@ -181,11 +181,17 @@
       "solutions": {
         "apm": 1,
         "polestar": 3
+      },
+      "zones": {
+        "gongjon": 4
       }
     },
     "solution_labels": {
       "apm": "제니퍼",
       "polestar": "폴스타"
+    },
+    "zone_labels": {
+      "gongjon": "공동존"
     }
   },
   "operator_list": {
@@ -374,11 +380,17 @@
       "solutions": {
         "apm": 1,
         "polestar": 3
+      },
+      "zones": {
+        "gongjon": 4
       }
     },
     "solution_labels": {
       "apm": "제니퍼",
       "polestar": "폴스타"
+    },
+    "zone_labels": {
+      "gongjon": "공동존"
     }
   },
   "user_trace_polestar": {

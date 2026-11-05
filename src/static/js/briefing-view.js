@@ -131,10 +131,10 @@
     // 한 줄(문자열)을 렌더 — `[가설]`·`[미결]` 접두는 배지로 바꾸고 나머지는 이스케이프한다.
     function renderTextLine(line) {
         var match = BADGE_PREFIX.exec(line);
-        if (!match) return '<div class="bv-line">' + escapeHtml(line) + '</div>';
+        if (!match) return '<div class="bv-line">' + lineHtml(line) + '</div>';
         var kind = match[1] === "가설" ? "hypo" : "open";
         return '<div class="bv-line"><span class="bv-badge bv-badge--' + kind + '">' +
-            escapeHtml(match[1]) + '</span> ' + escapeHtml(line.slice(match[0].length)) + '</div>';
+            escapeHtml(match[1]) + '</span> ' + lineHtml(line.slice(match[0].length)) + '</div>';
     }
 
     function renderLine(item) {
@@ -972,6 +972,7 @@
      * 클릭 처리기가 있는 attach 렌더만 넘긴다(없으면 종전처럼 빈 자리). 복사 결과 안내는 `extra.ui.handoff.msg`.
      * (plans/199 W3) `tiers`가 참이면 그 뒤에 [근거 보기]·[자세히](상세형 ②·③을 열고 스크롤) — 같은 조건(attach 상세형)만.
      */
+    // (D-352 부기 5) 카드는 summaryView 켜짐에서만 그리므로 결론·할 일·꼭 확인(LLM 유래)은 늘 한 줄 마크다운 정돈(inlineHtml)
     function summaryCardHtml(model, extra, handoff, tiers) {
         if (!isObj(model) || !isObj(model.area) || !isObj(model.conclusion)) return "";
         var R = SUM_TEXT.rows;
@@ -984,7 +985,7 @@
         var rows = [sumRow(R.area, (s.label ? escapeHtml(s.label) + ' ' : "") + chipHtml(CERTAINTY_KINDS[s.certainty] || "none", s.certainty) +
             (isObj(a.alt) ? ' <span class="bv-sum-alt">' + escapeHtml(fill(SUM_TEXT.altArea, { label: a.alt.label })) + '</span>' : ""))];
         var c = model.conclusion;
-        rows.push(sumRow(R.conclusion, escapeHtml(c.text) +
+        rows.push(sumRow(R.conclusion, inlineHtml(c.text) +
             (SUM_TEXT.sources[c.source] ? ' <span class="bv-src">' + escapeHtml(SUM_TEXT.sources[c.source]) + '</span>' : "") +
             (c.progress ? ' ' + chipHtml("running", c.progress) : "")));
         var t = model.target;
@@ -998,13 +999,13 @@
         if (scope.length) rows.push(sumRow(R.scope, escapeHtml(scope.join(" · "))));
         var acts = asList(model.actions);
         if (acts.length) {
-            rows.push(sumRow(R.actions, acts.map(function (x) { return '<div>' + escapeHtml(x) + '</div>'; }).join("") +
+            rows.push(sumRow(R.actions, acts.map(function (x) { return '<div>' + inlineHtml(x) + '</div>'; }).join("") +
                 '<div class="bv-gated">' + escapeHtml(HUMAN_GATED_NOTE) + '</div>'));
         }
         var must = asList(model.mustSee).filter(isObj);
         if (must.length) {
             rows.push(sumRow(R.mustSee, '<ul class="bv-sum-must">' + must.map(function (m) {
-                return '<li class="bv-sum-must-item bv-sum-must-item--' + escapeHtml(m.kind || "warn") + '">' + escapeHtml(m.text) + '</li>';
+                return '<li class="bv-sum-must-item bv-sum-must-item--' + escapeHtml(m.kind || "warn") + '">' + inlineHtml(m.text) + '</li>';
             }).join("") + '</ul>'));
         }
         var hs = uiOf(extra).handoff;
@@ -1055,7 +1056,7 @@
         var fups = asList(syn.followups);
         if (fups.length) {
             lines.push('<div class="bv-pb-line"><span class="bv-pb-key">' + escapeHtml(PB_TEXT.followupHead) + '</span> ' +
-                escapeHtml(textOf(fups[0])) + '</div>');
+                lineHtml(textOf(fups[0])) + '</div>');
         }
         // (plans/199 W1) 「한눈에 보기」 카드가 켜져 있으면 머리 아래 카드가 이 「종합」 칸을 대신한다
         if (!extra.summaryView) {
@@ -1101,7 +1102,7 @@
         }
         if (col === "verdict" && VERDICT_CELLS[value]) return escapeHtml(VERDICT_CELLS[value]);
         if (typeof value === "number" && n !== null) return escapeHtml(fmtNum(n));
-        if (typeof value === "object") return escapeHtml(JSON.stringify(value));
+        if (typeof value === "object") return escapeHtml(cleanText ? compactText(value) : JSON.stringify(value));
         return escapeHtml(value);
     }
 
@@ -1308,7 +1309,7 @@
         var fups = asList(syn.followups);
         if (fups.length) {
             parts.push('<div class="bv-label">' + escapeHtml(PB_TEXT.followupHead) + '</div><ul class="bv-actions">' +
-                fups.map(function (f) { return '<li>' + escapeHtml(textOf(f)) + '</li>'; }).join("") + '</ul>');
+                fups.map(function (f) { return '<li>' + lineHtml(textOf(f)) + '</li>'; }).join("") + '</ul>');
         }
         // 서술은 근거(가설·대응) 다음 — 「AI 소견」 배지 · 가드가 버렸으면 사유
         if (syn.narrative) {
@@ -1327,13 +1328,13 @@
         var X = PB_TEXT.keExtra;
         var rows = [];
         ["issue", "cause"].forEach(function (k) {
-            if (ke[k]) rows.push('<div class="bv-meta">' + escapeHtml(X[k]) + ': ' + escapeHtml(textOf(ke[k])) + '</div>');
+            if (ke[k]) rows.push('<div class="bv-meta">' + escapeHtml(X[k]) + ': ' + lineHtml(textOf(ke[k])) + '</div>');
         });
         ["unsatisfied", "unknown"].forEach(function (k) {
             var items = asList(ke[k]);
             if (items.length) {
                 rows.push('<div class="bv-meta">' + escapeHtml(X[k]) + ': ' +
-                    items.map(function (x) { return escapeHtml(textOf(x)); }).join(" · ") + '</div>');
+                    items.map(function (x) { return lineHtml(textOf(x)); }).join(" · ") + '</div>');
             }
         });
         var pf = ke.permanent_fix;
@@ -1357,11 +1358,11 @@
     function workaroundRows(items) {
         if (!items.some(isObj)) {
             return '<div class="bv-meta">' + escapeHtml(PB_TEXT.knownFields.workaround) + ': ' +
-                items.map(function (x) { return escapeHtml(textOf(x)); }).join(" · ") + '</div>';
+                items.map(function (x) { return lineHtml(textOf(x)); }).join(" · ") + '</div>';
         }
         return '<div class="bv-meta">' + escapeHtml(PB_TEXT.knownFields.workaround) + '</div><ol class="bv-actions">' +
             items.map(function (w) {
-                if (!isObj(w)) return '<li>' + escapeHtml(textOf(w)) + '</li>';
+                if (!isObj(w)) return '<li>' + lineHtml(textOf(w)) + '</li>';
                 var meta = ["risk", "verification", "rollback"].filter(function (k) { return w[k]; }).map(function (k) {
                     return escapeHtml(PB_TEXT.actionMeta[k]) + ' ' + escapeHtml(w[k]);
                 });
@@ -1398,7 +1399,7 @@
                     if (!items.length) return "";
                     if (k === "workaround") return workaroundRows(items);
                     return '<div class="bv-meta">' + escapeHtml(PB_TEXT.knownFields[k]) + ': ' +
-                        items.map(function (x) { return escapeHtml(textOf(x)); }).join(" · ") + '</div>';
+                        items.map(function (x) { return lineHtml(textOf(x)); }).join(" · ") + '</div>';
                 }).join("");
                 var chips = (ke.badge ? ' ' + chipHtml("warn", ke.badge) : "") +
                     (ke.pinned === true ? ' ' + chipHtml("ok", PB_TEXT.kePinned) : "") +
@@ -1626,7 +1627,7 @@
         var rows = ["meaning", "impact", "mitigation", "escalation", "owner", "last_reviewed", "references"].map(function (k) {
             var v = rb[k];
             if (v === null || v === undefined || v === "" || (Array.isArray(v) && !v.length)) return "";
-            var text = Array.isArray(v) ? v.map(function (x) { return escapeHtml(textOf(x)); }).join(" · ") : escapeHtml(textOf(v));
+            var text = Array.isArray(v) ? v.map(function (x) { return lineHtml(textOf(x)); }).join(" · ") : lineHtml(textOf(v));
             return '<div class="bv-item"><div class="bv-label">' + escapeHtml(F[k]) + '</div><div class="bv-text">' + text + '</div></div>';
         }).join("");
         return '<details class="bv-step bv-runbook" data-bv-key="runbook"><summary>' + escapeHtml(PB_TEXT.runbookHead) +
@@ -1782,6 +1783,154 @@
         return '<div class="bv-md">' + toc + out.join("") + "</div>";
     }
 
+    // ── 원문 정돈(D-352 부기 5) — 장애 진단 화면의 마크다운 기호·JSON 원문 노출 제거 ────────────────────
+    // ① 한 줄 문장(LLM 유래)은 `inlineHtml`(escape 먼저 → **굵게**·`코드`만 변환) 또는 textContent용 `plainText`(기호만 뗀다).
+    // ② 도구 결과 발췌(`excerpt`)는 대개 JSON이고 기록 상한(2KB)에서 잘려 「…」로 끝나기도 한다 — `excerptHtml`은 JSON이면
+    //    항목(키: 값)·표로, 잘렸으면 마지막 완결 값까지 닫아 읽고 「잘림」 표지를 붙인다. JSON이 아니고 마크다운처럼 보이면
+    //    안전 렌더, 그 밖은 종전 고정폭 원문이다. 모든 키·값은 escapeHtml을 거치고 태그·class는 고정 문자열이다.
+    var DATA_TEXT = { cut: "… 이하 잘림(기록 상한)", empty: "(없음)", more: "외 {n}건", moreCols: "열 {n}개 생략" };
+    var DATA_MAX_ROWS = 20;
+    var DATA_MAX_COLS = 8;
+    var DATA_MAX_KEYS = 40;
+    var DATA_MAX_DEPTH = 4;
+    var JSON_REPAIR_TRIES = 8;
+    var MD_HINT = /(^|\n)\s*(#{1,4}\s|[-*]\s|\d+\.\s|\|)|\*\*[^\s*]/;
+
+    // renderBody 1회 동안만 참 — `extra.summaryView` 켜짐(코드 기본 on)일 때만 정돈한다. 꺼짐은 종전 escape 그대로(비트 동일 · D-352 부기 2 ①).
+    var cleanText = false;
+
+    function lineHtml(text) { return cleanText ? inlineHtml(text) : escapeHtml(text); }
+
+    function inlineHtml(text) {
+        return mdInline(escapeHtml(text === null || text === undefined ? "" : text));
+    }
+
+    // textContent에 넣는 한 줄 — 제목 `#`·**굵게**·`코드` 기호만 뗀다(마스킹 표지 `***`는 짝이 아니라 그대로).
+    function plainText(text) {
+        return String(text === null || text === undefined ? "" : text)
+            .replace(/^\s{0,3}#{1,6}\s+/gm, "")
+            .replace(/\*\*(?=[^\s*])([^*\n]*[^\s*])\*\*/g, "$1")
+            .replace(/`([^`\n]+)`/g, "$1");
+    }
+
+    // 문자열 밖 괄호 스택과 쉼표 위치(선형 1회 · 정규식 없음)
+    function jsonScan(s) {
+        var stack = [], commas = [], inStr = false, esc = false;
+        for (var i = 0; i < s.length; i++) {
+            var c = s.charAt(i);
+            if (inStr) {
+                if (esc) esc = false;
+                else if (c === "\\") esc = true;
+                else if (c === '"') inStr = false;
+                continue;
+            }
+            if (c === '"') inStr = true;
+            else if (c === "{") stack.push("}");
+            else if (c === "[") stack.push("]");
+            else if (c === "}" || c === "]") stack.pop();
+            else if (c === ",") commas.push(i);
+        }
+        return { stack: stack, commas: commas, inStr: inStr };
+    }
+
+    // JSON 원문 → { value, cut } — 객체·배열이 아니면 null. 잘린 원문은 뒤쪽 쉼표부터 잘라 괄호를 닫아 본다.
+    function parseLooseJson(text) {
+        var s = String(text === null || text === undefined ? "" : text).trim();
+        if (!/^[[{]/.test(s)) return null;
+        try {
+            var whole = JSON.parse(s);
+            return isObj(whole) || Array.isArray(whole) ? { value: whole, cut: false } : null;
+        } catch (_) { /* 잘린 원문일 수 있다 */ }
+        var body = s.replace(/…$/, "");
+        var commas = jsonScan(body).commas;
+        for (var k = commas.length - 1, tries = 0; k >= 0 && tries < JSON_REPAIR_TRIES; k--, tries++) {
+            var head = body.slice(0, commas[k]);
+            var st = jsonScan(head);
+            if (st.inStr || !st.stack.length) continue;
+            try {
+                return { value: JSON.parse(head + st.stack.reverse().join("")), cut: true };
+            } catch (_) { /* 앞 쉼표로 */ }
+        }
+        return null;
+    }
+
+    function isScalar(v) { return v === null || v === undefined || typeof v !== "object"; }
+
+    // 깊은 값·표 칸 안의 객체를 한 줄로 — 「키: 값 · 키: 값」(JSON 기호 없이)
+    function compactText(v) {
+        if (v === null || v === undefined || v === "") return "—";
+        if (typeof v !== "object") return String(v);
+        if (Array.isArray(v)) return v.map(compactText).join(", ");
+        return Object.keys(v).map(function (k) { return k + ": " + compactText(v[k]); }).join(" · ");
+    }
+
+    function scalarHtml(v) {
+        if (v === null || v === undefined || v === "") return '<span class="bv-data-nil">—</span>';
+        return escapeHtml(String(v));
+    }
+
+    function moreHtml(notes) {
+        return notes.length ? '<div class="bv-data-more">' + escapeHtml(notes.join(" · ")) + "</div>" : "";
+    }
+
+    function dataTableHtml(cols, rows) {
+        var shown = cols.slice(0, DATA_MAX_COLS);
+        var body = rows.slice(0, DATA_MAX_ROWS).map(function (row) {
+            return "<tr>" + shown.map(function (c, i) {
+                var v = Array.isArray(row) ? row[i] : row[c];
+                return "<td>" + (isScalar(v) ? scalarHtml(v) : escapeHtml(compactText(v))) + "</td>";
+            }).join("") + "</tr>";
+        }).join("");
+        var notes = [];
+        if (rows.length > DATA_MAX_ROWS) notes.push(fill(DATA_TEXT.more, { n: rows.length - DATA_MAX_ROWS }));
+        if (cols.length > shown.length) notes.push(fill(DATA_TEXT.moreCols, { n: cols.length - shown.length }));
+        return '<div class="bv-md-tbl"><table class="bv-data-tbl"><thead><tr>' +
+            shown.map(function (c) { return "<th>" + escapeHtml(c) + "</th>"; }).join("") +
+            "</tr></thead><tbody>" + body + "</tbody></table></div>" + moreHtml(notes);
+    }
+
+    function flatObj(x) { return isObj(x) && Object.keys(x).every(function (k) { return isScalar(x[k]); }); }
+
+    function dataHtml(v, depth) {
+        if (isScalar(v)) return scalarHtml(v);
+        if (depth >= DATA_MAX_DEPTH) return escapeHtml(compactText(v));
+        if (Array.isArray(v)) {
+            if (!v.length) return '<span class="bv-data-nil">' + escapeHtml(DATA_TEXT.empty) + "</span>";
+            if (v.every(isScalar)) return escapeHtml(v.map(compactText).join(", "));
+            if (v.every(flatObj)) {
+                var cols = [];
+                v.forEach(function (o) { Object.keys(o).forEach(function (k) { if (cols.indexOf(k) < 0) cols.push(k); }); });
+                return dataTableHtml(cols, v);
+            }
+            return '<ol class="bv-data-list">' + v.slice(0, DATA_MAX_ROWS).map(function (x) {
+                return "<li>" + dataHtml(x, depth + 1) + "</li>";
+            }).join("") + "</ol>" + moreHtml(v.length > DATA_MAX_ROWS ? [fill(DATA_TEXT.more, { n: v.length - DATA_MAX_ROWS })] : []);
+        }
+        // 열 이름 + 행 배열 모양(`{columns: [...], rows: [[...]]}`)은 표로
+        if (Array.isArray(v.columns) && v.columns.every(isScalar) && Array.isArray(v.rows) && v.rows.every(Array.isArray)) {
+            var rest = {};
+            Object.keys(v).forEach(function (k) { if (k !== "columns" && k !== "rows") rest[k] = v[k]; });
+            return dataTableHtml(v.columns.map(String), v.rows) + (Object.keys(rest).length ? dataHtml(rest, depth) : "");
+        }
+        var keys = Object.keys(v);
+        if (!keys.length) return '<span class="bv-data-nil">' + escapeHtml(DATA_TEXT.empty) + "</span>";
+        return '<dl class="bv-data">' + keys.slice(0, DATA_MAX_KEYS).map(function (k) {
+            return "<dt>" + escapeHtml(k) + "</dt><dd>" + dataHtml(v[k], depth + 1) + "</dd>";
+        }).join("") + "</dl>" + moreHtml(keys.length > DATA_MAX_KEYS ? [fill(DATA_TEXT.more, { n: keys.length - DATA_MAX_KEYS })] : []);
+    }
+
+    function excerptHtml(text) {
+        var s = String(text === null || text === undefined ? "" : text);
+        if (!s.trim()) return "";
+        var parsed = parseLooseJson(s);
+        if (parsed) {
+            return '<div class="bv-data-view">' + dataHtml(parsed.value, 0) +
+                (parsed.cut ? '<div class="bv-data-more">' + escapeHtml(DATA_TEXT.cut) + "</div>" : "") + "</div>";
+        }
+        if (MD_HINT.test(s)) return renderMarkdownSafe(s);
+        return '<pre class="bv-data-raw">' + escapeHtml(s) + "</pre>";
+    }
+
     // HolmesGPT 칸 [서술 보기](summaryView 켜짐) — 원인·근거·대응·한계 4줄(없는 줄 생략 · 대응은 「권고 없음」 표지 제외)
     // 다음에 원문을 다시 접어 둔다. 원문이 없으면 첫 줄 summary + 중립 안내(이유는 단정하지 않는다 — 저장 상한·옛 레코드).
     function deepNarrativeHtml(dd, hgSide) {
@@ -1910,7 +2059,7 @@
         var notes = asList(ctx.pb.notes);
         if (!notes.length) return "";
         return '<div class="bv-pb-block"><div class="bv-label">' + escapeHtml(PB_TEXT.notesHead) + '</div>' +
-            notes.map(function (n) { return '<div class="bv-meta">' + escapeHtml(textOf(n)) + '</div>'; }).join("") + '</div>';
+            notes.map(function (n) { return '<div class="bv-meta">' + lineHtml(textOf(n)) + '</div>'; }).join("") + '</div>';
     }
 
     // ── plans/199 W3: ② 근거 요약 · ③ 상세 ───────────────────────────────────────────────────
@@ -2242,6 +2391,16 @@
      *     불리언 · 참이면 그 단을 펼친 채 그린다 · 없으면 접힘)는 attach가 펼침 기억에서 읽어 싣는다
      */
     function renderBody(view, extra) {
+        var prev = cleanText;
+        cleanText = !!(extra && extra.summaryView);
+        try {
+            return renderBodyOf(view, extra);
+        } finally {
+            cleanText = prev;
+        }
+    }
+
+    function renderBodyOf(view, extra) {
         view = view || { status: "none" };
         var pbCtx = playbookContext(view);
         if (pbCtx) return renderPlaybook(view, pbCtx, extra || {});
@@ -3342,6 +3501,13 @@
         // (plans/199 W3) 상세형 ②·③ 문구
         EV_TEXT: EV_TEXT,
         renderMarkdownSafe: renderMarkdownSafe,
+        // (D-352 부기 5) 원문 정돈 — 한 줄 마크다운 · textContent용 기호 제거 · 도구 결과 발췌(JSON → 항목·표)
+        DATA_TEXT: DATA_TEXT,
+        inlineHtml: inlineHtml,
+        plainText: plainText,
+        parseLooseJson: parseLooseJson,
+        compactText: compactText,
+        excerptHtml: excerptHtml,
         // (plans/199 W1) 「한눈에 보기」 — 모델(순수) · 카드 HTML · 원인 영역 문구 표 · 문구
         SUM_TEXT: SUM_TEXT,
         NO_ACTION_PREFIX: NO_ACTION_PREFIX,

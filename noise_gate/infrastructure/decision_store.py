@@ -1765,6 +1765,8 @@ class DecisionStore:
         operator_view: bool = False,
         solution: str | None = None,
         solution_of: Callable[[str], str] | None = None,
+        zone: str | None = None,
+        zone_of: Callable[[str], str] | None = None,
     ) -> dict:
         """결정 레코드를 필터·페이지로 조회한다 (Plan 54 모듈 3 — 근거 조회).
 
@@ -1785,6 +1787,8 @@ class DecisionStore:
             (D-351) `solution_of`(db_id → 솔루션 코드 · 라우트가 레지스트리로 주입)를 주면
             `facets.solutions`(**solution 필터만 뺀** 집합 · 0보다 큰 키만)를 싣고, `solution`이
             있으면 그 코드로 거른다. 저장소는 레지스트리를 모른다(계층). 미주입이면 종전과 같다.
+            (D-351 부기 1) `zone_of`(db_id → 존 코드)·`zone`도 같은 규칙이다 —
+            `facets.zones`는 **zone 필터만 뺀** 집합이고, 솔루션·존 칩은 서로의 필터를 반영한다.
             목록·facets·related는 **파일 1회 읽기**로 만든다 — related는 창 밖 tail까지 봐야
             하므로 tail을 창 없이 한 번 읽고 창은 여기서 건다(`_tail_records(window)`와 같은 판정).
 
@@ -1805,6 +1809,8 @@ class DecisionStore:
             operator_view: 운영자 전용 키(`condition_log`)를 싣는지 — 기본은 싣지 않는다.
             solution: 솔루션 코드 필터(`solution_of`가 있을 때만 적용).
             solution_of: db_id → 솔루션 코드 분류 함수.
+            zone: 존 코드 필터(`zone_of`가 있을 때만 적용).
+            zone_of: db_id → 존 코드 분류 함수.
 
         Returns:
             `{items, total, page, size, facets}`. 파일 부재·비활성이면 빈 목록.
@@ -1824,6 +1830,8 @@ class DecisionStore:
         facet_stages: dict[str, int] = {}
         facet_solutions: dict[str, int] = {}
         solution_codes: dict[str, str] = {}  # db_id → 코드(분류 호출을 db_id당 1회로)
+        facet_zones: dict[str, int] = {}
+        zone_codes: dict[str, str] = {}  # db_id → 존 코드(분류 호출을 db_id당 1회로)
         matched: list[int] = []  # tail 인덱스(시간순)
         for index, rec in enumerate(tail):
             if cutoff_ts is not None and not self._within_window(rec, cutoff_ts):
@@ -1856,20 +1864,31 @@ class DecisionStore:
             rec_stage = self._stage_of(rec)
             tier_ok = not tiers or rec_tier in tiers
             stage_ok = not stage or rec_stage == stage
+            rec_db_id = str(rec.get("db_id", "") or "")
             solution_ok = True
+            rec_solution = ""
             if solution_of is not None:
-                rec_db_id = str(rec.get("db_id", "") or "")
                 if rec_db_id not in solution_codes:
                     solution_codes[rec_db_id] = solution_of(rec_db_id)
                 rec_solution = solution_codes[rec_db_id]
                 solution_ok = not solution or rec_solution == solution
-                if tier_ok and stage_ok:
-                    facet_solutions[rec_solution] = facet_solutions.get(rec_solution, 0) + 1
-            if stage_ok and solution_ok and rec_tier in facet_tiers:
+            zone_ok = True
+            rec_zone = ""
+            if zone_of is not None:
+                if rec_db_id not in zone_codes:
+                    zone_codes[rec_db_id] = zone_of(rec_db_id)
+                rec_zone = zone_codes[rec_db_id]
+                zone_ok = not zone or rec_zone == zone
+            if solution_of is not None and tier_ok and stage_ok and zone_ok:
+                facet_solutions[rec_solution] = facet_solutions.get(rec_solution, 0) + 1
+            if zone_of is not None and tier_ok and stage_ok and solution_ok:
+                facet_zones[rec_zone] = facet_zones.get(rec_zone, 0) + 1
+            origin_ok = solution_ok and zone_ok
+            if stage_ok and origin_ok and rec_tier in facet_tiers:
                 facet_tiers[rec_tier] += 1
-            if tier_ok and solution_ok:
+            if tier_ok and origin_ok:
                 facet_stages[rec_stage] = facet_stages.get(rec_stage, 0) + 1
-            if tier_ok and stage_ok and solution_ok:
+            if tier_ok and stage_ok and origin_ok:
                 matched.append(index)
 
         matched.reverse()  # 최신 우선
@@ -1896,6 +1915,8 @@ class DecisionStore:
         facets: dict[str, dict[str, int]] = {"tiers": facet_tiers, "stages": facet_stages}
         if solution_of is not None:
             facets["solutions"] = facet_solutions
+        if zone_of is not None:
+            facets["zones"] = facet_zones
         return {
             "items": items,
             "total": total,

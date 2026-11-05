@@ -247,12 +247,17 @@ class DecisionsResponse(BaseModel):
         description=(
             "분포 칩용 건수 — tiers는 tier 필터만 뺀 집합(4키 항상), "
             "stages는 stage 필터만 뺀 집합(0보다 큰 키만), "
-            "solutions는 solution 필터만 뺀 집합(0보다 큰 키만 · 못 푼 출처는 unclassified)"
+            "solutions는 solution 필터만 뺀 집합(0보다 큰 키만 · 못 푼 출처는 unclassified), "
+            "zones는 zone 필터만 뺀 집합(0보다 큰 키만 · 존 미배정·미상은 unclassified)"
         ),
     )
     solution_labels: dict[str, str] = Field(
         default_factory=dict,
         description="facets.solutions 코드 → 표시 이름(결정 이력 「솔루션」 선택지)",
+    )
+    zone_labels: dict[str, str] = Field(
+        default_factory=dict,
+        description="facets.zones 코드 → 표시 이름(결정 이력 「존」 선택지 · D-351 부기 1)",
     )
 
 
@@ -587,9 +592,10 @@ def _origin_resolver():  # noqa: ANN202 — Callable[[str], dict[str, str]]
     `_UNCLASSIFIED_SOLUTION`으로 모아 화면에서 사라지지 않게 한다. 메모는 목록 필터(저장소 분류
     함수)와 행 라벨이 함께 쓴다 — 창 안 db_id마다 레지스트리 조회 1회.
     """
-    from noise_gate.application.server_identity import alarm_origin_for
+    from noise_gate.application.server_identity import alarm_origin_for, alarm_zone_for
 
     memo: dict[str, dict[str, str]] = {}
+    zone_memo: dict[str, tuple[str, str]] = {}
 
     def resolve(db_id: str) -> dict[str, str]:
         if db_id not in memo:
@@ -601,7 +607,18 @@ def _origin_resolver():  # noqa: ANN202 — Callable[[str], dict[str, str]]
             }
         return memo[db_id]
 
+    def zone_of(db_id: str) -> str:
+        """(D-351 부기 1) db_id → 존 코드 — 못 풀면 `_UNCLASSIFIED_SOLUTION`과 같은 코드."""
+        if db_id not in zone_memo:
+            code, label = alarm_zone_for(db_id)
+            zone_memo[db_id] = (
+                (code, label) if code else (_UNCLASSIFIED_SOLUTION, _UNCLASSIFIED_LABEL)
+            )
+        return zone_memo[db_id][0]
+
     resolve.memo = memo  # type: ignore[attr-defined] — 선택지 라벨 수집용
+    resolve.zone_of = zone_of  # type: ignore[attr-defined]
+    resolve.zone_memo = zone_memo  # type: ignore[attr-defined]
     return resolve
 
 
@@ -872,7 +889,7 @@ async def noise_health(
         "<br/>`tier`는 쉼표 복수값(`page,ticket`)을 받고, `facets`는 분포 칩용 건수입니다. "
         "`related=true`면 상관·자가복구 행에 대표/원 발생 판단을 붙입니다.<br/>"
         "각 행의 `solution`·`solution_label`·`location_label`은 db_id를 레지스트리로 푼 알람 출처"
-        "(솔루션·존 위치)이고, `solution`으로 거릅니다(못 푼 출처 = `unclassified`).<br/>"
+        "(솔루션·존 위치)이고, `solution`·`zone`으로 거릅니다(못 푼 출처 = `unclassified`).<br/>"
         "각 행의 `investigation`은 그 알람의 가장 최근 거부 아닌 조사"
         "(`{investigation_id, status, queue_position}`) 또는 null"
         "(조사 안 됨 · 볼 권한 없음)입니다 — "
@@ -903,6 +920,11 @@ async def noise_decisions(
         max_length=64,
         description="솔루션 코드(레지스트리 solutions[].code · 못 푼 출처는 unclassified)",
     ),
+    zone: str | None = Query(
+        default=None,
+        max_length=64,
+        description="존 코드(레지스트리 zones[].code · 존 미배정·미상은 unclassified)",
+    ),
 ) -> DecisionsResponse:
     """결정 감사 목록을 필터·페이지로 돌려준다."""
     window = _resolve_range(range)
@@ -924,12 +946,15 @@ async def noise_decisions(
         operator_view=_is_operator_path(request),
         solution=(solution or "").strip() or None,
         solution_of=lambda db_id: resolve(db_id)["solution"],
+        zone=(zone or "").strip() or None,
+        zone_of=resolve.zone_of,
     )
     _attach_investigations(request, result["items"])
     _attach_origins(result["items"], resolve)
     result["solution_labels"] = {
         origin["solution"]: origin["solution_label"] for origin in resolve.memo.values()
     }
+    result["zone_labels"] = dict(resolve.zone_memo.values())
     return DecisionsResponse(**result)
 
 

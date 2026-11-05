@@ -1008,6 +1008,13 @@ body:has(.chat-layout.history-collapsed) {
     border-radius: 4px;
 }
 
+/* (D-352 부기 5) 정돈된 발췌·AI 메모 — 고정폭 원문 대신 공용 렌더(항목·표·마크다운) */
+.dv-excerpt--rich {
+    font-family: inherit;
+    white-space: normal;
+    max-height: 320px;
+}
+
 .dv-partial-body,
 .dv-final-body {
     font-size: 0.8125rem;
@@ -3926,6 +3933,18 @@ body.auth-pending .auth-splash {
 .bv-md th, .bv-md td { border: 1px solid var(--border); padding: 1px 6px; text-align: left; white-space: nowrap; }
 .bv-md-toc { padding: 3px 6px; border: 1px dashed var(--border); border-radius: var(--radius-sm); }
 .bv-md-short { display: flex; flex-direction: column; gap: 3px; margin-top: 4px; }
+/* (D-352 부기 5) 도구 결과 발췌 정돈 — JSON → 항목(키: 값)·표 · 잘림 표지 */
+.bv-data-view { display: flex; flex-direction: column; gap: 4px; font-size: 0.75rem; color: var(--text-secondary); overflow-wrap: anywhere; }
+.bv-data { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 2px 10px; margin: 0; }
+.bv-data > dt { color: var(--text-muted); font-family: var(--font-mono); font-size: 0.95em; }
+.bv-data > dd { margin: 0; color: var(--text); white-space: pre-wrap; min-width: 0; }
+.bv-data-list { margin: 0; padding-left: 1.2em; display: flex; flex-direction: column; gap: 4px; }
+.bv-data-tbl { border-collapse: collapse; font-size: 0.7rem; }
+.bv-data-tbl th, .bv-data-tbl td { border: 1px solid var(--border); padding: 1px 6px; text-align: left; white-space: nowrap; }
+.bv-data-tbl th { color: var(--text-muted); font-weight: 600; }
+.bv-data-nil, .bv-data-more { color: var(--text-muted); }
+.bv-data-more { font-size: 0.7rem; }
+.bv-data-raw { margin: 0; font-family: var(--font-mono); white-space: pre-wrap; overflow-wrap: anywhere; }
 
 /* plans/199 W1 · D-352 — 「한눈에 보기」 카드(briefing-view.js summaryCardHtml) · 테마 토큰만 쓴다 */
 .bv-sum {

@@ -120,6 +120,16 @@ def _short_label(label: str) -> str:
     return (label or "").split("(")[0].split("—")[0].strip()
 
 
+def alarm_zone_for(db_id: str) -> tuple[str, str]:
+    """판단 기록의 db_id → (존 코드, 존 약칭) — 결정 이력 「존」 필터(D-351 부기 1).
+
+    존 코드는 레지스트리 `zones[].code`(gongjon·bankjon)이고 약칭은 라벨의 `(`/`—` 앞 토큰
+    (「공동존」·「은행존」)이다. 못 풀면(미등록·존 미배정) 빈 문자열 2개.
+    """
+    zone, zone_label, _ = zone_labels_for(db_id or "") if db_id else ("", "", "")
+    return zone, _short_label(zone_label) or zone
+
+
 def alarm_origin_for(db_id: str) -> dict[str, str]:
     """판단 기록의 db_id → 알람 출처 `{solution, solution_label, location}` (D-351).
 
