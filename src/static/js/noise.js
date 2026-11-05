@@ -3368,12 +3368,13 @@ function mount(mountRoot, opts) {
         });
     }
 
-    // 솔루션 선택지(D-351) — 조회마다 `facets.solutions`(솔루션 필터만 뺀 건수)로 다시 채운다.
-    // 기간 안에 판단이 있는 솔루션만 보이고, 고른 값은 0건이 돼도 남겨 선택이 풀리지 않게 한다.
-    function fillSolutionFilter(facets, labels) {
-        var select = document.getElementById("decSolution");
+    // 솔루션·존 선택지(D-351 · 부기 1) — 조회마다 `facets.solutions`/`facets.zones`(제 필터만 뺀
+    // 건수)로 다시 채운다. 기간 안에 판단이 있는 값만 보이고, 고른 값은 0건이 돼도 남겨 선택이
+    // 풀리지 않게 한다.
+    function fillOriginFilter(selectId, counts, labels) {
+        var select = document.getElementById(selectId);
         var current = select.value;
-        var counts = (facets && facets.solutions) || {};
+        counts = counts || {};
         var codes = Object.keys(counts);
         if (current && codes.indexOf(current) < 0) codes.push(current);
         codes.sort(function (a, b) {
@@ -3399,12 +3400,15 @@ function mount(mountRoot, opts) {
             "tier=" + document.getElementById("decTier").value,
             "stage=" + document.getElementById("decStage").value,
             "solution=" + encodeURIComponent(document.getElementById("decSolution").value),
+            "zone=" + encodeURIComponent(document.getElementById("decZone").value),
             "related=true",
         ];
         var data = await getJSON(API + "/decisions?" + params.join("&"));
         if (!data) return;
 
-        fillSolutionFilter(data.facets, data.solution_labels || {});
+        var facets = data.facets || {};
+        fillOriginFilter("decSolution", facets.solutions, data.solution_labels || {});
+        fillOriginFilter("decZone", facets.zones, data.zone_labels || {});
         document.getElementById("decTotal").textContent = fmtInt(data.total) + "건";
         var body = document.getElementById("decisionBody");
         body.innerHTML = "";

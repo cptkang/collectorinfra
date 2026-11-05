@@ -721,8 +721,8 @@ def test_tab_markup_hidden_by_default_and_script_order() -> None:
     tab = html[html.index('data-view="diagnosis"') - 60: html.index('id="diagnosisTabBadge"')]
     assert 'style="display: none;"' in tab and 'aria-controls="diagnosisView"' in tab
     assert 'id="diagnosisView"' in html and 'class="diagnosis-view view-hidden"' in html
-    bv = html.index("briefing-view.js?v=13")
-    dv = html.index("diagnosis-view.js?v=16")
+    bv = html.index("briefing-view.js?v=14")
+    dv = html.index("diagnosis-view.js?v=17")
     app = html.index("app.js?v=54")
     assert bv < dv < app
     css = (_STATIC / "css" / "style.css").read_text(encoding="utf-8")
@@ -795,7 +795,15 @@ def test_server_text_never_goes_through_inner_html_and_no_write_buttons() -> Non
     src = _DV_JS.read_text(encoding="utf-8")
     assigns = re.findall(r"\.innerHTML\s*=\s*([^;]+);", src)
     # (plans/199 W5a) 공용 렌더(자체 이스케이프) 출력만 — 상세형 렌더 + 진척형 「한눈에 보기」 카드
-    assert sorted(a.split("(")[0] for a in assigns) == ["bv.renderBody", "bv.summaryCardHtml"]
+    # (D-352 부기 5) + 원문 정돈 — `bvCall`은 BV_TEXT_FNS(공용 렌더의 escape 먼저 함수)
+    # 화이트리스트만 부른다
+    assert sorted(a.split("(")[0] for a in assigns) == [
+        "bv.renderBody", "bv.summaryCardHtml", "bvCall", "bvCall",
+    ]
+    assert (
+        "var BV_TEXT_FNS = { plainText: 1, inlineHtml: 1, renderMarkdownSafe: 1, "
+        "excerptHtml: 1, compactText: 1 };"
+    ) in src
     assert "insertAdjacentHTML" not in src and "outerHTML" not in src and "eval(" not in src
     # D-003 — 조사 취소·명령 실행 경로 없음(읽기 GET만)
     assert "POST" not in src and "DELETE" not in src and "method:" not in src

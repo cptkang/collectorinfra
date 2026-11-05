@@ -370,6 +370,27 @@
         return [e.engine || "", m[1], e.step || "", e.tool || ""].join("|");
     }
 
+    // (D-352 부기 5) 실행 기록 한 줄 `도구 {인자 JSON}`(sre_agent `tool_label`) → 「도구 — 키: 값 · 키: 값」.
+    // 인자가 JSON이 아니면 원문 그대로다(순수 · 화면 그리기에서만 부른다 — 행 모델은 원문을 둔다).
+    var TOOL_LABEL_RE = /^([^\s{]+) (\{[\s\S]*\})$/;
+    function argText(v) {
+        if (v === null || v === undefined) return "—";
+        if (typeof v !== "object") return String(v);
+        if (Array.isArray(v)) return v.map(argText).join(", ");
+        return Object.keys(v).map(function (k) { return k + "=" + argText(v[k]); }).join(", ");
+    }
+    function toolLabelText(label) {
+        var s = String(label === null || label === undefined ? "" : label);
+        var m = TOOL_LABEL_RE.exec(s);
+        if (!m) return s;
+        var args;
+        try { args = JSON.parse(m[2]); } catch (_) { return s; }
+        if (!isObj(args)) return s;
+        var keys = Object.keys(args);
+        if (!keys.length) return m[1];
+        return m[1] + " — " + keys.map(function (k) { return k + ": " + argText(args[k]); }).join(" · ");
+    }
+
     function firstLine(text, limit) {
         var line = String(text || "").split("\n")[0];
         return line.length > limit ? line.slice(0, limit) + "…" : line;
@@ -1289,6 +1310,40 @@
             return node;
         }
 
+        // (D-352 부기 5) 서버 원문(마크다운·JSON)을 공용 렌더로 정돈해 넣는다 — innerHTML은 공용 렌더 출력에만
+        // (자체 escape). `summaryView` 꺼짐이거나 공용 렌더가 없으면 종전 textContent 그대로(비트 동일).
+        var BV_TEXT_FNS = { plainText: 1, inlineHtml: 1, renderMarkdownSafe: 1, excerptHtml: 1, compactText: 1 };
+        function bvFn(name) {
+            var bv = root.BriefingView;
+            if (!BV_TEXT_FNS[name] || !optOn(opts.summaryView)) return null;
+            return bv && typeof bv[name] === "function" ? bv[name] : null;
+        }
+
+        function bvCall(name, text) { return bvFn(name)(text); }
+
+        // 한 줄 문장 — 켜짐이면 마크다운 기호를 떼고, 도구 행(`tool`)은 인자 JSON을 「키: 값」으로
+        function plain(text, tool) {
+            var f = bvFn("plainText");
+            if (!f) return String(text === null || text === undefined ? "" : text);
+            return f(tool ? toolLabelText(text) : text);
+        }
+
+        function mdNode(tag, cls, text) {
+            var s = String(text === null || text === undefined ? "" : text);
+            if (!bvFn("inlineHtml") || !bvFn("renderMarkdownSafe")) return el(tag, cls, s);
+            var multi = /\n/.test(s.trim());
+            var node = el(multi ? "div" : tag, cls + (multi ? " dv-md" : ""));
+            node.innerHTML = bvCall(multi ? "renderMarkdownSafe" : "inlineHtml", s);
+            return node;
+        }
+
+        function excerptNode(text) {
+            if (!bvFn("excerptHtml")) return el("pre", "dv-excerpt", text);
+            var node = el("div", "dv-excerpt dv-excerpt--rich");
+            node.innerHTML = bvCall("excerptHtml", text);
+            return node;
+        }
+
         function headers() { return opts.headers ? opts.headers() : {}; }
 
         function getJSON(url) {
@@ -1982,7 +2037,9 @@
                 if (!Array.isArray(row)) return;
                 var tr = el("tr");
                 row.forEach(function (v, i) {
-                    var text = v === null || v === undefined ? "—" : typeof v === "object" ? JSON.stringify(v) : String(v);
+                    var compact = bvFn("compactText");
+                    var text = v === null || v === undefined ? "—" : typeof v !== "object" ? String(v)
+                        : compact ? compact(v) : JSON.stringify(v);
                     tr.appendChild(el("td", null, (terms && terms.termValue(cols[i], v)) || text));
                 });
                 body.appendChild(tr);
@@ -2009,11 +2066,11 @@
 
         function queryNode(tab, q, key) {
             var div = el("div", "dv-q" + (q.warn ? " dv-q--warn" : ""));
-            div.appendChild(el("span", "dv-q-text", q.text));
+            div.appendChild(el("span", "dv-q-text", plain(q.text, !q.phrase)));
             var meta = [q.open ? "⟳" : q.icon, q.elapsed, q.rows].filter(Boolean).join(" ");
             if (meta) div.appendChild(el("span", "dv-meta", meta));
             if (q.excerpt) {
-                var pre = el("pre", "dv-excerpt", q.excerpt);
+                var pre = excerptNode(q.excerpt);
                 div.appendChild(toggler(tab, key, "▸", "▾", pre));
                 div.appendChild(pre);
             }
@@ -2074,7 +2131,7 @@
             }
             if (m.finding || m.reason || m.table) {
                 var res = el("div", "dv-result");
-                if (m.finding) res.appendChild(el("span", "dv-finding", m.finding));
+                if (m.finding) res.appendChild(mdNode("span", "dv-finding", m.finding));
                 else if (m.reason) res.appendChild(el("span", "dv-finding dv-finding--reason", m.reason));
                 if (m.table) {
                     var wrap = el("div", "dv-card-table-wrap");
@@ -2088,7 +2145,7 @@
                 var op = el("div", "dv-opinion dv-opinion--" + m.opinion.status);
                 if (m.opinion.status === "ok") {
                     op.appendChild(el("span", "dv-ai-mark", TEXT.opinionMark));
-                    op.appendChild(el("span", "dv-opinion-text", m.opinion.text));
+                    op.appendChild(mdNode("span", "dv-opinion-text", m.opinion.text));
                 } else if (m.opinion.status === "pending") {
                     op.textContent = TEXT.opinionPending;
                 } else {
@@ -2319,7 +2376,7 @@
             if (r.note) {
                 var op = el("div", "dv-opinion dv-opinion--holmes");
                 op.appendChild(el("span", "dv-ai-badge", TEXT.holmesJudge));
-                op.appendChild(el("span", "dv-opinion-text", r.note));
+                op.appendChild(mdNode("span", "dv-opinion-text", r.note));
                 line(dl, TEXT.holmesJudge, op);
             }
             li.appendChild(dl);
@@ -2341,7 +2398,7 @@
             ai.hidden = !model.sofarAi;
             if (model.sofarAi) {
                 ai.appendChild(el("span", "dv-ai-badge", TEXT.holmesJudge));
-                ai.appendChild(el("span", "dv-sofar-ai-text", model.sofarAi));
+                ai.appendChild(mdNode("span", "dv-sofar-ai-text", model.sofarAi));
             }
             var host = tab.done ? hostLinkState(model.cards, src.scope) : null;
             var rq = requeryByStep(tab.view);
@@ -2458,7 +2515,7 @@
             if (row.step) li.appendChild(el("span", "dv-step", row.step));
             if (row.ai) li.appendChild(el("span", "dv-ai-badge", TEXT.aiBadge));
             else li.appendChild(el("span", "dv-icon", row.icon));
-            var text = el("span", "dv-text", row.text);
+            var text = el("span", "dv-text", plain(row.text, !row.ai));
             // 도구 행은 그 스텝의 목적을 마우스 올림 설명으로 단다(행마다 되풀이하지 않는다)
             var stepWhy = row.step ? tab.stepPurpose[row.step] : "";
             if (!row.purpose && stepWhy) text.title = TEXT.purposePrefix + stepWhy;
@@ -2470,7 +2527,8 @@
                 var toggle = el("button", "dv-expand", open ? "▾" : "▸");
                 toggle.type = "button";
                 toggle.setAttribute("aria-expanded", open ? "true" : "false");
-                var pre = el("pre", "dv-excerpt", row.detail);
+                var pre = row.ai && bvFn("renderMarkdownSafe")
+                    ? mdNode("div", "dv-excerpt dv-excerpt--rich", row.detail) : excerptNode(row.detail);
                 pre.hidden = !open;
                 toggle.addEventListener("click", function () {
                     var on = !tab.expanded[row.seq];
@@ -3105,6 +3163,7 @@
         FAIL_LIMIT: FAIL_LIMIT,
         FALLBACK_POLL_MS: FALLBACK_POLL_MS,
         eventRow: eventRow,
+        toolLabelText: toolLabelText,
         mergeEvents: mergeEvents,
         whyLines: whyLines,
         foldWhy: foldWhy,

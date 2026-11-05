@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>노이즈 캔슬링 관제 - KB AIOps 포탈</title>
     <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
-    <link rel="stylesheet" href="/static/css/style.css?v=19">
+    <link rel="stylesheet" href="/static/css/style.css?v=20">
     <link rel="stylesheet" href="/static/css/noise-console.css?v=11">
     <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
     <script src="/static/js/theme.js"></script>
@@ -195,6 +195,9 @@
                     <select id="decSolution" title="알람을 보낸 솔루션으로 거릅니다" style="padding:7px 9px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);">
                         <option value="">전 솔루션</option>
                     </select>
+                    <select id="decZone" title="알람이 속한 존으로 거릅니다" style="padding:7px 9px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);">
+                        <option value="">전 존</option>
+                    </select>
                     <select id="decTier" style="padding:7px 9px;font-size:12px;border-radius:6px;border:1px solid var(--border);background:var(--bg-elevated);color:var(--text);">
                         <option value="">전 티어</option>
                         <option value="page">PAGE</option>
@@ -252,7 +255,7 @@
     </aside>
 
     <script src="/static/js/noise-help.js?v=7"></script>
-    <script src="/static/js/briefing-view.js?v=13"></script>
-    <script src="/static/js/noise.js?v=27"></script>
+    <script src="/static/js/briefing-view.js?v=14"></script>
+    <script src="/static/js/noise.js?v=28"></script>
 </body>
 </html>
