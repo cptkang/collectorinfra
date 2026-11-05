@@ -357,6 +357,7 @@ def test_diagnosis_agent_installs_by_flag(clean_completion, enabled):
     DiagnosisAgent(AgentSettings(
         _env_file=None, model="m", tool_call_markup_parse_enabled=enabled,
         system_message_position_fix=False, bash_write_guard_enabled=False,
+        llm_harmony_retry_max=0,
     ))
     installed = getattr(clean_completion.completion, guard_mod._GUARD_FLAG, False)
     assert installed is enabled

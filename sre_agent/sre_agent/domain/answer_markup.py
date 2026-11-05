@@ -45,6 +45,29 @@ MALFORMED_ANSWER_LIMITATION = (
     "모델에 맞게 확인(docs/26 §5.6.3)"
 )
 
+#: 형식 불일치 종류(plans/213 W1 · D-366 ③) — `classify_tool_call_markup`의 반환값.
+#: 판정 범위는 `has_tool_call_markup`과 같고(셋 중 하나 ⇔ 섞임), 순서도 같다(리터럴 → 구문 → 맨 JSON).
+MALFORMED_KIND_MARKUP = "markup"            # 마크업 리터럴(`<|tool_call>` 등)
+MALFORMED_KIND_CALL_SYNTAX = "call_syntax"  # `call:이름{`
+MALFORMED_KIND_BARE_JSON = "bare_json"      # 답 전체가 맨 JSON 도구 호출
+#: 한계 문구에 싣는 종류 이름(한국어).
+MALFORMED_KIND_LABELS: dict[str, str] = {
+    MALFORMED_KIND_MARKUP: "마크업 리터럴",
+    MALFORMED_KIND_CALL_SYNTAX: "call:이름{…} 구문",
+    MALFORMED_KIND_BARE_JSON: "본문 JSON",
+}
+#: 도구 0건 · 맨 JSON — 파서 불일치와 모델 응답 문제를 이 문구만으로는 가를 수 없다.
+MALFORMED_BARE_JSON_LIMITATION = (
+    "조사 LLM이 도구 호출을 본문 JSON으로 냄 — 파서 불일치 또는 모델 응답 문제"
+    "(docs/26 §5.6.3 판정으로 구분)"
+)
+#: 도구 1건 이상 — `{n}` 도구 건수 · `{kind}` 종류 이름. C8 변환 호출도 건수에 들므로
+#: 「파서 정상」을 단정하지 않는다.
+MALFORMED_AFTER_TOOLS_LIMITATION = (
+    "도구 {n}건은 처리됐으나 마지막 답이 서술이 아니라 도구 호출 꼴({kind})로 끝남 — "
+    "파서보다 모델 응답 문제 · 다시 분석 또는 모델 교체 검토"
+)
+
 
 #: holmes 내장 할 일 목록 도구 이름과 상태 값
 #: (holmes 0.36.0 `TODO_WRITE_TOOL_NAME`·`TaskStatus` 실측).
@@ -135,6 +158,37 @@ def has_tool_call_markup(text: str | None) -> bool:
     return parse_bare_json_tool_calls(text) is not None
 
 
+def classify_tool_call_markup(text: str | None) -> str | None:
+    """형식 불일치 종류 — `markup` · `call_syntax` · `bare_json` 중 하나, 섞임이 없으면 None.
+
+    `has_tool_call_markup`과 같은 부분 판정을 같은 순서로 재사용한다(None ⇔ 섞임 False).
+    """
+    if not text:
+        return None
+    if any(lit in text for lit in TOOL_CALL_MARKUP_LITERALS):
+        return MALFORMED_KIND_MARKUP
+    if _CALL_RE.search(text) is not None:
+        return MALFORMED_KIND_CALL_SYNTAX
+    if parse_bare_json_tool_calls(text) is not None:
+        return MALFORMED_KIND_BARE_JSON
+    return None
+
+
+def malformed_limitation(kind: str | None, tools_run: int) -> str:
+    """형식 불일치 종결의 한계 1줄 — 종류와 실행된 도구 건수로 3종 중 고른다.
+
+    - 도구 0건 · `markup`/`call_syntax`(또는 종류 미상) → `MALFORMED_ANSWER_LIMITATION`(종전 문구)
+    - 도구 0건 · `bare_json` → `MALFORMED_BARE_JSON_LIMITATION`
+    - 도구 1건 이상 → `MALFORMED_AFTER_TOOLS_LIMITATION`(건수·종류 이름)
+    """
+    if tools_run > 0:
+        label = MALFORMED_KIND_LABELS.get(kind or "", MALFORMED_KIND_LABELS[MALFORMED_KIND_MARKUP])
+        return MALFORMED_AFTER_TOOLS_LIMITATION.format(n=tools_run, kind=label)
+    if kind == MALFORMED_KIND_BARE_JSON:
+        return MALFORMED_BARE_JSON_LIMITATION
+    return MALFORMED_ANSWER_LIMITATION
+
+
 #: Gemma 문자열 구분자 — 로그 가림(`k:"v"` 꼴 인식) 전에 큰따옴표로 바꾼다.
 _GEMMA_QUOTE = GEMMA_STRING_DELIM
 
@@ -171,12 +225,20 @@ __all__ = [
     "GEMMA_STRING_DELIM",
     "GEMMA_TOOL_CALL_CLOSE",
     "GEMMA_TOOL_CALL_OPEN",
+    "MALFORMED_AFTER_TOOLS_LIMITATION",
     "MALFORMED_ANSWER_CAUSE",
     "MALFORMED_ANSWER_LIMITATION",
     "MALFORMED_ANSWER_SUMMARY",
+    "MALFORMED_BARE_JSON_LIMITATION",
+    "MALFORMED_KIND_BARE_JSON",
+    "MALFORMED_KIND_CALL_SYNTAX",
+    "MALFORMED_KIND_LABELS",
+    "MALFORMED_KIND_MARKUP",
     "TODO_WRITE_TOOL",
     "TOOL_CALL_MARKUP_LITERALS",
+    "classify_tool_call_markup",
     "has_tool_call_markup",
+    "malformed_limitation",
     "markup_log_excerpt",
     "parse_bare_json_tool_calls",
 ]
