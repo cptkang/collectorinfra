@@ -158,10 +158,11 @@ _SECTION_HEAD_KEYS: tuple[str, ...] = (
 #: `deep_dive.narrative`(심층 답변 원문)를 줄일 때 남기는 앞부분 글자 수와 표지.
 DEEP_NARRATIVE_CLIP_CHARS = 2000
 DEEP_NARRATIVE_CLIPPED_NOTE = "\n…(저장 상한 32KB로 이하 생략)"
-#: `deep_dive`를 줄일 때 남기는 키(앞쪽이 상태 · 뒤쪽이 우선 보존 서술).
+#: `deep_dive`를 줄일 때 남기는 키(앞쪽이 상태 · 뒤쪽이 우선 보존 서술). `retryable`은 재분석
+#: 합류 예외 판정(plans/213 W4 · D-366 부기 1)이 읽어 상태와 함께 끝까지 남긴다.
 _DEEP_DIVE_KEEP_KEYS: tuple[tuple[str, ...], ...] = (
-    ("status", "mode", "reason", "label", "summary", "cause"),
-    ("status", "mode", "reason", "label"),
+    ("status", "retryable", "mode", "reason", "label", "summary", "cause"),
+    ("status", "retryable", "mode", "reason", "label"),
 )
 
 

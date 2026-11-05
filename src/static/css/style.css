@@ -4030,13 +4030,28 @@ select.bv-input { width: auto; padding-right: 22px; background-position: right 6
 .alarm-past-note, .alarm-past-status { margin-top: 6px; font-size: 0.72rem; color: var(--text-muted); }
 .alarm-past-list { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
 .alarm-past-row {
-    width: 100%; display: grid; grid-template-columns: 11em 10em 1fr auto; gap: 8px; align-items: center;
+    width: 100%; display: grid; grid-template-columns: auto 6.5em minmax(6em, 9em) minmax(6em, 10em) 1fr auto; gap: 8px; align-items: center;
     padding: 4px 8px; border: 1px solid var(--border); border-radius: var(--radius-sm);
     background: transparent; color: var(--text); font-size: 0.75rem; text-align: left; cursor: pointer;
 }
 .alarm-past-row[aria-expanded="true"] { border-color: var(--accent-dim); background: var(--accent-glow); }
-.alarm-past-time, .alarm-past-stage { color: var(--text-muted); font-family: var(--font-mono); font-size: 0.7rem; }
-.alarm-past-server, .alarm-past-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alarm-past-time, .alarm-past-stage { color: var(--text-muted); font-family: var(--font-mono); font-size: 0.7rem; white-space: nowrap; }
+.alarm-past-source, .alarm-past-server, .alarm-past-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.alarm-past-source { color: var(--text-secondary); font-size: 0.7rem; }
+/* 4티어 배지 — 노이즈 관제 .badge-tier와 같은 색(--tier-*) */
+.alarm-past-tier {
+    justify-self: start; font-family: var(--font-mono); font-size: 0.62rem; padding: 2px 6px;
+    border-radius: 4px; letter-spacing: .05em; white-space: nowrap;
+    color: var(--bg-elevated); background: var(--text-muted);
+}
+.alarm-past-tier.t-page { background: var(--tier-page); }
+.alarm-past-tier.t-ticket { background: var(--tier-ticket); }
+.alarm-past-tier.t-dashboard { background: var(--tier-dash); }
+.alarm-past-tier.t-suppress { background: var(--tier-suppress); }
+@media (max-width: 640px) {
+    .alarm-past-row { grid-template-columns: auto auto 1fr; row-gap: 2px; }
+    .alarm-past-name { grid-column: 1 / -1; }
+}
 .alarm-past-card { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 4px 12px; padding: 6px 8px; border-left: 2px solid var(--accent-dim); }
 .alarm-past-card[hidden] { display: none; }
 .alarm-past-summary { font-size: 0.74rem; color: var(--text-secondary); }

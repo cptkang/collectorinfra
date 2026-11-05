@@ -674,6 +674,17 @@ PY
 | 본문이 Gemma 4 표기(`<\|tool_call>call:이름{…}<tool_call\|>`) | `--tool-call-parser` 불일치(Gemma 계열) — sre_agent가 **클라이언트 측에서 파싱**해 tool_calls로 바꾸고 조사를 진행한다(`TOOL_CALL_MARKUP_PARSE_ENABLED` 기본 on · plans/188 W5). 해석 실패면 원본 그대로 두어 위 행의 `[미결]` 종결(warning 로그 `도구 호출 마크업 해석 실패`) | 파서 교정이 여전히 근본 조치. 다음 턴 왕복(holmes가 싣는 assistant `tool_calls` + `role=tool`을 vLLM 템플릿이 렌더링하는지)은 로컬 실측 불가 — **첫 실조사에서 도구 호출이 2턴 이상 이어지는지**로 판정(이어지지 않으면 파서 교정이 유일한 해법) |
 | 연결 오류 | 방화벽·바인드 | §5.6.2부터 |
 
+**Harmony 파싱 오류 재시도**(plans/213 W3 · D-366 ①): gpt-oss 계열을 서빙하는 vLLM은 가끔
+`Unexpected token … expecting start token 200006` 400을 돌려준다(같은 요청을 다시 보내면 정상 — 폐쇄망 실측
+2026-11-04). holmes는 재시도하지 않아 이 400 한 번으로 조사가 실패하므로, sre_agent가 LLM 경계에서 예외 메시지에
+`expecting start token`이 있는 litellm 400·500만 **같은 요청 그대로**(temperature 등 불변) 재시도한다. 조사 루프와
+단계 소견·종합 호출 모두 대상이고, 그 밖의 오류(컨텍스트 초과·인증·403 등)와 정상 응답은 그대로 통과한다.
+설정 2키 — `LLM_HARMONY_RETRY_MAX`(재시도 상한 · 기본 1 · `0`이면 off) · `LLM_HARMONY_RETRY_SKIP_AFTER_S`(첫 시도
+경과가 이 초를 넘으면 재시도 생략 · 기본 45 — 소견·종합의 바깥 타이머 60·90초 안에 들게). 확인은
+`grep 'Harmony 파싱 오류 재시도' <sre_agent 로그>` — warning `재시도 n/N — 첫 시도 경과 Xs · 호출 종류=조사|요약 ·
+오류=…`(원문 앞 200자 · 로그 가림 경유)와 info `재시도 결과 — 통과|재실패`가 짝으로 남는다. 재시도는 근본 조치가
+아니다 — **재실패가 잦으면** 엔드포인트의 vLLM·openai-harmony 버전 문제로 운영자에게 교정을 요청한다.
+
 #### 5.6.4 `sre_agent` 배선 — 필드 4개
 
 ```bash
@@ -770,8 +781,23 @@ cd sre_agent && RUN_E2E=1 LLM_GEMINI_API_KEY= GEMINI_API_KEY= .venv/bin/python -
 | `incomplete=True` 반복 | 모델이 ReAct를 못 끌고 감 → **모델 상향**(9B→상위), `MAX_STEPS` 확인 |
 | 도구 호출 0회인데 답변만 장문 | 도구를 안 쓰고 지어냄 → 파서 재확인(§5.6.3). **인용 없으면 불합격** |
 | 답이 JSON뿐(할 일 목록 `[{"id","content","status"}…]` · `{"name","arguments"}`) | 도구 호출이 `tool_calls`가 아니라 본문으로 나옴(파서 불일치) → `[미결] 조사 실패` 종결. sre_agent 로그 `조사 LLM 턴: … 경로=`(`native` 외 `bare_json`·`gemma_markup`·`none`)와 `조사 도구 호출 요약:`으로 턴별 확인 → 파서 재확인(§5.6.3 · D-343 부기 1) |
+| 브리핑 한계 「도구 N건은 처리됐으나 마지막 답이 서술이 아니라 도구 호출 꼴(…)로 끝남」 | 도구 호출은 처리됐는데 **마지막 답**만 도구 호출 꼴로 끝남 → 파서보다 모델 응답 문제일 공산이 크다. 다시 분석하고 반복되면 모델 교체 검토. N에는 C8 변환 호출도 들어가므로 파서 정상을 뜻하지는 않는다 — 턴별 `경로=`로 확인(plans/213 W1 · D-366 ③) |
+| 브리핑 한계 「조사 LLM이 도구 호출을 본문 JSON으로 냄」(도구 0건 · 맨 JSON) | 파서 불일치와 모델 응답 문제를 문구만으로는 못 가른다 → §5.6.3 왕복 판정으로 구분 |
+| 브리핑 한계 「조사 LLM 응답에 도구 호출 원문이 섞임 — vLLM …」(도구 0건 · 마크업·`call:이름{`) | 종전 그대로 — 파서 확인(§5.6.3) |
 | 컨텍스트 초과 오류 | `--max-model-len` 상향 |
 | 수백 초 소요 | 통보가 그만큼 지연된다 → 본체에서 `NOISE_INVESTIGATION_FOLLOWUP_ENABLED=true`(§5.5) |
+
+**형식 불일치 판독**(plans/213 W1): 종류는 `markup`(마크업 리터럴) · `call_syntax`(`call:이름{`) · `bare_json`(답 전체가 맨 JSON) 셋이고,
+원문 앞 200자는 서버 로그에만 남는다(브리핑·통보에는 싣지 않음 · 비밀값 가림 경유).
+
+```bash
+journalctl -u sre-agent | grep "조사 LLM 답변에 도구 호출 마크업"      # 주 경로 — 종류=… 도구=N건 앞부분=…
+journalctl -u sre-agent | grep "심층 조사 답변에 도구 호출 형식"      # 플레이북 심층 생략 — 같은 형식
+```
+
+감사 `done` 레코드 — 주 경로는 `answer_malformed`(값 `tool_call_markup` 종전 그대로) + `answer_malformed_kind`,
+플레이북 심층 생략은 `deep_dive_display: "skipped"` + `deep_dive_malformed`(툴셋 연결 실패 생략이면 이 키 없음).
+`deep_dive_status`는 심층 엔진 종결 상태라 생략돼도 `done`이다.
 
 **참고 기준치**(Gemini 3.5-flash · 2026-07-28 실측): 완주 161초 · PromQL 감사 37건.
 소용량 vLLM은 이보다 느리고 스텝을 더 쓴다 — **절대 비교가 아니라 완주 여부로 판정**한다.

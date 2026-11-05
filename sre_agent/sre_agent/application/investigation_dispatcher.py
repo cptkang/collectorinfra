@@ -96,9 +96,10 @@ from sre_agent.domain.activity_log import ActivityLog, safe_append
 from sre_agent.domain.answer_markup import (
     ANSWER_MALFORMED_TOOL_CALL,
     MALFORMED_ANSWER_CAUSE,
-    MALFORMED_ANSWER_LIMITATION,
     MALFORMED_ANSWER_SUMMARY,
+    classify_tool_call_markup,
     has_tool_call_markup,
+    malformed_limitation,
     markup_log_excerpt,
 )
 from sre_agent.domain.cross_source_episode import (
@@ -233,13 +234,34 @@ def prom_empty_limitation(outputs: Sequence[object]) -> str | None:
             f"{', '.join(dict.fromkeys(reasons))}")
 
 
+def _tools_run(result: Any) -> int:
+    """실행된 도구 건수 — `result.tool_outputs` 길이(형식 불일치 한계 문구 입력 · plans/213 W1)."""
+    return len(getattr(result, "tool_outputs", None) or ())
+
+
+def _deep_malformed_kind(result: Any) -> str | None:
+    """심층 답의 형식 불일치 종류(plans/213 W1). 툴셋 연결 실패 생략·정상 답이면 None.
+
+    생략 판정 기준은 `has_tool_call_markup` 그대로다 — 종류는 그 위에 붙이는 진단뿐이다.
+    """
+    if getattr(result, "tools_unavailable", None):
+        return None
+    answer = getattr(result, "answer", None)
+    if not has_tool_call_markup(answer):
+        return None
+    return classify_tool_call_markup(answer)
+
+
 def _deep_skip_reason(result: Any) -> str | None:
-    """심층 결과를 서술로 쓰지 않을 사유(plans/188 A안·C7과 같은 기준 · 정상이면 None)."""
+    """심층 결과를 서술로 쓰지 않을 사유(plans/188 A안·C7과 같은 기준 · 정상이면 None).
+
+    형식 불일치 사유는 종류·도구 건수로 고른 한계 문구다(plans/213 W1 · 주 경로와 공용).
+    """
     tools_unavailable = getattr(result, "tools_unavailable", None)
     if tools_unavailable:
         return str(tools_unavailable)
     if has_tool_call_markup(getattr(result, "answer", None)):
-        return MALFORMED_ANSWER_LIMITATION
+        return malformed_limitation(_deep_malformed_kind(result), _tools_run(result))
     return None
 
 
@@ -1214,10 +1236,14 @@ class InvestigationDispatcher:
         # plans/188 C7 — 답변에 도구 호출 마크업이 섞이면(vLLM tool-call-parser 불일치)
         # 서술로 쓰지 않고 A안처럼 원문 없이 미결 종결한다. 판정 입력 `basis`는 불변.
         malformed = not tools_unavailable and has_tool_call_markup(result.answer)
+        # plans/213 W1 — 종류(markup·call_syntax·bare_json)와 도구 건수로 한계 문구를 고른다.
+        malformed_kind = classify_tool_call_markup(result.answer) if malformed else None
+        tools_run = _tools_run(result)
         if malformed:
             logger.warning("조사 LLM 답변에 도구 호출 마크업 — 원문 없이 미결 종결: "
-                           "investigation_id=%s 앞부분=%r",
-                           job.investigation_id, markup_log_excerpt(result.answer))
+                           "investigation_id=%s 종류=%s 도구=%d건 앞부분=%r",
+                           job.investigation_id, malformed_kind, tools_run,
+                           markup_log_excerpt(result.answer))
         if self._settings.apm_guidance_enabled and (tools_unavailable or malformed):
             # A안 — 조사가 없었으므로 APM 대체·정체 가드 한계는 싣지 않는다(소스 라벨만 유지).
             briefing_kwargs["source_labels"] = True
@@ -1263,7 +1289,7 @@ class InvestigationDispatcher:
             # C7 — 요약은 고정 문구(answer 자리), 원인은 전용 문구, 사유는 한계 1줄.
             briefing_kwargs["investigation_skipped"] = True
             briefing_kwargs["skipped_cause"] = MALFORMED_ANSWER_CAUSE
-            _add_limitations(briefing_kwargs, [MALFORMED_ANSWER_LIMITATION])
+            _add_limitations(briefing_kwargs, [malformed_limitation(malformed_kind, tools_run)])
         xs = active_episode(job.payload, self._settings.cross_source_investigation_enabled,
                             getattr(job, "reference_time", None))
         if xs is not None:
@@ -1335,6 +1361,8 @@ class InvestigationDispatcher:
             record["tools_unavailable"] = tools_unavailable   # A안만 추가 키(plans/188)
         if malformed:
             record["answer_malformed"] = ANSWER_MALFORMED_TOOL_CALL   # C7만 추가 키(plans/188)
+            if malformed_kind:
+                record["answer_malformed_kind"] = malformed_kind   # 가산 키(plans/213 W1)
         # plans/198 I-10 — 값이 있을 때만 추가 키(플래그 off면 늘 없다).
         if stalled:
             record["stalled"] = stalled
@@ -2032,15 +2060,32 @@ class InvestigationDispatcher:
         ]
 
     def _deep_section(self, mode: str, status: str, reason: str | None, result: Any,
-                      verdict: ImportanceVerdict, gate_tier: str | None) -> dict:
-        """브리핑 `deep_dive` 키 — 상태 · 모드 · 사유 · (완료 시) 6요소(중요도 제외)."""
+                      verdict: ImportanceVerdict, gate_tier: str | None,
+                      investigation_id: str | None = None,
+                      retryable_skip: bool = False) -> dict:
+        """브리핑 `deep_dive` 키 — 상태 · 모드 · 사유 · (완료 시) 6요소(중요도 제외).
+
+        `retryable`(plans/213 W4 · D-366 부기 1): 다시 돌리면 결과가 달라질 수 있는 생략(시간 예산
+        부족 · 형식 불일치)에만 True를 싣는다 — 본체 재분석 합류 예외가 읽는다. 그 밖에는 키 없음.
+        """
         out: dict = {"status": status, "mode": mode, "reason": reason, "label": DEEP_DIVE_LABEL}
+        if status == "skipped" and retryable_skip:
+            out["retryable"] = True
         if status != "done" or result is None:
             return out
         skipped = _deep_skip_reason(result)
         if skipped:
             # plans/188 — 툴셋 연결 실패·도구 호출 마크업 답은 서술로 쓰지 않는다(원문 없이 생략 표시).
+            kind = _deep_malformed_kind(result)
+            if kind is not None:
+                # plans/213 W1 — 주 경로와 같은 형식의 증거 1줄(원문 앞부분은 로그에만 · D-339 가림 경유).
+                logger.warning("심층 조사 답변에 도구 호출 형식 불일치 — 서술 생략: "
+                               "investigation_id=%s 종류=%s 도구=%d건 앞부분=%r",
+                               investigation_id, kind, _tools_run(result),
+                               markup_log_excerpt(str(getattr(result, "answer", "") or "")))
             out.update({"status": "skipped", "reason": skipped})
+            if kind is not None:
+                out["retryable"] = True  # 형식 불일치는 일시 오류일 수 있다(툴셋 연결 실패는 제외)
             return out
         incomplete = bool(getattr(result, "incomplete", False))
         basis: DiagnosisLike = _AnswerOnly(result.answer) if incomplete else result
@@ -2161,6 +2206,7 @@ class InvestigationDispatcher:
 
         # 심층 조사 — 모드별 결정
         status, reason = deep_state["status"], degrade
+        retryable_skip = False  # 시간 예산 생략만 True(plans/213 W4)
         if deep is None:
             missing = sum(1 for s in run.sections if s.status == "missing")
             synth = run.synthesis or {}
@@ -2180,6 +2226,7 @@ class InvestigationDispatcher:
                 status = "skipped"
                 reason = DEEP_SKIP_TIME.format(remaining=max(0.0, deadline - self._clock()),
                                                floor=DEEP_MIN_REMAINING_S)
+                retryable_skip = True
             else:
                 deep = self._start_deep(
                     job, self._deep_job(job, pb, self._prior_findings(run, block), cache,
@@ -2229,14 +2276,15 @@ class InvestigationDispatcher:
         result = deep.result if (deep is not None and status == "done") else None
         self._finish_playbook(job, started, run, block, pb, mode, status, reason,
                               degrade, result, pb_outputs, cache, gate_severity, gate_tier,
-                              walls=walls)
+                              walls=walls, retryable_skip=retryable_skip)
 
     def _finish_playbook(self, job: JobLike, started: float, run: PlaybookRun, block: dict,
                          pb: Playbook, mode: str, status: str, reason: str | None,
                          degrade: str | None, result: Any, pb_outputs: list[_ToolText],
                          cache: ToolResultCache, gate_severity: int,
                          gate_tier: str | None,
-                         walls: Mapping[str, float | None] | None = None) -> None:
+                         walls: Mapping[str, float | None] | None = None,
+                         retryable_skip: bool = False) -> None:
         """판정(두 엔진 도구 출력 합집합 · G-25) → 플레이북 브리핑 → 잡 종결 · 감사.
 
         계측에는 `PLAYBOOK_TIMING_KEYS`(plans/200 I-0)를 가산한다 — `stage_wall_s`는 실행기
@@ -2250,7 +2298,9 @@ class InvestigationDispatcher:
         verdict = self._run_severity_judge(
             gate_severity, _AnswerOnly("", tool_outputs=[*pb_outputs, *deep_outputs])
         )
-        deep_dive = self._deep_section(mode, status, reason, result, verdict, gate_tier)
+        deep_dive = self._deep_section(mode, status, reason, result, verdict, gate_tier,
+                                       investigation_id=job.investigation_id,
+                                       retryable_skip=retryable_skip)
         signals, cited = self._deep_evidence(result)
         agreement = compare_engines(
             block["readings"], signals, cited,
@@ -2315,6 +2365,12 @@ class InvestigationDispatcher:
             "cache_real_calls": cache.real_calls,
             "cache_hits": cache.hits,
         }
+        if status == "done" and deep_dive.get("status") == "skipped":
+            # plans/213 W1 — 엔진은 끝났으나 서술을 생략했다(가산 키 · `deep_dive_status`는 불변).
+            record["deep_dive_display"] = "skipped"
+            kind = _deep_malformed_kind(result)
+            if kind:
+                record["deep_dive_malformed"] = kind
         record.update(self._episode_audit(job))
         self._audit(record)
 
