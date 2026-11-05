@@ -8,6 +8,10 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-11-05 | D-367 | D-367 부기 3 — LLM 역할 경계: 실행 시점 명령 생성 금지 · 실행 시점은 `sre_agent` 프로파일 선택 + `collection_gaps` 기록 · 오프라인 `catalog draft` 초안 → `catalog check` → 사람 승인(G-14) → 재배포 · 매개변수형 `diag.log_tail`·`diag.mw.<kind>` |
+| 2026-11-05 | D-367 | D-367 부기 2 — 셸스크립트 방안 검토(대상 대부분 RHEL): 배포형 bash 수집 스크립트 + 강제 명령 채택 · cron 주기 수집 1차 미채택(G-13) · 전송 실행·push 기각 · RHEL 기본 도구 편입(`sar` 과거 지표 `diag.history` · `rpm` 설치 시각) · 픽스처 Rocky 8·9 |
+| 2026-11-05 | D-367 | D-367 부기 1 — 본체 연결 검토: 원인 분석은 `fault_diagnosis`→`sre_agent` 경유(본체 변경 없음) · 서버 구성·변경 조회는 `host_inspect` 프로파일 2개로 편입(스냅샷 조회만 · 본체 `host_collect` 거부) · 주소 `MCP_SOURCE_ENDPOINTS` 존 키 · G-12(스냅샷 조회 조사 인가) 대기 (`plans/214` v1.2) |
+| 2026-11-05 | D-367 · SREAgent D-019 | D-367 신규 — 서버 정보 직접 수집 SSH 채택(`plans/sre-agent/06` §1 「SSH 미채택」 개정) · 존별 수집 게이트웨이 `host_gateway/` · OpenSSH 직접 실행(Ansible 미사용 · 대상 Python 미설치) · 계획(`plans/214`) |
 | 2026-11-05 | D-352 | 부기 5 — 장애 진단 화면 원문 정돈: 도구 발췌 JSON → 항목·표(잘린 JSON 복구 · 잘림 표지) · AI 메모·판단 마크다운 안전 렌더 · `도구 {인자 JSON}` → 「도구 — 키: 값」 · 공용 렌더 한 줄 `**` → 굵게 · `summaryView` 켜짐 전용(꺼짐 비트 동일) |
 | 2026-11-05 | D-351 | 부기 1 — 결정 이력 「존」 필터: `GET /decisions?zone=`(레지스트리 `zones[].code` · 미상 `unclassified`) · `facets.zones`(zone 필터만 뺀 집합)·`zone_labels` · 두 화면 「전 존」 선택 상자 · 플래그 없음 |
 | 2026-11-04 | D-366 (재부여) | 원 D-365 → D-366 · `plans/212` → `plans/213` — 원격 `main`(a86aa4e5)이 D-365·`plans/212`를 용도별 LLM 평면에 먼저 사용 · 브랜치 `sre_improvement`를 a86aa4e5로 재기준 |
