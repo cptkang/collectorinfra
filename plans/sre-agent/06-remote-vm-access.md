@@ -5,6 +5,7 @@
 > **관련 결정**: D-004(VM 진단 대상·읽기 전용 프로파일), D-013(폴스타 MCP 일원화 — Plan 04), D-016(collectorinfra 연동 — Plan 05)
 > **신규 결정(본 계획 예약, 구현 착수 시 등재)**: D-020(원격 VM 프로파일 구현 세부 — hostname 정합 규약 포함). ※ 이관 후 등재는 **collectorinfra `docs/02_decision.md` 번호 체계**를 grep해 그쪽 최댓값+1로 부여한다(이 D-번호는 SREAgent 체계의 예약 인용).
 > **상태**: 계획(미구현) — **통합 갱신(2026-07-24)**: 구현 위치는 `sre_agent/` 독립 패키지(README). 폴스타 MCP 축은 본 저장소 `mcp_server/`(Plan 04 확장) 소비로 동일하다. **갱신(2026-07-27 · collectorinfra D-119)**: Prometheus 축의 전송 경로를 holmesgpt 내장 `prometheus/metrics` toolset 직결에서 **`mcp_server` 노출 PromQL 도구 경유로 변경** — 2축(소스) 구도는 유지하되 하향 의존은 `mcp_server` 하나가 된다. §1·§2·§3·§5·§6·§8이 이 기준으로 갱신됨(내장 toolset 세부는 §3 말미에 A안 복귀 폴백 참고로 보존).
+> **개정(2026-11-05 · collectorinfra D-367)**: §1의 「SSH 미채택」을 사용자 확정으로 개정했다 — 원격 진단에 **서버 직접 수집 축**(존별 읽기 전용 게이트웨이 `host_gateway/` · MCP 도구만 노출 · LLM은 카탈로그 항목만 고름 · 대상 쪽 강제 명령)을 더한다(3축). 2축(Prometheus·폴스타) 본문은 그대로 유효하며, 직접 수집 설계는 `plans/214`가 정본이다. §6 `remote_vm_profile()`의 bash off(D-233)는 유지한다.
 > **번호 체계 주의**: 본 문서의 D-번호는 SREAgent(이관 전) 결정 체계의 인용 — collectorinfra D-번호와 무관(폴더 README 참조).
 
 ---

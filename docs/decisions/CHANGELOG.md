@@ -8,6 +8,10 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-11-05 | D-367 | D-367 부기 3 — LLM 역할 경계: 실행 시점 명령 생성 금지 · 실행 시점은 `sre_agent` 프로파일 선택 + `collection_gaps` 기록 · 오프라인 `catalog draft` 초안 → `catalog check` → 사람 승인(G-14) → 재배포 · 매개변수형 `diag.log_tail`·`diag.mw.<kind>` |
+| 2026-11-05 | D-367 | D-367 부기 2 — 셸스크립트 방안 검토(대상 대부분 RHEL): 배포형 bash 수집 스크립트 + 강제 명령 채택 · cron 주기 수집 1차 미채택(G-13) · 전송 실행·push 기각 · RHEL 기본 도구 편입(`sar` 과거 지표 `diag.history` · `rpm` 설치 시각) · 픽스처 Rocky 8·9 |
+| 2026-11-05 | D-367 | D-367 부기 1 — 본체 연결 검토: 원인 분석은 `fault_diagnosis`→`sre_agent` 경유(본체 변경 없음) · 서버 구성·변경 조회는 `host_inspect` 프로파일 2개로 편입(스냅샷 조회만 · 본체 `host_collect` 거부) · 주소 `MCP_SOURCE_ENDPOINTS` 존 키 · G-12(스냅샷 조회 조사 인가) 대기 (`plans/214` v1.2) |
+| 2026-11-05 | D-367 · SREAgent D-019 | D-367 신규 — 서버 정보 직접 수집 SSH 채택(`plans/sre-agent/06` §1 「SSH 미채택」 개정) · 존별 수집 게이트웨이 `host_gateway/` · OpenSSH 직접 실행(Ansible 미사용 · 대상 Python 미설치) · 계획(`plans/214`) |
 | 2026-11-04 | D-366 (재부여) | 원 D-365 → D-366 · `plans/212` → `plans/213` — 원격 `main`(a86aa4e5)이 D-365·`plans/212`를 용도별 LLM 평면에 먼저 사용 · 브랜치 `sre_improvement`를 a86aa4e5로 재기준 |
 | 2026-11-04 | D-366 · D-341 | D-366 부기 1 — `skipped`는 sre_agent `deep_dive.retryable` 표지(시간 부족·형식 불일치)만 재분석 새 접수 · Harmony 재시도 직전 취소(D-347) 확인 · D-341 부기 27 교정 문구 (`plans/213` W4) |
 | 2026-11-04 | D-365 (재부여) | 원 D-363 → D-365 · `plans/211` → `plans/212` — 원격 `main`(8608c8ee)이 D-363·`plans/211`을 호스트 이름 매칭에 먼저 사용 · 브랜치 `sre_improvement`로 이관 |
