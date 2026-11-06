@@ -432,6 +432,17 @@ class AgentSettings(BaseSettings):
     # 대체로 쓰고, 그 사실을 근거 문장으로 남긴다.
     # 기본 빈 매핑 = 현행 동일(폴스타 축 미확정). `.env`에는 JSON으로 쓴다(인라인 주석 금지).
     sre_playbook_polestar_source_map: dict[str, str] = Field(default_factory=dict)
+    # ── 업무 서비스 맥락 소비(plans/215 W10 교정 · 전부 기본 off = 현행 비트 동일) ──
+    # S4 업무 서비스 비교 구성원 지표 호출 대기 상한(초). 미입력 = 본 판정과 같은 배치(현행 비트
+    # 동일). 값이 있으면 비교를 다른 배치로 동시에 내고 본 판정은 기다리지 않는다 — 시작부터 이
+    # 초를 넘기면 비교 행만 「비교 수집 Ns 초과」 결손이다. S4 스텝 `timeout_s` 이상이면 기동 경고.
+    sre_biz_compare_wait_s: float | None = Field(default=None, gt=0)
+    # S0 업무 서비스 맥락을 정본으로 — 맥락은 있는데 APM 구성원이 비었으면 업무명 해석과
+    # `apm_instance_map(business=)`를 생략한다. 기본 off = 현행 비트 동일.
+    sre_s0_biz_service_authoritative: bool = False
+    # S0 대상 확정 실패여도 업무 서비스 APM 구성원을 범위 비교 호출에만 넣는다(대상 승격 없음 —
+    # 이후 APM 스텝은 알람 인스턴스 단독 · 비교 상한 그대로). 기본 off = 현행 비트 동일.
+    sre_s0_biz_peers_without_resolve: bool = False
 
     # ── 조사 잡 실행 기록(plans/187 W13 · §5.6.3 ⓑ · D-341 부기 4 ㉘) ──
     # 기본 on(사용자 결정 2026-10-29 · D-341 부기). 켜져 있으면 접수된 잡마다 메모리 링 버퍼

@@ -1,0 +1,48 @@
+# 업무 서비스 연계 계산 설정 (plans/215 §3.2.1 6 · §3.2.3 「설정」 · §4.4 · D-368)
+#
+# noise_gate/application/biz_service_config.py가 읽어 순수 함수(noise_gate/domain/biz_service*.py)에
+# 인자로 넘긴다. 값이 잘못되면 그 신호만 끄고 경고를 남긴다(침묵 금지 — 실행 기록에 사유가 나간다).
+# 숫자는 계획서 초기값이다. 폐쇄망 실측(W0)으로 고친다 — 값을 지어내 넣지 않는다.
+# 일반어(generic_terms)는 여기 두지 않는다 — config/knowledge/itam/service_host_lookup.yaml 목록을 재사용한다.
+version: 1
+
+# S6 호스트 접두 업무코드 — W0-6에서 채운다(접두 규칙·제외 접두·존 머리 패턴) · ITAM 코드 체계 대조는 W0-7
+host_prefix_code:
+  enabled: true
+  length: 3
+  min_share: 0.8
+  prefix_only_services: inferred   # inferred | candidate — Q9
+  exclude_prefixes: []              # W0-6 결과로 채운다(값을 지어내 넣지 않는다)
+  strip_prefix_patterns: []         # 존·센터 머리 정규식 — W0-6 · 각 패턴은 ^로 시작해야 한다(아니면 S6 비활성 + 경고)
+
+# S7 자원 트리 그룹 — W0-19에서 채운다(폴더 자원 유형 · 존별 트리 구성 확인)
+tree_group: {enabled: true, min_share: 0.8}
+
+# 보조 신호 S8~S12 — 후보 전용 · 순도 보정 공통 값. 신호별 숫자는 W0-20~W0-24 분포를 보고 고친다
+aux_signals:
+  min_anchors: 2
+  min_purity: 0.8
+  min_groups: 5
+  # S8 등록 시각 묶음 — W0-20에서 채운다(등록 시각 단위·분포)
+  registered_batch:   {enabled: true,  gap_seconds: 120, max_batch: 20}
+  # S9 IP 대역 — W0-21에서 채운다(제외 대역)
+  ip_subnet:          {enabled: true,  prefix_len: 24, exclude_cidrs: []}
+  # S10 ITAM 계약 — W0-22에서 채운다(ITAM 구조 정본 미작성 · plans/95 G-4)
+  itam_contract:      {enabled: false}
+  # S11 알람 동시 발생 — W0-23에서 채운다
+  alarm_cooccurrence: {enabled: false, min_co: 3, lookback_days: 14, burst_hosts: 10}
+  # S12 가용성 의존 — W0-24에서 채운다(채움률)
+  avail_dependency:   {enabled: true}
+
+# SMS 사용률 임계(cpu·memory·filesystem의 warn·crit) — W0-9에서 채운다(운영 관행 확인 전엔 비움 → 「판정 불가 · 임계 미설정」)
+sms_thresholds: {}
+
+# M3 SMS 지표 원천 — W0-8에서 채운다(지표마다 폴스타 자원 유형 값 · 통계 지표 정의 이름 · 추정 금지).
+# 비어 있는 지표는 수집하지 않는다 — 셋 다 비면 SMS 수집 0 · 사유 「SMS 지표 원천 미설정(W0-8)」
+sms_metric_source:
+  cpu:        {resource_type: "", definition_name: ""}
+  memory:     {resource_type: "", definition_name: ""}
+  filesystem: {resource_type: "", definition_name: ""}
+
+# 계층 자동 제안 호스트 이름 토큰(web·was·db·batch·etc → 토큰 목록) — W0-12에서 채운다(비면 전 구성원 「미지정」)
+layer_tokens: {}

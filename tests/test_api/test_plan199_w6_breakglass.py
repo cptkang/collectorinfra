@@ -174,7 +174,12 @@ def test_forged_or_mistyped_tokens_are_rejected(tmp_path: Path, token: str) -> N
     assert FIELD not in res.text
 
 
-@pytest.mark.parametrize("token", [_break_glass(), _user_token("u1"), _user_token("u-admin")])
+# 시각 기반 JWT가 ID에 들어가면 xdist 워커마다 수집이 달라진다 — ID를 고정한다
+@pytest.mark.parametrize(
+    "token",
+    [_break_glass(), _user_token("u1"), _user_token("u-admin")],
+    ids=["break-glass", "user-u1", "user-u-admin"],
+)
 def test_user_path_health_is_not_registered(tmp_path: Path, token: str) -> None:
     """사용자 경로 `/noise/*`에는 헬스가 없다 — 이 필드도 사용자 경로로 새지 않는다(D-245)."""
     res = _client(tmp_path).get("/api/v1/noise/health", headers=_bearer(token))

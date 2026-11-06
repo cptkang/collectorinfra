@@ -25,6 +25,7 @@ import threading
 import time
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor
+from concurrent.futures import wait as futures_wait
 from dataclasses import asdict, dataclass, field, replace
 from datetime import datetime, timedelta
 from statistics import mean
@@ -214,6 +215,12 @@ class RunScope:
     #: — 첫 원소 = `polestar_source`·`polestar_server`). 지표 단계(S4)가 대상마다 조회한다. 비면
     #: 단일 대상(종전 동작)이고 브리핑 범위에 키를 싣지 않는다.
     polestar_targets: list[dict[str, str]] = field(default_factory=list)
+    #: 페이로드 `meta.biz_service`(plans/215 §4.8 D2 — 같은 업무 서비스 구성원 · 받은 사실만)의
+    #: 정규화 값(`playbook_runner.biz_service_context`). S0이 `apm_members`를 같은 업무 비교
+    #: 후보로, 지표 단계(S4)가 `compare_targets`를 비교 수집 대상으로 쓴다(`polestar_targets`와
+    #: 섞지 않는다). None이면 종전 동작이고, 브리핑 범위(`to_dict`)에는 싣지 않는다(브리핑 선택
+    #: 키 `biz_service`).
+    biz_service: dict[str, Any] | None = None
 
     def target_names(self) -> list[str]:
         return [name for name, _ in self.target_entries()]
@@ -235,6 +242,7 @@ class RunScope:
         out.pop("host_was", None)
         # 운영자 상세는 직렬화하지 않는다(D6 — 섹션 `reason_detail`·서버 로그로만)
         out.pop("polestar_reason_detail", None)
+        out.pop("biz_service", None)
         for key in ("polestar_basis", "polestar_link"):
             if out.get(key) is None:
                 out.pop(key, None)
@@ -354,6 +362,30 @@ def _aborted(calls: Sequence[tuple[str, dict]]) -> list[ToolResponse]:
     return [ToolResponse(t, dict(a), None, STEP_ABORTED) for t, a in calls]
 
 
+@dataclass(frozen=True)
+class BizServiceOptions:
+    """업무 서비스 맥락(`scope.biz_service`) 소비 옵션(plans/215 W10 교정 · 기본값 = 종전 동일).
+
+    compare_wait_s:  S4 비교 구성원 지표 호출을 본 판정과 다른 배치로 동시에 내고, 시작 시각부터
+                     이 초까지만 기다린다(`StepContext.call_with_side`). None = 같은 배치(종전).
+    s0_authoritative: 업무 서비스 맥락이 있고 APM 구성원이 비었으면 S0가 업무명 해석과
+                     `apm_instance_map(business=)`를 생략한다.
+    s0_peers_without_resolve: S0 대상 확정 실패여도 APM 구성원을 범위 비교 호출에만 넣는다(대상
+                     승격 없음 — 이후 APM 스텝은 알람 인스턴스 단독).
+    """
+
+    compare_wait_s: float | None = None
+    s0_authoritative: bool = False
+    s0_peers_without_resolve: bool = False
+
+
+#: 곁가지 배치 대기 중 중단 신호를 보는 간격(초 · `StepContext.call_with_side`).
+_SIDE_POLL_S = 0.05
+
+#: S4 비교 배치가 대기 상한을 넘었을 때의 사유(plans/215 W10 교정).
+BIZ_COMPARE_TIMEOUT = "비교 수집 {secs}s 초과"
+
+
 class StepContext:
     """스텝 1회 실행 문맥. 스텝마다 새로 만든다(호출 기록이 스텝별).
 
@@ -378,6 +410,7 @@ class StepContext:
         target_sources: Sequence[str | None] | None = None,
         xview_confirm_over: int | None = None,
         axis_concurrency: bool = False,
+        biz_options: BizServiceOptions | None = None,
     ) -> None:
         self.payload = payload
         self.windows = windows
@@ -400,6 +433,8 @@ class StepContext:
         #: 스텝 안 독립 축 동시 조회(plans/200 I-3 · `sre_playbook_axis_concurrency_enabled`).
         #: False = 축 순차(종전 비트 동일).
         self.axis_concurrency = bool(axis_concurrency)
+        #: 업무 서비스 맥락 소비 옵션(plans/215 W10 교정 — 미주입 = 전부 기본값 · 종전 비트 동일).
+        self.biz_options = BizServiceOptions() if biz_options is None else biz_options
         self.polestar = polestar
         self.apm = apm
         self.now = now
@@ -535,6 +570,71 @@ class StepContext:
         if first_exc is not None:
             raise first_exc
         return out
+
+    def call_with_side(
+        self,
+        axis: Axis,
+        calls: Sequence[tuple[str, dict]],
+        side: Sequence[tuple[str, dict]],
+        wait_s: float,
+        timeout_msg: str,
+    ) -> tuple[list[ToolResponse], list[ToolResponse] | None]:
+        """본 호출 `calls`와 곁가지 호출 `side`를 다른 배치로 동시에 부른다(plans/215 W10 교정).
+
+        곁가지 배치는 별도 스레드로 내고 본 배치는 이 스레드에서 부른다 — 본 배치는 곁가지를
+        기다리지 않는다. 본 배치가 돌아온 뒤 곁가지는 시작 시각부터 `wait_s`초까지만 기다린다.
+        기록·적재 순서는 본 → 곁가지(같은 배치로 부를 때와 같다). 중단은 `call()`과 같은 의미다.
+
+        곁가지가 상한을 넘으면 곁가지 응답은 None이고, 곁가지 호출마다 `tool_end(status=error ·
+        발췌 timeout_msg)`를 남긴다(「진행 중」이 남지 않게). 늦게 돌아온 곁가지 배치는 진행
+        계수만 갱신하고 기록·적재하지 않는다(중단 뒤 돌아온 배치와 같은 의미 — 잡 캐시에는 실제
+        응답이 그대로 남는다). 곁가지 콜러블 예외는 그 호출들만 오류 응답으로 돌려주고 다시 내지
+        않는다.
+        """
+        if not calls or not side:
+            return self.call(axis, calls), self.call(axis, side)
+        if self.cancel.is_set():
+            return _aborted(calls), _aborted(side)
+        caller = self.apm if axis == "apm" else self.polestar
+        if caller is None:
+            return self._unconfigured(axis, calls), self._unconfigured(axis, side)
+        t0 = time.monotonic()
+        cached = self._record_start(caller, calls)
+        side_cached = self._record_start(caller, side)
+        pool = ThreadPoolExecutor(max_workers=1, thread_name_prefix="playbook-side")
+        try:
+            fut = pool.submit(self._invoke, caller, list(side))
+        finally:
+            pool.shutdown(wait=False)  # 늦은 곁가지 스레드는 기다리지 않는다
+        raws, elapsed_ms = self._invoke(caller, calls)
+        if self.cancel.is_set():
+            return _aborted(calls), _aborted(side)
+        main = self._store(calls, raws, cached, elapsed_ms)
+        # 대기 중에도 중단 신호를 본다(짧은 간격) — 초과 판정은 `done()`으로 한다(콜러블이 스스로 낸
+        # TimeoutError를 대기 초과로 오분류하지 않게 · 3.11+는 둘이 같은 클래스)
+        deadline = t0 + wait_s
+        while not fut.done() and not self.cancel.is_set():
+            left = deadline - time.monotonic()
+            if left <= 0:
+                break
+            futures_wait([fut], timeout=min(left, _SIDE_POLL_S))
+        if self.cancel.is_set():
+            return main, _aborted(side)  # 중단 — 기록·적재 0(`call()`과 같은 의미)
+        if not fut.done():
+            for t, a in side:
+                self._record_end(
+                    ToolResponse(t, dict(a), None, timeout_msg), None, "error", None, timeout_msg
+                )
+            return main, None
+        exc = fut.exception()
+        if exc is not None:  # 곁가지 실패가 본 결과를 막지 않는다 — 그 호출들만 오류 응답
+            msg = f"{type(exc).__name__}: {exc}"
+            errors = [ToolResponse(t, dict(a), None, msg) for t, a in side]
+            for r in errors:
+                self._record_end(r, None, "error", None, msg)
+            return main, errors
+        side_raws, side_ms = fut.result()
+        return main, self._store(side, side_raws, side_cached, side_ms)
 
     def _unconfigured(self, axis: Axis, calls: Sequence[tuple[str, dict]]) -> list[ToolResponse]:
         """콜러블이 없는 축 — 부르지 않고 전부 미구성 오류 응답(`tool_end`만 남긴다)."""
@@ -1191,12 +1291,43 @@ def _rescoped_polestar_server(ctx: StepContext, host: str | None) -> tuple[str |
     return host, f"{basis} · {note}" if basis else note
 
 
+#: S0 같은 업무 조회어 출처 — 페이로드 업무 서비스 구성원 목록(plans/215 D2).
+BIZ_SERVICE_SOURCE = "meta.biz_service"
+
+
+#: S0 업무 서비스 맥락 정본 사유(W10 교정 · `s0_authoritative` · 구성원 없음 → 업무 검색 생략).
+BIZ_AUTHORITATIVE_REASON = "업무 서비스 『{name}』 구성원 기준 — 게이트웨이 업무 검색 생략"
+#: S0 대상 확정 실패 + 구성원 범위 비교 사유(W10 교정 · `s0_peers_without_resolve`).
+BIZ_PEERS_UNRESOLVED_REASON = "대상 확정 실패({why}) — 업무 서비스 구성원 {n}개로 범위만 비교"
+
+
+def _biz_name(biz: Mapping[str, Any] | None) -> str:
+    """업무 서비스 표시명(비면 서비스 id)."""
+    biz = biz or {}
+    return str(biz.get("display_name") or "").strip() or str(biz.get("service_id") or "")
+
+
+def _biz_apm_peers(ctx: StepContext) -> list[tuple[str, str | None]]:
+    """범위의 업무 서비스 APM 구성원 `(인스턴스명, 소스 id)` — 없으면 빈 목록(종전 동작)."""
+    items = (ctx.scope.biz_service or {}).get("apm_members") or []
+    return [
+        (str(m["instance_name"]), str(m.get("source_id") or "") or None)
+        for m in items
+        if isinstance(m, Mapping) and m.get("instance_name")
+    ]
+
+
 def resolve_was_targets(ctx: StepContext) -> StepResult:
     """S0 — 알람 인스턴스 → 호스트 → 그 호스트 인스턴스 + 같은 업무 인스턴스 → 판정 → 대상 선별.
 
     인자: `max_instances`(대상 상한 · 기본 3) · `max_compare`(범위 비교 app_health 상한 · 기본 8) ·
     `p95_ratio`(판정 배수 · 기본 2.0) · `pick`(degraded만 지원 — 그 밖은 비교 전원).
     정합 신뢰도 낮음/0건이면 「대상 확정 실패」 — 이후 APM 스텝은 알람 인스턴스 단독으로 강등한다.
+    (plans/215 D2) 범위에 업무 서비스 APM 구성원(`meta.biz_service.apm_members`)이 있으면 그 목록을
+    같은 업무 비교 후보로 쓰고 `apm_instance_map(business=)`는 부르지 않는다(상한은 그대로).
+    (W10 교정 · `ctx.biz_options` — 기본 off = 종전) `s0_authoritative`면 업무 서비스 맥락이 있고
+    구성원이 비어도 업무명 해석·업무 검색을 생략한다. `s0_peers_without_resolve`면 대상 확정
+    실패여도 구성원을 범위 비교 호출에만 넣는다(대상은 알람 인스턴스 단독 그대로).
     """
     alarm_instance = ctx.scope.alarm_instance
     if not alarm_instance:
@@ -1234,9 +1365,20 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
     alarm_src = _row_source(alarm_row) if resolved else None
     # (인스턴스, 호스트, 소스) — 같은 이름이라도 소스가 다르면 다른 서버라 행을 나눈다.
     compare: list[tuple[str, str | None, str | None]] = [(alarm_instance, None, alarm_src)]
+    # (plans/215 D2) 페이로드가 넘긴 업무 서비스 APM 구성원 — 있으면 게이트웨이 업무명 해석 대신.
+    biz_peers = _biz_apm_peers(ctx)
+    biz = ctx.scope.biz_service
+    # (W10 교정) 업무 서비스 맥락을 정본으로 — 구성원이 비어도 게이트웨이 업무 검색을 하지 않는다.
+    biz_named = bool(biz_peers) or (ctx.biz_options.s0_authoritative and biz is not None)
     if resolved:
         host = str(alarm_row.get("hostname") or alarm_row.get("host_name") or host or "") or None  # type: ignore[union-attr]
-        business, business_source = _business_term(ctx, alarm_row)
+        if biz_named:
+            business = str((biz or {}).get("display_name") or "") or None
+            business_source = BIZ_SERVICE_SOURCE
+            if not biz_peers:
+                reasons.append(BIZ_AUTHORITATIVE_REASON.format(name=_biz_name(biz)))
+        else:
+            business, business_source = _business_term(ctx, alarm_row)
         calls: list[tuple[str, dict]] = []
         if host:
             # 호스트는 알람 인스턴스의 서버다 — 그 소스로 좁힌다(소스 미확정이면 탐색 호출).
@@ -1246,7 +1388,7 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
                     _apm_args(ctx, APM_INSTANCE_MAP, alarm_src, discovery=True, hostname=host),
                 )
             )
-        if business:
+        if business and not biz_named:
             # 업무 동료 탐색은 소스를 좁히지 않는다 — 나온 행마다 자기 `source_id`로 이후 호출한다.
             calls.append(
                 (
@@ -1267,10 +1409,27 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
                 compare.append(
                     (name, str(r.get("hostname") or r.get("host_name") or "") or None, src)
                 )
+        for name, src in biz_peers:
+            if name == alarm_instance and (alarm_src is None or src is None or src == alarm_src):
+                continue  # 알람 인스턴스 자신(생산자가 이미 뺐지만 이름이 겹치면 합친다)
+            compare.append((name, None, src))
         compare[0] = (alarm_instance, host, alarm_src)
     else:
         why = q.error or ("0건" if alarm_row is None else f"정합 신뢰도 {confidence or '없음'}")
-        reasons.append(f"대상 확정 실패({why}) — 이후 APM 스텝은 알람 인스턴스 단독")
+        # (W10 교정) 대상 확정 실패여도 업무 서비스 APM 구성원을 범위 비교 호출에만 넣는다 —
+        # 대상은 알람 인스턴스 단독 그대로다(아래 `chosen` · D-341 ① 결정적 대상 확정).
+        peers = (
+            [(n, src) for n, src in biz_peers if n != alarm_instance]
+            if ctx.biz_options.s0_peers_without_resolve
+            else []
+        )
+        if peers:
+            compare.extend((n, None, src) for n, src in peers)
+            business = str((biz or {}).get("display_name") or "") or None
+            business_source = BIZ_SERVICE_SOURCE
+            reasons.append(BIZ_PEERS_UNRESOLVED_REASON.format(why=why, n=len(peers)))
+        else:
+            reasons.append(f"대상 확정 실패({why}) — 이후 APM 스텝은 알람 인스턴스 단독")
     seen: dict[tuple[str, str | None], str | None] = {}
     for name, h, src in compare:
         seen.setdefault((name, src), h)
@@ -1345,6 +1504,7 @@ def resolve_was_targets(ctx: StepContext) -> StepResult:
         polestar_reason_detail=ctx.scope.polestar_reason_detail,
         polestar_link=ctx.scope.polestar_link,
         polestar_targets=ctx.scope.polestar_targets,
+        biz_service=ctx.scope.biz_service,
     )
     polestar_reason = scope_polestar_reason(scope)
     if polestar_reason:
@@ -1506,6 +1666,7 @@ def host_to_was(ctx: StepContext) -> StepResult:
         polestar_reason_detail=ctx.scope.polestar_reason_detail,
         polestar_link=ctx.scope.polestar_link,
         polestar_targets=ctx.scope.polestar_targets,
+        biz_service=ctx.scope.biz_service,
     )
     v, s = _worst([(i["verdict"], i["verdict_source"]) for i in instances])
     return StepResult(
@@ -1895,17 +2056,86 @@ def usage_trend(ctx: StepContext) -> StepResult:
         (sc, [c for c in build_calls(sc) if c[0] == TOOL_METRIC and c[1].get("kind") in kinds])
         for sc in scopes
     ]
-    resps = ctx.call("polestar", [c for _, calls in plans for c in calls])
+    # (plans/215 D2) 같은 업무 서비스 비교 구성원 — 같은 배치로(비교 대기 상한이 있으면 다른
+    # 배치로 · W10 교정) 부르되 판정·표·사유와 섞지 않는다.
+    seen = {(sc.source, sc.server_name) for sc in scopes}
+    biz_plans = [
+        (sc, [c for c in build_calls(sc) if c[0] == TOOL_METRIC and c[1].get("kind") in kinds])
+        for sc in (
+            replace(head, source=t["db_id"], server_name=t["server_name"])
+            for t in (ctx.scope.biz_service or {}).get("compare_targets") or []
+            if (t["db_id"], t["server_name"]) not in seen
+        )
+    ]
+    main_calls = [c for _, calls in plans for c in calls]
+    biz_calls = [c for _, calls in biz_plans for c in calls]
+    wait_s = ctx.biz_options.compare_wait_s
+    over = BIZ_COMPARE_TIMEOUT.format(secs=f"{wait_s:g}") if wait_s is not None else ""
+    biz_resps: list[ToolResponse] | None
+    if biz_calls and wait_s is not None:
+        # (plans/215 W10 교정) 비교는 다른 배치로 동시에 — 본 판정은 비교를 기다리지 않는다
+        resps, biz_resps = ctx.call_with_side("polestar", main_calls, biz_calls, wait_s, over)
+    else:
+        resps = ctx.call("polestar", main_calls + biz_calls)
+        resps, biz_resps = resps[: len(main_calls)], resps[len(main_calls) :]
     # 설정 매핑으로 정한 소스면 근거를 사유 끝에 남긴다(W21 P6 · 없으면 종전 사유 그대로).
     basis = [ctx.scope.polestar_basis] if ctx.scope.polestar_basis else []
     if len(plans) == 1:
-        return _trend_result(ctx, head, plans[0][1], resps, basis)
-    parts: list[tuple[EvidenceScope, StepResult]] = []
+        result = _trend_result(ctx, head, plans[0][1], resps, basis)
+    else:
+        parts: list[tuple[EvidenceScope, StepResult]] = []
+        at = 0
+        for sc, calls in plans:
+            parts.append((sc, _trend_result(ctx, sc, calls, resps[at : at + len(calls)], [])))
+            at += len(calls)
+        result = _merge_target_trends(parts, basis)
+    if biz_plans:
+        result.data["biz_compare"] = (
+            _biz_compare_summary(ctx, biz_plans, biz_resps)
+            if biz_resps is not None
+            else _biz_compare_timed_out(biz_plans, over)
+        )
+    return result
+
+
+def _biz_compare_timed_out(
+    plans: Sequence[tuple[EvidenceScope, Sequence[tuple[str, dict]]]], reason: str
+) -> list[dict[str, Any]]:
+    """S4 비교 배치가 대기 상한을 넘었을 때의 구성원별 행 — 전부 결손 + 사유(W10 교정)."""
+    return [
+        {
+            "db_id": sc.source,
+            "server_name": sc.server_name,
+            "status": "missing",
+            "verdict": None,
+            "anomalous": [],
+            "missing": [str(args["kind"]) for _, args in calls],
+            "reason": reason,
+        }
+        for sc, calls in plans
+    ]
+
+
+def _biz_compare_summary(
+    ctx: StepContext,
+    plans: Sequence[tuple[EvidenceScope, Sequence[tuple[str, dict]]]],
+    resps: Sequence[ToolResponse],
+) -> list[dict[str, Any]]:
+    """S4 업무 서비스 비교 구성원별 판정 요약(plans/215 D2) — 알람 대상 판정에는 쓰지 않는다."""
+    out: list[dict[str, Any]] = []
     at = 0
     for sc, calls in plans:
-        parts.append((sc, _trend_result(ctx, sc, calls, resps[at : at + len(calls)], [])))
+        r = _trend_result(ctx, sc, calls, resps[at : at + len(calls)], [])
         at += len(calls)
-    return _merge_target_trends(parts, basis)
+        out.append({
+            "db_id": sc.source,
+            "server_name": sc.server_name,
+            "status": r.status,
+            "verdict": r.verdict,
+            "anomalous": list(r.data.get("anomalous") or []),
+            "missing": list(r.missing),
+        })
+    return out
 
 
 def _trend_result(
@@ -2740,6 +2970,8 @@ __all__ = [
     "XVIEW_CONFIRM_LIMIT",
     "XVIEW_CONFIRM_REQUIRED",
     "BaselineWindow",
+    "BIZ_COMPARE_TIMEOUT",
+    "BizServiceOptions",
     "CORRELATION_NOT_CAUSATION",
     "CHANGE_CANDIDATE_NOTE",
     "DEFAULT_P95_RATIO",

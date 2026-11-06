@@ -1280,3 +1280,278 @@ settings:
     stability: MCP 서버 max_rows 이상이면 페이지가 잘려 서버를 빠뜨리므로 범위로 막는다.
     recommendation: 기본 1000.
     related: [NOISE_APM_HOST_MAP_AUTO_ENABLED]
+
+  # ── plans/215 · D-368: 업무 서비스 통합 연계(정의·현황·진단·조사 맥락) ──
+
+  NOISE_BIZ_SERVICE_ENABLED:
+    summary: 업무 서비스 연계(SMS 서버·APM 구성원 묶음)를 계산·저장하고 「업무 서비스 정의」 페이지를 열지.
+    behavior: >-
+      업무 서비스를 SMS 서버·APM 구성원으로 묶는 자동 제안·사람 확정을 연다. 정본은 내부 PG 표(`biz_service*`)이고
+      Redis에 읽기 사본(`bizsvc:*`)을 두며, 사본 기록자는 API 프로세스뿐이다. 「업무 서비스 정의」 페이지와 메뉴
+      링크가 생긴다. 자동 계산은 plans/210 APM·SMS 연계 사전 스캔 스냅샷을 쓴다. 업무 현황·조사 맥락 플래그는
+      모두 이 값이 켜져 있어야 의미가 있다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 표·사본·라우트·메뉴·태스크가 없고 기동 경로가 현행과 비트 동일하다.
+      - value: "true"
+        effect: >-
+          표를 기동 때 만들고 정의 페이지가 열린다. 자동은 후보만 제안하고 확정은 사람이 한다.
+    example: >-
+      켜고 다시 기동하면 정의 페이지에서 자동 계산·가져오기로 서비스를 만든다. 사람이 구성원을 확인하면 재계산이
+      그 SMS 구성원을 덮지 않는다.
+    performance: 자동 계산은 관리자가 돌릴 때만 실행되고 알람 경로에는 비용이 없다.
+    stability: >-
+      내부 PG(auth 풀)가 없으면 「업무 서비스 비활성 — auth 풀(내부 PG)이 없다」 경고만 남기고 꺼진 것처럼
+      동작한다. 연계 스냅샷 저장소가 없으면 자동 계산이 막힌다. 재시작이 필요하다.
+    recommendation: >-
+      기본 false. 내부 PG·Redis와 APM·SMS 연계 스냅샷(NOISE_APM_HOST_MAP_ENABLED · NOISE_APM_HOST_MAP_AUTO_ENABLED
+      후 지금 스캔)을 갖춘 뒤 켠다.
+    related: [NOISE_BIZ_SERVICE_MAX_MEMBERS, NOISE_BIZ_MONITOR_ENABLED, NOISE_BIZ_INVESTIGATION_CONTEXT_ENABLED, NOISE_APM_HOST_MAP_ENABLED]
+
+  NOISE_BIZ_SERVICE_MAX_MEMBERS:
+    summary: 업무 서비스 하나가 가질 수 있는 SMS 구성원 수 상한.
+    behavior: 자동 계산이 이보다 많은 SMS 서버를 한 서비스로 묶으면 그 후보를 모호(ambiguous)로 둔다(1 이상).
+    example: >-
+      기본 200이면 서버 250대가 한 업무로 묶이는 후보는 확정 제안이 되지 않고 모호로 남아, 사람이 나눠 확정한다.
+    performance: 클수록 서비스 하나의 현황·진단 조회가 무거워진다.
+    stability: 너무 크면 공용 인프라 서버까지 한 서비스로 묶일 수 있다.
+    recommendation: 기본 200.
+    related: [NOISE_BIZ_SERVICE_ENABLED]
+
+  NOISE_BIZ_MONITOR_ENABLED:
+    summary: 포털 「업무 현황」 탭과 서비스별 알람 현황(M2)을 열지.
+    behavior: >-
+      사용자 화면에 업무 현황 탭이 생기고, 감시 대상 서비스의 알람을 서비스 단위로 모아 보여 준다.
+      NOISE_BIZ_SERVICE_ENABLED가 켜져 있어야 유효하다. 지표 수집·변경 이력·지표 보기·진단 플래그는 이 값이
+      켜져 있을 때만 의미가 있다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 업무 현황 탭·라우트가 없고 현행과 비트 동일하다.
+      - value: "true"
+        effect: 감시 대상으로 둔 서비스가 업무 현황 탭에 나온다.
+    example: >-
+      서비스 정의를 마친 뒤 켜고 기본 정보에서 서비스를 감시 대상으로 두면, 최근 NOISE_BIZ_MONITOR_ALARM_WINDOW_MINUTES
+      동안의 알람이 서비스별로 보인다. 이상이 없으면 「이상 신호 없음」으로 표시된다.
+    performance: 이 플래그만으로는 제니퍼·폴스타 관측 호출이 없다 — 관측 호출은 지표 수집 플래그가 따로 정한다.
+    stability: >-
+      상태는 상관을 보여 줄 뿐 원인 판정이 아니다. NOISE_BIZ_SERVICE_ENABLED가 꺼져 있으면 켜도 꺼진 것과 같다.
+      재시작이 필요하다.
+    recommendation: 기본 false. 서비스 정의를 갖춘 뒤 켠다.
+    related: [NOISE_BIZ_SERVICE_ENABLED, NOISE_BIZ_MONITOR_MAX_SERVICES, NOISE_BIZ_MONITOR_ALARM_WINDOW_MINUTES, NOISE_BIZ_MONITOR_METRICS_ENABLED]
+
+  NOISE_BIZ_MONITOR_METRICS_ENABLED:
+    summary: 업무 현황의 실시간 지표 수집기(M3)를 돌릴지.
+    behavior: >-
+      보는 사람이 있을 때만 제니퍼·폴스타를 주기적으로 조회해 서비스 지표를 채운다. NOISE_BIZ_MONITOR_ENABLED가
+      켜져 있어야 유효하다. 서버 지표는 운영 측정값(config/knowledge/biz_service.yaml의 sms_metric_source)이 있어야
+      수집한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 화면에 「지표 수집 꺼짐」이 나오고 관측 호출이 0이다.
+      - value: "true"
+        effect: >-
+          APM은 NOISE_BIZ_MONITOR_APM_INTERVAL_SECONDS, SMS는 NOISE_BIZ_MONITOR_SMS_INTERVAL_SECONDS마다 조회한다.
+    example: >-
+      sms_metric_source가 비어 있으면 켜도 서버 지표 SELECT는 0건이고 사유 「SMS 지표 원천 미설정(W0-8)」이 나온다.
+      sms_thresholds가 비어 있으면 사용률 판정은 「판정 불가 · 임계 미설정」이다.
+    performance: >-
+      켜면 주기마다 APM 최대 NOISE_BIZ_MONITOR_MAX_APM_TARGETS개 인스턴스와 감시 서비스의 SMS 구성원을 조회한다.
+    stability: >-
+      제니퍼 응답시간·TPS·에러율에는 본체 임계를 두지 않는다(게이트웨이 신호만 쓴다). 업무 현황이 꺼져 있으면
+      켜도 꺼진 것과 같다. 재시작이 필요하다.
+    recommendation: 기본 false. 운영 측정값을 실측으로 채운 뒤 켠다.
+    related: [NOISE_BIZ_MONITOR_ENABLED, NOISE_BIZ_MONITOR_APM_INTERVAL_SECONDS, NOISE_BIZ_MONITOR_SMS_INTERVAL_SECONDS, NOISE_BIZ_MONITOR_MAX_APM_TARGETS]
+
+  NOISE_BIZ_MONITOR_MAX_SERVICES:
+    summary: 업무 현황이 감시하는 서비스 수 상한.
+    behavior: >-
+      지표 수집기가 한 주기에 감시하는 서비스를 이 수까지로 자르고, 넘친 수는 「감시 서비스 상한 초과」 사유로
+      남긴다(1 이상).
+    example: 기본 20이면 감시 대상 30개 중 20개만 지표를 수집하고 10개는 감시 제외 사유가 남는다.
+    performance: 클수록 지표 수집 대상이 늘어난다.
+    stability: 너무 크면 지표 수집 주기 안에 조회가 끝나지 않을 수 있다.
+    recommendation: 기본 20.
+    related: [NOISE_BIZ_MONITOR_ENABLED]
+
+  NOISE_BIZ_MONITOR_MAX_APM_TARGETS:
+    summary: 지표 수집기가 한 주기에 조회하는 APM 인스턴스 수 상한.
+    behavior: 감시 서비스의 APM 구성원 합이 이보다 많으면 한 주기에 상한까지만 조회한다(1 이상).
+    example: 기본 100이면 APM 구성원 150개를 가진 감시 서비스들도 한 주기에 100개만 조회한다.
+    performance: 클수록 제니퍼 게이트웨이 호출이 늘어난다.
+    stability: 너무 작으면 일부 구성원 지표가 비어 보인다.
+    recommendation: 기본 100.
+    related: [NOISE_BIZ_MONITOR_METRICS_ENABLED]
+
+  NOISE_BIZ_MONITOR_APM_INTERVAL_SECONDS:
+    summary: 지표 수집기의 APM 조회 주기(초).
+    behavior: 보는 사람이 있을 때 이 간격마다 제니퍼 지표를 조회한다(30 이상).
+    example: 기본 60이면 업무 현황 APM 지표가 1분마다 갱신된다. 30 미만은 기동 때 설정 검증에서 막힌다.
+    performance: 작을수록 화면이 빨리 갱신되지만 게이트웨이 호출이 늘어난다.
+    stability: 너무 작으면 장애 중 제니퍼 부하를 키울 수 있어 하한을 둔다.
+    recommendation: 기본 60.
+    related: [NOISE_BIZ_MONITOR_METRICS_ENABLED, NOISE_BIZ_MONITOR_SMS_INTERVAL_SECONDS]
+
+  NOISE_BIZ_MONITOR_SMS_INTERVAL_SECONDS:
+    summary: 지표 수집기의 SMS(폴스타) 조회 주기(초).
+    behavior: 보는 사람이 있을 때 이 간격마다 폴스타 서버 지표를 조회한다(300 이상).
+    example: 기본 600이면 서버 사용률이 10분마다 갱신된다. 300 미만은 기동 때 설정 검증에서 막힌다.
+    performance: 작을수록 관측 DB 조회가 늘어난다.
+    stability: 폴스타 통계는 정각 단위라 너무 잦은 조회는 같은 값을 반복해 읽는다.
+    recommendation: 기본 600.
+    related: [NOISE_BIZ_MONITOR_METRICS_ENABLED, NOISE_BIZ_MONITOR_APM_INTERVAL_SECONDS]
+
+  NOISE_BIZ_MONITOR_ALARM_WINDOW_MINUTES:
+    summary: 업무 현황 알람 집계(M2)가 보는 최근 시간 창(분).
+    behavior: 이 창 안에 서비스 구성원에서 난 알람을 서비스 단위로 모은다(1 이상).
+    example: 기본 60이면 최근 1시간 알람이 서비스 카드에 집계된다. 창 안에 알람이 없으면 「이상 신호 없음」이다.
+    performance: 클수록 집계에 읽는 알람 기록이 늘어난다.
+    stability: 너무 크면 이미 끝난 장애가 현재 상태처럼 보인다.
+    recommendation: 기본 60.
+    related: [NOISE_BIZ_MONITOR_ENABLED]
+
+  NOISE_BIZ_MONITOR_CHANGES_ENABLED:
+    summary: 업무 현황 이벤트 타임라인에 폴스타 변경 이력과 「장애 직전 변경」을 보일지.
+    behavior: >-
+      서비스 구성원의 변경 이력을 이벤트 타임라인에 싣는다. PostgreSQL 존만 읽고 DB2 존은 「변경 이력 미지원」으로
+      나온다. NOISE_BIZ_MONITOR_ENABLED가 켜져 있어야 유효하다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 타임라인에 변경 이력이 없고 현행과 비트 동일하다.
+      - value: "true"
+        effect: 장애 직전 NOISE_BIZ_MONITOR_CHANGE_LOOKBACK_MINUTES 안의 변경이 타임라인에 표시된다.
+    example: >-
+      폴스타 변경 이력 표의 시각 단위를 운영에서 확인(W0-16)하기 전에 켜면 변경 시각이 어긋나 보일 수 있다 —
+      그래서 마지막에 켠다.
+    performance: 타임라인을 열 때 변경 이력 SELECT가 더해진다.
+    stability: 업무 현황이 꺼져 있으면 켜도 꺼진 것과 같다. 재시작이 필요하다.
+    recommendation: 기본 false. 폴스타 변경 이력 표 운영 실측(W0-16) 전에는 켜지 않는다.
+    related: [NOISE_BIZ_MONITOR_ENABLED, NOISE_BIZ_MONITOR_CHANGE_LOOKBACK_MINUTES]
+
+  NOISE_BIZ_MONITOR_CHANGE_LOOKBACK_MINUTES:
+    summary: 「장애 직전 변경」으로 볼 시간 창(분).
+    behavior: 이벤트 기준 시각 이전 이 창 안의 변경을 장애 직전 변경으로 표시한다(1 이상).
+    example: 기본 60이면 장애 1시간 전까지의 배포·설정 변경이 「장애 직전 변경」으로 강조된다.
+    performance: 클수록 읽는 변경 이력이 늘어난다.
+    stability: 너무 크면 관련 없는 변경까지 강조돼 오해를 부를 수 있다.
+    recommendation: 기본 60.
+    related: [NOISE_BIZ_MONITOR_CHANGES_ENABLED]
+
+  NOISE_BIZ_MONITOR_HISTORY_ENABLED:
+    summary: 업무 현황 서비스 상세의 「지표」 탭(과거 지표 보기)을 열지.
+    behavior: >-
+      탭을 열 때 원천을 1회 조회하고 60초 메모한다. 실시간 지표 수집기(NOISE_BIZ_MONITOR_METRICS_ENABLED)와
+      독립이다. NOISE_BIZ_MONITOR_ENABLED가 켜져 있어야 유효하다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 상세에 지표 탭이 없고 현행과 비트 동일하다.
+      - value: "true"
+        effect: 상세 지표 탭에서 구성원 지표 추이를 본다.
+    example: >-
+      sms_thresholds가 채워져 있으면 지표 탭에 「설정 임계」 선이 그려지고, 비어 있으면 선 없이 「판정 불가 · 임계 미설정」이다.
+    performance: >-
+      탭을 열 때만 조회한다. 한 번에 최대 NOISE_BIZ_MONITOR_HISTORY_MAX_MEMBERS 구성원, 전체 동시
+      NOISE_BIZ_MONITOR_HISTORY_MAX_CONCURRENCY건까지다.
+    stability: 업무 현황이 꺼져 있으면 켜도 꺼진 것과 같다. 재시작이 필요하다.
+    recommendation: 기본 false. 운영 측정값(sms_metric_source · sms_thresholds)을 채운 뒤 켠다.
+    related: [NOISE_BIZ_MONITOR_ENABLED, NOISE_BIZ_MONITOR_HISTORY_MAX_MEMBERS, NOISE_BIZ_MONITOR_HISTORY_MAX_CONCURRENCY]
+
+  NOISE_BIZ_MONITOR_HISTORY_MAX_MEMBERS:
+    summary: 지표 탭 한 번 조회에 담는 구성원 수 상한.
+    behavior: 지표 보기 한 번이 조회하는 구성원 수를 이 값으로 자른다(1~20).
+    example: 기본 20. 20을 넘기면 SMS 행 상한 계산이 깨지므로 기동 때 설정 검증에서 막힌다.
+    performance: 클수록 탭 한 번의 조회가 무거워진다.
+    stability: 상한 20은 SMS 조회 행 상한을 지키기 위한 고정 범위다.
+    recommendation: 기본 20.
+    related: [NOISE_BIZ_MONITOR_HISTORY_ENABLED]
+
+  NOISE_BIZ_MONITOR_HISTORY_MAX_CONCURRENCY:
+    summary: 지표 탭 조회의 전체 동시 실행 상한.
+    behavior: 여러 사용자가 동시에 지표 탭을 열어도 이 수까지만 동시에 원천을 조회한다(1 이상 · 프로세스 메모리 기준).
+    example: 기본 2이면 다섯 명이 동시에 지표 탭을 열 때 두 건씩 조회하고 나머지는 기다린다.
+    performance: 클수록 동시 응답은 빨라지지만 관측 원천 부하가 커진다.
+    stability: 너무 크면 장애 중 여러 사람이 탭을 열 때 관측 원천에 부하가 몰린다.
+    recommendation: 기본 2.
+    related: [NOISE_BIZ_MONITOR_HISTORY_ENABLED]
+
+  NOISE_BIZ_DIAGNOSIS_ENABLED:
+    summary: 업무 현황 상세의 「진단」 탭(D1)과 서비스 심층 조사(D3)를 열지.
+    behavior: >-
+      D1은 결정적 판독(R1~R6 · LLM 0)으로 서비스 구성원의 동시성·최초 이상을 「가설 · 참고용」으로 보여 준다.
+      D3는 수동 전용 서비스 심층 조사로 장애 조사 서비스에 서비스 맥락을 넘긴다. NOISE_BIZ_MONITOR_ENABLED가 켜져
+      있어야 유효하고, D3는 알람 조사 서비스도 켜져 있어야 한다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 진단 탭·심층 조사 버튼이 없고 현행과 비트 동일하다.
+      - value: "true"
+        effect: 상세에 진단 탭과 서비스 심층 조사가 생긴다.
+    example: >-
+      한 업무의 WAS 여러 대가 같은 창 안에 이상을 보이면 D1이 「가설 · 참고용」으로 공통 원인 가능성을 적는다.
+      이상이 없으면 「이상 신호 없음」이다. 억제·통보 판정은 바뀌지 않는다.
+    performance: >-
+      진단 탭을 열 때 APM 최대 NOISE_BIZ_DIAGNOSIS_MAX_APM_TARGETS개 인스턴스를 즉석 조회한다.
+    stability: 판독은 원인 판정이 아니다. 업무 현황이 꺼져 있으면 켜도 꺼진 것과 같다. 재시작이 필요하다.
+    recommendation: 기본 false. 업무 현황을 확인한 뒤 켠다.
+    related: [NOISE_BIZ_MONITOR_ENABLED, NOISE_BIZ_DIAGNOSIS_MAX_APM_TARGETS, NOISE_BIZ_DIAGNOSIS_WINDOW_MINUTES, NOISE_BIZ_INVESTIGATION_MAX_SMS]
+
+  NOISE_BIZ_DIAGNOSIS_MAX_APM_TARGETS:
+    summary: 진단(D1)이 즉석 조회하는 APM 인스턴스 수 상한.
+    behavior: 서비스 APM 구성원이 이보다 많으면 진단 한 번에 상한까지만 조회한다(1 이상).
+    example: 기본 50이면 APM 구성원 80개 서비스의 진단은 50개만 보고 판독한다.
+    performance: 클수록 진단 탭 응답이 늦어지고 게이트웨이 호출이 늘어난다.
+    stability: 너무 작으면 이상이 난 구성원을 빠뜨릴 수 있다.
+    recommendation: 기본 50.
+    related: [NOISE_BIZ_DIAGNOSIS_ENABLED]
+
+  NOISE_BIZ_DIAGNOSIS_WINDOW_MINUTES:
+    summary: 진단(D1)이 동시성·최초 이상을 판단하는 시간 창(분).
+    behavior: 이 창 안에 구성원들의 이상이 함께 나타났는지, 어느 구성원이 먼저였는지를 본다(1 이상).
+    example: 기본 15이면 15분 안에 여러 구성원이 이상을 보일 때 동시 발생으로 판독한다.
+    performance: 클수록 읽는 지표·알람 범위가 늘어난다.
+    stability: 너무 크면 별개 사건이 동시 발생처럼 묶일 수 있다.
+    recommendation: 기본 15.
+    related: [NOISE_BIZ_DIAGNOSIS_ENABLED]
+
+  NOISE_BIZ_INVESTIGATION_CONTEXT_ENABLED:
+    summary: 알람 조사를 맡길 때 그 서버가 속한 업무 서비스 구성원을 비교 대상으로 함께 넘길지(D2).
+    behavior: >-
+      알람 조사 페이로드에 `meta.biz_service`를 더해, 조사가 같은 업무 구성원과 비교하게 한다. 화면은 없다.
+      NOISE_BIZ_SERVICE_ENABLED가 켜져 있어야 유효하다. 알람 존을 알 수 없으면 구성원을 싣지 않는다.
+    options:
+      - value: "false"
+        label: 기본
+        effect: 조사 페이로드가 현행과 바이트 동일하다.
+      - value: "true"
+        effect: >-
+          서비스에 속한 서버의 알람 조사에 SMS 최대 NOISE_BIZ_INVESTIGATION_MAX_SMS · APM 최대
+          NOISE_BIZ_INVESTIGATION_MAX_APM 구성원이 비교 대상으로 실린다.
+    example: >-
+      WAS 한 대에서 알람이 나면 같은 업무의 다른 WAS·DB를 조사가 함께 보고, 한 대만의 문제인지 업무 전체 문제인지
+      가려낸다.
+    performance: 조사 의뢰 때 색인 조회가 더해지고 조사가 비교 구성원만큼 길어질 수 있다.
+    stability: 억제·통보 판정과 사건 키는 바뀌지 않는다. 업무 서비스 연계가 꺼져 있으면 켜도 꺼진 것과 같다. 재시작이 필요하다.
+    recommendation: 기본 false. 서비스 정의가 갖춰진 뒤 켠다.
+    related: [NOISE_BIZ_SERVICE_ENABLED, NOISE_BIZ_INVESTIGATION_MAX_SMS, NOISE_BIZ_INVESTIGATION_MAX_APM, NOISE_INVESTIGATION_TRIGGER_ENABLED]
+
+  NOISE_BIZ_INVESTIGATION_MAX_SMS:
+    summary: 조사 맥락(D2)·서비스 심층 조사(D3)가 비교 대상으로 넘기는 SMS 구성원 수 상한.
+    behavior: 같은 업무의 SMS 구성원 중 이 수까지만 조사에 넘긴다(1 이상).
+    example: 기본 10이면 서버 40대 업무에서 알람 조사가 비교하는 서버는 10대다.
+    performance: 클수록 조사 한 건의 조회와 시간이 늘어난다.
+    stability: 너무 작으면 비교 대상이 적어 업무 전체 문제를 놓칠 수 있다.
+    recommendation: 기본 10.
+    related: [NOISE_BIZ_INVESTIGATION_CONTEXT_ENABLED, NOISE_BIZ_DIAGNOSIS_ENABLED]
+
+  NOISE_BIZ_INVESTIGATION_MAX_APM:
+    summary: 조사 맥락(D2)·서비스 심층 조사(D3)가 비교 대상으로 넘기는 APM 구성원 수 상한.
+    behavior: 같은 업무의 APM 구성원 중 이 수까지만 조사에 넘긴다(1 이상).
+    example: 기본 8이면 APM 인스턴스 20개 업무에서 조사가 비교하는 인스턴스는 8개다.
+    performance: 클수록 조사 한 건의 조회와 시간이 늘어난다.
+    stability: 너무 작으면 이상이 난 인스턴스를 비교에서 빠뜨릴 수 있다.
+    recommendation: 기본 8.
+    related: [NOISE_BIZ_INVESTIGATION_CONTEXT_ENABLED, NOISE_BIZ_DIAGNOSIS_ENABLED]

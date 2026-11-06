@@ -1086,9 +1086,27 @@ async def alarm_feedback_summary(
     return AlarmFeedbackSummaryResponse(items=items, episode_counts=episode_counts)
 
 
+class AlarmCapabilitiesBizResponse(AlarmCapabilitiesResponse):
+    """(plans/215 · D-368) 업무 서비스 기능 4키 가산 — 종전 키·직렬화 규칙은 부모 그대로."""
+
+    biz_service_enabled: bool = Field(
+        default=False, description="업무 서비스 정의 (NOISE_BIZ_SERVICE_ENABLED · 기본 off)"
+    )
+    biz_monitor_enabled: bool = Field(
+        default=False, description="업무 현황 뷰 탭·M2 (NOISE_BIZ_MONITOR_ENABLED · 기본 off)"
+    )
+    biz_diagnosis_enabled: bool = Field(
+        default=False, description="업무 서비스 진단 D1·D3 (NOISE_BIZ_DIAGNOSIS_ENABLED · 기본 off)"
+    )
+    biz_history_enabled: bool = Field(
+        default=False,
+        description="업무 현황 상세 「지표」 보기 (NOISE_BIZ_MONITOR_HISTORY_ENABLED · 기본 off)",
+    )
+
+
 @router.get(
     "/alarm/capabilities",
-    response_model=AlarmCapabilitiesResponse,
+    response_model=AlarmCapabilitiesBizResponse,
     summary="알람 UI 기능 가용성",
     description=(
         "카드 UI가 버튼(피드백·확인)을 렌더할지 결정하기 위한 게이트 상태입니다.<br/>"
@@ -1099,7 +1117,7 @@ async def alarm_feedback_summary(
 async def alarm_capabilities(
     request: Request,
     current_user: dict = Depends(require_user),
-) -> AlarmCapabilitiesResponse:
+) -> AlarmCapabilitiesBizResponse:
     """게이트 조합을 서버가 계산해 내린다(클라이언트가 .env를 추론하지 않게)."""
     ng = request.app.state.config.noise_gate
     gate_on = bool(getattr(ng, "enable_noise_gate", False))
@@ -1109,7 +1127,7 @@ async def alarm_capabilities(
     extra: dict[str, bool] = {}
     if getattr(request.app.state, "alarm_card_flow_enabled", False) is True:
         extra["card_flow_enabled"] = True
-    return AlarmCapabilitiesResponse(
+    return AlarmCapabilitiesBizResponse(
         # 피드백 라우트의 503 조건과 **같은 식**이어야 한다(어긋나면 UI가 거짓말을 한다).
         feedback_enabled=gate_on and bool(getattr(ng, "enable_llm_actionability", False)),
         incident_tracking=bool(getattr(ng, "incident_tracking_enabled", False)),
@@ -1141,6 +1159,11 @@ async def alarm_capabilities(
         investigation_summary_view_enabled=bool(
             getattr(ng, "investigation_summary_view_enabled", True)
         ),
+        # (plans/215 · D-368) 업무 서비스 — 플래그 사이 의존을 푼 `*_active` 속성(정확히 True만)
+        biz_service_enabled=getattr(ng, "biz_service_active", False) is True,
+        biz_monitor_enabled=getattr(ng, "biz_monitor_active", False) is True,
+        biz_diagnosis_enabled=getattr(ng, "biz_diagnosis_active", False) is True,
+        biz_history_enabled=getattr(ng, "biz_monitor_history_active", False) is True,
         **extra,
     )
 
@@ -2949,6 +2972,9 @@ async def request_manual_investigation(
             investigation_kind=KIND_MANUAL,
             # (plans/210) 연계 매핑 사본 — 플래그 off면 기동이 대입하지 않아 None(비트 동일)
             map_cache=getattr(request.app.state, "apm_host_map_cache", None),
+            # (plans/215 D2) 업무 서비스 사본 — 플래그 off면 기동이 대입하지 않아 None(비트 동일)
+            biz_service_cache=getattr(request.app.state, "biz_service_cache", None),
+            biz_zones=scope,
         )
         timeout = float(getattr(ng, "investigation_mcp_call_timeout_seconds", 10.0))
 
@@ -3515,6 +3541,16 @@ async def post_host_link(
         prior_readings = briefing_pb.get("readings")
         if prior_readings is not None:
             rerun["prior_readings"] = prior_readings
+        # (plans/215 §4.8 D2) 업무 서비스 맥락 — D2 플래그 on이고 사본이 있을 때만 인자를 넘긴다
+        # (off면 호출·페이로드 비트 동일). 비교 구성원은 요청자 허용 존 안만(수동 분석과 같다).
+        biz_cache = getattr(request.app.state, "biz_service_cache", None)
+        biz_kwargs: dict[str, Any] = (
+            {"biz_service_cache": biz_cache,
+             "biz_zones": _alarm_zone_scope(request, current_user)}
+            if biz_cache is not None
+            and getattr(ng, "biz_investigation_context_active", False) is True
+            else {}
+        )
         payload = await build_manual_payload(
             config,
             event,
@@ -3533,6 +3569,7 @@ async def post_host_link(
                 by=sub, at=str(rec.get("at") or ""),
             ),
             rerun=rerun,
+            **biz_kwargs,
         )
         timeout = float(getattr(ng, "investigation_mcp_call_timeout_seconds", 10.0))
 

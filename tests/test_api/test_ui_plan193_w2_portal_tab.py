@@ -437,7 +437,11 @@ out = { first: first, again: state(), kids: kids, standalone: standalone, reques
         "token": ["function", "u-1", "u-2"],   # 포털 토큰(user_token)을 요청마다 읽는 게터
         "authFail": True,
         "live": True,
-        "keys": ["liveView", "mode", "onAuthFail", "onForbidden", "onOpenInvestigation", "token"],
+        # plans/215 W8b — openAlarm 가산
+        "keys": [
+            "liveView", "mode", "onAuthFail", "onForbidden", "onOpenInvestigation",
+            "openAlarm", "token",
+        ],
     }
 
 

@@ -169,7 +169,7 @@ def test_dashboard_summary_box_sits_above_settings_list() -> None:
     box = html.index('id="investigationSummary"')
     assert html.index('id="settingsSearch"') < box < html.index('id="settingsAccordion"')
     assert ".inv-summary {" in html
-    assert "admin.js?v=18" in html
+    assert "admin.js?v=19" in html
 
 
 # ── U5 노이즈 관제 수동 조사 모드 ──
@@ -244,4 +244,4 @@ def test_noise_pages_cache_busted() -> None:
     assert ".noise-mode-chip {" in css
     for page in ("noise.html", "admin/noise.html"):
         html = (_STATIC / page).read_text(encoding="utf-8")
-        assert "noise.js?v=28" in html and "noise-console.css?v=11" in html, page
+        assert "noise.js?v=29" in html and "noise-console.css?v=11" in html, page

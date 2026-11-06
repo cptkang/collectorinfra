@@ -1,0 +1,105 @@
+/* plans/215 W5 — 「업무 서비스 정의」(P1) 독립 페이지.
+   색은 style.css 테마 토큰만 쓴다(라이트/다크 같은 규칙). 상태는 색 + 글자(배지 문구)로 함께 보인다. */
+.bizsvc-page { background: var(--bg); color: var(--text); font-family: var(--font-display); }
+.bizsvc-top {
+    display: flex; align-items: center; gap: 12px; padding: 12px 20px;
+    background: var(--header-bg); border-bottom: 1px solid var(--border);
+}
+.bizsvc-top h1 { font-size: 1.125rem; margin: 0; white-space: nowrap; }
+.bizsvc-top .bizsvc-spacer { flex: 1; }
+.bizsvc-top .bizsvc-user { color: var(--text-secondary); font-size: 0.8125rem; white-space: nowrap; }
+.bizsvc-alert {
+    margin: 10px 20px 0; padding: 8px 12px; border-radius: var(--radius-sm);
+    border: 1px solid var(--border); font-size: 0.8125rem;
+}
+.bizsvc-alert--error { background: var(--error-bg); color: var(--error); border-color: var(--error); }
+.bizsvc-alert--ok { background: var(--success-bg); color: var(--success); border-color: var(--success); }
+.bizsvc-alert--warn { background: var(--warning-bg); color: var(--warning); border-color: var(--warning); }
+.bizsvc-tabs { display: flex; gap: 4px; padding: 10px 20px 0; border-bottom: 1px solid var(--border); }
+.bizsvc-tab {
+    background: none; border: 1px solid transparent; border-bottom: none; color: var(--text-secondary);
+    padding: 7px 14px; border-radius: var(--radius-sm) var(--radius-sm) 0 0; cursor: pointer;
+    font-size: 0.8125rem; white-space: nowrap;
+}
+.bizsvc-tab.active { color: var(--text); background: var(--surface); border-color: var(--border); }
+.bizsvc-main { padding: 14px 20px 40px; }
+.bizsvc-layout { display: flex; gap: 14px; align-items: flex-start; }
+.bizsvc-listcol { flex: 1 1 auto; min-width: 0; }
+.bizsvc-detail {
+    flex: 0 0 560px; max-width: 560px; background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); padding: 12px 14px; max-height: calc(100vh - 150px); overflow: auto;
+}
+.bizsvc-bar { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin-bottom: 8px; }
+.bizsvc-bar input, .bizsvc-bar select, .bizsvc-form input, .bizsvc-form select, .bizsvc-form textarea {
+    background: var(--bg-elevated); color: var(--text); border: 1px solid var(--border);
+    border-radius: var(--radius-sm); padding: 5px 8px; font-size: 0.8125rem;
+}
+/* 전역 `select { width: 100% }`(style.css)를 도구줄 안에서만 되돌린다 — 화살표 자리는 오른쪽 여백으로 */
+.bizsvc-bar select { width: auto; padding-right: 28px; background-position: right 8px center; }
+.bizsvc-bar .btn, .bizsvc-detail .btn, .bizsvc-main .btn { font-size: 0.8125rem; padding: 5px 12px; }
+.bizsvc-tablewrap { overflow-x: auto; border: 1px solid var(--border); border-radius: var(--radius-sm); }
+.bizsvc-table { width: 100%; border-collapse: collapse; font-size: 0.8125rem; white-space: nowrap; }
+.bizsvc-table th {
+    text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--table-header-border);
+    color: var(--text-secondary); font-weight: 600; background: var(--surface);
+}
+.bizsvc-table td { padding: 6px 8px; border-bottom: 1px solid var(--table-cell-border); }
+.bizsvc-table tr.bizsvc-row { cursor: pointer; }
+.bizsvc-table tr.bizsvc-row:hover { background: var(--surface-hover); }
+.bizsvc-table tr.selected { background: var(--accent-glow); }
+.bizsvc-muted { color: var(--text-muted); font-size: 0.75rem; }
+.bizsvc-note { color: var(--text-secondary); font-size: 0.8125rem; margin: 6px 0; }
+.bizsvc-empty { padding: 18px; text-align: center; color: var(--text-secondary); }
+.bizsvc-badge {
+    display: inline-block; padding: 1px 7px; border-radius: 999px; font-size: 0.6875rem;
+    border: 1px solid var(--border); margin-right: 3px; white-space: nowrap;
+}
+.bizsvc-badge--ok { color: var(--success); background: var(--success-bg); border-color: var(--success); }
+.bizsvc-badge--warn { color: var(--warning); background: var(--warning-bg); border-color: var(--warning); }
+.bizsvc-badge--err { color: var(--error); background: var(--error-bg); border-color: var(--error); }
+.bizsvc-badge--info { color: var(--info); background: var(--info-bg); border-color: var(--info); }
+.bizsvc-badge--muted { color: var(--text-muted); background: var(--track); }
+.bizsvc-chip {
+    display: inline-block; padding: 1px 6px; margin: 1px 3px 1px 0; border-radius: var(--radius-sm);
+    background: var(--track); color: var(--text-secondary); font-size: 0.6875rem;
+}
+.bizsvc-subtabs { display: flex; flex-wrap: wrap; gap: 4px; margin: 10px 0 8px; }
+.bizsvc-subtab {
+    background: var(--surface); border: 1px solid var(--border); color: var(--text-secondary);
+    padding: 4px 10px; border-radius: var(--radius-sm); cursor: pointer; font-size: 0.75rem;
+}
+.bizsvc-subtab.active { color: var(--on-accent); background: var(--accent); border-color: var(--accent); }
+.bizsvc-dl { display: grid; grid-template-columns: 130px 1fr; gap: 4px 10px; font-size: 0.8125rem; }
+.bizsvc-dl dt { color: var(--text-secondary); }
+.bizsvc-dl dd { margin: 0; word-break: break-all; }
+.bizsvc-form { display: grid; grid-template-columns: 110px 1fr; gap: 6px 10px; font-size: 0.8125rem; margin: 8px 0; }
+.bizsvc-form label { color: var(--text-secondary); align-self: center; }
+.bizsvc-preview {
+    margin: 8px 0; padding: 10px 12px; border: 1px dashed var(--border-accent);
+    border-radius: var(--radius-sm); background: var(--accent-glow); font-size: 0.8125rem;
+}
+.bizsvc-preview ul { margin: 6px 0; padding-left: 18px; }
+.bizsvc-lanes { display: flex; gap: 8px; overflow-x: auto; }
+.bizsvc-lane {
+    flex: 0 0 150px; border: 1px solid var(--border); border-radius: var(--radius-sm);
+    background: var(--bg-elevated); padding: 6px; min-height: 60px;
+}
+.bizsvc-lane h4 { margin: 0 0 6px; font-size: 0.75rem; color: var(--text-secondary); }
+.bizsvc-lane .bizsvc-chip { display: block; margin-bottom: 3px; white-space: normal; word-break: break-all; }
+.bizsvc-tree td.lvl1 { padding-left: 22px; }
+.bizsvc-tree td.lvl2 { padding-left: 40px; }
+.bizsvc-pre {
+    background: var(--bg-elevated); border: 1px solid var(--border); border-radius: var(--radius-sm);
+    padding: 6px 8px; font-family: var(--font-mono); font-size: 0.6875rem; white-space: pre-wrap;
+    word-break: break-all; max-height: 160px; overflow: auto; margin: 0;
+}
+.bizsvc-yaml { width: 100%; min-height: 180px; font-family: var(--font-mono); font-size: 0.75rem; }
+.bizsvc-card {
+    background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+    padding: 12px 14px; margin-bottom: 12px;
+}
+.bizsvc-card h3 { margin: 0 0 8px; font-size: 0.9375rem; }
+.bizsvc-tabbadge {
+    display: inline-block; min-width: 18px; padding: 0 5px; margin-left: 4px; border-radius: 999px;
+    background: var(--warning-bg); color: var(--warning); font-size: 0.6875rem; text-align: center;
+}

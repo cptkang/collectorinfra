@@ -23,6 +23,7 @@ from starlette.applications import Starlette
 from starlette.types import Receive, Scope, Send
 
 from sre_agent import __version__
+from sre_agent.application.biz_compare import collect_biz_compare
 from sre_agent.application.briefing_builder import build_briefing
 from sre_agent.application.evidence_prefetch import prefetch_and_correlate, scope_from_job
 from sre_agent.application.investigation_dispatcher import (
@@ -432,6 +433,27 @@ def _default_prefetch_fn(settings: AgentSettings):
     return _prefetch
 
 
+def _default_biz_compare_fn(settings: AgentSettings):
+    """서비스 심층 조사(plans/215 D3) 구성원 비교 콜러블 — dispatcher.biz_compare_fn 주입용.
+
+    플래그 없이 늘 만든다 — dispatcher가 `meta.biz_service`가 있는 진단 잡에서만 부른다(그 밖의 잡은
+    부르지 않아 비트 동일). 배치 콜러블은 사전수집·플레이북과 같은 것(축 전역 상한·조사별
+    owner)이고, URL이 없는 축은 None이라 그 축 구성원은 「미구성」 결손으로 남는다.
+    """
+    polestar = make_batch_caller(settings)
+    apm = make_apm_batch_caller(settings)
+    confirm_over = settings.apm_xview_confirm_over
+
+    def _compare(job, budget_s: float) -> dict:  # noqa: ANN001 — JobLike
+        return collect_biz_compare(
+            getattr(job, "payload", None), getattr(job, "reference_time", None),
+            getattr(job, "lookback_minutes", None), polestar=polestar, apm=apm,
+            budget_s=budget_s, xview_confirm_over=confirm_over,
+        )
+
+    return _compare
+
+
 def _log_timechain(settings: AgentSettings, playbooks: Sequence[Playbook]) -> None:
     """조사 시간 사슬 정합(plans/187 W22 · D-341 부기 13)을 기동 시 1회 로그로 남긴다.
 
@@ -455,6 +477,31 @@ def _log_timechain(settings: AgentSettings, playbooks: Sequence[Playbook]) -> No
         logger.warning("조사 시간 사슬 불일치 — %s (%s)", "; ".join(problems), values)
     else:
         logger.info("조사 시간 사슬 정합 (%s)", values)
+
+
+#: S4(호스트 자원 추이) 스텝 액션 — 비교 대기 상한 기동 경고의 대상(plans/215 W10 교정).
+_USAGE_TREND_ACTION = "host.usage_trend"
+
+
+def _log_biz_compare_wait(settings: AgentSettings, playbooks: Sequence[Playbook]) -> None:
+    """S4 비교 대기 상한(`sre_biz_compare_wait_s` · plans/215 W10 교정)이 S4 스텝 상한(YAML
+    `timeout_s` · 없으면 실행기 기본값) 이상이면 기동 경고 1줄. 미입력·정합이면 무동작."""
+    wait = settings.sre_biz_compare_wait_s
+    if wait is None:
+        return
+    over = [
+        f"{pb.id} {limit:g}s"
+        for pb in playbooks
+        for st in pb.steps
+        if st.action == _USAGE_TREND_ACTION
+        and wait >= (limit := st.timeout_s or DEFAULT_STEP_TIMEOUT_S)
+    ]
+    if over:
+        logger.warning(
+            "업무 서비스 비교 대기 SRE_BIZ_COMPARE_WAIT_S %gs ≥ S4 스텝 timeout_s(%s) — "
+            "비교를 기다리다 S4 전체가 스텝 타임아웃될 수 있다",
+            wait, ", ".join(over),
+        )
 
 
 def _default_playbook_wiring(
@@ -487,6 +534,7 @@ def _default_playbook_wiring(
         logger.warning("알려진 오류 거부(기동 적재): %s — %s", name, reason)
     logger.info("알려진 오류 %d건 적재(%s)", len(known.known_errors), DEFAULT_KNOWN_ERROR_DIR)
     _log_timechain(settings, loaded.playbooks)
+    _log_biz_compare_wait(settings, loaded.playbooks)
 
     def _llm(messages: list[dict[str, str]]) -> str:
         response = agent_getter().llm.llm.completion(messages, temperature=0)
@@ -540,6 +588,7 @@ def _build_dispatcher(
         audit_path=audit_path if audit_path is not None else default_audit_path(),
         playbook=_default_playbook_wiring(settings, agent_getter),
         loaded_tools_fn=_loaded_tools,
+        biz_compare_fn=_default_biz_compare_fn(settings),
     )
 
 
@@ -611,6 +660,7 @@ def create_service(
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
         prior_findings: dict | None = None,
+        context: dict | None = None,
     ) -> str:
         """pull형 자연어 진단 잡을 제출한다(§3 — 챗 의도 위임용). 동일 잡 패턴.
 
@@ -625,6 +675,11 @@ def create_service(
         사용 도구·사건창 — LLM 서술 제외)이다. 지침에 「이미 수집된 판정」 블록으로 렌더된다.
         넘기지 않으면 종전과 같다.
 
+        `context`(plans/215 D3 · 선택)는 `{biz_service: …}` 하나만 허용한다 — 알람 조사 D2
+        `meta.biz_service`와 같은 모양(서비스 id·표시명·비교 구성원 식별자)이며 잡 payload
+        `meta.biz_service`로 실린다. 허용 밖 키·크기 상한 초과·모양 오류는 `rejected`. 넘기지 않으면
+        종전과 같다.
+
         dispatcher 동기 가드 거부(대기 상한 등)는 `{status: "rejected", reason, verdict}`로 바로
         돌려준다(plans/194 W3).
         """
@@ -633,6 +688,7 @@ def create_service(
                 question, server_name, hostname, db_id, target_state,
                 reference_time=reference_time, lookback_minutes=lookback_minutes,
                 prior_findings=prior_findings,
+                **({"context": context} if context is not None else {}),
             ),
             ensure_ascii=False,
         )

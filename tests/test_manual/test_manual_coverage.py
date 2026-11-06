@@ -39,6 +39,8 @@ SCREENS = [
     "admin/login.html",
     "admin/dashboard.html",
     "admin/noise.html",
+    "biz-services.html",
+    "biz-monitor.html",
 ]
 _SLOTS_COMMON = ("what", "how", "ui", "caution", "related")
 

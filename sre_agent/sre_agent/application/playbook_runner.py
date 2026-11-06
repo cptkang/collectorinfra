@@ -38,7 +38,11 @@ from dataclasses import dataclass, field
 from datetime import date, datetime, timedelta
 from typing import Any
 
-from sre_agent.application.investigation_guidance import classify_alarm_kind
+from sre_agent.application.investigation_guidance import (
+    BIZ_VERDICT_RE,
+    classify_alarm_kind,
+    sanitize_inline,
+)
 from sre_agent.application.playbook_narrator import (
     NOT_CONFIGURED,
     Opinion,
@@ -51,12 +55,14 @@ from sre_agent.application.playbook_schedule import ancestors, deps_of
 from sre_agent.application.playbook_schedule import reading_refs as _reading_refs
 from sre_agent.application.playbook_steps import (
     ACTION_TITLES,
+    BIZ_SERVICE_SOURCE,
     POLESTAR_AXIS_ACTIONS,
     POLESTAR_JENNIFER_HOST_BASIS,
     POLESTAR_UNRESOLVED,
     SCOPE_ACTIONS,
     STEP_LIBRARY,
     BaselineWindow,
+    BizServiceOptions,
     RunScope,
     RunWindows,
     StepContext,
@@ -511,6 +517,121 @@ def polestar_link_targets(payload: Mapping[str, Any]) -> list[dict[str, str]]:
     return out if len(out) > 1 else []
 
 
+#: 업무 서비스 비교 SMS 구성원 수집 상한(plans/215 §4.8 D2 — `POLESTAR_LINK_TARGETS_MAX`와 공유).
+BIZ_COMPARE_SMS_MAX = 3
+_BIZ_SMS_KEYS = ("db_id", "server_name", "hostname", "confidence")
+_BIZ_APM_KEYS = ("source_id", "domain_id", "instance_name", "confidence")
+_SCOPE_RESOLVE_WAS = "scope.resolve_was_targets"
+
+
+def _biz_items(
+    raw: Any, keys: Sequence[str], required: Sequence[str]
+) -> list[dict[str, str]]:
+    out: list[dict[str, str]] = []
+    seen: set[tuple[str, ...]] = set()
+    for item in raw if isinstance(raw, list) else []:
+        if not isinstance(item, Mapping):
+            continue
+        # (보안 M2) 외부 이름 칸은 한 줄·길이 상한으로 거른다 — 정상 값은 strip과 같다.
+        row = {k: v for k in keys if (v := sanitize_inline(item.get(k)))}
+        ident = tuple(row.get(k, "") for k in keys if k != "confidence")
+        if any(not row.get(k) for k in required) or ident in seen:
+            continue
+        seen.add(ident)
+        out.append(row)
+    return out
+
+
+def biz_service_context(payload: Mapping[str, Any]) -> dict[str, Any] | None:
+    """페이로드 `meta.biz_service`(plans/215 §4.8 D2) → 정규화 값. 없거나 형식이 틀리면 None
+    (종전 동작).
+
+    값은 받은 그대로 쓴다(구성원 재해소 없음 — D-118 받은 사실만). 단 문자열 칸은
+    `sanitize_inline`(개행·제어문자 제거 · 칸당 128자)으로 거르고 `d1_verdict`는 R1~R6만 싣는다
+    (보안 M2 — D2 플레이북·브리핑과 D3 지침이 같은 정화를 거친다). `compare_targets`는 폴스타 비교
+    수집 대상 — `sms_members` 앞에서부터(생산자가 D1 이상 구성원을 앞에 둔다) ≤`BIZ_COMPARE_SMS_MAX`
+    이고 `POLESTAR_LINK_TARGETS_MAX`를 넘지 않는다. JSON 문자열로 직렬화돼 와도 읽는다.
+    """
+    meta = payload.get("meta") if isinstance(payload, Mapping) else None
+    raw = meta.get("biz_service") if isinstance(meta, Mapping) else None
+    if isinstance(raw, str):
+        try:
+            raw = json.loads(raw)
+        except ValueError:
+            return None
+    if not isinstance(raw, Mapping):
+        return None
+    try:
+        service_id = int(raw.get("service_id"))  # type: ignore[arg-type]
+    except (TypeError, ValueError):
+        return None
+    sms = _biz_items(raw.get("sms_members"), _BIZ_SMS_KEYS, ("db_id", "server_name"))
+    apm = _biz_items(raw.get("apm_members"), _BIZ_APM_KEYS, ("instance_name",))
+    cap = min(BIZ_COMPARE_SMS_MAX, POLESTAR_LINK_TARGETS_MAX)
+    out: dict[str, Any] = {
+        "service_id": service_id,
+        "display_name": sanitize_inline(raw.get("display_name")),
+        "confidence": sanitize_inline(raw.get("confidence")) or None,
+        "sms_members": sms,
+        "apm_members": apm,
+        "compare_targets": [
+            {k: t[k] for k in ("db_id", "server_name", "hostname") if t.get(k)} for t in sms[:cap]
+        ],
+        "truncated": _truthy(raw.get("truncated")),
+    }
+    verdict = sanitize_inline(raw.get("d1_verdict"))
+    if BIZ_VERDICT_RE.match(verdict):  # R1~R6 enum만(아니면 생략)
+        out["d1_verdict"] = verdict
+    return out
+
+
+def biz_service_brief(scope: RunScope, sections: Sequence[StepResult]) -> dict[str, Any] | None:
+    """브리핑 선택 키 `biz_service`(plans/215 D2) — 서비스명 · 비교한 구성원 · 추정 구성원 표지.
+
+    비교한 APM 구성원은 S0이 페이로드 목록으로 비교한 인스턴스(알람 인스턴스 제외), 비교한 SMS
+    구성원은 S4가 수집한 `biz_compare`다. 범위에 업무 서비스 맥락이 없으면 None(키 없음).
+    """
+    biz = scope.biz_service
+    if not biz:
+        return None
+    sms_conf = {(t["db_id"], t["server_name"]): t.get("confidence") for t in biz["sms_members"]}
+    apm_conf = {
+        (t["instance_name"], t.get("source_id") or None): t.get("confidence")
+        for t in biz["apm_members"]
+    }
+    compared_apm: list[dict[str, Any]] = []
+    compared_sms: list[dict[str, Any]] = []
+    for sec in sections:
+        from_biz = sec.data.get("business_source") == BIZ_SERVICE_SOURCE
+        if sec.action == _SCOPE_RESOLVE_WAS and from_biz:
+            for inst in (sec.data.get("instances") or [])[1:]:
+                key = (str(inst.get("instance") or ""), inst.get("source_id") or None)
+                if key in apm_conf:
+                    compared_apm.append({
+                        "instance_name": key[0], "source_id": key[1],
+                        "verdict": inst.get("verdict"),
+                        "inferred": apm_conf[key] == "inferred",
+                    })
+        for row in sec.data.get("biz_compare") or []:
+            key2 = (str(row.get("db_id") or ""), str(row.get("server_name") or ""))
+            compared_sms.append({
+                "db_id": key2[0], "server_name": key2[1], "status": row.get("status"),
+                "verdict": row.get("verdict"), "anomalous": list(row.get("anomalous") or []),
+                "inferred": sms_conf.get(key2) == "inferred",
+            })
+    out: dict[str, Any] = {
+        "service_id": biz["service_id"],
+        "display_name": biz["display_name"],
+        "target_inferred": biz.get("confidence") == "inferred",
+        "compared_sms": compared_sms,
+        "compared_apm": compared_apm,
+        "truncated": bool(biz.get("truncated")),
+    }
+    if biz.get("d1_verdict"):
+        out["d1_verdict"] = biz["d1_verdict"]
+    return out
+
+
 def is_pod_unresolved(link: Mapping[str, str] | None) -> bool:
     """파드로 판정됐는데 노드 서버를 정하지 못한 힌트인가(D-355 ④ — `unresolved` + `pod`)."""
     return link is not None and link.get("status") == "unresolved" and link.get("pod") == "true"
@@ -723,6 +844,7 @@ def initial_scope(
         polestar_reason_detail=POLESTAR_REASON_DETAILS.get(reason or ""),
         polestar_link=link_status,
         polestar_targets=link_targets,
+        biz_service=biz_service_context(payload),
     )
 
 
@@ -910,6 +1032,9 @@ class PlaybookRun:
     known_errors: list[dict[str, Any]] = field(default_factory=list)
     discrimination: Discrimination | None = None
     stage_wall_s: list[float] = field(default_factory=list, repr=False)
+    #: 브리핑 선택 키 `biz_service`(plans/215 D2 · `biz_service_brief`) — 페이로드에 업무 서비스
+    #: 맥락이 없으면 None(키 없음). `to_dict`·`to_briefing_dict`에는 싣지 않는다.
+    biz_service: dict[str, Any] | None = None
 
     def section(self, step_id: str) -> StepResult | None:
         return next((s for s in self.sections if s.step == step_id), None)
@@ -1011,6 +1136,7 @@ def run_playbook(
     discriminate_top_n: int = 0,
     dag_scheduling: bool = False,
     axis_concurrency: bool = False,
+    biz_options: BizServiceOptions | None = None,
 ) -> PlaybookRun:
     """플레이북을 실행한다. 예외를 내지 않는다 — 실패는 섹션의 상태·사유로 남긴다.
 
@@ -1052,6 +1178,8 @@ def run_playbook(
                      `plan_stages` 단계 실행(종전 동일).
     axis_concurrency: 스텝 안 독립 축 동시 조회(plans/200 I-3 — `StepContext` 인자로 넘긴다).
                      기본 거짓 = 축 순차(종전 동일).
+    biz_options:     업무 서비스 맥락 소비 옵션(plans/215 W10 교정 — `StepContext` 인자로 넘긴다).
+                     None = 전부 기본값(종전 동일).
     """
     started = clock()
     library = STEP_LIBRARY if steps is None else steps
@@ -1082,6 +1210,7 @@ def run_playbook(
             discriminate_top_n=discriminate_top_n,
             dag_scheduling=dag_scheduling,
             axis_concurrency=axis_concurrency,
+            biz_options=biz_options,
         )
     finally:
         if own_cache:
@@ -1259,6 +1388,7 @@ def _run(
     discriminate_top_n: int = 0,
     dag_scheduling: bool = False,
     axis_concurrency: bool = False,
+    biz_options: BizServiceOptions | None = None,
 ) -> PlaybookRun:
     notes: list[str] = []
     source, source_reason = resolve_polestar_source(payload, polestar_source)
@@ -1319,6 +1449,7 @@ def _run(
                 xview_confirm_over=xview_confirm_over, axis_concurrency=axis_concurrency,
                 activity=activity, on_skip=on_skip,
                 results=results, contexts=contexts, timed_out=timed_out,
+                biz_options=biz_options,
             )
         for stage in [] if dag_scheduling else plan_stages(playbook):
             stage_starts.append(time.monotonic())
@@ -1387,6 +1518,7 @@ def _run(
                     prior=dict(results),
                     xview_confirm_over=xview_confirm_over,
                     axis_concurrency=axis_concurrency,
+                    biz_options=biz_options,
                 )
                 # 실행 기록의 스텝 ID를 미리 단다(plans/200 — 래퍼가 액션별 대기열로 배정하지 않게)
                 ctx.step_id = step.id
@@ -1431,6 +1563,7 @@ def _run(
                     target_sources=[src for _, src in picked],
                     polestar=polestar, apm=apm, now=now, prior=dict(results),
                     xview_confirm_over=xview_confirm_over, axis_concurrency=axis_concurrency,
+                    biz_options=biz_options,
                 )
                 ctx.step_id, ctx.retry_of = step.id, first
                 # 재시도마다 새 실행기 — 앞 재시도가 다시 타임아웃돼 중단된 스레드가 워커를
@@ -1458,7 +1591,7 @@ def _run(
             polestar=polestar, apm=apm, now=now, library=library, clock=clock, started=started,
             budget_s=budget_s, step_timeout_s=step_timeout_s, for_each_max=for_each_max,
             xview_confirm_over=xview_confirm_over, activity=activity, on_skip=on_skip,
-            axis_concurrency=axis_concurrency,
+            axis_concurrency=axis_concurrency, biz_options=biz_options,
         )
 
     for step in playbook.steps:
@@ -1544,6 +1677,7 @@ def _run_dag(
     results: dict[str, StepResult],
     contexts: dict[str, StepContext],
     timed_out: dict[str, tuple[str, str | None]],
+    biz_options: BizServiceOptions | None = None,
 ) -> tuple[RunScope, list[float]]:
     """의존 기반 수집(plans/200 I-2) — `results`·`contexts`·`timed_out`을 채우고 (최종 범위, 위상
     레벨별 벽시계 초)를 돌려준다.
@@ -1607,6 +1741,7 @@ def _run_dag(
             target_sources=[src for _, src in picked],
             polestar=polestar, apm=apm, now=now, prior=prior,
             xview_confirm_over=xview_confirm_over, axis_concurrency=axis_concurrency,
+            biz_options=biz_options,
         )
         ctx.step_id = step.id
         contexts[step.id] = ctx
@@ -1741,6 +1876,7 @@ def _discriminate(
     activity: ActivityLog | None = None,
     on_skip: Callable[[StepResult, str], None] | None = None,
     axis_concurrency: bool = False,
+    biz_options: BizServiceOptions | None = None,
 ) -> Discrimination:
     """판별 조회 1회(plans/198 I-2 · 결정적 · LLM 0) — 수집 결과로 가설을 1차 평가해 상위 `top_n`개
     판단 보류 가설의 판별 스텝을 순위 순서대로 하나씩 돈다.
@@ -1784,6 +1920,7 @@ def _discriminate(
                 target_sources=[src for _, src in picked],
                 polestar=polestar, apm=apm, now=now, prior={**results, **disc.results},
                 xview_confirm_over=xview_confirm_over, axis_concurrency=axis_concurrency,
+                biz_options=biz_options,
             )
             sctx.step_id = d.step   # 실행 기록의 스텝 ID(래퍼가 액션 이름 대신 이 ID로 기록)
             limit = step_wait_s(spec, step_timeout_s, remaining)
@@ -2124,6 +2261,7 @@ def _finish(
         notes=notes,
         correlation=_correlation(sections, windows.alarm_time if windows else None),
         readings=readings,
+        biz_service=biz_service_brief(scope, sections),
     )
 
 
@@ -2527,8 +2665,11 @@ __all__ = [
     "RerunHint",
     "SQL_EVENT_TYPES",
     "SQL_PATTERN_KIND",
+    "BIZ_COMPARE_SMS_MAX",
     "alarm_facts_from_payload",
     "apm_map_unresolved_reason",
+    "biz_service_brief",
+    "biz_service_context",
     "compute_windows",
     "finalize_playbook_run",
     "flow_readings",

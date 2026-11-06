@@ -59,6 +59,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
+from sre_agent.application.biz_compare import (
+    BIZ_COMPARE_AXIS_SHARE,
+    BIZ_COMPARE_BUDGET_EXHAUSTED,
+    BIZ_COMPARE_TIMEOUT,
+    biz_compare_brief,
+    biz_compare_limitations,
+    skipped_compare,
+)
 from sre_agent.application.briefing_builder import build_partial_briefing, build_playbook_briefing
 from sre_agent.application.investigation_guidance import PROM_ANCHOR_REASONS, deep_dive_note
 from sre_agent.application.playbook_narrator import (
@@ -87,6 +95,7 @@ from sre_agent.application.playbook_schedule import ancestors, narration_basis
 from sre_agent.application.playbook_steps import (
     ACTION_TITLES,
     STEP_LIBRARY,
+    BizServiceOptions,
     StepContext,
     StepFn,
     StepResult,
@@ -274,6 +283,12 @@ def _clip_narrative(answer: str) -> str:
         n=len(text), keep=DEEP_NARRATIVE_MAX_CHARS)
 
 
+def _biz_kwargs(run: Any) -> dict[str, Any]:
+    """브리핑 선택 키 `biz_service` 인자(plans/215 D2) — 값이 있을 때만(없으면 인자 종전 동일)."""
+    biz = getattr(run, "biz_service", None)
+    return {"biz_service": biz} if biz is not None else {}
+
+
 def _add_limitations(briefing_kwargs: dict[str, Any], lines: list[str]) -> None:
     """브리핑 `limitations` 인자에 줄을 합친다.
 
@@ -388,6 +403,25 @@ DiagnoseFn = Callable[[JobLike], DiagnosisLike]
 BriefingFn = Callable[..., dict]
 #: 사전수집 콜러블 — 잡을 받아 CorrelationResult.to_dict()(또는 None)를 돌려준다. 예외를 던져도 된다(격리).
 PrefetchFn = Callable[[JobLike], "dict | None"]
+#: 업무 서비스 구성원 비교 콜러블(plans/215 D3) — `(잡, 축 시간 상한 초)` → 비교 결과 dict
+#: (`biz_compare.collect_biz_compare` 모양). 예외를 던져도 된다(격리 — 전 구성원 결손).
+BizCompareFn = Callable[[JobLike, float], "dict | None"]
+
+
+#: 서비스 심층 조사(plans/215 D3) in-flight 키의 kind 축 — 종합 조사 `"episode"` 축과 같은 방식.
+INVESTIGATION_KIND_BIZ = "biz"
+
+
+def _is_biz_diagnosis(job: JobLike, payload: dict) -> bool:
+    """서비스 심층 조사 잡 여부 — pull 진단 잡이고 payload `meta.biz_service`가 dict일 때만.
+
+    알람 잡의 D2 맥락(`meta.biz_service`)은 축을 바꾸지 않는다 — 알람 단독 조사끼리의 같은 호스트
+    차단은 종전 그대로다.
+    """
+    if getattr(job, "kind", None) != "diagnosis":
+        return False
+    meta = payload.get("meta")
+    return isinstance(meta, dict) and isinstance(meta.get("biz_service"), dict)
 
 
 def _host_key(job: JobLike, episode_scoped: bool = False) -> tuple[str, ...] | None:
@@ -409,12 +443,16 @@ def _host_key(job: JobLike, episode_scoped: bool = False) -> tuple[str, ...] | N
     단독 조사가 도는 동안 제출되면 거부되고 사건당 1회라 재시도도 없다. 그래서 종합 조사는
     `(db_id, host, "episode")`로 따로 잡는다(같은 호스트 종합 조사끼리의 중복 차단은 유지).
 
+    **서비스 심층 조사**(plans/215 D3 — pull 진단 + `meta.biz_service`): 대표 서버 단독 조사가 도는
+    중에도 접수되도록 `(db_id, host, "biz")`로 따로 잡는다(플래그 없음 — `context`를 넘긴 잡만 ·
+    같은 대표 서버의 서비스 조사끼리는 차단 유지). `context`가 없으면 키가 종전과 같다.
+
     Args:
         job: 조사 잡
         episode_scoped: True면 종합 조사 잡에 kind 축을 붙인다(False면 종전 키 그대로)
 
     Returns:
-        `(db_id, host[, "episode"])` 키. 대상을 식별할 수 없으면 None(부하 귀속이 불가하므로
+        `(db_id, host[, "episode" | "biz"])` 키. 대상을 식별할 수 없으면 None(부하 귀속이 불가하므로
         가드 대상 아님)
     """
     payload = getattr(job, "payload", None) or {}
@@ -431,6 +469,8 @@ def _host_key(job: JobLike, episode_scoped: bool = False) -> tuple[str, ...] | N
         return None
     if episode_scoped and is_episode_investigation(payload):
         return (db_id, host, INVESTIGATION_KIND_EPISODE)
+    if _is_biz_diagnosis(job, payload):
+        return (db_id, host, INVESTIGATION_KIND_BIZ)
     return (db_id, host)
 
 
@@ -629,6 +669,7 @@ class InvestigationDispatcher:
         wall_clock: Callable[[], float] = time.time,
         playbook: PlaybookWiring | None = None,
         loaded_tools_fn: Callable[[], Iterable[str] | None] | None = None,
+        biz_compare_fn: BizCompareFn | None = None,
     ) -> None:
         self._settings = settings
         # 조사 에이전트에 로드된 도구(plans/198 재검토 Minor5) — 미연결 소스를
@@ -640,6 +681,9 @@ class InvestigationDispatcher:
         self._diagnose_fn = diagnose_fn
         self._briefing_fn = briefing_fn
         self._prefetch_fn = prefetch_fn
+        # 서비스 심층 조사(plans/215 D3) 구성원 비교 — `_is_biz_diagnosis` 잡에서만 부른다(그 밖은
+        # 읽지도 않는다 · None이면 D3도 종전 지침 경로 그대로).
+        self._biz_compare_fn = biz_compare_fn
         self._remote = remote
         self._timeout = timeout_seconds if timeout_seconds is not None else float(settings.investigation_timeout_seconds)
         self._prefetch_timeout = (
@@ -1176,6 +1220,7 @@ class InvestigationDispatcher:
             self._audit({"event": "playbook_unmatched", "investigation_id": job.investigation_id})
         prefetch_started = self._clock()
         job.correlation = self._prefetch(job)
+        self._biz_compare(job, prefetch_started)
         prefetch_s = round(self._clock() - prefetch_started, 3)
         log = _activity(job)
         if log is not None:
@@ -1202,6 +1247,7 @@ class InvestigationDispatcher:
                 # best-effort — 실패하면 stub을 두고 경고만(타임아웃 확정·감사는 그대로).
                 try:
                     job.briefing = self._timeout_partial_briefing(job, log)
+                    self._attach_biz_brief(job, job.briefing)
                     timeout_extra["partial_briefing"] = "timeout"
                 except Exception as exc:  # noqa: BLE001 — 부분 브리핑 실패가 timeout을 failed로 바꾸지 않게
                     logger.warning("타임아웃 부분 브리핑 조립 실패 — stub 유지: %s", exc)
@@ -1259,6 +1305,9 @@ class InvestigationDispatcher:
             briefing_kwargs["source_labels"] = True
             briefing_kwargs["unresolved"] = bool(stalls)
         _add_limitations(briefing_kwargs, extra_limits)
+        # plans/215 D3 — 구성원 비교 결손·생략 사유(비교가 돈 잡만 · 없으면 인자 불변).
+        _add_limitations(
+            briefing_kwargs, biz_compare_limitations(getattr(job, "biz_compare", None)))
         # plans/198 I-10 — 정체 중단(가드 on일 때만 값) · 미완주 부분 브리핑 · 미조회 소스.
         stalled = getattr(result, "stalled", None)
         if stalled:
@@ -1308,6 +1357,8 @@ class InvestigationDispatcher:
                 [("alarm.payload", job.payload)] if getattr(job, "payload", None) else [])
             if getattr(job, "correlation", None):
                 extra.append(("prefetch.correlation", job.correlation))
+            if getattr(job, "biz_compare", None):
+                extra.append(("prefetch.biz_compare", job.biz_compare))  # type: ignore[attr-defined]
             briefing_kwargs["evidence_ledger"] = build_ledger(citable, extra=extra)
             briefing_kwargs["ledger_masker"] = mask_activity_text
         if partial_mode:
@@ -1335,6 +1386,7 @@ class InvestigationDispatcher:
                 remediation=self._recommend_remediation(verdict),
                 **briefing_kwargs,
             )
+        self._attach_biz_brief(job, briefing)
 
         self._log_finalize(job, started, "done")
         job.status = "done"
@@ -1994,6 +2046,16 @@ class InvestigationDispatcher:
         mapped, basis = mapped_polestar_source(
             job.payload or {}, self._settings.sre_playbook_polestar_source_map
         )
+        # 업무 서비스 맥락 소비 옵션(plans/215 W10 교정) — 전부 기본값이면 인자를 싣지 않는다
+        # (호출 인자를 비교하는 off 기준선 비트 동일 · docs/18 2026-11-05).
+        biz_options = BizServiceOptions(
+            compare_wait_s=self._settings.sre_biz_compare_wait_s,
+            s0_authoritative=bool(self._settings.sre_s0_biz_service_authoritative),
+            s0_peers_without_resolve=bool(self._settings.sre_s0_biz_peers_without_resolve),
+        )
+        biz_kwargs: dict[str, Any] = (
+            {"biz_options": biz_options} if biz_options != BizServiceOptions() else {}
+        )
         t_collect = time.monotonic()
         run = run_playbook(
             job.payload or {}, pb, matched_by=matched_by,
@@ -2012,6 +2074,7 @@ class InvestigationDispatcher:
             max_workers=int(self._settings.sre_playbook_max_workers),
             dag_scheduling=bool(self._settings.sre_playbook_dag_scheduling_enabled),
             axis_concurrency=bool(self._settings.sre_playbook_axis_concurrency_enabled),
+            **biz_kwargs,
         )
         if hooks is not None and hooks.flush is not None:
             # 미룬 단계 끝 처리(의존 기반 실행 · 해석 기준이 정착하지 않은 것)를 YAML 순서로 마저
@@ -2250,7 +2313,7 @@ class InvestigationDispatcher:
                     engine_agreement=compare_engines(
                         block["readings"], unavailable_reason=DEEP_NOT_COMPARABLE_PENDING
                     ),
-                    duty_areas=self._duty_areas,
+                    duty_areas=self._duty_areas, **_biz_kwargs(run),
                 ),
             }
             job.updated_at = self._wall_clock()
@@ -2316,7 +2379,7 @@ class InvestigationDispatcher:
             remediation=self._recommend_remediation(verdict), limitations=limits,
             correlation=run.correlation, deep_dive=deep_dive, engine_agreement=agreement,
             cross_source=xs, apm_tools_connected=bool(self._settings.apm_mcp_url),
-            tool_names=tool_names, duty_areas=self._duty_areas,
+            tool_names=tool_names, duty_areas=self._duty_areas, **_biz_kwargs(run),
         )
         self._log_finalize(job, started, "done")
         job.status = "done"
@@ -2456,6 +2519,59 @@ class InvestigationDispatcher:
             "kind": ctx.investigation_kind or job.kind,
             "cross_source_links": len(ctx.links),
         }
+
+    def _biz_compare(self, job: JobLike, prefetch_started: float) -> None:
+        """서비스 심층 조사(plans/215 D3)의 구성원 비교 사전수집 — 결과를 `job.biz_compare`에 단다.
+
+        `_is_biz_diagnosis` 잡이고 콜러블이 주입됐을 때만 돈다(그 밖의 잡은 속성도 달지 않는다 —
+        지침·브리핑·감사 비트 동일). 사전수집 타임박스를 상관 사전수집과 나눠 쓴다 — 남은 시간
+        안에서만 돌고, 축은 그 `BIZ_COMPARE_AXIS_SHARE` 안에 끝나야 한다. 타임박스 만료·예외는
+        전 구성원 결손(사유)으로 남긴다(조사는 계속).
+        """
+        payload = getattr(job, "payload", None) or {}
+        if self._biz_compare_fn is None or not isinstance(payload, dict) or not _is_biz_diagnosis(
+                job, payload):
+            return
+        budget = self._prefetch_timeout - (self._clock() - prefetch_started)
+        fn = self._biz_compare_fn
+        compare: dict | None
+        if budget <= 0:
+            compare = skipped_compare(payload, BIZ_COMPARE_BUDGET_EXHAUSTED)
+        else:
+            try:
+                compare = self._join_timebox(
+                    lambda j: fn(j, budget * BIZ_COMPARE_AXIS_SHARE), job, budget,
+                    "sre-biz-compare")
+            except TimeoutError:
+                compare = skipped_compare(payload, BIZ_COMPARE_TIMEOUT.format(s=budget))
+            except BaseException as e:  # noqa: BLE001 — CancelledError 포함(사전수집과 같은 격리)
+                logger.warning("업무 서비스 구성원 비교 실패 (%s): %s: %s",
+                               job.investigation_id, type(e).__name__, e)
+                compare = skipped_compare(payload, f"구성원 비교 실패 — {type(e).__name__}")
+        if compare is None:
+            return
+        job.biz_compare = compare  # type: ignore[attr-defined]
+        sms = compare.get("compared_sms") or []
+        apm = compare.get("compared_apm") or []
+        self._audit({
+            "event": "biz_compare",
+            "investigation_id": job.investigation_id,
+            "sms": len(sms),
+            "apm": len(apm),
+            "missing": sum(1 for r in sms if r.get("status") != "ok")
+            + sum(1 for r in apm if not r.get("verdict")),
+            "tool_calls": compare.get("tool_calls", 0),
+        })
+
+    @staticmethod
+    def _attach_biz_brief(job: JobLike, briefing: object) -> None:
+        """브리핑 선택 키 `biz_service`를 맨 뒤에 단다 — 구성원 비교가 돈 잡(D3)만(6요소 불변)."""
+        compare = getattr(job, "biz_compare", None)
+        if not isinstance(compare, dict) or not isinstance(briefing, dict):
+            return
+        brief = biz_compare_brief(getattr(job, "payload", None), compare)
+        if brief is not None:
+            briefing["biz_service"] = brief
 
     def _prefetch(self, job: JobLike) -> dict | None:
         """사전수집 콜러블을 격리 실행한다. 미주입·기준시각 없음이면 None(호출 자체를 하지 않는다)."""

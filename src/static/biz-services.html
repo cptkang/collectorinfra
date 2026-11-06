@@ -1,0 +1,177 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>업무 서비스 정의 - KB AIOps 포탈</title>
+    <link rel="icon" href="/static/favicon.svg" type="image/svg+xml">
+    <link rel="stylesheet" href="/static/css/style.css?v=22">
+    <link rel="stylesheet" href="/static/css/biz-services.css?v=2">
+    <!-- 테마 부트스트랩: 첫 페인트 전 <html data-theme> 확정(FOUC 방지) -->
+    <script src="/static/js/theme.js"></script>
+</head>
+<!-- plans/215 W5 · D-368 — 「업무 서비스 정의」(P1) 독립 페이지(포털 매뉴얼 메뉴·관리자 대시보드에서 새 탭).
+     조회는 로그인 사용자(존 권한 밖 구성원은 건수만), 편집 버튼은 관리자에게만 그린다 — 정본은 서버 403.
+     화면 값은 모두 biz-services.js가 textContent로 넣는다(HTML 문자열 주입·브라우저 확인 대화상자 없음 · 이 페이지에서 새 탭을 열지 않는다). -->
+<body class="bizsvc-page">
+    <header class="bizsvc-top">
+        <h1>업무 서비스 정의</h1>
+        <span class="bizsvc-muted">서비스 카탈로그 · 구성원 작업대</span>
+        <span class="bizsvc-spacer"></span>
+        <span class="bizsvc-user" id="bsUser"></span>
+        <a href="/" class="btn btn-secondary" style="font-size: 0.8125rem; padding: 6px 12px; text-decoration: none;">질의응답으로</a>
+    </header>
+
+    <div class="bizsvc-alert" id="bsAlert" hidden></div>
+
+    <nav class="bizsvc-tabs" id="bsSections">
+        <button type="button" class="bizsvc-tab active" data-section="catalog">서비스 목록</button>
+        <button type="button" class="bizsvc-tab" data-section="review" data-admin hidden>검토함<span class="bizsvc-tabbadge" id="bsReviewBadge" hidden></span></button>
+        <button type="button" class="bizsvc-tab" data-section="compute" data-admin hidden>자동 계산</button>
+        <button type="button" class="bizsvc-tab" data-section="analysis" data-admin hidden>연계 분석</button>
+    </nav>
+
+    <main class="bizsvc-main">
+        <!-- ① 서비스 목록 + ② 오른쪽 상세 패널(목록 유지) -->
+        <section id="secCatalog">
+            <div class="bizsvc-layout">
+                <div class="bizsvc-listcol">
+                    <div class="bizsvc-bar">
+                        <input type="search" id="bsQ" placeholder="표시명·서비스 키·서버명·hostname" maxlength="200" style="width: 220px;">
+                        <select id="bsZone" title="존"><option value="">전체 존</option></select>
+                        <select id="bsTier" title="등급">
+                            <option value="">전체 등급</option><option value="1">1등급</option><option value="2">2등급</option><option value="3">3등급</option>
+                        </select>
+                        <select id="bsStatus" title="상태">
+                            <option value="">전체 상태</option><option value="confirmed">확정</option><option value="inferred">추정</option>
+                            <option value="review">검토 필요</option><option value="disabled">비활성</option>
+                        </select>
+                        <select id="bsMonitored" title="감시 대상">
+                            <option value="">감시 전체</option><option value="true">감시 대상</option><option value="false">감시 안 함</option>
+                        </select>
+                        <input type="number" id="bsCoverage" min="1" max="100" placeholder="커버리지 % 미만" title="APM 커버리지가 이 값(%) 미만인 서비스만" style="width: 130px;">
+                        <select id="bsSort" title="정렬">
+                            <option value="tier">등급 순</option><option value="name">표시명 순</option><option value="sms">SMS 서버 수</option>
+                            <option value="apm">APM 수</option><option value="coverage">APM 커버리지</option><option value="inferred">추정 비율</option>
+                            <option value="updated">마지막 변경</option>
+                        </select>
+                        <select id="bsOrder" title="정렬 방향"><option value="asc">오름차순</option><option value="desc">내림차순</option></select>
+                        <button type="button" class="btn btn-primary" id="bsSearch">찾기</button>
+                        <button type="button" class="btn btn-secondary" id="bsExport">CSV 내보내기</button>
+                        <button type="button" class="btn btn-secondary" id="bsNew" data-admin hidden>새 서비스</button>
+                    </div>
+                    <div id="bsNewPanel" class="bizsvc-card" hidden></div>
+                    <div class="bizsvc-note" id="bsListNote"></div>
+                    <div class="bizsvc-tablewrap">
+                        <table class="bizsvc-table" id="bsTable">
+                            <thead>
+                                <tr>
+                                    <th>표시명</th><th>등급</th><th>담당 부서</th><th>SMS 서버</th><th>APM</th>
+                                    <th title="마지막 적용 기준 — APM이 이어진 SMS 서버 비율">APM 커버리지</th><th>추정 비율</th>
+                                    <th>상태</th><th>감시</th><th>마지막 변경</th>
+                                </tr>
+                            </thead>
+                            <tbody id="bsRows"></tbody>
+                        </table>
+                    </div>
+                    <div class="bizsvc-empty" id="bsEmpty" hidden></div>
+                    <div class="bizsvc-bar" style="margin-top: 8px;">
+                        <button type="button" class="btn btn-secondary" id="bsPrev">이전</button>
+                        <span class="bizsvc-muted" id="bsPage"></span>
+                        <button type="button" class="btn btn-secondary" id="bsNext">다음</button>
+                    </div>
+                </div>
+                <aside class="bizsvc-detail" id="bsDetail" hidden></aside>
+            </div>
+        </section>
+
+        <!-- ③ 검토함(관리자) -->
+        <section id="secReview" hidden>
+            <div class="bizsvc-card">
+                <h3>후보 · 병합 후보 · APM 미연계</h3>
+                <div class="bizsvc-bar">
+                    <select id="rvKind" title="종류">
+                        <option value="">전체 종류</option><option value="member">구성원 후보</option>
+                        <option value="merge">병합 후보</option><option value="apm_unlinked">APM 미연계</option>
+                    </select>
+                    <button type="button" class="btn btn-secondary" id="rvReload">새로 고침</button>
+                    <button type="button" class="btn btn-primary" id="rvAccept">수락</button>
+                    <button type="button" class="btn btn-secondary" id="rvReject">거절</button>
+                    <span class="bizsvc-muted" id="rvCount"></span>
+                </div>
+                <div id="rvCandPreview"></div>
+                <div class="bizsvc-tablewrap">
+                    <table class="bizsvc-table">
+                        <thead><tr><th><input type="checkbox" id="rvAll" title="모두 선택"></th><th>종류</th><th>서비스</th><th>대상</th><th>근거</th><th>갱신</th></tr></thead>
+                        <tbody id="rvCandRows"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="bizsvc-card">
+                <h3>미소속 서버</h3>
+                <div class="bizsvc-note">스냅샷에 있는데 어느 서비스에도 없는 서버입니다(존·접두 코드 묶음). 골라서 한 서비스로 지정합니다(한 번에 200대까지).</div>
+                <div class="bizsvc-bar">
+                    <button type="button" class="btn btn-secondary" id="rvUnassignedLoad">불러오기</button>
+                    <select id="rvTarget" title="지정할 서비스"><option value="">지정할 서비스 고르기</option></select>
+                    <button type="button" class="btn btn-primary" id="rvAssign">서비스로 지정</button>
+                    <span class="bizsvc-muted" id="rvUnassignedCount"></span>
+                </div>
+                <div id="rvAssignPreview"></div>
+                <div id="rvUnassigned"></div>
+            </div>
+        </section>
+
+        <!-- ④ 자동 계산(관리자) -->
+        <section id="secCompute" hidden>
+            <div class="bizsvc-card">
+                <h3>자동 계산</h3>
+                <div class="bizsvc-note" id="cpReason"></div>
+                <div class="bizsvc-bar">
+                    <button type="button" class="btn btn-primary" id="cpRun">다시 계산</button>
+                    <button type="button" class="btn btn-secondary" id="cpApply" disabled>적용</button>
+                    <span class="bizsvc-muted" id="cpStatus"></span>
+                </div>
+                <div id="cpResult"></div>
+            </div>
+            <div class="bizsvc-card">
+                <h3>실행 이력</h3>
+                <div class="bizsvc-tablewrap">
+                    <table class="bizsvc-table">
+                        <thead><tr><th>실행</th><th>종류</th><th>결과</th><th>시작</th><th>끝</th><th>실행자</th><th>변경 수</th></tr></thead>
+                        <tbody id="cpRuns"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+
+        <!-- ⑥ 연계 분석(관리자) -->
+        <section id="secAnalysis" hidden>
+            <div class="bizsvc-card">
+                <h3>전체 지표</h3>
+                <div class="bizsvc-note" id="anReason"></div>
+                <div id="anOverall"></div>
+            </div>
+            <div class="bizsvc-card">
+                <h3>추이(적용 실행 순)</h3>
+                <div class="bizsvc-tablewrap">
+                    <table class="bizsvc-table">
+                        <thead><tr><th>적용 시각</th><th>서비스</th><th>SMS 서버</th><th>소속</th><th>미소속 서버</th><th>APM 연계 서버</th><th>미소속 인스턴스</th><th>추정 비율</th></tr></thead>
+                        <tbody id="anTrend"></tbody>
+                    </table>
+                </div>
+            </div>
+            <div class="bizsvc-card">
+                <h3>서비스별 커버리지(낮은 순 — 연계 보강 대상)</h3>
+                <div class="bizsvc-tablewrap">
+                    <table class="bizsvc-table">
+                        <thead><tr><th>서비스 키</th><th>SMS 서버</th><th>APM 연계</th><th>APM 없는 서버</th><th>커버리지</th><th>못 이은 인스턴스</th></tr></thead>
+                        <tbody id="anCoverage"></tbody>
+                    </table>
+                </div>
+            </div>
+        </section>
+    </main>
+
+    <script src="/static/js/biz-services.js?v=1"></script>
+</body>
+</html>

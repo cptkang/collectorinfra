@@ -5,7 +5,8 @@
 1. 캡처 DB 재생성 + 스냅샷(``capture`` 프로필 — 재생 그래프 · LLM 호출 0)
 2. 녹화한 결정 기록을 캡처 서버 저장소로 옮김(시각만 현재로)
 3. 캡처 서버 기동(18981) — **자기가 띄운 PID 만** 종료한다
-4. 시드 — 사례 계정·사용자 몇 명·침묵 규칙 1건(API 로만 넣는다 — DB 를 직접 쓰지 않는다)
+4. 시드 — 사례 계정·사용자 몇 명·침묵 규칙 1건 · (``capture-biz``) 예시 업무 서비스·구성원
+   (API 로만 넣는다 — DB 를 직접 쓰지 않는다)
 5. ``capture.py`` 실행(uv 로 playwright 를 붙여 별도 프로세스) → ``build.py``
 
 전제: Redis(6380) · 샌드박스 PG 컨테이너(polestar_pg) 가동. 브라우저는 playwright 캐시.
@@ -92,10 +93,68 @@ def _seed() -> None:
     c.post("/api/v1/auth/login", json={"user_id": "lee_db", "password": "wrong-password"})
 
 
+# 업무 서비스 장면(capture-biz)의 예시 서비스 — 서버 이름은 결정 기록 픽스처
+# (fixtures/alarms/decisions.jsonl)의 서버와 같게 둬 알람 현황·이벤트 행이 생기게 한다.
+# resource_id 는 가짜 번호다(스냅샷이 없어 요청의 표시 칸을 쓴다)
+def _sms(resource_id: str, server_name: str, layer: str | None = None) -> dict:
+    """SMS 서버 구성원 추가 요청 본문(샌드박스 DB · 계층은 준 경우만)."""
+    m = {"kind": "sms_server", "db_id": "polestar", "resource_id": resource_id,
+         "server_name": server_name}
+    return {**m, "layer": layer} if layer else m
+
+
+_BIZ_SERVICES = [
+    {
+        "service": {"service_key": "pay_core", "display_name": "결제 코어(예시)", "tier": 1,
+                    "owner_org": "결제플랫폼팀", "description": "결제 승인 · 정산 연계",
+                    "monitored": True},
+        "members": [_sms("910001", "staapos1", "was"), _sms("910002", "staapos2", "was"),
+                    _sms("910003", "stadbos1", "db"), _sms("910004", "stafxo01", "batch")],
+        "verified": True,
+    },
+    {
+        "service": {"service_key": "web_portal", "display_name": "고객 웹 포털(예시)", "tier": 2,
+                    "owner_org": "채널운영팀", "description": "인터넷 뱅킹 웹 화면",
+                    "monitored": True},
+        "members": [_sms("910011", "svr-web-03", "web"), _sms("910012", "nipdbr36", "db")],
+        "verified": False,
+    },
+    {
+        "service": {"service_key": "backup_ops", "display_name": "백업 운영(예시)", "tier": 3,
+                    "owner_org": "인프라운영팀", "monitored": False},
+        "members": [_sms("910021", "svr-bkp-01")],
+        "verified": False,
+    },
+]
+
+
+def _seed_biz() -> None:
+    """예시 업무 서비스·구성원을 관리 API 로 넣는다(capture-biz — DB 직접 쓰기 0 · 관측 호출 0)."""
+    c = httpx.Client(base_url=BASE, timeout=30)
+    tok = c.post(
+        "/api/v1/auth/login", json={"user_id": ADMIN_USER, "password": ADMIN_PASSWORD}
+    ).json()["access_token"]
+    h = {"Authorization": f"Bearer {tok}"}
+    api = "/api/v1/admin/biz-services"
+    for spec in _BIZ_SERVICES:
+        r = c.post(api, headers=h, json=spec["service"])
+        r.raise_for_status()
+        svc = r.json()["service"]
+        for m in spec["members"]:
+            r = c.post(
+                f"{api}/{svc['id']}/members", headers=h, json={"version": svc["version"], **m}
+            )
+            r.raise_for_status()
+            svc = r.json()["service"]
+        if spec["verified"]:
+            c.patch(f"{api}/{svc['id']}", headers=h,
+                    json={"version": svc["version"], "verified": True}).raise_for_status()
+
+
 def _serve_and_capture(profile: str, only: list[str] | None, keep: bool) -> int:
     """프로필 스냅샷으로 캡처 서버를 띄우고 그 서버 소속 장면을 찍는다. 자기가 띄운 PID 만 종료한다."""
     app = snapshot.build(profile)
-    if profile in ("capture", "capture-diag"):
+    if profile in ("capture", "capture-diag", "capture-biz"):
         n = alarms.seed_decisions(app)
         b = alarms.seed_briefing(app)
         print(f"스냅샷 {app} · 결정 기록 {n}건 · 조사 브리핑 예시 {b}건")
@@ -112,6 +171,8 @@ def _serve_and_capture(profile: str, only: list[str] | None, keep: bool) -> int:
     try:
         _wait_health()
         _seed()
+        if profile == "capture-biz":
+            _seed_biz()
         cmd = [
             "uv",
             "run",
@@ -157,7 +218,15 @@ def main() -> None:
                 f"포트 {PORT} 이 이미 쓰이고 있다 — 이전 캡처 서버(--keep)나 녹화 서버를 먼저 내린다"
             )
     snapshot.reset_capture_db()
-    profiles = ("capture", "capture-zones", "capture-viz", "capture-diag")
+    profiles = ("capture", "capture-zones", "capture-viz", "capture-diag", "capture-biz")
+    if a.only:  # --only 장면이 없는 프로필은 서버를 띄우지 않는다
+        import yaml
+
+        caps = yaml.safe_load(
+            (REPO / "scripts/manual/captures.yaml").read_text(encoding="utf-8")
+        )["captures"]
+        wanted = {c.get("server", "capture") for c in caps if c["id"] in a.only}
+        profiles = tuple(p for p in profiles if p in wanted)
     rc = 0
     for i, profile in enumerate(profiles):
         rc |= _serve_and_capture(profile, a.only, keep=a.keep and i == len(profiles) - 1)

@@ -759,6 +759,7 @@ def build_playbook_briefing(
     apm_tools_connected: bool = False,
     tool_names: list[str] | None = None,
     duty_areas: DutyAreaMap | None = None,
+    biz_service: dict | None = None,
 ) -> dict:
     """플레이북 종합으로 6요소 브리핑을 조립한다(결정적 — LLM 서술은 `playbook` 안에만).
 
@@ -773,6 +774,8 @@ def build_playbook_briefing(
     `duty_view`(영역별 판정 · 인계 문구)를 `summary` **바로 뒤에** 싣는다 — 저장 상한 축소(noise_gate
     `clip_briefing`)가 키 순서대로 담으므로 뒤의 큰 값(`timeline`·`playbook` 등)보다 먼저 자리를 잡는다.
     수집 단계가 없으면 싣지 않는다. None이면 종전과 같다(키 없음 · 나머지 키 순서 불변).
+    `biz_service`(plans/215 D2 — `PlaybookRun.biz_service`): 선택 키 `biz_service`(서비스명 · 비교한
+    구성원 · 추정 구성원 표지)를 맨 뒤에 싣는다. None이면 키 없음(6요소 불변).
     """
     synthesis = playbook.get("synthesis") or {}
     hyps = list(synthesis.get("hypotheses") or [])
@@ -821,6 +824,8 @@ def build_playbook_briefing(
             cross_source, list(cross_source.valid_links), None, list(tool_names or []),
             apm_tools_connected,
         )
+    if biz_service is not None:
+        briefing["biz_service"] = biz_service
     return briefing
 
 

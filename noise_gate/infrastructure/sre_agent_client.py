@@ -234,6 +234,7 @@ class SreAgentClient:
         reference_time: Optional[str] = None,
         lookback_minutes: Optional[int] = None,
         prior_findings: dict[str, Any] | None = None,
+        context: dict[str, Any] | None = None,
     ) -> dict:
         """pull형 장애 진단 잡을 제출한다(`sre_diagnose` — sre-agent/05 §3·§7).
 
@@ -252,6 +253,8 @@ class SreAgentClient:
             prior_findings: 이미 수집한 판정의 구조화 요약(선택 — plans/187 W10 추가 조사).
                 서술 키 없이 호출부가 화이트리스트로 만든 dict이며, 없으면 인자를 보내지
                 않는다(종전 호출과 비트 동일).
+            context: 진단 맥락(선택 — plans/215 D3 · `{biz_service: …}` 하나). 없으면 인자를
+                보내지 않는다(종전 호출과 비트 동일).
 
         Returns:
             `{investigation_id, status, ...}` (파싱된 dict). 이후 `poll`로 진단 결과를 조회한다.
@@ -273,6 +276,8 @@ class SreAgentClient:
                 arguments["lookback_minutes"] = int(lookback_minutes)
         if prior_findings:
             arguments["prior_findings"] = prior_findings
+        if context:
+            arguments["context"] = context
         return await self._call_tool_json("sre_diagnose", arguments)
 
     async def health(self) -> dict[str, Any]:

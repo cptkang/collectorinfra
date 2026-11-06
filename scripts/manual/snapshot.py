@@ -13,6 +13,7 @@
 - ``capture-viz`` : 결과 그래프·값 해석 장면(plans/160) — ``capture`` + 두 플래그 on ·
   LLM 주소를 닫힌 포트로
 - ``capture-diag`` : 장애 진단·조사 대화 장면(plans/187) — ``capture`` + 실시간 화면 on
+- ``capture-biz`` : 업무 서비스 정의·업무 현황 장면(plans/215) — ``capture`` + 두 플래그 on
 """
 
 from __future__ import annotations
@@ -34,6 +35,7 @@ APP_DIRS = {
     "capture-zones": BUILD / "app-capture-zones",
     "capture-viz": BUILD / "app-capture-viz",
     "capture-diag": BUILD / "app-capture-diag",
+    "capture-biz": BUILD / "app-capture-biz",
 }
 APP = APP_DIRS["record"]
 FIXTURES = REPO / "scripts" / "manual" / "fixtures"
@@ -195,6 +197,16 @@ PROFILES["capture-diag"] = {
     **PROFILES["capture"],
     "NOISE_INVESTIGATION_LIVE_VIEW_ENABLED": "true",
     "NOISE_INVESTIGATION_SERVICE_URL": "http://127.0.0.1:9/sse",
+}
+# 업무 서비스 정의 · 업무 현황 장면 전용(plans/215 U-86·U-87·U-89 · A-92·A-94) — 두 플래그는
+# 기본 off 라 기본 캡처 서버에 켜면 머리글 뷰 탭 줄에 「업무 현황」이 새로 찍혀 기존 장면이 바뀐다.
+# 서비스·구성원은 관리 API 로만 넣는다(run_capture._seed_biz). 지표 수집기 · 지표 보기 ·
+# 서비스 진단 · 조사 맥락 플래그는 끈 채로 둔다 — 관측 DB · 제니퍼 게이트웨이 호출 0
+# (알람 현황·이벤트는 결정 기록만 읽는다)
+PROFILES["capture-biz"] = {
+    **PROFILES["capture"],
+    "NOISE_BIZ_SERVICE_ENABLED": "true",
+    "NOISE_BIZ_MONITOR_ENABLED": "true",
 }
 
 

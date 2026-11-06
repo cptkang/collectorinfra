@@ -660,8 +660,72 @@ class NoiseGateConfig(BaseSettings):
     apm_host_map_retry_hours: int = 24             # failed·ambiguous 재시도 간격(시)
     # 스캔 키셋 페이지 행 수 — MCP 서버 max_rows(10000) 미만이어야 한 페이지가 잘리지 않는다
     apm_host_map_scan_page_rows: int = Field(default=1000, ge=1, lt=10000)
+    # ── plans/215 · D-368: 업무 서비스 통합 연계(정의·현황·진단·조사 맥락) ──
+    # 업무 서비스(PG 정본 `biz_service*` + Redis 읽기 사본 `bizsvc:*`)를 SMS 서버·APM 구성원으로 묶어
+    # 현황(M1~M3)·진단(D1·D3)·조사 맥락(D2)에 쓴다. 사본 기록자는 API 프로세스뿐(D-049). 전부 기본
+    # off = 기동 경로·라우트·페이로드 비트 동일(DDL·태스크 0). 플래그 사이 의존은 아래 `biz_*_active`
+    # 속성이 해석한다 — 소비처는 그 속성만 본다. 기동 시 1회 해석.
+    biz_service_enabled: bool = False              # 연계 계산·저장·정의 페이지(auth 풀 필요)
+    biz_service_max_members: int = Field(default=200, ge=1)   # 서비스당 SMS 구성원 상한(넘으면 ambiguous)
+    biz_monitor_enabled: bool = False              # 업무 현황 탭·M2(biz_service 필요)
+    biz_monitor_metrics_enabled: bool = False      # M3 수집기 — off면 관측 호출 0(biz_monitor 필요)
+    biz_monitor_max_services: int = Field(default=20, ge=1)   # 감시 서비스 상한
+    biz_monitor_max_apm_targets: int = Field(default=100, ge=1)  # 주기당 APM 인스턴스 상한
+    biz_monitor_apm_interval_seconds: int = Field(default=60, ge=30)
+    biz_monitor_sms_interval_seconds: int = Field(default=600, ge=300)
+    biz_monitor_alarm_window_minutes: int = Field(default=60, ge=1)   # M2 창
+    biz_diagnosis_enabled: bool = False            # D1 진단·D3 서비스 심층 조사(biz_monitor 필요)
+    biz_diagnosis_max_apm_targets: int = Field(default=50, ge=1)  # D1 즉석 조회 APM 인스턴스 상한
+    biz_diagnosis_window_minutes: int = Field(default=15, ge=1)   # D1 동시성·최초 이상 창
+    biz_investigation_context_enabled: bool = False  # D2 조사 페이로드 meta.biz_service(biz_service 필요)
+    biz_investigation_max_sms: int = Field(default=10, ge=1)   # D2·D3 비교 SMS 구성원 상한
+    biz_investigation_max_apm: int = Field(default=8, ge=1)    # D2·D3 비교 APM 구성원 상한
+    biz_monitor_changes_enabled: bool = False      # 타임라인 변경 이력(biz_monitor 필요 · W0-16 확인 전 off)
+    biz_monitor_change_lookback_minutes: int = Field(default=60, ge=1)  # 「장애 직전 변경」 창
+    biz_monitor_history_enabled: bool = False      # 상세 「지표」 보기(biz_monitor 필요 · M3와 독립)
+    # 지표 보기 조회 구성원 상한 — 20을 넘기면 SMS 행 상한 계산이 깨진다
+    biz_monitor_history_max_members: int = Field(default=20, ge=1, le=20)
+    biz_monitor_history_max_concurrency: int = Field(default=2, ge=1)  # 지표 보기 전체 동시 조회 상한
 
     model_config = {"env_prefix": "NOISE_", "env_file": ".env", "extra": "ignore"}
+
+    @property
+    def biz_service_active(self) -> bool:
+        """업무 서비스 정의·저장 유효 여부(plans/215 §7 — 정확히 True일 때만)."""
+        return self.biz_service_enabled is True
+
+    @property
+    def biz_monitor_active(self) -> bool:
+        """업무 현황(P2·M2) 유효 여부 — `biz_service_active` 필요."""
+        return self.biz_service_active and self.biz_monitor_enabled is True
+
+    @property
+    def biz_monitor_metrics_active(self) -> bool:
+        """M3 실시간 지표 수집 유효 여부 — `biz_monitor_active` 필요."""
+        return self.biz_monitor_active and self.biz_monitor_metrics_enabled is True
+
+    @property
+    def biz_monitor_changes_active(self) -> bool:
+        """P2 타임라인 변경 이력 유효 여부 — `biz_monitor_active` 필요."""
+        return self.biz_monitor_active and self.biz_monitor_changes_enabled is True
+
+    @property
+    def biz_monitor_history_active(self) -> bool:
+        """P2 상세 「지표」 보기 유효 여부 — `biz_monitor_active` 필요(M3와 독립)."""
+        return self.biz_monitor_active and self.biz_monitor_history_enabled is True
+
+    @property
+    def biz_diagnosis_active(self) -> bool:
+        """D1 진단·D3 서비스 심층 조사 유효 여부 — `biz_monitor_active` 필요.
+
+        D3는 조사 가능 신호(`investigation_enabled`)도 필요하다 — 그 판정은 소비처가 더한다.
+        """
+        return self.biz_monitor_active and self.biz_diagnosis_enabled is True
+
+    @property
+    def biz_investigation_context_active(self) -> bool:
+        """D2 조사 페이로드 `meta.biz_service` 가산 유효 여부 — `biz_service_active` 필요."""
+        return self.biz_service_active and self.biz_investigation_context_enabled is True
 
     @property
     def page_review_always_page_globs(self) -> list[str]:

@@ -46,10 +46,18 @@
     // (최종 활성 탭 = 관제). 주소는 탭 전환이 고쳐 쓰므로 무엇보다 먼저 읽어 둔다.
     var noiseEntry = {
         wanted: new URLSearchParams(window.location.search).get("view") === "noise",
+        alarm: new URLSearchParams(window.location.search).get("alarm"),   // plans/215 W8b `?view=noise&alarm=<id>`
         settled: false,
         capsKnown: false,
         done: false,
     };
+    // plans/215 W8 업무 현황(기능 조회 biz_monitor_enabled) — `?view=biz&service=&tab=`는 무엇보다 먼저 읽어 둔다
+    // (탭 전환이 주소를 고쳐 쓴다). 진입 판정은 관제와 같은 시점(복원·기능 조회가 둘 다 끝난 뒤)에 1회.
+    var bizEntry = (function () {
+        var p = new URLSearchParams(window.location.search);
+        return { wanted: p.get("view") === "biz", service: p.get("service"), tab: p.get("tab"), at: p.get("at"),
+            settled: false, capsKnown: false, done: false };
+    })();
     var investigationTab = document.getElementById("investigationTab");   // plans/187 W16 조사 대화
     var investigationTabClose = document.getElementById("investigationTabClose");
     var alarmList = document.getElementById("alarmList");
@@ -4806,7 +4814,7 @@
     // (하드코딩 toggle을 늘리면 뷰 하나가 조용히 안 숨는 회귀가 생긴다).
     // 질의 이력은 여기 없다 — 탭으로 본문을 바꾸는 뷰가 아니라 채팅 옆에 붙는 사이드바다.
     function viewRegistry() {
-        return { chat: chatView, alarm: alarmView, diagnosis: diagnosisView, noise: noiseView };
+        return { chat: chatView, alarm: alarmView, diagnosis: diagnosisView, noise: noiseView, biz: bizViewEl() };
     }
 
     function setActiveView(view) {
@@ -4826,6 +4834,7 @@
         });
         // plans/193 W2: 노이즈 관제 탭 — 보이면 붙이거나(첫 활성) 재개하고, 떠나면 주기 갱신을 멈춘다
         noiseViewShown(view === "noise");
+        bizViewShown(view === "biz");   // plans/215 W8 — 떠나면 폴링·heartbeat 정지(pause)
         if (view === "alarm") {
             alarmUnreadCount = 0;
             renderAlarmBadge();
@@ -5804,6 +5813,9 @@
     var noiseLoading = null;    // 첫 활성의 조각 조회·자산 로드(실패하면 비워 다음 활성 때 다시 · mount 실패면 그대로)
     var NOISE_FLASH_MS = 8000;  // 일시 안내(진입 거부 사유)가 떠 있는 시간 — 채팅 오류 칸과 같다
     var noiseFlash = null;      // 떠 있는 일시 안내 {node, timer}
+    // (plans/215 W8b) 관제 탭에서 열 알람 — 업무 현황 이벤트 행·`?view=noise&alarm=`이 넣고, 관제 모듈이 mount·resume 때
+    // mount 인자 `openAlarm`(takeNoiseAlarm)으로 한 번 꺼내 그 알람의 판정 서랍을 연다. 주소 `alarm=`은 관제 탭을 떠날 때 지운다.
+    var pendingNoiseAlarm = null;
 
     function applyNoiseTabCapability() {
         noiseTabEnabled = !!(alarmCapabilities && alarmCapabilities.noise_console_portal_tab === true);
@@ -5819,13 +5831,16 @@
     function noiseEntrySettled() {
         noiseEntry.settled = true;
         applyNoiseEntry();
+        bizEntrySettled();   // plans/215 W8 — 업무 현황 진입(`?view=biz`)도 같은 시점에 판정
     }
 
     function applyNoiseEntry() {
         if (noiseEntry.done || !noiseEntry.settled || !noiseEntry.capsKnown) return;
         noiseEntry.done = true;
-        if (noiseEntry.wanted && noiseTabEnabled) setActiveView("noise");
-        else syncNoiseViewParam(activeView === "noise");   // 꺼져 있으면 파라미터만 지운다
+        if (noiseEntry.wanted && noiseTabEnabled) {
+            if (noiseEntry.alarm) pendingNoiseAlarm = noiseEntry.alarm;   // plans/215 W8b `?view=noise&alarm=`
+            setActiveView("noise");
+        } else syncNoiseViewParam(activeView === "noise");   // 꺼져 있으면 파라미터만 지운다
     }
 
     // 관제 탭이 활성인 동안 주소에 `view=noise`를 둔다(다른 쿼리 보존) — 새로고침·401 로그인 복귀(next)가 돌아온다
@@ -5833,7 +5848,10 @@
         var params = new URLSearchParams(window.location.search);
         if ((params.get("view") === "noise") === on) return;
         if (on) params.set("view", "noise");
-        else params.delete("view");
+        else {
+            params.delete("view");
+            params.delete("alarm");   // plans/215 W8b — 관제 탭을 떠나면 열었던 알람(`alarm=`)도 지운다
+        }
         var rest = params.toString();
         history.replaceState(null, "", window.location.pathname + (rest ? "?" + rest : "") + window.location.hash);
     }
@@ -5879,6 +5897,29 @@
         clearTimeout(noiseFlash.timer);
         noiseFlash.node.remove();
         noiseFlash = null;
+    }
+
+    // (plans/215 W8b) 업무 현황 이벤트 알람 행 → 같은 창 관제 탭 서랍(새 브라우저 탭 0) — 옮겼으면 true
+    function openAlarmInNoise(alarmId) {
+        if (!noiseTabEnabled || !noiseView || !alarmId) return false;
+        pendingNoiseAlarm = String(alarmId);
+        setActiveView("noise");   // 숨어 있던 관제는 resume, 처음이면 mount가 openAlarm으로 꺼낸다
+        if (activeView !== "noise") {
+            pendingNoiseAlarm = null;
+            return false;
+        }
+        // 주소에 그 알람을 남긴다(`?view=noise&alarm=<id>` — 새로고침·로그인 복귀가 같은 서랍으로 돌아온다)
+        var params = new URLSearchParams(window.location.search);
+        params.set("alarm", String(alarmId));
+        history.replaceState(null, "", window.location.pathname + "?" + params.toString() + window.location.hash);
+        return true;
+    }
+
+    // 관제 모듈 mount 인자 `openAlarm` — 기다리는 알람 id를 한 번만 꺼낸다(없으면 null = 종전 동작)
+    function takeNoiseAlarm() {
+        var id = pendingNoiseAlarm;
+        pendingNoiseAlarm = null;
+        return id;
     }
 
     function openNoiseInvestigation(id) {
@@ -5947,6 +5988,7 @@
                         onForbidden: function () { showNoiseNotice("노이즈 관제를 볼 권한이 없습니다."); },
                         onOpenInvestigation: openNoiseInvestigation,
                         liveView: diagnosisOn,
+                        openAlarm: takeNoiseAlarm,   // plans/215 W8b — 업무 현황 이벤트 행의 알람 서랍
                     });
                 } catch (err) {
                     reason = (err && err.message) || String(err);
@@ -5967,6 +6009,170 @@
                 noiseLoading = null;
                 noiseView.textContent = "";
                 showNoiseNotice("노이즈 관제를 불러오지 못했습니다(" + err.message + "). 탭을 다시 열면 다시 시도합니다.");
+            });
+    }
+
+    // ─── 업무 현황 탭 (plans/215 W8 · §5.2) ───
+    // 기능 조회 `biz_monitor_enabled`가 참일 때만 탭을 보인다(거짓·조회 실패면 DOM·요청 무변경). 노이즈 관제와 같은 방식 —
+    // 첫 활성 때 마크업 조각(/static/biz-monitor.html)을 받아 붙이고 그 문서의 스타일시트를 실은 뒤 BizMonitor.mount.
+    // 탭이 숨으면 pause(폴링·heartbeat 0), 다시 보이면 resume. 주소는 `?view=biz[&service=<id>][&tab=<보기>]`.
+    // 동선은 같은 창이다 — [질의응답에서 묻기]는 질의응답 입력창에 채우기만(reuseHistoryQuery · 전송 0),
+    // [이 구성원 알람 조사]는 이벤트 알람 탭 「지난 알람 검색」에 그 서버를 넣어 찾는다(기존 조사 동선 — 카드의 분석 요청·조사 열기).
+    var BIZ_PAGE = "/static/biz-monitor.html";
+    var bizTabEnabled = false;
+    var bizHandle = null;    // BizMonitor.mount 핸들 {pause, resume, unmount, route}
+    var bizLoading = null;
+
+    // 뷰·탭 노드는 부를 때 찾는다 — 공용 경로(setActiveView·진입 판정)는 이 노드가 없으면 업무 현황 상태를 건드리지 않는다
+    function bizViewEl() {
+        return document.getElementById("bizView");
+    }
+
+    function applyBizTabCapability() {
+        bizTabEnabled = !!(alarmCapabilities && alarmCapabilities.biz_monitor_enabled === true);
+        var tab = document.getElementById("bizTab");
+        if (bizTabEnabled && tab) tab.style.display = "";
+        bizEntry.capsKnown = true;
+        applyBizEntry();
+    }
+
+    function bizEntrySettled() {
+        if (!bizViewEl()) return;
+        bizEntry.settled = true;
+        applyBizEntry();
+    }
+
+    function applyBizEntry() {
+        if (bizEntry.done || !bizEntry.settled || !bizEntry.capsKnown) return;
+        bizEntry.done = true;
+        if (bizEntry.wanted && bizTabEnabled) setActiveView("biz");
+        else syncBizParams(activeView === "biz");   // 꺼져 있으면 파라미터만 지운다
+    }
+
+    // 활성인 동안 view=biz + 상세(service·tab)를 둔다 · 떠나면 service·tab을 지우고 view는 biz일 때만 지운다(다른 뷰 주소 보존)
+    function syncBizParams(on) {
+        var params = new URLSearchParams(window.location.search);
+        var before = params.toString();
+        if (on) {
+            var route = bizHandle ? bizHandle.route() : { service: bizEntry.service, tab: bizEntry.tab, at: bizEntry.at };
+            params.set("view", "biz");
+            if (route.service) params.set("service", route.service); else params.delete("service");
+            if (route.service && route.tab) params.set("tab", route.tab); else params.delete("tab");
+            // 이벤트 보기 시각 지정(§5.2.1) — 모듈이 검사한 값만 남는다(무효면 mount 뒤 첫 동기화가 지운다)
+            if (route.service && route.tab === "events" && route.at) params.set("at", route.at); else params.delete("at");
+        } else {
+            if (params.get("view") === "biz") params.delete("view");
+            params.delete("service");
+            params.delete("tab");
+            params.delete("at");
+        }
+        var rest = params.toString();
+        if (rest === before) return;
+        history.replaceState(null, "", window.location.pathname + (rest ? "?" + rest : "") + window.location.hash);
+    }
+
+    function bizViewShown(on) {
+        if (!bizViewEl()) return;
+        syncBizParams(on);
+        if (!on) {
+            if (bizHandle) bizHandle.pause();
+            return;
+        }
+        if (bizHandle) bizHandle.resume();
+        else loadBizMonitor();
+    }
+
+    // 불러오기·시작 실패 안내 — 관제 뷰 안내와 같은 모양(style.css `.noise-view-notice`)
+    function showBizNotice(text) {
+        var bizView = bizViewEl();
+        if (!bizView) return;
+        var note = bizView.querySelector(".noise-view-notice");
+        if (!note) {
+            note = document.createElement("p");
+            note.className = "noise-view-notice";
+            note.setAttribute("role", "alert");
+            bizView.insertBefore(note, bizView.firstChild);
+        }
+        note.textContent = text;
+    }
+
+    function fillBizQuestion(text) {
+        if (!promptEl || !text) return false;
+        setActiveView("chat");
+        if (activeView !== "chat") return false;   // 답변 중 조사 대화 전환 실패 등
+        reuseHistoryQuery(text);
+        return true;
+    }
+
+    function investigateBizMember(member) {
+        var name = member && (member.server_name || member.hostname || member.instance_name || member.name);
+        if (!alarmCanReceive || !alarmPastQuery || !alarmPastSearchBtn || !name) return false;
+        setActiveView("alarm");
+        if (activeView !== "alarm") return false;
+        var past = document.getElementById("alarmPast");
+        if (past) past.open = true;
+        alarmPastQuery.value = String(name);
+        searchPastAlarms();
+        if (past && past.scrollIntoView) past.scrollIntoView({ block: "start" });
+        return true;
+    }
+
+    function loadBizMonitor() {
+        var bizView = bizViewEl();
+        if (bizLoading || !bizView) return;
+        bizLoading = fetch(BIZ_PAGE, { cache: "no-cache" })
+            .then(function (res) {
+                if (!res.ok) throw new Error("HTTP " + res.status);
+                return res.text();
+            })
+            .then(function (html) {
+                var doc = new DOMParser().parseFromString(html, "text/html");
+                var assets = [];
+                doc.querySelectorAll('head link[rel="stylesheet"]').forEach(function (n) {
+                    assets.push(["link", n.getAttribute("href")]);
+                });
+                bizView.textContent = "";
+                Array.prototype.slice.call(doc.body.children).forEach(function (node) {
+                    if (node.tagName !== "SCRIPT") bizView.appendChild(document.adoptNode(node));
+                });
+                return assets.reduce(function (chain, a) {
+                    return chain.then(function () { return loadNoiseAsset(a[0], a[1]); });
+                }, Promise.resolve());
+            })
+            .then(function () {
+                if (!window.BizMonitor) throw new Error("업무 현황 모듈이 없습니다");
+                var handle = null;
+                var reason = "";
+                try {
+                    handle = window.BizMonitor.mount(bizView, {
+                        token: function () { return localStorage.getItem("user_token") || ""; },
+                        onAuthFail: redirectToLogin,
+                        isAdmin: function () { return alarmOperator; },
+                        service: bizEntry.wanted ? bizEntry.service : null,
+                        tab: bizEntry.wanted ? bizEntry.tab : null,
+                        at: bizEntry.wanted ? bizEntry.at : null,
+                        onRoute: function () { if (activeView === "biz") syncBizParams(true); },
+                        fillQuestion: fillBizQuestion,
+                        onInvestigateMember: investigateBizMember,
+                        onOpenAlarm: openAlarmInNoise,               // W8b 이벤트 알람 행 → 같은 창 관제 탭 서랍
+                        onOpenInvestigation: openInvestigationEntry,  // W8b 이벤트 조사 행 → 같은 창 장애 진단 탭
+                    });
+                } catch (err) {
+                    reason = (err && err.message) || String(err);
+                }
+                if (!handle) {
+                    bizView.textContent = "";
+                    showBizNotice("업무 현황을 시작하지 못했습니다" + (reason ? "(" + reason + ")" : "") + ". 새로고침하면 다시 시도합니다.");
+                    return;
+                }
+                bizHandle = handle;
+                if (activeView !== "biz") bizHandle.pause();
+                else syncBizParams(true);
+            })
+            .catch(function (err) {
+                bizLoading = null;
+                bizView.textContent = "";
+                showBizNotice("업무 현황을 불러오지 못했습니다(" + err.message + "). 탭을 다시 열면 다시 시도합니다.");
             });
     }
 
@@ -7384,6 +7590,12 @@
         }
     }
 
+    // plans/215 W5: 「업무 서비스 정의」(새 탭 독립 페이지) 링크 — 기능 조회 biz_service_enabled일 때만 보인다.
+    function applyBizServicesLink() {
+        var link = document.getElementById("bizServicesLink");
+        if (link) link.style.display = alarmCapabilities && alarmCapabilities.biz_service_enabled === true ? "block" : "none";
+    }
+
     function connectAlarmStream() {
         if (!alarmCanReceive || !alarmReceiveEnabled) return;
         if (alarmStreamSource) return;  // 중복 연결 방지
@@ -7686,6 +7898,8 @@
         loadAlarmCapabilities().then(function () {
             setupAlarmLevelSelect(userInfo, authEnabled);
             applyNoiseTabCapability();   // plans/193 W2 — 포털 「노이즈 관제」 탭(플래그)
+            applyBizTabCapability();     // plans/215 W8 — 포털 「업무 현황」 탭(플래그)
+            applyBizServicesLink();      // plans/215 W5 — 매뉴얼 메뉴 「업무 서비스 정의」(플래그)
         });
         if (alarmCanReceive && alarmReceiveEnabled) connectAlarmStream();
     }

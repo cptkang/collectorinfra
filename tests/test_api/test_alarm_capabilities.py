@@ -81,6 +81,9 @@ def test_capabilities_expose_no_paths_or_secrets():
         "investigation_label_enabled",   # plans/198 교정 — 불리언(실제 원인 입력)
         "investigation_memory_enabled",  # plans/198 교정 — 불리언(비슷한 과거 조사)
         "investigation_summary_view_enabled",  # plans/199 W1 — 불리언(한눈에 보기 카드)
+        # plans/215 W6 — 불리언(업무 서비스 정의·현황·서비스 진단·지표 보기)
+        "biz_service_enabled", "biz_monitor_enabled",
+        "biz_diagnosis_enabled", "biz_history_enabled",
     }
     for value in body.values():
         assert isinstance(value, (bool, int, float)), value

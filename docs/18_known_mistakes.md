@@ -2470,3 +2470,43 @@
 - **실수**: 바꾼 파일 목록을 `FILES=$(… | tr '\n' ' ')`에 담아 `regress.py --files $FILES`로 넘겼다. zsh는 따옴표 없는 변수를 단어로 나누지 않으므로 목록 전체가 파일 하나로 전달됐고, 도구가 `OSError: File name too long`으로 rc=1을 내 회귀가 돌지 않았다
 - **원인**: bash의 단어 분리 규칙을 zsh 셸(이 개발 맥 기본)에 그대로 가정했다
 - **방지책**: 목록은 줄 단위 파일로 두고 `xargs python scripts/regress.py --base <SHA> --files < list.txt`로 넘긴다(또는 zsh `${=FILES}`). rc만 보지 말고 출력 첫 줄 `기준 … · 변경 N`이 찍혔는지 확인한다
+
+### 2026-11-05 · (plans/215 W10) sre_agent 디스패처가 새 kwarg `biz_service=`를 늘 넘겨 「off 비트 동일」 기준선 테스트 12건이 깨졌다
+- **실수**: D2 서비스 맥락을 브리핑 빌더로 넘기려고 `investigation_dispatcher`가 키 유무와 무관하게 `biz_service=`를 전달했다. `sre_agent/tests/test_plan201_w4_verify.py::test_off_bit_identical_to_baseline_builder[*]`가 호출 인자를 기준 빌더와 비교하므로 12건이 실패했다(1차 모듈 회귀에서 발견)
+- **원인**: 「키가 없으면 종전과 같다」를 반환값 수준에서만 생각하고, 호출 인자 자체를 비교하는 기준선 테스트가 있는지 확인하지 않았다
+- **방지책**: 선택 기능의 인자는 값이 있을 때만 kwarg로 싣는다(`**_biz_kwargs(run)` 꼴). 가산 인자를 넣기 전에 대상 함수 이름으로 `off_bit_identical`·`baseline` 테스트를 grep한다
+
+### 2026-11-05 · (plans/215 W1·W3·W7 · implementer 자체 발견) 미스캔 DB 구성원 삭제 · no-op 행 version 증가 · 로더 경고 순서
+- **실수**: ① W1 `plan_apply`가 이번 계산에서 스캔하지 않은 DB의 구성원을 「제안에서 사라짐」으로 지우려 했다 ② W3 `apply_ops`가 가드에 걸려 아무것도 바꾸지 않은 행의 `version`도 올렸다 ③ W7 설정 로더가 경고를 평가하는 순서가 틀려 빈 지표 원천 경고가 다른 경고에 가려졌다. 셋 다 자기 테스트에서 잡혀 고쳤다
+- **원인**: 「이번 입력에 없음」과 「이번에 보지 않음」을 구분하지 않았다 · 낙관적 동시성 표에 「정보가 늘지 않는 쓰기」를 대조하지 않았다(2026-11-04 항목과 같은 유형)
+- **방지책**: 동기화 삭제는 스캔 범위(db_id 집합) 안에서만 판정하고 테스트에 「미스캔 DB 구성원 유지」를 둔다. `version` 조건 갱신은 실제 바뀐 행만 올리고 「같은 내용 재적용 = version 불변」 테스트를 같은 Wave에 둔다
+
+### 2026-11-05 · (plans/215 · 팀 리드) 위임 프롬프트가 아직 만들지 않은 참고 파일을 가리켰다 · 병렬 Wave가 같은 라우트 파일의 폴백 값을 서로 넘겼다
+- **실수**: ① W5 프롬프트에 관리 API 표 `scratchpad/w4_routes.md`를 읽으라고 적고 그 파일을 W5를 띄운 뒤에 만들었다(직후 보충 메시지로 알림) ② W8b가 쓴 `getattr(ng, "investigation_store_path", "")`(필드 기본값과 다른 폴백)가 `config_fallback_check`를 깨, 같은 시각에 돌던 W9·W11·W5b 세 implementer가 모두 「담당 밖 실패」로 보고했다
+- **원인**: 참고 파일 작성과 위임 순서를 점검하지 않았다 · 병렬 Wave의 `--no-tests` 정적 게이트가 남의 진행 중 파일까지 스캔한다는 점을 프롬프트에 적지 않았다
+- **방지책**: 위임 프롬프트가 가리키는 파일은 띄우기 전에 `ls`로 존재를 확인한다. 병렬 Wave 프롬프트에 「담당 밖 파일의 정적 게이트 실패는 파일:줄만 보고하고 고치지 않는다 — 팀 리드가 담당자에게 넘긴다」를 적고, 첫 보고가 오면 바로 담당자에게 교정을 보낸다
+
+### 2026-11-05 · (plans/215 · 팀 리드) 모듈 회귀가 xdist 수집 불일치로 본체 테스트를 하나도 돌리지 못했다
+- **실수**: 마지막 Wave 회귀 1차에서 본체가 `ERROR gw0 - Different tests were collected between gw6 and gw0`로 끝나 통과 2건만 찍혔다. 원인은 이 계획 밖의 `tests/test_api/test_plan199_w6_breakglass.py` — parametrize id에 수집 시각으로 만든 JWT(`exp`)가 들어가 워커가 초 경계를 넘으면 id가 달라진다. 재실행으로 통과했다
+- **원인**: 수집 시점 비결정 값(시각 기반 토큰)을 parametrize id로 쓴 기존 테스트 · rc만이 아니라 본체 「통과 N」이 기대 규모인지 확인하지 않으면 회귀가 돈 것처럼 보인다
+- **방지책**: regress 결과에서 본체 통과 건수가 수천 단위인지 먼저 본다. `Different tests were collected`가 나오면 해당 파일의 parametrize id에 시각·난수가 섞였는지 확인하고 재실행한다(근본 수정은 id를 고정 문자열로 — 별도 작업)
+
+### 2026-11-05 · (plans/215 W2 · 팀 리드) 설정 필드 20개를 더하면서 설정 카탈로그의 세 그물(건수·구획·도움말)을 같은 Wave에 갱신하지 않았다
+- **실수**: W2가 `src/config/alarm.py`에 `NOISE_BIZ_*` 20개를 더했지만 `tests/test_api/test_settings_catalog.py`(총 건수 499 고정)·`src/api/settings_catalog.py` `SECTION_BY_KEY`(구획)·`config/settings_help/`(큐레이션 도움말 100%)·`.env.example`을 갱신하지 않았다. 계획 마지막 회귀와 교정 라운드 회귀에서 하나씩 드러나 세 번에 나눠 고쳤다
+- **원인**: 설정 필드 추가가 「`src/config/` = 웨이브 회귀」로만 인식됐고, 설정 관리 UI가 필드를 인트로스펙션해 건수·구획·도움말 그물이 함께 걸린다는 점을 위임 프롬프트에 적지 않았다
+- **방지책**: `src/config/`에 필드를 더하는 Wave 프롬프트에 「`.env.example` 주석 항목 · `SECTION_BY_KEY` · `config/settings_help/` 항목 · `test_settings_catalog.py` 건수」 네 곳을 같은 Wave 담당으로 적는다. 그 Wave 끝에 `pytest tests/test_api/test_settings_catalog*.py tests/test_api/test_settings_help.py`를 돌린다
+
+### 2026-11-06 · (plans/215 · 팀 리드) 미구현 사유를 실측 없이 「기록 필드 1건이면 켜진다」로 결정 기록에 적었다
+- **실수**: D-368 이탈 1에 M2 귀속 폴스타 연계 단계·트리 추정이 「게이트가 필드를 기록하면 켜진다(비용 1건)」고 적었다. 실측해 보니 결정 기록 시점엔 `polestar_link`가 아직 없고(조사 트리거가 기록 뒤 APM 알람에만 붙임) `resource_id`는 알람 원문에 없으며 `resourceAncestry`는 운영 템플릿 미지원(D-188)이었다.
+- **원인**: implementer의 「필드가 없다」 보고를 비용 추정으로 바꿔 적으면서 그래프 순서(`notification_gate → investigation_trigger`)와 기존 실측(D-188)을 확인하지 않았다.
+- **방지책**: 「X만 더하면 켜진다」는 잔여 서술은 값의 생산 시점(그래프·노드 순서)과 원문 필드 존재를 확인한 뒤에만 쓴다. 확인 전이면 「미확인」으로 적는다(D-368 부기 1 ⑧에서 정정).
+
+### 2026-11-06 · (plans/215 W10 교정 · implementer) `concurrent.futures.TimeoutError`로 대기 초과를 가려 곁가지의 자체 `TimeoutError`까지 「대기 초과」로 바꿨다
+- **실수**: `call_with_side`가 `except FutureTimeout`으로 대기 상한 초과를 판정해, 곁가지 콜러블이 스스로 낸 `TimeoutError`도 「비교 수집 Ns 초과」가 되고 실제 사유가 사라졌다. 같은 대기 동안 중단 신호도 보지 않았다(verifier Minor 2건).
+- **원인**: Python 3.11+에서 `concurrent.futures.TimeoutError`는 `builtins.TimeoutError`와 같은 클래스다.
+- **방지책**: 대기 초과는 `fut.done()`으로 판정하고 끝난 future는 `fut.exception()`으로 처리한다. 스레드 대기는 짧은 주기로 `cancel`을 본다.
+
+### 2026-11-06 · (plans/215 W5·W8 · 팀 리드) 브라우저 확인 없이 화면을 완료 처리해 전역 `select { width: 100% }` 상속으로 필터 칸이 전체 폭으로 늘어난 것을 놓쳤다
+- **실수**: 업무 서비스 정의 검색 줄·업무 현황 도구줄의 `<select>`가 전역 스타일을 덮지 않아 한 줄씩 전체 폭으로 늘어났다. 정적·node 검사는 통과했고 매뉴얼 캡처에서야 드러났다.
+- **원인**: 1차 구현 때 브라우저 확인을 「도구 부재」로 건너뛰었으나 실제로는 매뉴얼 캡처 하네스(playwright·`run_capture`)로 실 렌더가 가능했다.
+- **방지책**: 새 화면은 완료 전에 `scripts.manual.run_capture`(가짜 데이터 · LLM 0)로 1회 렌더해 본다. 새 페이지 CSS는 전역 `input`·`select` 폭 규칙을 덮는지 확인한다.

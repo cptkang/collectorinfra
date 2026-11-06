@@ -1,10 +1,12 @@
 # 215. 업무 서비스 통합 연계 — 업무 서비스별 APM·SMS 연계를 자동 분석·저장·관리하고, 알람·실시간 지표로 모니터링하며, 서비스 단위로 복합 진단한다
 
 > **작성일**: 2026-11-05
-> **상태**: **TODO** — 계획(코드 0건) · 열린 질문 Q1~Q37(§15)은 권고안을 「이의 없으면 확정」으로 제시 · D-368 예약
+> **상태**: **WIP** — W1~W12(W5b·W8b·W8c 포함) 구현 완료(2026-11-05) · 잔여 진행 + W10 교정 3건(2026-11-06 · D-368 부기 1) · 커밋 전 작업 트리 · 잔여: **W0 운영 실측(사용자 몫)** — `sms_thresholds`·`layer_tokens`·`strip_prefix_patterns`·`sms_metric_source`·S10/S11 판단 등 · 아래 「구현 잔여」
 > **분석 기준 HEAD**: `a86aa4e5` (main · plans/210 W1~W10 · plans/211 W1~W8 · plans/212 포함)
-> **계획 시작 SHA**: (착수 시 기입)
-> **회귀 대상 파일**: (착수 시 Wave별 기입 — §12)
+> **계획 시작 SHA**: `fefbc9ac` (브랜치 `plan215-biz-service` · 2026-11-05 착수 · 커밋 없음)
+> **회귀 대상 파일**: `git diff fefbc9ac --name-only` + 미추적 신규 파일 중 `plans/`·`docs/`·`.claude/`·`build/`·`logs/`·이미지 제외 140개(2026-11-06 기준 — 같은 명령으로 재생성) · 마지막 모듈 회귀(2026-11-06 · 140개 1회): 본체 통과 13,394 · sre_agent 통과 3,526 · 실패 43건 전부 원래 실패 · `범위: 모듈 단위 — 전체 미실행` · `[전체 회귀 권고]`(허브 모듈 `src.config.alarm` 87% · `alarm_capabilities` 반환 주석 변경) — 사용자 요청 시 `--full`
+> **진행 상태**: W1~W12·W5b·W8b·W8c 구현 · 1차 검증(verifier·security-auditor) 교정 · 2026-11-06 잔여 ②~⑩·⑬ 진행 + W10 교정 3건 · 2차 검증(verifier) Minor 3건 교정 · 매뉴얼 캡처 5장 · W0은 사용자 몫(제외)
+> **구현 잔여**(2026-11-06 갱신 · D-368 부기 1): ① M2 귀속 폴스타 연계 단계·트리 그룹 추정 미구현 — 결정 기록 시점에 값이 없음(`polestar_link`는 기록 뒤 APM 알람에만 · `resource_id` 원문 없음 · `resourceAncestry` 운영 템플릿 미지원 D-188) · 별도 결정 필요 ② 다중 워커 동시성 — 계획이 Redis 잠금을 정한 곳(`bizsvc:lock`·`bizmon:leader`)은 구현 · D3 재접수·가져오기 미리보기·지표 동시 상한은 계획 미정이라 프로세스 내 가드 유지 ③ D3 구성원 비교는 `reference_time` 없으면 건너뜀 · APM 기준선 전일만 · X-View 초과 시 판정 불가 ④ 대기 초과로 버린 비교 배치는 남은 호출을 계속 냄(D-347 성격) ⑤ 감시 상한 확인·쓰기 비원자(수집기 상한이 최종 방어) ⑥ 캡처 미완 U-88(지표)·U-90(진단)·A-93(검토함·계산 — 210 스냅샷 필요)·A-95(화면 없음) ⑦ 업무 현황 고지 「지표 수집 꺼짐 — 알람 현황만」 2회 표시(의도 확인 필요)
 > **개정 이력**
 > - 초안(2026-11-05): 사용자 지시 *"Apm과 sms을 연결하는 기능과 유사하게 엄무명이나 호스트네임의 유사성을 이용하여 같은 업무의 서버를 그룹핑을 자동화 하는 페이지를 만들 계획파일을 작성하라"* → SMS 서버 업무 그룹(신호 S1~S5)
 > - 개정 1(2026-11-05): *"호스트면 앞 3글자는 업무코드로 만들기도 한다. 이 정책도 반영하라"* → 신호 S6 호스트 접두 업무코드(§3.2.1)
@@ -408,6 +410,10 @@ aux_signals:
   - 폴스타 비교: `sms_members` 중 D1 이상 구성원(또는 앞에서부터) ≤3대를 비교 지표 수집 대상으로(`polestar_link_targets` 수집 함수를 재사용하되 별도 입력 · 상한 `POLESTAR_LINK_TARGETS_MAX` 공유).
   - 브리핑 선택 키 `biz_service`(서비스명 · 비교한 구성원 · 추정 여부) — 6요소 불변(D-325 ⑨와 같은 방식).
 - **D-341 ①과의 관계**: 플레이북 대상 확정은 여전히 결정적이다 — 입력 목록이 하나 늘 뿐 LLM이 고르지 않는다.
+- **W10 교정(2026-11-06 · D-368 부기 1 ① · sre_agent 플래그 3개 · 전부 기본 off = 위 동작 비트 동일)**:
+  - `SRE_BIZ_COMPARE_WAIT_S`(미입력 = 같은 배치): S4 비교 지표 호출을 본 판정과 **다른 배치**로 동시에 내고 시작부터 그 초까지만 기다린다 — 넘기면 `biz_compare` 행만 `status=missing`·「비교 수집 Ns 초과」, 본 판정 불변, 늦은 배치는 기록·적재 0 · 값이 S4 `timeout_s` 이상이면 기동 경고.
+  - `SRE_S0_BIZ_SERVICE_AUTHORITATIVE`: `scope.biz_service`가 있고 `apm_members`가 비면 ③ `apm_instance_map(business=)` 생략 · 사유 「업무 서비스 『{display_name}』 구성원 기준 — 게이트웨이 업무 검색 생략」(도메인 확장 `apm_instance_map(domain_id=, source_ids=)`은 범위 밖).
+  - `SRE_S0_BIZ_PEERS_WITHOUT_RESOLVE`: biz_peers를 `if resolved:` 밖에서도 — 대상 확정 실패여도 구성원(hint `source_id`)을 ④ 범위 비교에만 · 진단 대상은 알람 인스턴스 하나 유지(D-341 ①) · 사유 「대상 확정 실패({why}) — 업무 서비스 구성원 {n}개로 범위만 비교」.
 
 ### 4.9 D3 — 서비스 심층 조사 (`NOISE_BIZ_DIAGNOSIS_ENABLED`)
 
@@ -705,7 +711,7 @@ aux_signals:
 | W8b | (개정 4) P2 통합 이벤트 타임라인 — 판정 이력·상태 전이·조사·(옵트인) 변경 이력 합치기 · 묶음 「×N」 · 「장애 직전 변경」 · 알람 행 → 관제 탭 서랍(`noise.js` mount 옵션 `openAlarm` 가산) | `noise_gate/application/biz_monitor_events.py` · `noise_gate/infrastructure/change_feed.py`(재사용 · 고정 SELECT 조립 추가 시 `biz_service_sql.py`) · `src/api/routes/biz_monitor.py` · `src/static/js/biz-monitor.js` · `src/static/js/noise.js`(옵션 1개) | 소스별 행 단언 · 행 ≤500 · 사용자 경로 마스킹 · 억제 포함 규칙 = 관제 · 변경 플래그 off면 `change_feed` 호출 0 · DB2 존 「미지원」 · 관제 모듈 옵션 없으면 종전 동작 |
 | W8c | (개정 6) **P2 상세 보기 탭 4개 + 「지표」 보기**(§5.2.1) — 탭·주소 `&tab=` · [넓게 보기] · 계층 레인 그래프 · 구성원 선택·고르기 · 이벤트 표지(W8b 결과 재사용) · 시간 커서 · 드릴다운 서랍 · 어제 비교 · 표로 보기 대체 · 이력 조회(SMS 고정 SELECT · APM series · 메모 · 동시 상한 · 부분 결과) · 플래그·기능 조회 키 | `noise_gate/application/biz_monitor_history.py` · `noise_gate/infrastructure/biz_service_sql.py`(이력 빌더) · `src/api/routes/biz_monitor.py` · `src/config/alarm.py`(플래그 3) · `src/api/routes/alarm.py`(기능 조회 키) · `src/static/biz-monitor.html` · `src/static/js/biz-monitor.js` · `noise_gate/tests/test_plan215_w8c_*.py` | 플래그 off 탭·라우트 0·관측 호출 0 · 행 상한 단언(24h 1,440 · 7d 일 통계) · `members` 외부 id 400 · 동시 429 · 60초 메모 재요청 호출 0 · APM 임계선 0 · 보간 0 · 탭 이탈 요청 0 · `innerHTML` 0 · 브라우저 1회(가짜 데이터) · **[웨이브 회귀 필요]**(`src/config/`) |
 | W9 | D1 서비스 진단 스냅샷 — 판독 R1~R6 · 최초 이상 순 · 대표 선정 · 즉석 조회 상한·메모 · 진단 API · 보드 진단 패널(D3 버튼 제외) | `noise_gate/domain/biz_diagnosis.py` · `noise_gate/application/biz_diagnosis.py` · `src/api/routes/biz_monitor.py` · `src/static/js/biz-monitor.js` · `noise_gate/tests/test_plan215_w9_*.py` | 판독 벡터(§14) · 결정성 · M3 캐시 있으면 관측 호출 0 · 즉석 조회 소스당 1·존당 1 · 「가설 · 참고용」·「정상」 어휘 0 |
-| W10 | D2 알람 조사 서비스 맥락 — `meta.biz_service` 가산(트리거·수동·사건 종합) · sre_agent S0 명시 구성원 우선 · 폴스타 비교 · 브리핑 선택 키 | `noise_gate/domain/investigation_payload.py` · `noise_gate/application/nodes/investigation_trigger.py` · `sre_agent/sre_agent/application/playbook_steps.py`·`playbook_runner.py` · `sre_agent/tests/test_plan215_w10_*.py` | 플래그 off 페이로드 바이트 동일 · 상한·존 필터 · `polestar_link` 불변 · 키 없으면 S0 종전 경로 · **[웨이브 회귀 필요]**(조사 페이로드 계약) · sre_agent는 자체 venv |
+| W10 | D2 알람 조사 서비스 맥락 — `meta.biz_service` 가산(트리거·수동·사건 종합 · (2026-11-06) 재조회 `post_host_link`) · sre_agent S0 명시 구성원 우선 · 폴스타 비교 · 브리핑 선택 키 · **(교정 2026-11-06 · §4.8)** S4 비교 배치 분리·대기 상한 · S0 업무 검색 생략 · 미확정 시 범위 비교만(플래그 3개 기본 off) | `noise_gate/domain/investigation_payload.py` · `noise_gate/application/nodes/investigation_trigger.py` · `sre_agent/sre_agent/application/playbook_steps.py`·`playbook_runner.py` · `sre_agent/tests/test_plan215_w10_*.py` | 플래그 off 페이로드 바이트 동일 · 상한·존 필터 · `polestar_link` 불변 · 키 없으면 S0 종전 경로 · **[웨이브 회귀 필요]**(조사 페이로드 계약) · sre_agent는 자체 venv |
 | W11 | D3 서비스 심층 조사 — 접수 라우트(인가·상한·서비스 키) · `sre_diagnose` `context` 가산 · `_host_key` `"biz"` 축 · 저장 `subject` · 보드 버튼·진단 이력 | `src/api/routes/biz_monitor.py` · `noise_gate/infrastructure/sre_agent_client.py` · `sre_agent/sre_agent/interface/mcp_service.py`·`application/investigation_jobs.py`·`investigation_dispatcher.py` · `src/static/js/biz-monitor.js` | 거부 사유(권한·상한·대표 없음) · 같은 서비스 재접수 = 기존 id · 대표 단독 조사 중에도 접수 · `context` 없으면 sre_agent 비트 동일 · 프롬프트 렌더 회귀(`prompt_render_diff.py` — 지침 경로를 쓰면) |
 | W12 | 매뉴얼(D-255) — 관리자 「업무 서비스 정의」(편집·검토함·가져오기·계산) · 사용자 「업무 서비스 정의」(조회) · 「업무 현황」(타일·보기 탭·구성 맵·지표·타임라인·서비스 진단) · 캡처 | `scripts/manual/features.yaml` · `content/admin.md`·`user.md` · `src/static/manual/*` | `pytest tests/test_manual` |
 

@@ -29,6 +29,8 @@
  *     onForbidden()       403 처리(종전: `/`로).
  *     onOpenInvestigation(id)  서랍 조사 진입(종전: 새 탭 `/?diagnosis=`·`/?conversation=` noopener).
  *     liveView()          장애 진단 켜짐 판정 — 주면 `/active` 조회를 하지 않고 렌더·클릭 때마다 부른다.
+ *     openAlarm           (plans/215 W8b) 열 알람 id — 문자열이면 mount 직후 1번, 함수면 mount 직후와 resume마다
+ *                         불러 값(알람 id)이 있을 때 그 알람의 판정 추적 서랍을 연다(포털 업무 현황 → 같은 창 관제 탭).
  * 반환 핸들 `{pause, resume, unmount}` — 숨은 탭에서 주기 갱신·열린 서랍의 조사 브리핑 재조회를 멈추는
  * 용도(독립 페이지는 쓰지 않는다).
  */
@@ -3591,6 +3593,14 @@ function mount(mountRoot, opts) {
 
     startTimers();
 
+    // (plans/215 W8b) mount 인자 `openAlarm` — 받은 알람의 서랍을 연다(인자 없으면 아무것도 하지 않는다 = 종전)
+    function openRequestedAlarm() {
+        var alarmId = typeof opts.openAlarm === "function" ? opts.openAlarm() : opts.openAlarm;
+        if (alarmId) openDrawer(String(alarmId), null);
+    }
+
+    if (opts.openAlarm) openRequestedAlarm();
+
     // ── mount 핸들 (plans/193 W1) ───────────────────────────────────────
     // 포털 탭이 숨으면 pause, 보이면 resume, 떠나면 unmount. 독립 페이지는 부르지 않는다.
     // pause는 주기 갱신·운영자 스트림 재연결 타이머를 멈추고 열린 설명 팝오버·차트 툴팁을 닫는다
@@ -3646,7 +3656,16 @@ function mount(mountRoot, opts) {
         if (ctrl) ctrl.abort();
     }
 
-    return { pause: pause, resume: resume, unmount: unmount };
+    // (plans/215 W8b) mount 인자 `openAlarm`이 함수면 숨었다 다시 보일 때마다 기다리는 알람의 서랍을 연다 —
+    // 인자가 없거나 문자열이면 핸들의 resume은 종전 그대로다.
+    function resumeWithAlarm() {
+        var wasPaused = life.paused && !life.dead;
+        resume();
+        if (wasPaused) openRequestedAlarm();
+    }
+
+    var resumeHandle = typeof opts.openAlarm === "function" ? resumeWithAlarm : resume;
+    return { pause: pause, resume: resumeHandle, unmount: unmount };
 }
 
 function mountOnce(root, opts) {

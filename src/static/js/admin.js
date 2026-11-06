@@ -3380,4 +3380,13 @@
             '<tr><td colspan="8" style="color: var(--text-muted); text-align: center;">표시할 소스가 없습니다.</td></tr>';
         if (apmSourcesTable) apmSourcesTable.style.display = data.active ? "table" : "none";
     }
+
+    // plans/215 W5: 「업무 서비스 정의」 진입 링크 — 기본 숨김, 페이지 라우트가 있을 때(플래그 on 기동)만
+    // 보인다. 페이지는 NOISE_BIZ_SERVICE_ENABLED가 꺼진 기동에서 404다(조회 1회 · 실패는 숨긴 채 둔다).
+    var bizServicesEntryLink = document.getElementById("bizServicesEntryLink");
+    if (bizServicesEntryLink) {
+        fetch("/biz-services", { method: "GET", cache: "no-store" }).then(function (res) {
+            if (res.ok) bizServicesEntryLink.style.display = "";
+        }).catch(function () { /* 링크는 숨긴 채(진입 보조 — 기능 자체는 서버가 판정) */ });
+    }
 })();

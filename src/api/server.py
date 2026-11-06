@@ -445,6 +445,149 @@ async def _ensure_apm_host_map_tables(pool: Any) -> None:
         logger.warning("APM·SMS 연계 매핑 테이블 DDL 실행 실패: %s", e)
 
 
+# plans/215 · D-368: 업무 서비스·구성원·후보·실행 기록·보강 속성·상태 전이
+# (ddl/biz_service.sql과 동일)
+_BIZ_SERVICE_DDL = """
+CREATE TABLE IF NOT EXISTS biz_service (
+    id            BIGSERIAL PRIMARY KEY,
+    service_key   VARCHAR(128) NOT NULL,
+    display_name  VARCHAR(255) NOT NULL,
+    tier          SMALLINT     CHECK (tier IS NULL OR tier BETWEEN 1 AND 3),
+    description   VARCHAR(500),
+    owner_org     VARCHAR(60),
+    origin        VARCHAR(16)  NOT NULL CHECK (origin IN ('auto', 'manual')),
+    state         VARCHAR(16)  NOT NULL DEFAULT 'active'
+                  CHECK (state IN ('active', 'ambiguous', 'disabled')),
+    verified      BOOLEAN      NOT NULL DEFAULT FALSE,
+    monitored     BOOLEAN      NOT NULL DEFAULT FALSE,
+    evidence      JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    note          TEXT,
+    created_by    VARCHAR(100),
+    created_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_by    VARCHAR(100),
+    updated_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    version       INTEGER      NOT NULL DEFAULT 1,
+    last_run_id   VARCHAR(64),
+    CONSTRAINT uq_biz_service_key UNIQUE (service_key)
+);
+CREATE INDEX IF NOT EXISTS idx_biz_service_state ON biz_service(state);
+CREATE INDEX IF NOT EXISTS idx_biz_service_monitored ON biz_service(monitored) WHERE monitored;
+
+CREATE TABLE IF NOT EXISTS biz_service_member (
+    id             BIGSERIAL PRIMARY KEY,
+    service_id     BIGINT       NOT NULL REFERENCES biz_service(id) ON DELETE CASCADE,
+    kind           VARCHAR(16)  NOT NULL
+                   CHECK (kind IN ('sms_server', 'apm_instance', 'apm_domain', 'apm_business')),
+    member_key     VARCHAR(512) NOT NULL,
+    db_id          VARCHAR(64),
+    resource_id    VARCHAR(64),
+    server_name    VARCHAR(255),
+    hostname       VARCHAR(255),
+    ip             VARCHAR(64),
+    zone           VARCHAR(64),
+    source_id      VARCHAR(64),
+    domain_id      VARCHAR(64),
+    domain_name    VARCHAR(255),
+    instance_name  VARCHAR(255),
+    prefix_code    VARCHAR(64),
+    origin         VARCHAR(16)  NOT NULL CHECK (origin IN ('auto', 'manual')),
+    basis          VARCHAR(32)  NOT NULL,
+    confidence     VARCHAR(16)  NOT NULL DEFAULT 'inferred'
+                   CHECK (confidence IN ('confirmed', 'inferred')),
+    state          VARCHAR(16)  NOT NULL DEFAULT 'active'
+                   CHECK (state IN ('active', 'excluded', 'target_gone')),
+    apm_map_id     BIGINT,
+    layer          VARCHAR(16)
+                   CHECK (layer IS NULL OR layer IN ('web', 'was', 'db', 'batch', 'etc')),
+    layer_origin   VARCHAR(16)  CHECK (layer_origin IS NULL OR layer_origin IN ('auto', 'manual')),
+    evidence       JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    gone_at        TIMESTAMPTZ,
+    created_by     VARCHAR(100),
+    created_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_by     VARCHAR(100),
+    updated_at     TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    CONSTRAINT uq_biz_service_member_key UNIQUE (kind, member_key)
+);
+CREATE INDEX IF NOT EXISTS idx_biz_service_member_service ON biz_service_member(service_id);
+CREATE INDEX IF NOT EXISTS idx_biz_service_member_gone
+    ON biz_service_member(gone_at) WHERE state = 'target_gone';
+
+CREATE TABLE IF NOT EXISTS biz_service_candidate (
+    id                BIGSERIAL PRIMARY KEY,
+    kind              VARCHAR(16)  NOT NULL CHECK (kind IN ('member', 'merge', 'apm_unlinked')),
+    candidate_key     VARCHAR(512) NOT NULL,
+    service_id        BIGINT       REFERENCES biz_service(id) ON DELETE CASCADE,
+    other_service_id  BIGINT       REFERENCES biz_service(id) ON DELETE CASCADE,
+    member_kind       VARCHAR(16),
+    member_key        VARCHAR(512),
+    signals           JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    evidence          JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    status            VARCHAR(16)  NOT NULL DEFAULT 'open'
+                      CHECK (status IN ('open', 'accepted', 'rejected')),
+    run_id            VARCHAR(64),
+    created_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    decided_by        VARCHAR(100),
+    decided_at        TIMESTAMPTZ,
+    CONSTRAINT uq_biz_service_candidate_key UNIQUE (candidate_key)
+);
+CREATE INDEX IF NOT EXISTS idx_biz_service_candidate_status
+    ON biz_service_candidate(status, kind);
+
+CREATE TABLE IF NOT EXISTS biz_service_run (
+    run_id        VARCHAR(64)  PRIMARY KEY,
+    requested_by  VARCHAR(100),
+    scan_run_id   VARCHAR(64),
+    mode          VARCHAR(16)  NOT NULL CHECK (mode IN ('preview', 'apply')),
+    status        VARCHAR(16)  NOT NULL DEFAULT 'running'
+                  CHECK (status IN ('running', 'done', 'failed', 'aborted')),
+    summary       JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    started_at    TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    finished_at   TIMESTAMPTZ
+);
+CREATE INDEX IF NOT EXISTS idx_biz_service_run_started_at ON biz_service_run(started_at DESC);
+
+CREATE TABLE IF NOT EXISTS biz_service_attr (
+    id                 BIGSERIAL PRIMARY KEY,
+    run_id             VARCHAR(64)  NOT NULL,
+    db_id              VARCHAR(64)  NOT NULL,
+    resource_id        VARCHAR(64)  NOT NULL,
+    tree_group_id      VARCHAR(64),
+    tree_group_name    VARCHAR(255),
+    tree_code          VARCHAR(255),
+    registered_at      TIMESTAMPTZ,
+    depends            JSONB        NOT NULL DEFAULT '[]'::jsonb,
+    contract_no        VARCHAR(100),
+    contract_name      VARCHAR(255),
+    maint_contract_no  VARCHAR(100),
+    owner_branch       VARCHAR(255),
+    CONSTRAINT uq_biz_service_attr_key UNIQUE (run_id, db_id, resource_id)
+);
+CREATE INDEX IF NOT EXISTS idx_biz_service_attr_run_id ON biz_service_attr(run_id);
+
+CREATE TABLE IF NOT EXISTS biz_service_state_log (
+    id          BIGSERIAL PRIMARY KEY,
+    service_id  BIGINT       NOT NULL REFERENCES biz_service(id) ON DELETE CASCADE,
+    from_state  VARCHAR(32),
+    to_state    VARCHAR(32)  NOT NULL,
+    reason      JSONB        NOT NULL DEFAULT '{}'::jsonb,
+    at          TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_biz_service_state_log_service
+    ON biz_service_state_log(service_id, at DESC);
+CREATE INDEX IF NOT EXISTS idx_biz_service_state_log_at ON biz_service_state_log(at);
+"""
+
+
+async def _ensure_biz_service_tables(pool: Any) -> None:
+    """업무 서비스 테이블/인덱스가 없으면 생성한다(plans/215 · _ensure_apm_host_map_tables 미러)."""
+    try:
+        async with pool.acquire() as conn:
+            await conn.execute(_BIZ_SERVICE_DDL)
+    except Exception as e:
+        logger.warning("업무 서비스 테이블 DDL 실행 실패: %s", e)
+
+
 async def _check_apm_sources(config: AppConfig) -> SourceHealthReport | None:
     """제니퍼 소스 정합 점검을 1회 돌려 사용 가능 소스 집합을 확정한다(plans/147 W4 · D-322 ⑥).
 
@@ -528,6 +671,18 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
     ) = await _start_incident_tracking(app, config)
     _warn_retired_apm_url(config)
     apm_host_map_task, apm_host_map_redis = await _start_apm_host_map(app, config)
+    biz_service_redis = await _start_biz_service(app, config)
+    # (plans/215 W7) 업무 현황 M3 지표 수집기 — biz_monitor_metrics_active일 때만(끄면 태스크 0)
+    biz_monitor_collector = None
+    if getattr(getattr(config, "noise_gate", None), "biz_monitor_metrics_active", False) is True:
+        from noise_gate.application.biz_monitor_collector import start_biz_monitor_collector
+
+        biz_monitor_collector = start_biz_monitor_collector(
+            config,
+            cache=getattr(app.state, "biz_service_cache", None),
+            repo=getattr(app.state, "biz_service_repo", None),
+            incident_store=getattr(app.state, "incident_store", None),
+        )
     loop_lag_task = _start_loop_lag_monitor(config)
 
     yield
@@ -592,6 +747,14 @@ async def lifespan(app: FastAPI) -> AsyncGenerator:
             pass
     if apm_host_map_redis is not None:
         await _close_quietly(apm_host_map_redis, "aclose")
+
+    # 종료 시: 업무 현황 M3 수집기 정리(plans/215 W7 — 켰을 때만 있다 · 사본 Redis를 닫기 전에)
+    if biz_monitor_collector is not None:
+        await biz_monitor_collector.aclose()
+
+    # 종료 시: 업무 서비스 사본 Redis 연결 정리(plans/215 — 켰을 때만 있다)
+    if biz_service_redis is not None:
+        await _close_quietly(biz_service_redis, "aclose")
 
     # 종료 시: 감사 로그 로테이션 주기 태스크 정리
     if audit_retention_task:
@@ -1028,6 +1191,78 @@ async def _start_apm_host_map(app: FastAPI, config: AppConfig) -> tuple[Any, Any
     return task, redis
 
 
+async def _start_biz_service(app: FastAPI, config: AppConfig) -> Any:
+    """기동 단계 — 업무 서비스 저장소·Redis 사본(plans/215 §3.5 · D-368).
+
+    `NOISE_BIZ_SERVICE_ENABLED`가 정확히 True(`biz_service_active`) **그리고** auth 풀이 있을 때만
+    DDL·저장소·정리(보존 기한 · 남은 running 실행 기록)·사본 전체 재구성을 한다(`MagicMock` 설정
+    오판 방지). 꺼져 있으면 아무것도 하지 않는다 — `app.state`에도 대입하지 않는다(기동 경로 비트
+    동일 · 소비자는 `getattr(…, None)`). 켜졌을 때 `app.state.biz_service_repo`·
+    `app.state.biz_service_cache`를 둔다. 실패는 warning 후 계속한다(사본이 비면 「서비스 미상」 —
+    오귀속 없음). 주기 태스크는 없다(적용 시 재구성). (W4) 210 저장소(`apm_host_map_repo`)와 사본이
+    있으면 계산 서비스 `app.state.biz_service_compute`도 둔다(없으면 두지 않는다 — Q5).
+
+    Returns:
+        Redis 연결(만들었을 때만 — 종료 단계가 닫는다) 또는 None.
+    """
+    ng: Any = getattr(config, "noise_gate", None)
+    if getattr(ng, "biz_service_active", False) is not True:
+        return None
+    pool = getattr(app.state, "auth_pool", None)
+    if pool is None:
+        logger.warning("업무 서비스 비활성 — auth 풀(내부 PG)이 없다 (NOISE_BIZ_SERVICE_ENABLED)")
+        return None
+    from noise_gate.infrastructure.biz_service_cache import RedisBizServiceCache, connect_redis
+    from noise_gate.infrastructure.biz_service_repository import PostgresBizServiceRepository
+
+    await _ensure_biz_service_tables(pool)
+    repo = PostgresBizServiceRepository(pool)
+    app.state.biz_service_repo = repo
+    try:
+        aborted = await repo.abort_running_runs()
+        if aborted:
+            logger.info("업무 서비스 계산 — 남은 실행 기록 %d건을 aborted로 정리", aborted)
+        await repo.cleanup()
+    except Exception as e:
+        logger.warning("업무 서비스 기동 정리 실패(계속): %s", e)
+    redis = None
+    try:
+        redis = connect_redis(config)
+        cache = RedisBizServiceCache(redis)
+        app.state.biz_service_cache = cache
+        counts = await cache.sync_from_repo(repo)
+        logger.info("업무 서비스 사본 재구성 (%s)", counts)
+    except Exception as e:
+        logger.warning("업무 서비스 사본 재구성 실패 — 다음 적용 때 다시 만든다: %s", e)
+    # (W4) 계산 서비스 — 모집단은 210 사전 스캔 스냅샷이라 그 저장소가 있을 때만 조립한다
+    # (Q5 — 없으면 `app.state.biz_service_compute`를 두지 않고 관리 API가 「사전 스캔 비활성」
+    # 사유로 거부).
+    map_repo = getattr(app.state, "apm_host_map_repo", None)
+    compute_cache = getattr(app.state, "biz_service_cache", None)
+    if map_repo is None:
+        logger.info("업무 서비스 계산 비활성 — APM·SMS 연계(사전 스캔) 저장소가 없다 "
+                    "(NOISE_APM_HOST_MAP_ENABLED)")
+    elif compute_cache is None:
+        logger.warning("업무 서비스 계산 비활성 — Redis 사본(락) 연결이 없다")
+    else:
+        try:
+            from noise_gate.application.biz_service import build_biz_service
+            from noise_gate.infrastructure.decision_store import DecisionStore
+
+            path = ng.decision_store_path
+            decisions = DecisionStore(
+                path,
+                bool(getattr(ng, "decision_store_enabled", True)),
+                int(getattr(ng, "decision_store_max_lines", 20000)),
+            ) if path else None
+            app.state.biz_service_compute = build_biz_service(
+                config, repo=repo, map_repo=map_repo, cache=compute_cache, decisions=decisions,
+            )
+        except Exception as e:
+            logger.warning("업무 서비스 계산 서비스 조립 실패 — 미리보기·적용 비활성: %s", e)
+    return redis
+
+
 async def _start_incident_tracking(app: FastAPI, config: AppConfig) -> tuple[Any, Any, Any, Any]:
     """기동 단계 — D-049: ack/incident 라이프사이클 계측 (PostgreSQL 단일 저장소).
 
@@ -1260,6 +1495,23 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
         from src.api.routes import admin_apm_host_map
 
         application.include_router(admin_apm_host_map.router, prefix="/api/v1", tags=["admin"])
+    # (plans/215 W4) 관리자 「업무 서비스 정의」 — biz_service_active일 때만 등록
+    # (기동 시 1회 · 끄면 404).
+    if getattr(config.noise_gate, "biz_service_active", False) is True:
+        from src.api.routes import admin_biz_service
+
+        application.include_router(admin_biz_service.router, prefix="/api/v1", tags=["admin"])
+    # (plans/215 W6) 업무 현황 보기 — biz_monitor_active일 때만 등록(기동 시 1회 · 끄면 404).
+    if getattr(config.noise_gate, "biz_monitor_active", False) is True:
+        from src.api.routes import biz_monitor
+
+        application.include_router(biz_monitor.router, prefix="/api/v1")
+    # (plans/215 W5) 「업무 서비스 정의」 조회(로그인 사용자 · 존 필터) — biz_service_active일 때만.
+    # 업무 현황 라우터(`/biz-services/monitor`) 뒤에 두고 상세는 정수 경로(`/{service_id:int}`)다.
+    if getattr(config.noise_gate, "biz_service_active", False) is True:
+        from src.api.routes import biz_service as biz_service_routes
+
+        application.include_router(biz_service_routes.router, prefix="/api/v1")
     # (Plan 54) 알람 노이즈 캔슬링 관제 — 운영자 JWT 뒤의 집계·조회·침묵 관리.
     application.include_router(
         noise_dashboard.router, prefix="/api/v1", tags=["noise-console"]
@@ -1333,6 +1585,14 @@ def create_app(config: Optional[AppConfig] = None) -> FastAPI:
     async def user_noise_console_page() -> FileResponse:
         """사용자 노이즈 관제 화면(읽기 전용 — D-245)."""
         return FileResponse(static_dir / "noise.html")
+
+    # (plans/215 W5) 「업무 서비스 정의」 독립 페이지(새 탭) — 플래그 off면 라우트가 없어 404.
+    if getattr(config.noise_gate, "biz_service_active", False) is True:
+
+        @application.get("/biz-services", include_in_schema=False)
+        async def biz_services_page() -> FileResponse:
+            """업무 서비스 정의 화면."""
+            return FileResponse(static_dir / "biz-services.html")
 
     @application.get("/admin/login", include_in_schema=False)
     async def admin_login_page() -> FileResponse:

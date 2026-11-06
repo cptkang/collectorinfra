@@ -1095,3 +1095,65 @@ captures:
     steps:
       - goto: /docs
       - wait: 2500
+  # ── plans/215 업무 서비스 정의 · 업무 현황(capture-biz — 두 플래그 on · 예시 서비스는 run_capture._seed_biz 가
+  #    관리 API 로 넣는다 · 지표 수집·지표 보기·진단은 꺼 둬 관측 DB·제니퍼 호출 0 · LLM 0).
+#    사용자 매뉴얼 장면도 관리자로 찍는다 — 예시 구성원은 샌드박스 DB(polestar · 존 미배정)라 일반 사용자에게는
+#    「존 권한 밖 서비스 N개」로 건수만 보인다
+  - id: biz-services-list
+    server: capture-biz
+    login: admin
+    height: 700
+    steps:
+      - goto: /biz-services
+      - wait: "#bsRows tr.bizsvc-row"
+      - wait: 600
+    callouts: [[1, "#bsSections"], [2, "#bsQ"], [3, "#bsSearch"], [4, "#bsExport"], [5, "#bsTable"], [6, "#bsPrev"]]
+  - id: biz-services-members
+    server: capture-biz
+    login: admin
+    height: 900
+    steps:
+      - goto: /biz-services
+      - wait: "#bsRows tr.bizsvc-row"
+      - click: "#bsRows tr.bizsvc-row"
+      - wait: "#bsDetail .bizsvc-subtabs"
+      - click: "#bsDetail .bizsvc-subtab:has-text('구성원')"
+      - wait: "#bsDetail .bizsvc-table"
+      - wait: 800
+    callouts: [[1, "#bsNew"], [2, "#bsDetail > .bizsvc-subtabs"], [3, "#bsDetail > div .bizsvc-subtabs"], [4, "#bsDetail > div .bizsvc-bar"], [5, "#bsDetail .bizsvc-table"]]
+  # CSV 가져오기 탭(관리자) — 미리보기는 사전 스캔 스냅샷이 있어야 판정이 생겨 빈 탭만 찍는다
+  - id: biz-services-import
+    server: capture-biz
+    login: admin
+    height: 600
+    steps:
+      - goto: /biz-services
+      - wait: "#bsSections [data-section='import']"
+      - click: "#bsSections [data-section='import']"
+      - wait: "#secImport .bizsvc-card"
+      - wait: 600
+    callouts: [[1, "#bsSections [data-section='import']"], [2, "#secImport .bizsvc-note"], [3, "#secImport .bizsvc-bar"]]
+  - id: biz-monitor
+    server: capture-biz
+    login: admin
+    height: 1100
+    steps:
+      - goto: /?view=biz
+      - wait: "#bizView .bm-tile"
+      - click: "#bizView .bm-tile:has-text('결제 코어')"
+      - wait: "#bizView [data-bm='detailPanel'] .bm-section"
+      - wait: 800
+    callouts: [[1, "#bizView .bm-summary"], [2, "#bizView .bm-toolbar"], [3, "#bizView .bm-tile"], [4, "#bizView [data-bm='detailHead']"], [5, "#bizView [data-bm='detailTabs']"]]
+  - id: biz-monitor-events
+    server: capture-biz
+    login: admin
+    height: 900
+    steps:
+      - goto: /?view=biz
+      - wait: "#bizView .bm-tile"
+      - click: "#bizView .bm-tile:has-text('결제 코어')"
+      - wait: "#bizView .bm-tab[data-bm-tab='events']"
+      - click: "#bizView .bm-tab[data-bm-tab='events']"
+      - wait: "#bizView [data-bm='detailPanel'] .bm-table"
+      - wait: 800
+    callouts: [[1, "#bizView [data-bm='detailPanel'] .bm-toolbar"], [2, "#bizView [data-bm='detailPanel'] .bm-table"]]

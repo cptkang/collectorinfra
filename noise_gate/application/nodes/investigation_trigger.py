@@ -29,10 +29,12 @@ from __future__ import annotations
 import asyncio
 import ipaddress
 import logging
+from collections.abc import Collection
 from typing import Any, Optional
 
 from langchain_core.runnables import RunnableConfig
 
+from noise_gate.application.biz_investigation_context import attach_biz_service
 from noise_gate.domain.investigation_payload import (
     EPISODE_FINGERPRINT_PREFIX,
     INVESTIGATION_KIND_EPISODE,
@@ -132,6 +134,8 @@ async def investigation_trigger_node(
     await _attach_polestar_link(
         cfg, event, payload, redis=configurable.get("history_redis")
     )
+    # (plans/215 §4.8 D2) 업무 서비스 맥락 — 플래그 off·미소속이면 키 없음(비트 동일).
+    await attach_biz_service(cfg, event, payload, redis=configurable.get("history_redis"))
 
     # (Plan 66 3-E) 후속 모드 — submit까지만 하고 통보를 즉시 내보낸다(브리핑 미첨부).
     # poll·후속 발송은 notifier가 즉시 통보 **후** 백그라운드로 수행한다(순서 보장).
@@ -591,6 +595,7 @@ async def submit_episode_investigation(
     target_state = await _resolve_target_state(cfg, event, first)
     payload = build_episode_trigger_payload(event, decision, episode, target_state=target_state)
     await _attach_polestar_link(cfg, event, payload, redis=redis)
+    await attach_biz_service(cfg, event, payload, redis=redis)  # plans/215 D2 — 알람 존 안만
 
     status = "error"
     investigation_id: str | None = None
@@ -640,6 +645,8 @@ async def build_manual_payload(
     polestar_link: dict[str, Any] | None = None,
     rerun: dict[str, Any] | None = None,
     map_cache: Any = None,  # ApmHostMapCache | None (plans/210 — API 프로세스 사본)
+    biz_service_cache: Any = None,  # RedisBizServiceCache | None (plans/215 D2 — API 프로세스 사본)
+    biz_zones: Collection[str] | None = None,  # 요청자 허용 존(None = 전 존)
 ) -> dict[str, Any]:
     """사용자 요청 알람 분석 페이로드(plans/187 W11 · G-28) — 자동 트리거와 같은 조립 함수.
 
@@ -657,6 +664,8 @@ async def build_manual_payload(
     `meta.hints.rerun`.
     플래그 off면 두 키 모두 없다(비트 동일).
     (plans/210) `map_cache`는 연계 매핑 고속 경로의 사본이다(`apm_host_map_enabled`일 때만 쓴다).
+    (plans/215 §4.8 D2) `biz_service_cache`가 있고 D2 플래그가 켜져 있으면 `meta.biz_service`를
+    싣는다 — 비교 구성원은 요청자 허용 존(`biz_zones`) 안만. 없거나 플래그 off면 키 없음.
     """
     target_resolution = resolve_targets(
         alarm_payload={
@@ -680,6 +689,10 @@ async def build_manual_payload(
         cfg, event, payload, store=host_link_store, link=polestar_link, rerun=rerun,
         map_cache=map_cache,
     )
+    if biz_service_cache is not None:
+        await attach_biz_service(
+            cfg, event, payload, cache=biz_service_cache, manual=True, requester_zones=biz_zones
+        )
     return payload
 
 

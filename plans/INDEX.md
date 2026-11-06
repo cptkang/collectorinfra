@@ -1,6 +1,6 @@
 # 계획서 인덱스 (`plans/`)
 
-> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-11-05 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
+> **생성** 2026-08-20 (plans/70 D1) · **최종 갱신** 2026-11-06 · 갱신 이력은 [`INDEX-CHANGELOG.md`](./INDEX-CHANGELOG.md) 맨 위에 한 줄씩 추가한다(D-304).
 > 하위 `plans/sre-agent/` 7개는 별도 패키지 계획이라 이 인덱스에서 제외한다.
 
 `plans/README.md`는 **초기 구현 계획(01~10)의 목차**로 성격이 달라 그대로 둔다.
@@ -257,7 +257,7 @@
 | 212 | [`212-WIP-llm-plane-per-role.md`](./212-WIP-llm-plane-per-role.md) | 212. 용도별 LLM 평면 분리 — 질의 응답·시맨틱 라우팅·의도 계획·최종 응답·딥 에이전트의 모델·엔드포인트 | **WIP** · W0~W5 완료 · 잔여 W6(운영 전환 · Q5) · D-365 확정 · 역할 router·planner·answer · 미설정 = 워커 항목 단위 승계 · 과금 판정 확장 · D-174 부기 1 | 2026-11-04 |
 | 213 | [`213-deep-dive-resilience-harmony-retry-join.md`](./213-deep-dive-resilience-harmony-retry-join.md) | 213. 심층 조사 회복력 — Harmony 파싱 오류 재시도 · 재분석 합류 예외 · 생략 경로 진단 | **완료**(2026-11-04 · D-366 · 원 211 → 212 → 213 재부여) · W1 생략 종류·문구 3종 · W2 심층 failed/timeout·재시도 가치 있는 skipped 합류 제외 · W3 Harmony 1회 재시도 · W4 취소 확인 · 잔여 폐쇄망 검증 | 2026-11-04 |
 | 214 | [`214-TODO-host-info-collection-gateway.md`](./214-TODO-host-info-collection-gateway.md) | 214. 서버 정보 수집 — 에이전트리스(SSH) 읽기 전용 수집 게이트웨이 · 존별 인스턴스 · 정기 구성 스냅샷 + 장애 시점 진단 수집 | **TODO** · 코드 0 · D-367 확정(SSH 채택 · 06 §1 개정) · 존별 `host_gateway/` · OpenSSH 직접 실행(Ansible 미사용 · 대상 Python 없음) · 대상 강제 명령 bash 수집 스크립트(RHEL 기준 · `sar` 과거 지표) · 본체는 스냅샷 조회만(`host_inspect` 2 프로파일) · LLM은 선택·오프라인 초안만 · 남은 게이트 G-5·G-7~G-14 | 2026-11-05 |
-| 215 | [`215-TODO-business-service-integrated-linkage.md`](./215-TODO-business-service-integrated-linkage.md) | 215. 업무 서비스 통합 연계 — 업무 서비스별 APM·SMS 연계를 자동 분석·저장·관리하고, 알람·실시간 지표로 모니터링하며, 서비스 단위로 복합 진단 | **TODO**(코드 0건) · D-368 예약(원 213·D-366 재부여) · SMS 서버 묶기 S1~S7 + 보조 후보 S8~S12(등록 시각·IP 대역 등 · 순도 보정) · APM은 210 연계에서 도출 · 모니터링 M1~M3 · **복합 진단 D1~D3** · **화면 2개 — P1 「업무 서비스 정의」(새 탭)·P2 「업무 현황」(포털 탭 · 상세 보기 탭 개요·지표·이벤트·진단)** · Q1~Q37 권고 | 2026-11-05 |
+| 215 | [`215-WIP-business-service-integrated-linkage.md`](./215-WIP-business-service-integrated-linkage.md) | 215. 업무 서비스 통합 연계 — 업무 서비스별 APM·SMS 연계를 자동 분석·저장·관리하고, 알람·실시간 지표로 모니터링하며, 서비스 단위로 복합 진단 | **WIP**(2026-11-06 · D-368 부기 1 · 커밋 전) · W1~W12 구현 · 잔여 진행·W10 교정 3건(플래그 기본 off) · D3 구성원 비교 · D1 존별 판정 · 캡처 5장 · 잔여: W0 운영 실측 · M2 폴스타 단계(값 부재 · 별도 결정) · 다중 워커 잠금(계획 미정) | 2026-11-06 |
 | — | [`README.md`](./README.md) | 인프라 데이터 조회 에이전트 - 구현 계획서 목차 | *(미표기)* | 2026-04-09 |
 | — | [`multiturn_plan.md`](./multiturn_plan.md) | 멀티턴 대화 및 Human-in-the-loop 구현 계획 | *(미표기)* | 2026-03-23 |
 | — | [`schemacache_plan.md`](./schemacache_plan.md) | Redis 기반 스키마 캐시 구현 계획 | *(미표기)* | 2026-04-09 |

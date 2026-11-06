@@ -241,7 +241,8 @@ async def test_t1_schema_endpoint_returns_catalog(monkeypatch, tmp_path):
     # plans/212 W1 LLM_{ROUTER,PLANNER,ANSWER}_{PROVIDER,BASE_URL,MODEL,API_KEY,TIMEOUT}
     # +15(llm 기존 그룹)
     # 195 W2까지 478 · 210 W1 +6 · 211 W1 +1 · D-364 -1 · 212 W1 +15
-    assert len(items) == 499
+    # plans/215 W2 NOISE_BIZ_* +20(noise_gate 기존 그룹)
+    assert len(items) == 519
     # (D-184 부기) Plan 71 polestar_rest·Plan 74 drm 그룹이 GROUP_ORDER 미등재로 응답에서
     # 탈락해 어드민 UI에서 조회·수정 불가였다 — 응답에 실제로 실리는지 고정.
     group_keys = {group.group_key for group in response.groups}
@@ -438,7 +439,8 @@ def test_t2_group_and_field_counts():
     # plans/212 W1 LLM_{ROUTER,PLANNER,ANSWER}_{PROVIDER,BASE_URL,MODEL,API_KEY,TIMEOUT}
     # +15(llm 기존 그룹)
     # 195 W2까지 478 · 210 W1 +6 · 211 W1 +1 · D-364 -1 · 212 W1 +15
-    assert len(index) == 499
+    # plans/215 W2 NOISE_BIZ_* +20(noise_gate 기존 그룹)
+    assert len(index) == 519
     # plans/103 TIER3_PLAN_LOOP_ENABLED +1 · plans/119 REPLAN_BUDGET_PROMPT_ENABLED +1
     # plans/211 HOST_CANONICAL_MATCH_ENABLED +1
     assert len([s for s in index.values() if s.group_key == "general"]) == 22

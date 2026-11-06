@@ -409,7 +409,7 @@ def test_loader_wired_after_alarm_subscription_and_auth_gated() -> None:
 
 
 def test_cache_versions() -> None:
-    assert 'src="/static/js/app.js?v=54"' in _INDEX
+    assert 'src="/static/js/app.js?v=56"' in _INDEX
     assert 'href="/static/css/style.css?v=51"' in _INDEX
     css = (_ROOT / "src" / "static" / "css" / "style.css").read_text(encoding="utf-8")
     for cls in (".chat-welcome-guide", ".chat-welcome-guide-item--disabled", ".chat-welcome-guide-reason",

@@ -8,6 +8,8 @@
 
 | 날짜 | 결정 ID | 변경 내용 |
 |------|---------|----------|
+| 2026-11-06 | D-368 | D-368 부기 1 — 잔여 진행: W10 교정 플래그 3개(`SRE_BIZ_COMPARE_WAIT_S` 비교 배치 분리·대기 상한 · `SRE_S0_BIZ_SERVICE_AUTHORITATIVE` 업무 검색 생략 · `SRE_S0_BIZ_PEERS_WITHOUT_RESOLVE` 범위 비교만 · 기본 off 비트 동일) · D3 구성원 비교(사전수집 타임박스 · 플레이북은 알람 전용 유지) · D1 메모 존별 · M3 존별 통계 시각 · `post_host_link` D2 맥락 · 감시 상한 409(해석) · CSV 수신 중 413 · `&at=` · 이탈 1 정정(M2 폴스타 단계·트리 추정 미구현 근거 D-188) · 다중 워커 잠금 미구현(계획 미정) |
+| 2026-11-05 | D-368 | D-368 등재(예약 → 확정) — 업무 서비스 통합 연계 구현(`plans/215` W1~W12): PG 정본 6표·Redis 색인 · 자동은 후보만 · P1 「업무 서비스 정의」·P2 「업무 현황」(개요·지표·이벤트·진단) · D1 판독 R1~R6·D2 `meta.biz_service`·D3 `sre_diagnose` `context` · 플래그 7개 기본 off · 구현 중 해석·이탈 7항·검증 교정 기록 |
 | 2026-11-05 | D-367 | D-367 부기 3 — LLM 역할 경계: 실행 시점 명령 생성 금지 · 실행 시점은 `sre_agent` 프로파일 선택 + `collection_gaps` 기록 · 오프라인 `catalog draft` 초안 → `catalog check` → 사람 승인(G-14) → 재배포 · 매개변수형 `diag.log_tail`·`diag.mw.<kind>` |
 | 2026-11-05 | D-367 | D-367 부기 2 — 셸스크립트 방안 검토(대상 대부분 RHEL): 배포형 bash 수집 스크립트 + 강제 명령 채택 · cron 주기 수집 1차 미채택(G-13) · 전송 실행·push 기각 · RHEL 기본 도구 편입(`sar` 과거 지표 `diag.history` · `rpm` 설치 시각) · 픽스처 Rocky 8·9 |
 | 2026-11-05 | D-367 | D-367 부기 1 — 본체 연결 검토: 원인 분석은 `fault_diagnosis`→`sre_agent` 경유(본체 변경 없음) · 서버 구성·변경 조회는 `host_inspect` 프로파일 2개로 편입(스냅샷 조회만 · 본체 `host_collect` 거부) · 주소 `MCP_SOURCE_ENDPOINTS` 존 키 · G-12(스냅샷 조회 조사 인가) 대기 (`plans/214` v1.2) |

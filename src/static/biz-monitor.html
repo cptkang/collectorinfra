@@ -1,0 +1,53 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>업무 현황 - KB AIOps 포탈</title>
+    <!-- plans/215 W8 §5.2: 포털 뷰 탭 「업무 현황」의 마크업 조각이다(독립 페이지 아님 — 라우트 없음).
+         app.js가 첫 활성 때 이 문서를 받아 본문을 #bizView로 옮기고 아래 스타일시트를 실은 뒤
+         BizMonitor.mount로 붙인다(노이즈 관제 이식 방식 · D-245). 값·이름은 biz-monitor.js가 textContent로 채운다. -->
+    <link rel="stylesheet" href="/static/css/biz-monitor.css?v=4">
+</head>
+<body>
+    <section class="bm" data-bm-root aria-label="업무 현황">
+        <!-- ① 상단 요약 띠 — 상태 칩을 누르면 목록을 그 상태로 거른다 -->
+        <div class="bm-summary">
+            <div class="bm-state-chips" role="group" aria-label="상태별 서비스 수 — 누르면 거릅니다" data-bm="stateChips"></div>
+            <span class="bm-stat" data-bm="openIncidents"></span>
+            <span class="bm-stat" data-bm="metricsStatus"></span>
+            <span class="bm-stat bm-muted" data-bm="updatedAt"></span>
+            <span class="bm-spacer"></span>
+            <button type="button" class="bm-btn" data-bm="fullscreen">전체 화면</button>
+        </div>
+        <div class="bm-notices" data-bm="notices" aria-live="polite"></div>
+        <!-- 일시 안내(진입 거부·조회 실패) — 목록 갱신이 지우지 않도록 고지 칸과 나눈다 -->
+        <div class="bm-notices" data-bm="flash" aria-live="assertive"></div>
+        <div class="bm-body">
+            <!-- ② 서비스 목록 -->
+            <div class="bm-list" data-bm="listPane">
+                <div class="bm-toolbar">
+                    <div class="bm-seg" role="group" aria-label="보기 방식">
+                        <button type="button" data-bm-layout="tile" aria-pressed="true">타일</button>
+                        <button type="button" data-bm-layout="table" aria-pressed="false">표</button>
+                    </div>
+                    <select data-bm="zoneFilter" aria-label="존"></select>
+                    <select data-bm="tierFilter" aria-label="등급"></select>
+                    <select data-bm="stateFilter" aria-label="상태"></select>
+                    <label class="bm-check"><input type="checkbox" data-bm="monitoredOnly"> 감시 대상만</label>
+                    <input type="search" class="bm-search" data-bm="search" maxlength="64"
+                        placeholder="서비스 이름 찾기" aria-label="서비스 이름 찾기">
+                </div>
+                <div class="bm-unattributed bm-muted" data-bm="unattributed"></div>
+                <div class="bm-services" data-bm="services"></div>
+                <p class="bm-empty" data-bm="empty" hidden></p>
+            </div>
+            <!-- ③ 서비스 상세 — 머리 + 보기 탭(개요 · 지표(기능 조회로 켜짐) · 이벤트 · 이후 W9 진단) -->
+            <div class="bm-detail" data-bm="detailPane" hidden>
+                <div class="bm-detail-head" data-bm="detailHead"></div>
+                <div class="bm-tabs" role="tablist" aria-label="상세 보기" data-bm="detailTabs"></div>
+                <div class="bm-tab-panel" role="tabpanel" data-bm="detailPanel"></div>
+            </div>
+        </div>
+    </section>
+</body>
+</html>

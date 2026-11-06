@@ -57,6 +57,11 @@ TERMINAL_STATUSES: frozenset[str] = frozenset({"done", "failed", "timeout", "stu
 _DEFAULT_MAX_JOBS = 500
 _DEFAULT_TTL_SECONDS = 3600.0
 
+#: 진단 `context`(plans/215 D3 · 선택)의 허용 키와 크기 상한(JSON UTF-8 바이트 · 구성원 수).
+DIAGNOSIS_CONTEXT_KEYS: frozenset[str] = frozenset({"biz_service"})
+DIAGNOSIS_CONTEXT_MAX_BYTES = 16 * 1024
+DIAGNOSIS_CONTEXT_MAX_MEMBERS = 50
+
 # 감사 JSONL 기본 경로(런타임 전용 — 테스트는 항상 tmp 경로를 주입한다).
 _DEFAULT_AUDIT_PATH = Path(__file__).resolve().parents[2] / ".data" / "investigation_audit.jsonl"
 
@@ -224,6 +229,58 @@ def make_stub_executor(settings: AgentSettings) -> Executor:
         job.error = None
 
     return _stub
+
+
+def clean_diagnosis_context(raw: object) -> tuple[dict | None, str | None]:
+    """진단 `context`(plans/215 D3)를 검증·정리한다 → `(meta 가산 dict | None, 거부 사유 | None)`.
+
+    허용 키는 `biz_service` 하나다(그 밖의 키·크기 상한 초과·모양 오류는 사유와 함께 거부 —
+    호출자가 결정적으로 만들어 넘기는 값이라 오류는 결함이다). `biz_service`는 D2 페이로드
+    `meta.biz_service`와 같은 모양이며, D2 정규화(`playbook_runner.biz_service_context`)를 통과한
+    값에서 계약 키만 다시 골라 싣는다(받은 사실만 · D-118). 빈 dict는 `(None, None)`
+    (없는 것과 같다).
+    """
+    if not isinstance(raw, dict):
+        return None, "context가 JSON 객체가 아님"
+    if not raw:
+        return None, None
+    unknown = sorted(str(k) for k in raw if k not in DIAGNOSIS_CONTEXT_KEYS)
+    if unknown:
+        return None, f"context 허용 밖 키: {', '.join(unknown)[:120]}"
+    try:
+        size = len(json.dumps(raw, ensure_ascii=False).encode("utf-8"))
+    except (TypeError, ValueError):
+        return None, "context 직렬화 불가"
+    if size > DIAGNOSIS_CONTEXT_MAX_BYTES:
+        return None, f"context 크기 상한 초과({size}B > {DIAGNOSIS_CONTEXT_MAX_BYTES}B)"
+    biz_raw = raw.get("biz_service")
+    if not isinstance(biz_raw, dict):
+        return None, "context.biz_service가 JSON 객체가 아님"
+    for key in ("sms_members", "apm_members"):
+        items = biz_raw.get(key)
+        if items is not None and not isinstance(items, list):
+            return None, f"context.biz_service.{key}가 목록이 아님"
+        if isinstance(items, list) and len(items) > DIAGNOSIS_CONTEXT_MAX_MEMBERS:
+            cap = DIAGNOSIS_CONTEXT_MAX_MEMBERS
+            return None, f"context.biz_service.{key} 상한 초과({len(items)} > {cap})"
+    # 무거운 플레이북 모듈은 context가 있을 때만 읽는다(없으면 import 0 — 종전과 같다).
+    from sre_agent.application.playbook_runner import biz_service_context
+
+    norm = biz_service_context({"meta": {"biz_service": biz_raw}})
+    if norm is None:
+        return None, "context.biz_service 형식 오류(service_id 결측·비정수)"
+    biz: dict = {
+        "service_id": norm["service_id"],
+        "display_name": norm["display_name"],
+        "sms_members": norm["sms_members"],
+        "apm_members": norm["apm_members"],
+        "truncated": norm["truncated"],
+    }
+    if norm.get("confidence"):
+        biz["confidence"] = norm["confidence"]
+    if norm.get("d1_verdict"):
+        biz["d1_verdict"] = norm["d1_verdict"]
+    return {"biz_service": biz}, None
 
 
 class JobStore:
@@ -426,6 +483,7 @@ class JobStore:
         reference_time: str | None = None,
         lookback_minutes: int | None = None,
         prior_findings: dict | None = None,
+        context: dict | None = None,
     ) -> dict:
         """pull형 자연어 진단 잡을 제출한다(§3 `sre_diagnose`). 계약 검증 불요.
 
@@ -440,6 +498,11 @@ class JobStore:
         payload 키를 만들지 않는다
         (종전과 비트 동일). 지침 조립(`investigation_guidance`)이 이 값을 렌더한다.
 
+        `context`(plans/215 D3 · 선택)는 `{biz_service: D2 meta.biz_service와 같은 모양}`이다.
+        `clean_diagnosis_context`로 검증·정리한 값을 잡 payload `meta`에 싣는다(같은 서비스 구성원 ·
+        `_host_key` `"biz"` 축). 형식 오류는 거부한다. 넘기지 않으면 payload에 `meta` 키가 생기지
+        않는다(종전과 비트 동일).
+
         반환: {investigation_id, status: accepted|rejected, reason?, verdict?}
         — dispatcher 동기 가드 거부도 `rejected`로 바로 돌려준다(plans/194 W3).
         """
@@ -453,6 +516,9 @@ class JobStore:
                     reference_time = normalize_reference_time(reference_time)
                 except ValueError as e:
                     reason = str(e)
+            meta: dict | None = None
+            if reason is None and context is not None:
+                meta, reason = clean_diagnosis_context(context)
             if reason is not None:
                 job = self._new_job(kind="diagnosis", status="rejected", reason=reason)
                 self._jobs[job.investigation_id] = job
@@ -473,6 +539,8 @@ class JobStore:
             cleaned = clean_prior_findings(prior_findings) if prior_findings is not None else None
             if cleaned:
                 job.payload["prior_findings"] = cleaned
+            if meta:
+                job.payload["meta"] = meta
             self._jobs[job.investigation_id] = job
             self._audit(
                 {"investigation_id": job.investigation_id, "event": "accepted", "status": "accepted", "kind": "diagnosis"}
@@ -616,5 +684,6 @@ __all__ = [
     "Executor",
     "JobStore",
     "validate_payload",
+    "clean_diagnosis_context",
     "make_stub_executor",
 ]

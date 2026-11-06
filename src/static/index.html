@@ -82,6 +82,8 @@
                         <a id="adminManualLink" href="/manual/admin" target="_blank" rel="noopener" style="display: none;">관리자 매뉴얼</a>
                         <!-- 시스템 소개(plans/124 · D-277): 누구나 · 새 탭. 머리글 버튼을 늘리지 않으려 이 메뉴에 둔다. -->
                         <a id="introLink" href="/intro" target="_blank" rel="noopener">시스템 소개</a>
+                        <!-- 업무 서비스 정의(plans/215 W5): 기능 조회 biz_service_enabled일 때만 app.js가 보인다 · 새 탭(D-248). -->
+                        <a id="bizServicesLink" href="/biz-services" target="_blank" rel="noopener" style="display: none;">업무 서비스 정의</a>
                     </div>
                 </details>
                 <a id="adminEntryLink" href="/admin" target="_blank" rel="noopener" class="btn btn-secondary"
@@ -105,6 +107,10 @@
                  「노이즈 관제」 새 탭 링크는 빠진다. 화면 마크업은 /static/noise.html 한 벌을 첫 활성 때 받아 붙인다(D-245). -->
             <button type="button" class="view-tab" data-view="noise" id="noiseTab"
                 aria-controls="noiseView" aria-selected="false" style="display: none;">노이즈 관제</button>
+            <!-- plans/215 W8 업무 현황 — 기능 조회(biz_monitor_enabled)가 켜짐일 때만 보인다. 마크업은 /static/biz-monitor.html
+                 한 벌을 첫 활성 때 받아 붙인다(노이즈 관제와 같은 방식). 배지는 두지 않는다(알람 배지는 「이벤트 알람」 하나). -->
+            <button type="button" class="view-tab" data-view="biz" id="bizTab"
+                aria-controls="bizView" aria-selected="false" style="display: none;">업무 현황</button>
             <!-- plans/187 W15 장애 진단 — 사전 게이트(/active 200)에서만 보인다. 꺼져 있으면(404)·권한이
                  없으면 숨긴 채 스트림도 열지 않는다. 배지 = 진행 중 조사 건수. -->
             <button type="button" class="view-tab" data-view="diagnosis" id="diagnosisTab"
@@ -450,6 +456,9 @@
          NoiseConsole.mount로 사용자 모드(읽기 전용)를 띄운다 — 마크업·스크립트 사본을 두지 않는다(D-245 · K-1 B). -->
     <div class="noise-view view-hidden" id="noiseView"></div>
 
+    <!-- 업무 현황 뷰(plans/215 W8) — 비어 있다. 첫 활성 때 app.js가 /static/biz-monitor.html 조각을 받아 붙이고 BizMonitor.mount로 띄운다. -->
+    <div class="biz-view view-hidden" id="bizView"></div>
+
     <script src="/static/js/marked.min.js?v=1"></script>
     <!-- app.js 변경 시 v를 올려야 브라우저 캐시가 갱신된다(D-187: v=2 캐시로 저장 값 패널 미표시 실측) -->
     <!-- plans/153 W3: 조사 브리핑 공용 렌더(관제 드로어와 같은 파일) — app.js보다 먼저 -->
@@ -458,7 +467,9 @@
     <script src="/static/js/diagnosis-view.js?v=17"></script>
     <script src="/static/vendor/chartjs/chart.umd.min.js?v=1"></script>
     <script src="/static/js/result-viz.js?v=4"></script>
-    <script src="/static/js/app.js?v=54"></script>
+    <!-- plans/215 W8: 업무 현황 모듈 — 기능 조회가 켜짐일 때만 app.js가 mount한다(싣기만으로는 아무것도 하지 않는다) -->
+    <script src="/static/js/biz-monitor.js?v=3"></script>
+    <script src="/static/js/app.js?v=56"></script>
 </body>
 
 </html>
